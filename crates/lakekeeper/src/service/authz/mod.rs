@@ -2055,6 +2055,35 @@ where
         &[]
     }
 
+    /// Privileges the creating identity receives on a resource it just created, written
+    /// as ordinary grant rows in the same transaction as the resource itself.
+    ///
+    /// Only consulted when grants live in the catalog ([`Self::grants`] returns `None`).
+    /// An authorizer that owns its grant store records what creation confers in its
+    /// `create_*` hooks instead, where it can also write whatever else its model needs.
+    ///
+    /// The owner is the **acting** identity, so a request made under an assumed role
+    /// makes the role the owner — the same identity [`AuthZGrantOps::are_allowed_grants`]
+    /// folds to `None`. An anonymous create leaves no rows.
+    ///
+    /// Names should come from [`Self::grantable_privileges`]. One outside it is stored
+    /// and returned verbatim like any other name, but listings mark it unrecognized, and
+    /// revoking it needs [`AuthZGrantOps::are_allowed_grants`] to answer for a name the
+    /// authorizer does not know — which an enforcing one refuses, leaving the row
+    /// unrevocable through the API.
+    ///
+    /// A name here is also a commitment that the creator can be *given* it: the write,
+    /// and with it the create, fails if the acting user has no user record yet. That is
+    /// deliberate — a resource nobody owns is worse than a rejected create.
+    ///
+    /// [`ResourceType::Server`] is consulted when the server is bootstrapped; every
+    /// other type when a resource of it is created.
+    ///
+    /// The default is empty: creation confers nothing unless an authorizer opts in.
+    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &[&str] {
+        &[]
+    }
+
     /// Whether `privilege` is grantable on `resource_type`.
     ///
     /// Derived from [`Self::grantable_privileges`] so the two cannot disagree — an
@@ -2101,16 +2130,20 @@ where
     /// warehouse's grants without being able to read it — so there is no visibility
     /// check to fold in here. Callers document what that discloses.
     ///
-    /// Each check names a privilege and, where the caller knows it, the grantee it is
-    /// destined for. Whether the grantee changes the answer is the authorizer's business;
-    /// either way, return one decision per check, in order.
+    /// Each check names a privilege and, where the caller knows them, the grantee it is
+    /// destined for and which way it would move. Whether either changes the answer is the
+    /// authorizer's business; either way, return one decision per check, in order.
+    ///
+    /// `target` carries the resource's resolved ancestry, not just its id, so an authorizer
+    /// that resolves inheritance itself can place the resource in its hierarchy — see
+    /// [`GrantTarget`].
     ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _resource: &GrantResource,
+        _target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         Ok(vec![AuthorizationDecision::deny(); checks.len()])
@@ -2337,15 +2370,15 @@ pub mod tests {
                 privilege: "select".to_string(),
             })
         );
-        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
         let decisions = authz
             .are_allowed_grants(
                 &md,
                 None,
-                &GrantResource::Server,
+                &GrantTarget::Server,
                 &[
-                    GrantAuthorityCheck::new("admin", None),
-                    GrantAuthorityCheck::new("select", Some(&alice)),
+                    GrantAuthorityCheck::grantable("admin"),
+                    GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
                 ],
             )
             .await
@@ -3080,6 +3113,12 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
+        /// What creation confers per resource type, for tests that exercise the catalog
+        /// grant arm. Empty by default, so no test gains grant rows it did not ask for.
+        bootstrap: &'static [(ResourceType, &'static [&'static str])],
+        /// Which grant directions this authorizer has authority over. Empty by default,
+        /// which answers every grant-authority question with the trait's deny.
+        grant_ops: &'static [GrantOp],
     }
 
     impl Default for HidingAuthorizer {
@@ -3096,7 +3135,28 @@ pub mod tests {
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
+                bootstrap: &[],
+                grant_ops: &[],
             }
+        }
+
+        /// Give this authorizer authority over `ops` and nothing else, so a test can tell
+        /// a grant-authority question apart from a revoke one.
+        #[must_use]
+        pub fn with_grant_authority(mut self, ops: &'static [GrantOp]) -> Self {
+            self.grant_ops = ops;
+            self
+        }
+
+        /// Make creation confer privileges as catalog grant rows, per resource type.
+        /// A type absent from `privileges` confers nothing.
+        #[must_use]
+        pub fn with_bootstrap_grants(
+            mut self,
+            privileges: &'static [(ResourceType, &'static [&'static str])],
+        ) -> Self {
+            self.bootstrap = privileges;
+            self
         }
 
         fn check_available(&self, object: &str) -> bool {
@@ -3202,6 +3262,34 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
+            self.bootstrap
+                .iter()
+                .find(|(declared_for, _)| *declared_for == resource_type)
+                .map_or(&[], |(_, privileges)| *privileges)
+        }
+
+        async fn are_allowed_grants_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            _target: &GrantTarget<'_>,
+            checks: &[GrantAuthorityCheck<'_>],
+        ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            // Authority per direction, so a test can hold revoke authority alone and
+            // watch the grant side of a diff be refused.
+            Ok(checks
+                .iter()
+                .map(|check| {
+                    if self.grant_ops.contains(&check.op) {
+                        AuthorizationDecision::allow()
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
+                })
+                .collect())
         }
 
         #[cfg(feature = "open-api")]

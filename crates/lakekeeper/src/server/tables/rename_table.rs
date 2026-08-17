@@ -45,8 +45,13 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     // ------------------- IDEMPOTENCY CHECK -------------------
     let idempotency_key = request_metadata.idempotency_key().copied();
     if let Some(ref key) = idempotency_key {
-        let check =
-            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        let check = C::check_idempotency_key(
+            warehouse_id,
+            key,
+            EndpointFlat::CatalogV1RenameTable,
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
         if check.is_replay() {
             return Ok(());
         }

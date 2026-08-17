@@ -603,6 +603,33 @@ fn rows_into_specs(
         .collect()
 }
 
+/// Insert grants into a transaction the caller opened for other work.
+///
+/// Takes no advisory lock: that serializes diffs which cross — each revoking what the
+/// other adds — and an insert with no delete side has nothing to cross. It does bound its
+/// wait, because the foreign keys take `FOR KEY SHARE` on the grant's resource and
+/// principal, and another handler may hold `FOR UPDATE` there across a network call;
+/// unbounded, the caller would queue behind it holding its own connection. The bound is
+/// reset so it governs nothing but this insert.
+pub(crate) async fn insert_grants_bounded(
+    specs: &[GrantSpec],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query("SET LOCAL lock_timeout = '3s'")
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    let created = insert_grants(specs, transaction).await?;
+    sqlx::query("SET LOCAL lock_timeout = DEFAULT")
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(created)
+}
+
 /// Insert `specs`, ignoring grants that already exist. Returns the grants actually
 /// created.
 pub(crate) async fn insert_grants(
@@ -1887,6 +1914,61 @@ mod tests {
                 .unwrap();
             assert_eq!(page.grants, Vec::new());
         }
+    }
+
+    /// The bootstrap write shares its transaction with a resource create, so the bound it
+    /// needs for its own foreign-key waits must not outlive it. The diff path sets the
+    /// same transaction-local `lock_timeout` and deliberately keeps it — asserted here as
+    /// the contrast.
+    #[sqlx::test]
+    async fn bootstrapping_grants_leaves_the_transaction_settings_alone(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+        let spec = user_spec(&user, GrantResource::Warehouse(warehouse_id), "ownership");
+
+        let mut txn = pool.begin().await.unwrap();
+        let created = insert_grants_bounded(std::slice::from_ref(&spec), &mut txn)
+            .await
+            .unwrap();
+        assert_eq!(created, vec![spec.clone()]);
+        let timeout: String = sqlx::query_scalar("SHOW lock_timeout")
+            .fetch_one(&mut *txn)
+            .await
+            .unwrap();
+        assert_eq!(timeout, "0");
+
+        // Re-running the same bootstrap creates nothing: a replayed create, or a
+        // re-registered table that kept its id, must not double-grant.
+        let again = insert_grants_bounded(std::slice::from_ref(&spec), &mut txn)
+            .await
+            .unwrap();
+        assert_eq!(again, Vec::new());
+
+        apply_grants(std::slice::from_ref(&spec), &[], &mut txn)
+            .await
+            .unwrap();
+        let timeout: String = sqlx::query_scalar("SHOW lock_timeout")
+            .fetch_one(&mut *txn)
+            .await
+            .unwrap();
+        assert_eq!(timeout, "3s");
+        txn.commit().await.unwrap();
+
+        let page = list_grants(
+            &GrantFilter::on(GrantResource::Warehouse(warehouse_id), None),
+            no_pagination(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.grants
+                .iter()
+                .map(|row| row.privilege.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ownership"]
+        );
     }
 
     #[sqlx::test]

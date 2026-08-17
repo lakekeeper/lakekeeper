@@ -240,13 +240,13 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            etag: Some(ETag::from("W/\"lk1.deadbeef\"")),
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
         let response = load_table_result.into_response();
         let headers = response.headers();
 
-        assert_eq!(headers.get(header::ETAG).unwrap(), "W/\"lk1.deadbeef\"");
+        assert_eq!(headers.get(header::ETAG).unwrap(), "W/\"lk2.deadbeef\"");
     }
 
     #[test]
@@ -259,13 +259,13 @@ mod tests {
             metadata: create_table_metadata_mock(),
             config: None,
             storage_credentials: None,
-            etag: Some(ETag::from("W/\"lk1.abc.199e1e0f9c3\"")),
+            etag: Some(ETag::from("W/\"lk2.abc.199e1e0f9c3\"")),
         };
 
         let response = load_table_result.into_response();
         assert_eq!(
             response.headers().get(header::ETAG).unwrap(),
-            "W/\"lk1.abc.199e1e0f9c3\""
+            "W/\"lk2.abc.199e1e0f9c3\""
         );
     }
 
@@ -299,7 +299,7 @@ mod tests {
             metadata: table_metadata.clone(),
             config: None,
             storage_credentials: None,
-            etag: Some(ETag::from("W/\"lk1.deadbeef\"")),
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
         let response = load_table_result.clone().into_response();

@@ -26,10 +26,11 @@ pub mod v1 {
 
     use axum::{
         Extension, Json, Router,
-        extract::{Path, Query, State as AxumState},
+        extract::{Path, State as AxumState},
         response::{IntoResponse, Response},
         routing::{delete, get, post, put},
     };
+    use axum_extra::extract::Query;
     use generic_table::GenericTableManagementService as _;
     use grant::{
         ApplyGrantsRequest, GetGrantAccessQuery, GrantablePrivilegesResponse, ListGrantsQuery,
@@ -3346,7 +3347,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this server publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this server's
     /// grants.
@@ -3373,7 +3374,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this project publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this project's
     /// grants.
@@ -3400,7 +3401,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this warehouse publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this warehouse's
     /// grants.
@@ -3434,7 +3435,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this namespace publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this namespace's
     /// grants.
@@ -3469,7 +3470,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this table publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this table's
     /// grants.
@@ -3504,7 +3505,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this view publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this view's
     /// grants.
@@ -3539,7 +3540,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this generic table publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this generic table's
     /// grants.
@@ -3578,7 +3579,7 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Every privilege this tag definition publishes, each marked with whether the caller may
-    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
     /// another principal's behalf, which requires authority to read this tag definition's
     /// grants.

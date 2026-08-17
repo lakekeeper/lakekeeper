@@ -43,7 +43,7 @@
 //! (resolution, can-see action, event context). A ninth level is the trigger to
 //! revisit.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -59,9 +59,9 @@ use crate::{
         },
     },
     service::{
-        CachePolicy, CatalogGrantOps, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        ArcRole, CachePolicy, CatalogGrantOps, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
         CatalogTagOps, CatalogWarehouseOps, GenericTableId, NamespaceId, NamespaceIdentOrId,
-        ProjectId, SecretStore, State, TableId, TabularListFlags, TagDefinitionId, ViewId,
+        ProjectId, RoleId, SecretStore, State, TableId, TabularListFlags, TagDefinitionId, ViewId,
         WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
@@ -71,9 +71,10 @@ use crate::{
             AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantResource, GrantRow,
-            GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
-            UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp, GrantResource,
+            GrantRow, GrantSpec, GrantTarget, PrivilegeDescriptor, RequireTagActionError,
+            ResourceType, RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
+            UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -348,7 +349,7 @@ impl axum::response::IntoResponse for GrantablePrivilegesResponse {
     }
 }
 
-/// One privilege of a resource's vocabulary, and whether the principal may grant it.
+/// One privilege of a resource's vocabulary, and whether the principal may administer it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -359,12 +360,13 @@ pub struct GrantablePrivilege {
     /// distinct — and so a new descriptor field can never collide with `allowed`.
     #[cfg_attr(feature = "open-api", schema(value_type = PrivilegeDescriptor))]
     pub privilege: &'static PrivilegeDescriptor,
-    /// Whether the principal may grant and revoke this privilege on this resource.
+    /// Whether the principal may administer this privilege here — grant it, revoke it, or
+    /// both. Advisory: an apply checks each of its entries on its own.
     pub allowed: bool,
 }
 
 /// This resource's whole vocabulary, each entry marked with whether the principal may
-/// grant it.
+/// administer it — grant it, revoke it, or both.
 ///
 /// The deployment-wide vocabulary answers "what does this server understand"; this
 /// answers "what may I do here", which is the question a grant dialog asks. Grant
@@ -476,13 +478,13 @@ fn principal_from_params(
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetGrantAccessQuery {
-    /// Report which privileges this user may grant, instead of the caller. Requires
+    /// Report which privileges this user may administer, instead of the caller. Requires
     /// authority to read the resource's grants, since it discloses another principal's
     /// access. Mutually exclusive with `principalRole`.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<String>))]
     pub principal_user: Option<UserId>,
-    /// Report which privileges this role may grant, instead of the caller. Same
+    /// Report which privileges this role may administer, instead of the caller. Same
     /// authority requirement as `principalUser`, and mutually exclusive with it.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<uuid::Uuid>))]
@@ -660,33 +662,39 @@ fn validate_write_privileges<A: Authorizer>(
     Err(model.into())
 }
 
-/// Roles are project-scoped while their ids are global, so a caller could otherwise
-/// grant a privilege to a role from a different project. Checked on writes only, for
-/// the same reason as the privilege vocabulary: a grant to a role that has since
-/// moved or vanished must stay revocable.
-async fn validate_write_principals<C: CatalogRoleOps>(
+/// Every role named as a grantee anywhere in the diff, resolved to the role itself.
+///
+/// The authority check carries resolved grantees, so an authorizer can read a grantee
+/// role's identity and attributes instead of a `RoleId` it has no way to look up. One
+/// listing covers both sides of the diff.
+///
+/// Across projects, not within the request's: the server level has no project to scope to,
+/// and scoping here would make a cross-project role indistinguishable from a missing one,
+/// which is [`validate_write_principals`]'s distinction to draw. Nothing is refused here —
+/// a role that does not resolve is simply absent, and the check then asks without a
+/// grantee, which narrows nothing.
+///
+/// Runs before the authority gate, which is safe only because it cannot fail: the
+/// project-membership *judgement* stays after the gate, so an unauthorized caller still
+/// cannot use it to learn which roles exist.
+async fn resolve_grantee_roles<C: CatalogRoleOps>(
     request: &ApplyGrantsRequest,
-    project_id: &crate::service::ArcProjectId,
     catalog_state: C::State,
-) -> Result<()> {
+) -> Result<HashMap<RoleId, ArcRole>> {
     let mut role_ids: Vec<_> = request
-        .writes
-        .iter()
+        .entries()
         .filter_map(|entry| match &entry.principal {
             UserOrRole::Role(assignee) => Some(assignee.role_id()),
             UserOrRole::User(_) => None,
         })
         .collect();
     if role_ids.is_empty() {
-        return Ok(());
+        return Ok(HashMap::new());
     }
     role_ids.sort_unstable();
     role_ids.dedup();
 
-    // The listing is project-scoped, so a role from another project simply does not
-    // come back.
-    let found = C::list_roles(
-        project_id.clone(),
+    let found = C::list_roles_across_projects(
         crate::service::CatalogListRolesByIdFilter::builder()
             .role_ids(Some(role_ids.as_slice()))
             .build(),
@@ -698,10 +706,36 @@ async fn validate_write_principals<C: CatalogRoleOps>(
     )
     .await?
     .roles;
-    if let Some(missing) = role_ids
+    Ok(found.into_iter().map(|role| (role.id(), role)).collect())
+}
+
+/// Roles are project-scoped while their ids are global, so a caller could otherwise
+/// grant a privilege to a role from a different project. Checked on writes only, for
+/// the same reason as the privilege vocabulary: a grant to a role that has since
+/// moved or vanished must stay revocable.
+///
+/// Reads the resolution [`resolve_grantee_roles`] already performed rather than querying
+/// again — a role from another project resolves but reports a different project, which is
+/// the same answer a project-scoped listing gave by omitting it.
+fn validate_write_principals(
+    request: &ApplyGrantsRequest,
+    project_id: &ProjectId,
+    grantee_roles: &HashMap<RoleId, ArcRole>,
+) -> Result<()> {
+    let missing = request
+        .writes
         .iter()
-        .find(|role_id| !found.iter().any(|role| role.id() == **role_id))
-    {
+        .find_map(|entry| match &entry.principal {
+            UserOrRole::Role(assignee) => {
+                let role_id = assignee.role_id();
+                match grantee_roles.get(&role_id) {
+                    Some(role) if role.project_id() == project_id => None,
+                    _ => Some(role_id),
+                }
+            }
+            UserOrRole::User(_) => None,
+        });
+    if let Some(missing) = missing {
         return Err(bad_request(
             format!("Role `{missing}` does not exist in this project"),
             "GrantRoleNotInProject",
@@ -715,76 +749,100 @@ async fn validate_write_principals<C: CatalogRoleOps>(
 // Shared apply / list bodies
 // ---------------------------------------------------------------------------
 
-/// The distinct grant-authority questions a diff asks, in `writes`-then-`deletes` order:
-/// which privilege, destined for which principal.
+/// The grant-authority questions a diff asks, one per entry, in `writes`-then-`deletes`
+/// order: which privilege, destined for which principal, moving which way.
 ///
-/// Deduplicated on the *pair*, in first-seen order. A diff handing one privilege to a
-/// hundred principals asks a hundred questions: whether the grantee changes the answer
-/// belongs to the authorizer's model, so this layer cannot collapse them. An authorizer
-/// that resolves authority from the privilege alone collapses them itself, where that is
-/// sound.
-fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)> {
-    let mut seen = std::collections::HashSet::new();
-    request
-        .entries()
-        .map(|entry| {
-            (
-                UserOrRoleId::from(&entry.principal),
-                entry.privilege.as_str(),
-            )
+/// One question per entry rather than one per privilege: a diff handing one privilege to a
+/// hundred principals asks a hundred questions. Whether the grantee or the direction
+/// changes the answer belongs to the authorizer's model, so this layer collapses neither.
+/// An authorizer that resolves authority from the privilege alone collapses them itself,
+/// where that is sound — the tuple-based one does.
+///
+/// The direction each question carries is what lets an authorizer hold a principal to
+/// taking access away without letting it hand access out.
+///
+/// Nothing is deduplicated here because nothing can repeat: [`validate_request_shape`]
+/// rejects an entry repeated within a side and an entry appearing on both sides, and the
+/// side is what fixes the direction.
+fn authority_questions<'a>(
+    request: &'a ApplyGrantsRequest,
+    grantee_roles: &HashMap<RoleId, ArcRole>,
+) -> Vec<(Option<AuthzUserOrRole>, &'a str, GrantOp)> {
+    let sides = [
+        (request.writes.iter(), GrantOp::Grant),
+        (request.deletes.iter(), GrantOp::Revoke),
+    ];
+    sides
+        .into_iter()
+        .flat_map(|(entries, op)| {
+            entries.map(move |entry| {
+                let grantee = match &entry.principal {
+                    UserOrRole::User(user_id) => Some(AuthzUserOrRole::User(user_id.clone())),
+                    // Absent when the role does not resolve; see `resolve_grantee_roles`.
+                    UserOrRole::Role(assignee) => {
+                        grantee_roles.get(&assignee.role_id()).map(|role| {
+                            AuthzUserOrRole::Role(AuthzRoleAssignee::from_role(role.clone()))
+                        })
+                    }
+                };
+                (grantee, entry.privilege.as_str(), op)
+            })
         })
-        .filter(|question| seen.insert(question.clone()))
         .collect()
 }
 
-/// The privileges to name in a refusal: those `decisions` refused, named once each, in
-/// the order they were first refused.
+/// What a refusal is about: every question `decisions` refused, with the direction it
+/// asked about, in the order they were refused.
 ///
-/// `decisions` answer `questions` positionally. First-refusal order is not request order
-/// once an authorizer answers per grantee: a privilege allowed for the first principal
-/// that asks for it and refused for the second is named where the refusal is.
+/// `decisions` answer `questions` positionally. Refusal order is not request order once an
+/// authorizer answers per grantee: a privilege allowed for the first principal that asks
+/// for it and refused for the second is reported where the refusal is. Repeats are left
+/// in — naming each privilege once is the error's own presentation choice, and it needs
+/// every refused direction to say which were refused.
 fn refused_privileges<'a>(
-    questions: &[(UserOrRoleId, &'a str)],
+    questions: &[(Option<AuthzUserOrRole>, &'a str, GrantOp)],
     decisions: &[AuthorizationDecision],
-) -> Vec<&'a str> {
-    let mut named = std::collections::HashSet::new();
+) -> Vec<(GrantOp, &'a str)> {
     questions
         .iter()
         .zip(decisions)
         .filter(|(_, decision)| !decision.allowed)
-        .map(|((_, privilege), _)| *privilege)
-        .filter(|privilege| named.insert(*privilege))
+        .map(|((_, privilege, op), _)| (*op, *privilege))
         .collect()
 }
 
-/// Check grant authority for every entry of the diff, including the deletes:
-/// revoking a privilege requires the same authority as granting it.
+/// Check grant authority for every entry of the diff, including the deletes: taking a
+/// privilege away is administering it too, so it is asked rather than assumed. Whether an
+/// authorizer answers the two directions alike is its own business.
 async fn require_grant_authority<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
-    resource: &GrantResource,
+    target: &GrantTarget<'_>,
     request: &ApplyGrantsRequest,
+    grantee_roles: &HashMap<RoleId, ArcRole>,
 ) -> std::result::Result<(), AuthZError> {
     // Materialized first so each check can borrow its grantee: the request carries the
-    // API principal type, and converting it to an id allocates.
-    let questions = authority_questions(request);
+    // API principal type, and resolving it allocates.
+    let questions = authority_questions(request, grantee_roles);
     let checks: Vec<GrantAuthorityCheck<'_>> = questions
         .iter()
-        .map(|(grantee, privilege)| GrantAuthorityCheck::new(privilege, Some(grantee)))
+        .map(|(grantee, privilege, op)| {
+            GrantAuthorityCheck::entry(privilege, grantee.as_ref(), *op)
+        })
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(metadata, None, resource, &checks)
+        .are_allowed_grants(metadata, None, target, &checks)
         .await?;
     // Every refused privilege is named, matching the validation errors above: one round
     // trip should surface everything the caller must remove.
     let refused = refused_privileges(&questions, &decisions);
     if !refused.is_empty() {
-        return Err(AuthZGrantActionForbidden::new(resource, refused).into());
+        return Err(AuthZGrantActionForbidden::new(&target.resource(), refused).into());
     }
     Ok(())
 }
 
-/// The vocabulary entries the principal may grant on `resource`.
+/// The vocabulary entries the principal may administer on `target`.
 ///
 /// One batch call, so eight or nine privileges cost one round trip to the authorizer.
 ///
@@ -796,18 +854,19 @@ async fn allowed_privileges<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     for_user: Option<AuthzUserOrRole>,
-    resource: &GrantResource,
+    target: &GrantTarget<'_>,
 ) -> std::result::Result<Vec<GrantablePrivilege>, AuthZError> {
-    let vocabulary = authorizer.grantable_privileges(resource.resource_type());
-    // No grantee: this asks whether the subject has authority over each privilege here
-    // at all. Advisory - the apply path asks again per grantee - so an authorizer that
-    // distinguishes them need not enumerate anyone to answer.
+    let vocabulary = authorizer.grantable_privileges(target.resource_type());
+    // Asks about granting, with no grantee: may the subject hand each privilege out here
+    // at all? Advisory - the apply path asks again per entry, naming grantee and
+    // direction - so an authorizer that distinguishes grantees need not enumerate anyone
+    // to answer.
     let checks: Vec<GrantAuthorityCheck<'_>> = vocabulary
         .iter()
-        .map(|privilege| GrantAuthorityCheck::new(privilege.name.as_str(), None))
+        .map(|privilege| GrantAuthorityCheck::grantable(privilege.name.as_str()))
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &checks)
+        .are_allowed_grants(request_metadata, for_user.as_ref(), target, &checks)
         .await?;
     Ok(vocabulary
         .iter()
@@ -1245,6 +1304,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Server, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         // No principal validation: roles are project-scoped and the server is not in a
         // project, so there is no project to resolve a role against. Role principals
         // stay allowed because the assignment API already grants server relations to
@@ -1259,8 +1321,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = require_grant_authority(
             &authorizer,
             event_ctx.request_metadata(),
-            &resource,
+            &GrantTarget::Server,
             &request,
+            &grantee_roles,
         )
         .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -1332,6 +1395,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Project, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_project(
             request_metadata.into(),
             events.clone(),
@@ -1341,8 +1407,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = require_grant_authority(
             &authorizer,
             event_ctx.request_metadata(),
-            &resource,
+            &GrantTarget::Project(&project_id),
             &request,
+            &grantee_roles,
         )
         .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -1350,7 +1417,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -1442,6 +1509,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Namespace, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_namespace(
             request_metadata.into(),
             events.clone(),
@@ -1461,13 +1531,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 )
             );
             let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-            authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Namespace {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                },
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -1477,7 +1552,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -1584,6 +1659,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Tag, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_tag(
             request_metadata.into(),
             events.clone(),
@@ -1593,12 +1671,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = async {
             let definition =
                 C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-            authorizer.require_tag_presence(tag_definition_id, definition)?;
+            let definition = authorizer.require_tag_presence(tag_definition_id, definition)?;
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Tag(&definition),
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -1608,7 +1687,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -1700,6 +1779,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Table, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_table(
             request_metadata.into(),
             events.clone(),
@@ -1710,7 +1792,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = async {
             // Presence only, as at every other level: grant authority is its own
             // right, so requiring a table action too would be a second, wrong gate.
-            let (warehouse, _, _) =
+            let (warehouse, namespace, table) =
                 crate::service::authz::fetch_warehouse_namespace_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1723,8 +1805,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Table {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    table: &table,
+                },
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -1734,7 +1821,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -1826,6 +1913,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::View, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_view(
             request_metadata.into(),
             events.clone(),
@@ -1834,7 +1924,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ApplyGrants::of(&request),
         );
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, view) =
                 crate::service::authz::fetch_warehouse_namespace_view_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1847,8 +1937,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::View {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    view: &view,
+                },
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -1858,7 +1953,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -1950,6 +2045,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::GenericTable, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         let event_ctx = APIEventContext::for_generic_table(
             request_metadata.into(),
             events.clone(),
@@ -1958,7 +2056,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ApplyGrants::of(&request),
         );
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, generic_table) =
                 crate::service::authz::fetch_warehouse_namespace_generic_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1971,8 +2069,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::GenericTable {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    generic_table: &generic_table,
+                },
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -1982,7 +2085,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         apply_and_emit::<A, C>(
             &authorizer,
@@ -2011,6 +2114,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // (1) Request validation: a malformed diff is a 400, never a denial.
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Warehouse, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
         // (2) Authorization, folded into one result so the audit event is faithful.
         let event_ctx = APIEventContext::for_warehouse(
             request_metadata.into(),
@@ -2037,8 +2143,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Warehouse(&resolved),
                 &request,
+                &grantee_roles,
             )
             .await
         }
@@ -2048,7 +2155,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // After the gate: before it, the role lookup let an unauthorized caller probe
         // which roles exist in a project, and a catalog failure swallowed the
         // authorization event entirely. Still a 400, not an authorization failure.
-        validate_write_principals::<C>(&request, &project_id, catalog_state.clone()).await?;
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
 
         // (3)+(4) Write, then emit — after the authorization event, so a storage
         // failure is not recorded as a denial.
@@ -2062,7 +2169,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
     }
-    /// Which server privileges the caller may grant.
+    /// Which server privileges the caller may administer.
     async fn get_server_grantable_privileges(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -2071,7 +2178,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Server;
 
         let mut event_ctx = APIEventContext::for_server(
             request_metadata.into(),
@@ -2097,7 +2203,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Server,
             )
             .await
         }
@@ -2108,7 +2214,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which project privileges the caller may grant in the request's project.
+    /// Which project privileges the caller may administer in the request's project.
     async fn get_project_grantable_privileges(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -2118,7 +2224,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Project((*project_id).clone());
 
         let mut event_ctx = APIEventContext::for_project(
             request_metadata.into(),
@@ -2144,7 +2249,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Project(&project_id),
             )
             .await
         }
@@ -2155,7 +2260,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which warehouse privileges the caller may grant on a warehouse.
+    /// Which warehouse privileges the caller may administer on a warehouse.
     async fn get_warehouse_grantable_privileges(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -2166,7 +2271,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Warehouse(warehouse_id);
 
         let mut event_ctx = APIEventContext::for_warehouse(
             request_metadata.into(),
@@ -2194,7 +2298,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_warehouse_action(
                         event_ctx.request_metadata(),
                         warehouse_id,
-                        Ok(Some(resolved)),
+                        Ok(Some(resolved.clone())),
                         CatalogWarehouseAction::ReadGrants,
                     )
                     .await?;
@@ -2203,7 +2307,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Warehouse(&resolved),
             )
             .await
         }
@@ -2214,7 +2318,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which namespace privileges the caller may grant on a namespace.
+    /// Which namespace privileges the caller may administer on a namespace.
     async fn get_namespace_grantable_privileges(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -2226,10 +2330,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Namespace {
-            warehouse_id,
-            namespace_id,
-        };
 
         let mut event_ctx = APIEventContext::for_namespace(
             request_metadata.into(),
@@ -2252,7 +2352,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 )
             );
             let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-            authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
             if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
@@ -2270,7 +2371,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Namespace {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                },
             )
             .await
         }
@@ -2281,7 +2385,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which table privileges the caller may grant on a table.
+    /// Which table privileges the caller may administer on a table.
     async fn get_table_grantable_privileges(
         warehouse_id: WarehouseId,
         table_id: TableId,
@@ -2293,10 +2397,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Table {
-            warehouse_id,
-            table_id,
-        };
 
         let mut event_ctx = APIEventContext::for_table(
             request_metadata.into(),
@@ -2309,7 +2409,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, table) =
                 crate::service::authz::fetch_warehouse_namespace_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2335,7 +2435,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Table {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    table: &table,
+                },
             )
             .await
         }
@@ -2346,7 +2450,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which view privileges the caller may grant on a view.
+    /// Which view privileges the caller may administer on a view.
     async fn get_view_grantable_privileges(
         warehouse_id: WarehouseId,
         view_id: ViewId,
@@ -2358,10 +2462,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::View {
-            warehouse_id,
-            view_id,
-        };
 
         let mut event_ctx = APIEventContext::for_view(
             request_metadata.into(),
@@ -2374,7 +2474,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, view) =
                 crate::service::authz::fetch_warehouse_namespace_view_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2400,7 +2500,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::View {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    view: &view,
+                },
             )
             .await
         }
@@ -2411,7 +2515,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which generic-table privileges the caller may grant on a generic table.
+    /// Which generic-table privileges the caller may administer on a generic table.
     async fn get_generic_table_grantable_privileges(
         warehouse_id: WarehouseId,
         generic_table_id: GenericTableId,
@@ -2423,10 +2527,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::GenericTable {
-            warehouse_id,
-            generic_table_id,
-        };
 
         let mut event_ctx = APIEventContext::for_generic_table(
             request_metadata.into(),
@@ -2439,7 +2539,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, generic_table) =
                 crate::service::authz::fetch_warehouse_namespace_generic_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2465,7 +2565,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::GenericTable {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    generic_table: &generic_table,
+                },
             )
             .await
         }
@@ -2476,7 +2580,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which tag privileges the caller may grant on a tag definition.
+    /// Which tag privileges the caller may administer on a tag definition.
     async fn get_tag_grantable_privileges(
         tag_definition_id: TagDefinitionId,
         context: ApiContext<State<A, C, S>>,
@@ -2487,7 +2591,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Tag(tag_definition_id);
 
         let mut event_ctx = APIEventContext::for_tag(
             request_metadata.into(),
@@ -2508,7 +2611,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_tag_action(
                         event_ctx.request_metadata(),
                         tag_definition_id,
-                        Ok(Some(definition)),
+                        Ok(Some(definition.clone())),
                         CatalogTagAction::ReadGrants,
                     )
                     .await?;
@@ -2517,7 +2620,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Tag(&definition),
             )
             .await
         }
@@ -2692,13 +2795,14 @@ mod tests {
         // the grant surface, so `are_allowed_grants` takes the fail-closed default.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let warehouse = crate::service::ResolvedWarehouse::new_random();
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Warehouse(&warehouse),
             &write_request(&["get_metadata"]),
+            &HashMap::new(),
         )
         .await
         .expect_err("a deny-all authorizer must not confer grant authority");
@@ -2708,7 +2812,7 @@ mod tests {
         assert_eq!(err.r#type, "GrantActionForbidden");
         assert_eq!(
             err.message,
-            "Granting or revoking `get_metadata` on this warehouse is forbidden"
+            "Granting `get_metadata` on this warehouse is forbidden"
         );
     }
 
@@ -2719,13 +2823,13 @@ mod tests {
         // everything the caller must remove — matching the validation errors.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Server;
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Server,
             &write_request(&["provision_users", "list_users"]),
+            &HashMap::new(),
         )
         .await
         .expect_err("a deny-all authorizer must not confer grant authority")
@@ -2733,53 +2837,103 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
+            "Granting `provision_users`, `list_users` on this server is forbidden"
         );
     }
 
     #[test]
-    fn authority_questions_are_deduplicated_on_the_pair() {
-        // Not on the privilege alone: an authorizer may answer differently depending on
-        // who receives the privilege, so `modify` for alice and `modify` for a role are
-        // two questions. The same pair twice - here a grant and a revoke of `modify` for
-        // alice - is one, asked in the position the request first names it.
-        let role_id = RoleId::new_random();
-        let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
+    fn every_entry_asks_its_own_question_tagged_with_its_side() {
+        // One question per entry, writes first, each carrying the direction its side
+        // implies. Nothing collapses: an authorizer may answer differently depending on who
+        // receives the privilege and on which way it moves.
+        //
+        // A role grantee arrives resolved, so an authorizer can read its identity rather
+        // than an id it cannot look up. The second role is deliberately left out of the
+        // resolution: an unresolvable grantee asks without one rather than inventing a
+        // role, and a write naming it is refused after the gate.
+        let resolved = Arc::new(crate::service::Role::new_random());
+        let resolved_id = resolved.id();
+        let unresolved_id = RoleId::new_random();
         let request = ApplyGrantsRequest {
             writes: vec![
                 entry("modify", alice()),
-                entry("modify", role),
-                entry("select", alice()),
+                entry(
+                    "select",
+                    UserOrRole::Role(RoleAssignee::from_role(unresolved_id)),
+                ),
             ],
-            deletes: vec![entry("modify", alice())],
+            deletes: vec![entry(
+                "modify",
+                UserOrRole::Role(RoleAssignee::from_role(resolved_id)),
+            )],
         };
+        let grantee_roles = HashMap::from([(resolved_id, resolved.clone())]);
 
-        let alice_id = UserOrRoleId::from(&alice());
+        let alice_grantee =
+            AuthzUserOrRole::User(UserId::try_from("oidc~alice").expect("valid test user id"));
         assert_eq!(
-            authority_questions(&request),
+            authority_questions(&request, &grantee_roles),
             vec![
-                (alice_id.clone(), "modify"),
-                (UserOrRoleId::Role(role_id), "modify"),
-                (alice_id, "select"),
+                (Some(alice_grantee), "modify", GrantOp::Grant),
+                (None, "select", GrantOp::Grant),
+                (
+                    Some(AuthzUserOrRole::Role(AuthzRoleAssignee::from_role(
+                        resolved
+                    ))),
+                    "modify",
+                    GrantOp::Revoke
+                ),
             ]
         );
     }
 
+    /// The direction has to reach the authorizer, or separating the two is a fiction: this
+    /// authorizer has authority over revokes only, so the grant in the same diff is the one
+    /// refused — and the refusal says which.
+    ///
+    /// Fails if the apply path stopped passing the direction (both entries would be
+    /// refused), or if the sides were tagged the wrong way round (the revoke would be).
+    #[tokio::test]
+    async fn the_gate_asks_with_the_direction_each_entry_moves() {
+        let authorizer = HidingAuthorizer::new().with_grant_authority(&[GrantOp::Revoke]);
+        let metadata = RequestMetadataTestBuilder::builder().build();
+        let request = ApplyGrantsRequest {
+            writes: vec![entry("select", alice())],
+            deletes: vec![entry("modify", alice())],
+        };
+
+        let err = require_grant_authority(
+            &authorizer,
+            &metadata,
+            &GrantTarget::Server,
+            &request,
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("granting is not this authorizer's to allow")
+        .into_error_model();
+        assert_eq!(err.message, "Granting `select` on this server is forbidden");
+    }
+
     #[test]
-    fn a_refusal_names_each_privilege_once_in_first_refusal_order() {
+    fn a_refusal_reports_every_refused_question_with_its_direction() {
         // Mixed decisions, which no authorizer in this workspace produces: the answers are
-        // positional, so a pairing that slipped by one would name a privilege the
+        // positional, so a pairing that slipped by one would report a question the
         // authorizer allowed - and stay invisible to every all-deny or all-allow test.
-        let alice = UserOrRoleId::from(&alice());
-        let role = UserOrRoleId::Role(RoleId::new_random());
+        let alice =
+            AuthzUserOrRole::User(UserId::try_from("oidc~alice").expect("valid test user id"));
+        let role = AuthzUserOrRole::Role(AuthzRoleAssignee::from_role(Arc::new(
+            crate::service::Role::new_random(),
+        )));
         let questions = vec![
-            (alice.clone(), "select"),
-            (role, "select"),
-            (alice, "modify"),
+            (Some(alice.clone()), "select", GrantOp::Grant),
+            (Some(role), "select", GrantOp::Grant),
+            (Some(alice), "modify", GrantOp::Revoke),
         ];
 
-        // `select` allowed for alice but refused for the role: named once, and from the
-        // position of the refusal rather than of the first request for it.
+        // `select` allowed for alice but refused for the role: reported from the position
+        // of the refusal rather than of the first request for it, and the revoke of
+        // `modify` keeps its direction so the message can name it.
         assert_eq!(
             refused_privileges(
                 &questions,
@@ -2789,9 +2943,9 @@ mod tests {
                     AuthorizationDecision::deny(),
                 ]
             ),
-            vec!["select", "modify"]
+            vec![(GrantOp::Grant, "select"), (GrantOp::Revoke, "modify")]
         );
-        // Only the first question refused, so `modify` must not be named.
+        // Only the first question refused, so `modify` must not be reported.
         assert_eq!(
             refused_privileges(
                 &questions,
@@ -2801,7 +2955,7 @@ mod tests {
                     AuthorizationDecision::allow(),
                 ]
             ),
-            vec!["select"]
+            vec![(GrantOp::Grant, "select")]
         );
     }
 
@@ -2811,13 +2965,12 @@ mod tests {
         // refused for two principals is named once, and still in request order.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Server;
         let role = UserOrRole::Role(RoleAssignee::from_role(RoleId::new_random()));
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Server,
             &ApplyGrantsRequest {
                 writes: vec![
                     entry("provision_users", alice()),
@@ -2826,6 +2979,7 @@ mod tests {
                 ],
                 deletes: Vec::new(),
             },
+            &HashMap::new(),
         )
         .await
         .expect_err("a deny-all authorizer must not confer grant authority")
@@ -2833,7 +2987,7 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
+            "Granting `provision_users`, `list_users` on this server is forbidden"
         );
     }
 
@@ -2842,13 +2996,14 @@ mod tests {
         // The control case: the same gate, the same request, an allow-all authorizer.
         let authorizer = AllowAllAuthorizer::default();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let warehouse = crate::service::ResolvedWarehouse::new_random();
 
         require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Warehouse(&warehouse),
             &write_request(&["get_metadata", "list_namespaces"]),
+            &HashMap::new(),
         )
         .await
         .expect("allow-all confers grant authority on every privilege");

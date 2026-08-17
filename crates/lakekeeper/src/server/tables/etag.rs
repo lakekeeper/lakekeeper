@@ -1,7 +1,7 @@
 //! Construction of the `ETag` that lets a conditional `loadTable` be answered
 //! with `304 Not Modified`.
 //!
-//! This is Lakekeeper policy rather than Iceberg wire format — the `lk1.`
+//! This is Lakekeeper policy rather than Iceberg wire format — the `lk2.`
 //! encoding is ours, and the inputs include our authorization model — so it
 //! lives here and not in `iceberg-ext`. That crate keeps only the [`ETag`]
 //! newtype and emits whatever tag it is handed.
@@ -10,6 +10,7 @@ use iceberg_ext::catalog::rest::ETag;
 use xxhash_rust::xxh3::Xxh3Default;
 
 use crate::{
+    WarehouseId,
     api::iceberg::v1::tables::{DataAccessMode, LoadTableFilters, SnapshotsQuery},
     service::{WarehouseVersion, storage::StoragePermissions},
 };
@@ -17,7 +18,10 @@ use crate::{
 /// Version prefix for structured `loadTable` [`ETag`]s. Anything not parsing
 /// under this prefix (pre-upgrade or future-version values) isn't matched, so
 /// the client reloads. Bump the suffix on incompatible encoding changes.
-const ETAG_PREFIX: &str = "lk1";
+///
+/// `lk2` added the warehouse id to the hash. Every `lk1` tag in a client cache
+/// stops matching and the client reloads once — the cost of any axis change.
+const ETAG_PREFIX: &str = "lk2";
 
 /// One axis of a [`TableResponseShape`].
 ///
@@ -142,7 +146,7 @@ impl TableResponseShape {
 
 /// Structured contents of a `loadTable` [`ETag`].
 ///
-/// Wire form (inside the quotes): `lk1.<hash>`, or `lk1.<hash>.<revalidate_hex>`
+/// Wire form (inside the quotes): `lk2.<hash>`, or `lk2.<hash>.<revalidate_hex>`
 /// when credentials are vended (revalidate-after as epoch-ms in hex). Embedding
 /// the revalidation point lets the server decide, from the client-echoed tag
 /// alone, whether the held credentials are still within their serve window —
@@ -157,7 +161,21 @@ pub(crate) struct TableETag {
 }
 
 impl TableETag {
+    /// `warehouse_id` scopes the tag to the resource, not just to its metadata
+    /// location. The `(warehouse_id, fs_location)` index is not unique and every
+    /// lookup filters by warehouse, so two warehouses may hold the same metadata
+    /// file — `registerTable` is the one endpoint that can attach it to a table in
+    /// each. Without this axis one warehouse's tag would satisfy a conditional
+    /// load on the other and return the wrong warehouse's config.
+    ///
+    /// The table id is deliberately *not* an axis. Within a warehouse a location
+    /// belongs to at most one *live* table; a drop-keeping-data followed by a
+    /// re-register does let another table take it over later, but that body
+    /// differs only in the table-name-dependent credential-refresh URI, which
+    /// [`TableResponseShape`] already declares bounded by the credential window
+    /// rather than by the tag.
     pub(crate) fn new(
+        warehouse_id: WarehouseId,
         metadata_location: &str,
         shape: TableResponseShape,
         revalidate_after_ms: Option<i64>,
@@ -167,8 +185,13 @@ impl TableETag {
 
         // NUL-separated: each axis occupies a fixed slot, so no combination of an
         // arbitrary metadata location and the fixed tags can be re-split into a
-        // different combination that hashes the same.
+        // different combination that hashes the same. The warehouse id gets a
+        // separator like every other slot even though `as_bytes` is 16 bytes by
+        // type — the injectivity should come from the framing, not from a width
+        // invariant a future encoding change could quietly drop.
         let mut hasher = Xxh3Default::new();
+        hasher.update(warehouse_id.as_bytes());
+        hasher.update(&[0]);
         hasher.update(metadata_location.as_bytes());
         hasher.update(&[0]);
         hasher.update(snapshots.as_tag().as_bytes());
@@ -239,8 +262,9 @@ impl TableETag {
 }
 
 /// Mint the [`ETag`] for a commit response, which carries no storage config.
-pub(crate) fn commit_etag(metadata_location: &str) -> ETag {
+pub(crate) fn commit_etag(warehouse_id: WarehouseId, metadata_location: &str) -> ETag {
     TableETag::new(
+        warehouse_id,
         metadata_location,
         TableResponseShape::no_storage_config(),
         None,
@@ -256,6 +280,10 @@ mod tests {
     use crate::api::iceberg::v1::tables::DataAccess;
 
     const LOC: &str = "s3://bucket/table/metadata.json";
+    /// Fixed so the pinned wire-format values stay reproducible.
+    fn wh() -> WarehouseId {
+        WarehouseId::new(uuid::uuid!("019bbf1a-0000-7000-8000-0000000000a1"))
+    }
     fn wv() -> WarehouseVersion {
         WarehouseVersion::new(7)
     }
@@ -307,7 +335,7 @@ mod tests {
         let mut seen = HashSet::new();
         for shape in &shapes {
             assert!(
-                seen.insert(TableETag::new(LOC, *shape, None).into_etag()),
+                seen.insert(TableETag::new(wh(), LOC, *shape, None).into_etag()),
                 "duplicate ETag for {shape:?}"
             );
         }
@@ -333,10 +361,10 @@ mod tests {
         );
 
         assert_eq!(
-            TableETag::new(LOC, delegated_shape, None)
+            TableETag::new(wh(), LOC, delegated_shape, None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk1.d6f45486df4c5bc3\""
+            "W/\"lk2.ca98cf6daac60cd\""
         );
         // Same shape, next warehouse version: differs only in the trailing
         // little-endian bytes, so a big-endian slip changes this value.
@@ -349,17 +377,52 @@ mod tests {
             },
         );
         assert_eq!(
-            TableETag::new(LOC, next_version, None).into_etag().as_str(),
-            "W/\"lk1.ce4d3de4c470d7d0\""
+            TableETag::new(wh(), LOC, next_version, None)
+                .into_etag()
+                .as_str(),
+            "W/\"lk2.e475cfa1e21ecde5\""
         );
         // The `nc` branch skips the version entirely, and the revalidation
         // point is appended as lower-case hex.
         assert_eq!(
-            TableETag::new(LOC, TableResponseShape::no_storage_config(), Some(255))
-                .into_etag()
-                .as_str(),
-            "W/\"lk1.7ccceafed717f689.ff\""
+            TableETag::new(
+                wh(),
+                LOC,
+                TableResponseShape::no_storage_config(),
+                Some(255)
+            )
+            .into_etag()
+            .as_str(),
+            "W/\"lk2.165c4d5b6eec0d9a.ff\""
         );
+    }
+
+    /// Two warehouses may cover overlapping locations, and `registerTable` is the
+    /// one endpoint that can attach the same metadata file to a table in each.
+    /// Every other axis is identical there, so only the warehouse id keeps
+    /// warehouse A's tag from answering a conditional load on warehouse B.
+    #[test]
+    fn warehouse_id_is_part_of_the_tag() {
+        // Spent on id entropy rather than on shapes: the id is hashed before any
+        // shape branching, so looping the shapes re-tests one code path, while
+        // ids differing only in their trailing bytes let a truncating slip
+        // (hashing half the UUID) pass. These differ in the trailing bytes, in
+        // the leading bytes, and throughout.
+        let ids = [
+            uuid::uuid!("019bbf1a-0000-7000-8000-0000000000a1"),
+            uuid::uuid!("019bbf1a-0000-7000-8000-0000000000b2"),
+            uuid::uuid!("f19bbf1a-0000-7000-8000-0000000000a1"),
+            uuid::uuid!("7c3d51e8-9a44-4b21-b6ff-2e1d0c8b7a90"),
+        ]
+        .map(WarehouseId::new);
+        let shape = all_shapes()[1];
+        let mut seen = HashSet::new();
+        for id in ids {
+            assert!(
+                seen.insert(TableETag::new(id, LOC, shape, None).into_etag()),
+                "two warehouses share a tag at the same location: {id:?}"
+            );
+        }
     }
 
     #[test]
@@ -380,15 +443,15 @@ mod tests {
             )
         };
         assert_ne!(
-            TableETag::new(LOC, shape(WarehouseVersion::new(1)), None),
-            TableETag::new(LOC, shape(WarehouseVersion::new(2)), None)
+            TableETag::new(wh(), LOC, shape(WarehouseVersion::new(1)), None),
+            TableETag::new(wh(), LOC, shape(WarehouseVersion::new(2)), None)
         );
     }
 
     #[test]
     fn etag_round_trips_through_the_wire_form() {
         for revalidate in [None, Some(1_750_000_000_123)] {
-            let etag = TableETag::new(LOC, all_shapes()[0], revalidate);
+            let etag = TableETag::new(wh(), LOC, all_shapes()[0], revalidate);
             let wire = etag.clone().into_etag();
             // `parse_etags` strips the quotes and the weak marker before we see it.
             let bare = wire.as_str().trim_start_matches("W/").trim_matches('"');
@@ -401,19 +464,21 @@ mod tests {
     fn etag_is_emitted_as_a_weak_validator() {
         // Two responses sharing a tag are not byte-identical — each vends freshly
         // minted credentials — so the tag is weak per RFC 9110 8.8.1.
-        let wire = TableETag::new(LOC, all_shapes()[0], None).into_etag();
+        let wire = TableETag::new(wh(), LOC, all_shapes()[0], None).into_etag();
         assert!(wire.as_str().starts_with("W/\""), "{}", wire.as_str());
         assert!(wire.as_str().ends_with('"'));
     }
 
     #[test]
     fn parse_rejects_legacy_and_junk() {
-        // Legacy bare hash, wrong prefix, empty hash, trailing junk, non-hex expiry.
+        // Legacy bare hash, superseded prefix, future prefix, empty hash,
+        // trailing junk, non-hex expiry.
         assert!(TableETag::parse("e34615aade2e6333").is_none());
-        assert!(TableETag::parse("lk2.abc").is_none());
-        assert!(TableETag::parse("lk1.").is_none());
-        assert!(TableETag::parse("lk1.abc.def.ghi").is_none());
-        assert!(TableETag::parse("lk1.abc.zzz").is_none());
+        assert!(TableETag::parse("lk1.abc").is_none());
+        assert!(TableETag::parse("lk3.abc").is_none());
+        assert!(TableETag::parse("lk2.").is_none());
+        assert!(TableETag::parse("lk2.abc.def.ghi").is_none());
+        assert!(TableETag::parse("lk2.abc.zzz").is_none());
     }
 
     #[test]
@@ -467,12 +532,13 @@ mod tests {
         // A commit body and a no-storage-access load body are both metadata with
         // no config, so they are the same shape and sharing a tag is correct.
         // Every config-bearing load differs and must not match.
-        let commit = commit_etag(LOC);
+        let commit = commit_etag(wh(), LOC);
         assert_eq!(
             commit,
-            TableETag::new(LOC, TableResponseShape::no_storage_config(), None).into_etag()
+            TableETag::new(wh(), LOC, TableResponseShape::no_storage_config(), None).into_etag()
         );
         let delegated_load = TableETag::new(
+            wh(),
             LOC,
             TableResponseShape::new(
                 SnapshotsQuery::All,

@@ -14,7 +14,7 @@ use crate::{
         MovedNamespace, NamespaceId, NamespaceIdent, NamespaceWithParent, ResolvedWarehouse,
         authz::{CatalogNamespaceAction, CatalogWarehouseAction},
         events::{
-            APIEventContext, AuthorizationFailureSource,
+            APIEventContext, AuthorizationFailureSource, EventDispatcher,
             context::{
                 AuthzChecked, AuthzState, AuthzUnchecked, ResolutionState, Resolved,
                 ResolvedNamespace, UserProvidedNamespace,
@@ -137,6 +137,15 @@ impl<RW: ResolutionState, RN: ResolutionState, Z: AuthzState>
         match self {
             NamespaceOrWarehouseAPIContext::Warehouse(ctx) => &ctx.request_metadata,
             NamespaceOrWarehouseAPIContext::Namespace(ctx) => &ctx.request_metadata,
+        }
+    }
+
+    /// Either arm carries the same dispatcher — namespace creation is authorized against
+    /// the warehouse or the parent namespace, but emits into one event stream.
+    pub fn dispatcher(&self) -> &EventDispatcher {
+        match self {
+            NamespaceOrWarehouseAPIContext::Warehouse(ctx) => ctx.dispatcher(),
+            NamespaceOrWarehouseAPIContext::Namespace(ctx) => ctx.dispatcher(),
         }
     }
 }

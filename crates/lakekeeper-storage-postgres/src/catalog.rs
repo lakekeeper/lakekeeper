@@ -6,6 +6,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper::{
     SecretId,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
             tables::LoadTableFilters,
@@ -79,7 +80,10 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    grant::{apply_grants, delete_grants_for_user, list_grants, list_grants_on_resources},
+    grant::{
+        apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
+        list_grants_on_resources,
+    },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
         update_namespace_properties,
@@ -416,6 +420,13 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<AppliedGrants, ApplyGrantsStoreError> {
         apply_grants(writes, deletes, transaction).await
+    }
+
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+        insert_grants_bounded(writes, transaction).await
     }
 
     async fn delete_grants_for_user_impl<'a>(
@@ -1286,9 +1297,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: Self::State,
     ) -> Result<IdempotencyCheck> {
-        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+        Self::check_idempotency_key_impl(warehouse_id, key, endpoint, state).await
     }
 
     async fn try_insert_idempotency_key_impl<'a>(

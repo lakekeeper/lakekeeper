@@ -1238,6 +1238,23 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
+// This is a two-level union: `type` selects s3/az/gcs here, and
+// `credential-type` then selects within `S3Credential` / `AzCredential` /
+// `GcsCredential`, which are unions in their own right. On the wire that is
+// `{"type": "s3", "credential-type": "access-key", ...}`.
+//
+// Nested unions cannot survive into a generated client, so `api_doc()`
+// multiplies the two levels out into nine flat leaves — see
+// `expand_unions_composing_unions`. Adding a credential variant here needs no
+// change there; the expansion is derived.
+//
+// One constraint to be aware of when adding variants: the expansion can only
+// emit a usable union while a single property still identifies a leaf, and the
+// only one that does is `credential-type` (`type` alone maps `s3` to four
+// leaves). Reusing a `credential-type` value under a different `type` would
+// leave no valid discriminator, and the pass then deliberately skips the union
+// rather than emit something misleading — downstream generators would need
+// their own preprocessing again.
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
