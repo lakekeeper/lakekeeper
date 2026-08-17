@@ -51,6 +51,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Production: production.md
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
       - latest: "!include docs/docs/latest/mkdocs.yml"
@@ -66,7 +67,7 @@ nav:
   - Release Notes:
       - Stay Updated: about/subscribe.md
       - Lakekeeper (OSS): about/release-notes.md
-      - Lakekeeper Plus: about/enterprise-release-notes.md
+      - Lakekeeper+: about/enterprise-release-notes.md
   - Community: support.md
   - About:
       - License: about/license.md
@@ -99,10 +100,11 @@ markdown_extensions:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
-copyright: Copyright &copy; 2025 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
+copyright: Copyright &copy; {year} <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a> at <a href="https://vakamo.com" target="_blank" rel="noopener noreferrer">Vakamo</a>.
 
 hooks:
   - ../docs/hooks/env_key_wrap.py
+  - ../docs/hooks/copyright_year.py
 
 plugins:
   - monorepo

@@ -823,7 +823,14 @@ where
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
-            WHERE t.warehouse_id = $1 AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
+            -- Deliberately NOT filtering on tt.queue_name here. The predicate used to be:
+            --     AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
+            -- It can never exclude a row: the LEFT JOIN's ON clause already restricts matches to
+            -- those two queues, so a matched row always satisfies the IN, and an unmatched row
+            -- is NULL-extended by the outer join and always satisfies the IS NULL.
+            -- Postgres cannot reason about the LEFT JOIN, so the planner can get confused
+            -- and decides to not use the index, degrading query performance.
+            WHERE t.warehouse_id = $1
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
                 AND (t.typ = $3 OR $3 IS NULL)
@@ -1233,6 +1240,39 @@ impl From<FromTabularRowError> for RenameTabularError {
     }
 }
 
+/// Map a failed rename onto its error.
+///
+/// An occupied destination name is detected by the `unique_name_per_namespace_id`
+/// index rather than by a pre-check inside the statement. The index key is
+/// `(warehouse_id, namespace_id, name, deleted_at)` with `NULLS NOT DISTINCT`, and
+/// the row being renamed is always live, so it can only collide with another live
+/// row. A soft-deleted namesake therefore does not block the rename — the same
+/// name is already freely reusable via create. Letting the failing statement pick
+/// its own error also means the sequential case and a concurrent insert of the
+/// destination name are reported identically.
+///
+/// Like every constraint violation, a conflict aborts the caller's transaction.
+/// All callers propagate it and drop the transaction; anything that swallows this
+/// error would make the next statement fail with `25P02`.
+fn rename_tabular_error(
+    e: sqlx::Error,
+    warehouse_id: WarehouseId,
+    source_id: TabularId,
+    not_found_detail: &str,
+) -> RenameTabularError {
+    match e {
+        sqlx::Error::Database(db_err)
+            if db_err.constraint() == Some("unique_name_per_namespace_id") =>
+        {
+            TabularAlreadyExists::new().into()
+        }
+        sqlx::Error::RowNotFound => TabularNotFound::new(warehouse_id, source_id)
+            .append_detail(not_found_detail)
+            .into(),
+        _ => e.into_catalog_backend_error().into(),
+    }
+}
+
 /// Rename a tabular. Tabulars may be moved across namespaces.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
@@ -1277,13 +1317,6 @@ pub(crate) async fn rename_tabular(
                 FROM warehouse
                 WHERE warehouse_id = $4 AND status = 'active'
             ),
-            conflict_check AS (
-                SELECT 1
-                FROM tabular t
-                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
-                WHERE t.name = $1 AND t.tabular_id != $2
-                FOR UPDATE
-            ),
             updated AS (
                 UPDATE tabular t
                 SET name = $1
@@ -1292,8 +1325,7 @@ pub(crate) async fn rename_tabular(
                     AND t.warehouse_id = $4
                     AND wc.warehouse_id = $4
                     AND lsn.namespace_id IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
-                RETURNING 
+                RETURNING
                     t.tabular_id,
                     t.namespace_id,
                     t.name as tabular_name,
@@ -1361,11 +1393,13 @@ pub(crate) async fn rename_tabular(
         )
         .fetch_one(&mut **transaction)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => RenameTabularError::from(TabularNotFound::new(
-            warehouse_id, source_id
-        )),
-            _ => e.into_catalog_backend_error().into(),
+        .map_err(|e| {
+            rename_tabular_error(
+                e,
+                warehouse_id,
+                source_id,
+                "The source tabular could not be found.",
+            )
         })?
     } else {
         sqlx::query_as!(
@@ -1399,13 +1433,6 @@ pub(crate) async fn rename_tabular(
                 SELECT warehouse_id FROM warehouse
                 WHERE warehouse_id = $2 AND status = 'active'
             ),
-            conflict_check AS (
-                SELECT 1
-                FROM tabular t
-                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2
-                WHERE t.name = $1
-                FOR UPDATE
-            ),
             updated AS (
                 UPDATE tabular t
                 SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
@@ -1415,7 +1442,6 @@ pub(crate) async fn rename_tabular(
                     AND ln.namespace_id IS NOT NULL
                     AND wc.warehouse_id = $2
                     AND lsn.namespace_id IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
                 RETURNING t.tabular_id,
                     t.namespace_id,
                     t.name as tabular_name,
@@ -1485,11 +1511,13 @@ pub(crate) async fn rename_tabular(
         )
         .fetch_one(&mut **transaction)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => RenameTabularError::from(TabularNotFound::new(
-            warehouse_id, source_id
-        ).append_detail("Either the source tabular or the destination namespace could not be found.")),
-            _ => e.into_catalog_backend_error().into(),
+        .map_err(|e| {
+            rename_tabular_error(
+                e,
+                warehouse_id,
+                source_id,
+                "Either the source tabular or the destination namespace could not be found.",
+            )
         })?
     };
 
@@ -2308,5 +2336,102 @@ mod tests {
             vec!["hr_ns".to_string()]
         );
         assert_eq!(res.tabular.tabular_ident().name, "test_region_42");
+    }
+
+    /// `list_tabulars` joins `task` only to decorate rows with soft-deletion
+    /// info. The join is restricted to the soft-deletion queues by its ON clause
+    /// *alone*: the WHERE clause that used to repeat that restriction was
+    /// removed because it is a tautology that wrecks the planner's row estimate
+    /// (see the comment in `list_tabulars`).
+    ///
+    /// That makes the ON clause the only thing preventing a tabular with tasks
+    /// in other queues from being joined more than once. Duplicate joined rows
+    /// do not surface as duplicate entries -- the result is keyed by tabular id,
+    /// so they collapse -- they surface as *short pages*, because `LIMIT` counts
+    /// joined rows, not tabulars. This test would catch that: one tabular
+    /// carries two tasks in unrelated queues, and a page of two must still
+    /// return both tabulars.
+    #[sqlx::test]
+    async fn test_list_tabulars_unaffected_by_tasks_in_unrelated_queues(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["unrelated_queue_ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let mut transaction = pool.begin().await.unwrap();
+        let mut tabular_ids = Vec::new();
+        for name in ["table_one", "table_two"] {
+            let id = Uuid::now_v7();
+            let location = Location::from_str(&format!("s3://test-bucket/{name}/")).unwrap();
+            let metadata_location =
+                Location::from_str(&format!("s3://test-bucket/{name}/metadata/v1.json")).unwrap();
+            create_tabular(
+                CreateTabular {
+                    id,
+                    name,
+                    namespace_id: *namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: Some(&metadata_location),
+                    location: &location,
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            tabular_ids.push(id);
+        }
+        transaction.commit().await.unwrap();
+
+        // Two tasks on the *first* tabular, both in queues the list query does
+        // not join. If the ON clause ever stops filtering on queue_name, this
+        // tabular joins twice and consumes both slots of the page below.
+        for queue_name in ["tabular_purge", "statistics"] {
+            sqlx::query(
+                r#"
+                INSERT INTO task (task_id, warehouse_id, queue_name, status, scheduled_for,
+                                  task_data, entity_id, entity_type, entity_name, project_id)
+                SELECT gen_random_uuid(), w.warehouse_id, $1, 'scheduled', now(), '{}'::jsonb,
+                       $2, 'table', ARRAY['table_one'], w.project_id
+                FROM warehouse w WHERE w.warehouse_id = $3
+                "#,
+            )
+            .bind(queue_name)
+            .bind(tabular_ids[0])
+            .bind(*warehouse_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(namespace_id),
+            lakekeeper::service::TabularListFlags::active(),
+            &pool,
+            None,
+            lakekeeper::api::iceberg::v1::PaginationQuery {
+                page_token: lakekeeper::api::iceberg::v1::PageToken::NotSpecified,
+                page_size: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            listed.len(),
+            2,
+            "a page of 2 must return both tabulars; tasks in unrelated queues must not \
+             join and consume page slots"
+        );
+        for (_, info) in listed.iter() {
+            assert!(
+                info.expiration_task().is_none(),
+                "a task in an unrelated queue must not be reported as a pending deletion"
+            );
+        }
     }
 }

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::{
     super::{io::write_file, require_warehouse_id},
+    etag::{StorageAccess, TableETag, TableResponseShape},
     validate_table_properties,
 };
 use crate::{
@@ -18,7 +19,8 @@ use crate::{
         endpoints::EndpointFlat,
         iceberg::v1::{
             ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters,
-            Result, TableIdent, TableParameters, tables::DataAccessMode,
+            Result, TableIdent, TableParameters,
+            tables::{DataAccessMode, SnapshotsQuery},
         },
     },
     request_metadata::RequestMetadata,
@@ -323,12 +325,15 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // This requires the storage secret
     // because the table config might contain vended-credentials based
     // on the `data_access` parameter.
+    // Bound once and reused for the ETag shape below, so the tag can never
+    // describe a different access scope than the config it accompanies.
+    let storage_permissions = StoragePermissions::ReadWriteDelete;
     let config = storage_profile
         .generate_table_config(
             data_access,
             storage_secret_ref,
             &table_location,
-            StoragePermissions::ReadWriteDelete,
+            storage_permissions,
             &request_metadata,
             &table_info,
         )
@@ -338,13 +343,25 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         .credentials_expiration_ms
         .map(credential_revalidate_after_ms);
     let storage_credentials = config.storage_credentials(&table_location);
+    // Full (empty) snapshot list, tagged with the delegation and permission
+    // scope the config above was generated for.
+    let shape = TableResponseShape::new(
+        SnapshotsQuery::All,
+        StorageAccess::Config {
+            delegation: data_access,
+            permissions: storage_permissions,
+            warehouse_version: warehouse.version,
+        },
+    );
 
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location.as_ref().map(ToString::to_string),
         metadata: table_metadata.clone(),
         config: Some(config.config.into()),
         storage_credentials,
-        credentials_revalidate_after_ms,
+        etag: metadata_location.as_ref().map(|loc| {
+            TableETag::new(loc.as_str(), shape, credentials_revalidate_after_ms).into_etag()
+        }),
     };
 
     // Create table in authorizer

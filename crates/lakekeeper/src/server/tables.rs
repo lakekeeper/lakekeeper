@@ -23,6 +23,7 @@ use serde::Serialize;
 use uuid::Uuid;
 pub mod authorize_load;
 pub mod create_table;
+pub(crate) mod etag;
 pub mod load_table;
 mod rename_table;
 
@@ -51,7 +52,8 @@ use crate::{
                 ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
                 TableParameters,
                 tables::{
-                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
+                    LoadTableRequest, SnapshotsQuery,
                 },
             },
         },
@@ -165,6 +167,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
         )
     })?;
     Ok(CommitTableResponse {
+        etag: Some(etag::commit_etag(&metadata_location)),
         metadata_location,
         metadata: r.metadata,
         config: None,
@@ -468,12 +471,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
+        // Bound once and reused for the ETag shape below: if register ever starts
+        // honouring the delegation header, the tag must follow the config.
+        let data_access: DataAccessMode = DataAccess::not_specified().into();
+        let storage_permissions = StoragePermissions::ReadWriteDelete;
         let config = storage_profile
             .generate_table_config(
-                DataAccess::not_specified().into(),
+                data_access,
                 storage_secret_ref,
                 &table_location,
-                StoragePermissions::ReadWriteDelete,
+                storage_permissions,
                 request_metadata,
                 &table_info,
             )
@@ -549,13 +556,32 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(metadata_location),
         );
 
+        // Full snapshot list from the metadata file, tagged with the delegation
+        // and permission scope the config above was built for. A read-only
+        // caller's later load is scoped narrower, so it gets a distinct tag
+        // rather than matching this one. Register never honours the delegation
+        // header, so a client that sent one misses this tag on its next load —
+        // a lost validator, not a wrong one.
+        let etag = etag::TableETag::new(
+            &metadata_location_str,
+            etag::TableResponseShape::new(
+                SnapshotsQuery::All,
+                etag::StorageAccess::Config {
+                    delegation: data_access,
+                    permissions: storage_permissions,
+                    warehouse_version: warehouse.version,
+                },
+            ),
+            None,
+        )
+        .into_etag();
+
         Ok(LoadTableResult {
             metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
             config: Some(config.config.into()),
             storage_credentials: None,
-            // No credentials are vended in the register response.
-            credentials_revalidate_after_ms: None,
+            etag: Some(etag),
         })
     }
 
@@ -701,8 +727,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     "commit_table must return exactly one CommitContext"
                 );
 
+                let metadata_location = item.new_metadata_location.to_string();
                 Ok(CommitTableResponse {
-                    metadata_location: item.new_metadata_location.to_string(),
+                    etag: Some(etag::commit_etag(&metadata_location)),
+                    metadata_location,
                     metadata: item.new_metadata.clone(),
                     config: None,
                 })

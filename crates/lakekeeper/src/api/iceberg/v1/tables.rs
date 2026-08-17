@@ -68,7 +68,7 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotsQuery {
     /// Load all snapshots
@@ -1278,7 +1278,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            etag: Some(ETag::from("W/\"lk1.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
