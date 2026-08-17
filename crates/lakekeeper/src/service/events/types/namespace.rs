@@ -102,6 +102,10 @@ pub struct RegisterTableEvent {
     pub request: Arc<RegisterTableRequest>,
     pub metadata: TableMetadataRef,
     pub metadata_location: Arc<Location>,
+    /// The delegation the response was built for. Register vends credentials, so
+    /// without this a subscriber cannot tell a registration that handed out
+    /// read-write-delete credentials from one that handed out none.
+    pub data_access: DataAccessMode,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
@@ -315,12 +319,14 @@ impl
         request: Arc<RegisterTableRequest>,
         metadata: TableMetadataRef,
         metadata_location: Arc<Location>,
+        data_access: DataAccessMode,
     ) {
         let event = RegisterTableEvent {
             namespace: self.resolved_entity.data,
             request,
             metadata,
             metadata_location,
+            data_access,
             request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;
