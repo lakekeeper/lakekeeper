@@ -11973,8 +11973,7 @@ components:
             The preceding elements identify the new parent; a single-element destination moves the
             namespace to the warehouse root. Must not be empty. Renaming in place is expressed by
             keeping the same parent and changing only the last element. Mirrors the `destination`
-            of the Iceberg
-            rename-table request.
+            of Iceberg REST rename-table request.
 
             A destination equal to the namespace's current path succeeds without changing
             anything, so retrying a request that already went through is safe.
