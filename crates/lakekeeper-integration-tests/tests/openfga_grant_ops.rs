@@ -42,7 +42,7 @@ mod grant {
                 authn::Actor,
                 authz::{
                     AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
-                    GrantResource, GrantTarget, ResourceType, UserOrRoleId,
+                    GrantResource, GrantTarget, ResourceType, UserOrRole as AuthzUserOrRole,
                 },
             },
         };
@@ -101,11 +101,10 @@ mod grant {
             }
         }
 
-        /// A grant-authority question naming neither grantee nor direction, as the
-        /// grantable-privileges endpoint asks it. The tests that name either build the
-        /// check directly.
+        /// A grant-authority question naming no grantee, as the grantable-privileges
+        /// endpoint asks it. The tests that name one build the check directly.
         fn check(privilege: &str) -> GrantAuthorityCheck<'_> {
-            GrantAuthorityCheck::any(privilege)
+            GrantAuthorityCheck::grantable(privilege)
         }
 
         fn writes(entries: Vec<GrantEntry>) -> ApplyGrantsRequest {
@@ -340,8 +339,8 @@ mod grant {
             let authorizer = &ctx.v1_state.authz;
             let warehouse = warehouse_target(&ctx, warehouse_id).await;
             let target = GrantTarget::Warehouse(&warehouse);
-            let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
-            let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+            let alice = AuthzUserOrRole::User(UserId::new_unchecked("oidc", "alice"));
+            let bob = AuthzUserOrRole::User(UserId::new_unchecked("oidc", "bob"));
 
             let decisions = authorizer
                 .are_allowed_grants(
@@ -349,9 +348,9 @@ mod grant {
                     None,
                     &target,
                     &[
-                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("modify", &alice, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("modify", Some(&alice), GrantOp::Grant),
                     ],
                 )
                 .await
@@ -366,10 +365,10 @@ mod grant {
                     None,
                     &target,
                     &[
-                        GrantAuthorityCheck::entry("get_metadata", &alice, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("get_metadata", &bob, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("get_metadata", Some(&alice), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("get_metadata", Some(&bob), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
                     ],
                 )
                 .await
@@ -383,8 +382,8 @@ mod grant {
                     None,
                     &target,
                     &[
-                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
-                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
                     ],
                 )
                 .await

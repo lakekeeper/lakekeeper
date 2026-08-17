@@ -685,21 +685,21 @@ mod tests {
     /// more expensively.
     #[test]
     fn equal_privileges_share_one_tuple_whatever_the_grantee_or_direction() {
-        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
-        let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
+        let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
         let (items, item_of_check) = plan_authority_checks(
             ResourceType::Warehouse,
             "user:oidc~caller",
             "warehouse:11111111-1111-1111-1111-111111111111",
             &[
-                GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
-                GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
-                GrantAuthorityCheck::entry("modify", &alice, GrantOp::Grant),
+                GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
+                GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
+                GrantAuthorityCheck::entry("modify", Some(&alice), GrantOp::Grant),
                 // Taking `select` back asks the same relation as handing it out: this
                 // model has one relation per privilege and nothing to say about direction.
-                GrantAuthorityCheck::entry("select", &alice, GrantOp::Revoke),
+                GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
                 // A warehouse action, but not an assignable relation, so not grantable.
-                GrantAuthorityCheck::entry("get_metadata", &alice, GrantOp::Grant),
+                GrantAuthorityCheck::entry("get_metadata", Some(&alice), GrantOp::Grant),
             ],
         );
 

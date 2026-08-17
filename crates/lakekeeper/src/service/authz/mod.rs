@@ -2234,15 +2234,15 @@ pub mod tests {
                 privilege: "select".to_string(),
             })
         );
-        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
         let decisions = authz
             .are_allowed_grants(
                 &md,
                 None,
                 &GrantTarget::Server,
                 &[
-                    GrantAuthorityCheck::any("admin"),
-                    GrantAuthorityCheck::entry("select", &alice, GrantOp::Revoke),
+                    GrantAuthorityCheck::grantable("admin"),
+                    GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
                 ],
             )
             .await
@@ -3142,13 +3142,12 @@ pub mod tests {
             _target: &GrantTarget<'_>,
             checks: &[GrantAuthorityCheck<'_>],
         ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-            // Authority over a direction, and only when the caller names one: a question
-            // that names none is what the vocabulary endpoint asks, and this authorizer
-            // has nothing to say about it.
+            // Authority per direction, so a test can hold revoke authority alone and
+            // watch the grant side of a diff be refused.
             Ok(checks
                 .iter()
                 .map(|check| {
-                    if check.op.is_some_and(|op| self.grant_ops.contains(&op)) {
+                    if self.grant_ops.contains(&check.op) {
                         AuthorizationDecision::allow()
                     } else {
                         AuthorizationDecision::deny()

@@ -710,7 +710,9 @@ pub enum GrantOp {
 /// cannot: an authorizer that reads only the terms it knows keeps its previous answers,
 /// which is safe but silent. Every term here narrows the question, so ignoring one can
 /// only make an answer coarser than intended — never wider than the caller asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// No `Hash`: the resolved grantee is not hashable, and nothing keys a map by a whole
+// question — the tuple-based authorizer keys its plan by privilege.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GrantAuthorityCheck<'a> {
     /// A name from the authorizer's own vocabulary. An unrecognized name is answered
@@ -720,48 +722,63 @@ pub struct GrantAuthorityCheck<'a> {
     /// Who would come to hold the privilege — or lose it, for a revoke. An authorizer
     /// whose authority does not depend on the recipient ignores it.
     ///
-    /// `None` leaves the grantee out of the question: the grantable-privileges endpoint
-    /// asks whether the subject has authority over the privilege here at all. That
-    /// answer is advisory, since the apply path asks again for each grantee, so even an
-    /// authorizer that does distinguish grantees may answer this form from the privilege
-    /// alone.
-    pub grantee: Option<&'a UserOrRoleId>,
+    /// Resolved, not just identified: a role grantee carries the role itself, so an
+    /// authorizer can read its identity and attributes rather than only a `RoleId` it has
+    /// no way to look up.
+    ///
+    /// `None` means the question names nobody, which two callers do:
+    ///
+    /// - the grantable-privileges endpoint, asking whether the subject may grant the
+    ///   privilege here *to anyone*. Advisory, since the apply path asks again per entry,
+    ///   so an authorizer that distinguishes grantees may answer it from the privilege
+    ///   alone;
+    /// - a revoke whose role the catalog could not resolve. Grants cascade with their
+    ///   role, so the revoke is already a no-op; the gate runs before that is known, and
+    ///   the resolution ahead of it deliberately cannot fail, because refusing there
+    ///   would let an unauthorized caller probe which roles exist. A write naming such a
+    ///   role is still rejected, just after the gate.
+    ///
+    /// Both forms ask something broader than a named grantee would, so ignoring the term
+    /// or failing to match on it can only make an answer stricter, never wider.
+    pub grantee: Option<&'a UserOrRole>,
     /// Which way the privilege would move. An authorizer that grants and revokes on the
     /// same authority ignores it; one that separates them — a role that may take access
     /// away without being able to hand it out — answers the two differently.
     ///
-    /// `None` asks about neither direction in particular, which is what the
-    /// grantable-privileges endpoint wants: authority over the privilege here at all.
-    /// Like a `None` grantee, that answer is advisory, since the apply path asks again
-    /// per entry.
-    pub op: Option<GrantOp>,
+    /// Always present: every question is about moving a privilege in one direction. The
+    /// grantable-privileges endpoint asks about granting, so its answer is exact for an
+    /// authorizer that separates the directions rather than a blend of both.
+    pub op: GrantOp,
 }
 
 impl<'a> GrantAuthorityCheck<'a> {
     /// The question one diff entry asks: may the subject move `privilege` in direction
     /// `op`, to — or, for a revoke, from — `grantee`?
+    ///
+    /// `grantee` is `None` only when the entry names a role the catalog could not resolve;
+    /// see the field.
     #[must_use]
-    pub fn entry(privilege: &'a str, grantee: &'a UserOrRoleId, op: GrantOp) -> Self {
+    pub fn entry(privilege: &'a str, grantee: Option<&'a UserOrRole>, op: GrantOp) -> Self {
         Self {
             privilege,
-            grantee: Some(grantee),
-            op: Some(op),
+            grantee,
+            op,
         }
     }
 
-    /// A question naming neither grantee nor direction: has the subject authority over
-    /// `privilege` here at all? What the grantable-privileges endpoint asks — advisory,
-    /// since the apply path asks [`entry`](Self::entry) questions again per entry.
+    /// May the subject grant `privilege` here, to anyone? What the grantable-privileges
+    /// endpoint asks — advisory, since the apply path asks [`entry`](Self::entry)
+    /// questions again per entry, and those name the grantee.
     ///
-    /// The two constructors are the two questions anything asks. Terms are left out
-    /// together or not at all — a third combination would be a question no caller has,
-    /// which an authorizer would still have to decide how to answer.
+    /// Granting, not revoking: the endpoint exists to say what a principal could hand
+    /// out. Revocation needs no discovery question of its own — what can be taken away
+    /// is read off the existing grants, and each removal is authorized as it is applied.
     #[must_use]
-    pub fn any(privilege: &'a str) -> Self {
+    pub fn grantable(privilege: &'a str) -> Self {
         Self {
             privilege,
             grantee: None,
-            op: None,
+            op: GrantOp::Grant,
         }
     }
 }

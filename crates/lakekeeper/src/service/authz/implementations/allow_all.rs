@@ -453,7 +453,7 @@ fn build_vocabulary(resource_type: ResourceType) -> Vec<PrivilegeDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::super::{AuthZGrantOps, GrantOp, InvalidGrantPrivilege, UserOrRoleId},
+        super::super::{AuthZGrantOps, GrantOp, InvalidGrantPrivilege},
         *,
     };
 
@@ -546,15 +546,15 @@ mod tests {
         let authorizer = AllowAllAuthorizer::default();
         let warehouse = ResolvedWarehouse::new_random();
         let target = GrantTarget::Warehouse(&warehouse);
-        let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+        let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
         let decisions = authorizer
             .are_allowed_grants(
                 &RequestMetadata::new_unauthenticated(),
                 None,
                 &target,
                 &[
-                    GrantAuthorityCheck::entry("get_metadata", &bob, GrantOp::Grant),
-                    GrantAuthorityCheck::any("not_a_privilege"),
+                    GrantAuthorityCheck::entry("get_metadata", Some(&bob), GrantOp::Grant),
+                    GrantAuthorityCheck::grantable("not_a_privilege"),
                 ],
             )
             .await
