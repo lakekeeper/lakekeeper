@@ -735,8 +735,12 @@ pub(crate) async fn move_namespace(
     // A destination identical to the current path changes nothing, so answer with the row
     // just read. Returned before any guard, so that retrying a completed move succeeds
     // rather than colliding with itself or tripping a guard that no longer matters.
-    // Compared byte-exactly: a case-only difference is a real rename and falls through to
-    // the UPDATE below.
+    // Comparison is byte-exact, so if source != destination this might be
+    // - a "genuine move" to a different parent (possibly including a rename)
+    // - a "genuine rename", including one that changes only the leaf's casing
+    // - a no-op where the difference is only in the *casing* of the ancestors, which the
+    //   case-insensitive parent lookup makes meaningless
+    // The last case is handled below, after the guard, once the parent's stored spelling is known.
     if source.namespace_name == destination.as_ref()[..] {
         let previous_parent: Option<NamespaceId> = source.parent_namespace_id.map(Into::into);
         let namespace = source.into_namespace_with_parent_version(warehouse_id)?;
@@ -822,10 +826,12 @@ pub(crate) async fn move_namespace(
     // `namespace_name` is matched under the case-insensitive collation, consistent with
     // `create_namespace`.
     let destination_parent = destination.parent();
-    let destination_parent_id = if let Some(ref parent) = destination_parent {
-        let parent_id = sqlx::query_scalar!(
+    // Its stored `namespace_name` is read alongside the id, not just the id: see
+    // `written_name` below.
+    let destination_parent_row = if let Some(ref parent) = destination_parent {
+        let parent_row = sqlx::query!(
             r#"
-            SELECT namespace_id
+            SELECT namespace_id, namespace_name
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_name = $2
             FOR KEY SHARE
@@ -841,14 +847,67 @@ pub(crate) async fn move_namespace(
         // The destination's parent cannot be the namespace itself. A *deeper* descendant
         // is impossible to reach here: it would have to exist as the parent, and we
         // already rejected any namespace with descendants above.
-        if NamespaceId::from(parent_id) == namespace_id {
+        if NamespaceId::from(parent_row.namespace_id) == namespace_id {
             return Err(NamespaceCannotMoveIntoSelf::new(warehouse_id, namespace_id).into());
         }
-        Some(parent_id)
+        Some(parent_row)
     } else {
         None
     };
+    let destination_parent_id = destination_parent_row.as_ref().map(|r| r.namespace_id);
     let has_destination_parent = destination_parent_id.is_some();
+
+    // What actually gets written: the parent's *stored* spelling of the ancestor segments,
+    // plus the caller's spelling of the leaf.
+    //
+    // The parent was matched under the case-insensitive collation above, so a destination of
+    // `["PARENT", "child"]` resolves against a parent stored as `["parent"]`. Writing
+    // the caller's array verbatim would then store a child whose prefix does not byte-match
+    // its parent's name. The catalog would still be correct — the parent id is right — but it
+    // breaks an invariant the namespace cache relies on: `is_parent_ident` compares
+    // `child[..len - 1]` against the parent's ident with plain equality, and documents the two
+    // as "byte-identical by construction". A mismatch makes `build_hierarchy_from_cache`
+    // invalidate and miss on *every* subsequent by-id lookup of that namespace — a permanent
+    // cache miss plus eviction churn, not a stale read.
+    //
+    // Taking the prefix from the parent row makes the stored path canonical by construction.
+    // Only the leaf keeps the caller's casing, because a case-only change is a genuine rename.
+    //
+    // A destination that differs only in ancestor casing canonicalises to the path this row
+    // already has; the check below answers it as the no-op it is.
+    let written_name: Vec<String> = match destination_parent_row.as_ref() {
+        Some(parent_row) => parent_row
+            .namespace_name
+            .iter()
+            .cloned()
+            .chain(destination.as_ref().last().cloned())
+            .collect(),
+        // Moving to the warehouse root: a single element, nothing to canonicalise.
+        None => destination.as_ref().clone(),
+    };
+
+    // The parent resolved case-insensitively, so a destination differing from the current path
+    // only in ancestor casing canonicalises back to the path this row already has. Answer it as
+    // the no-op it is, rather than issuing an UPDATE that rewrites the same bytes while bumping
+    // `version` and `updated_at` — which would leave `is_noop()` reporting true while the row's
+    // version had in fact moved, suppressing the event that would tell any replica about it.
+    //
+    // Deliberately after the guards, unlike the byte-exact check at the top: this input already
+    // reaches them today, so answering it here changes no error, only the redundant write.
+    // Resolving the parent earlier instead would take its lock on paths that hold none today and
+    // would let `NamespaceNotFound` outrank `NamespaceProtected`.
+    if written_name == source.namespace_name {
+        let namespace = source.into_namespace_with_parent_version(warehouse_id)?;
+        return Ok(MovedNamespace {
+            namespace,
+            previous_ident,
+            previous_parent,
+        });
+    }
+
+    let canonical_destination_parent = destination_parent_row
+        .as_ref()
+        .map(|r| r.namespace_name.as_slice());
 
     // Collisions are caught by the `unique_namespace_per_warehouse` constraint rather
     // than by a probe, so there is no window between checking and writing. Renaming a row
@@ -859,8 +918,9 @@ pub(crate) async fn move_namespace(
     // `namespace_name`, which is `text[] collate "case_insensitive"`, so a case-only rename
     // compares equal and the trigger never fires. The trigger *assigns*
     // `NEW.version = OLD.version + 1` rather than incrementing `NEW`, so setting both here
-    // cannot double-bump when it does fire. The byte-exact no-op returns above, so a true
-    // no-op still bumps nothing.
+    // cannot double-bump when it does fire. Both no-op checks — byte-exact at the top of this
+    // function, and canonical once the parent is known — return before this point, so a request
+    // that changes nothing still bumps nothing.
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
         r#"
@@ -890,7 +950,8 @@ pub(crate) async fn move_namespace(
         SELECT
             u.namespace_id as "namespace_id!",
             u.namespace_name as "namespace_name!",
-            -- The caller supplied the destination path, so requested == canonical.
+            -- What was written is canonical by construction (see `written_name`), so there is
+            -- no separate requested spelling to carry.
             u.namespace_name as "requested_name!",
             u.warehouse_id as "warehouse_id!",
             u.protected as "protected!",
@@ -905,8 +966,10 @@ pub(crate) async fn move_namespace(
         "#,
         *warehouse_id,
         *namespace_id,
-        &destination.as_ref()[..],
-        destination_parent.as_deref(),
+        &written_name[..],
+        // The parent's stored name, so `parent_ns` matches byte-exactly rather than relying on
+        // the collation a second time.
+        canonical_destination_parent,
         has_destination_parent,
     )
     .fetch_optional(&mut **transaction)
@@ -3301,6 +3364,137 @@ pub mod tests {
             "a case-only rename must stamp updated_at"
         );
         assert!(!moved.is_noop());
+    }
+
+    /// The destination parent is matched case-insensitively, so a caller may spell ancestor
+    /// segments differently from how they are stored. What lands in the table must use the
+    /// parent's stored spelling: the namespace cache's `is_parent_ident` compares a child's
+    /// path minus its leaf against the parent's ident byte-wise, and a mismatch turns every
+    /// later by-id lookup of that namespace into a cache miss plus an eviction.
+    #[sqlx::test]
+    async fn test_move_namespace_canonicalises_parent_casing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        let movable =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["movable"]), None).await;
+
+        // Caller spells the parent "PARENT"; the stored row is "parent".
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            movable.namespace_id(),
+            &ident(&["PARENT", "child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stored_path(&pool, movable.namespace_id()).await,
+            vec!["parent".to_string(), "child".to_string()],
+            "the ancestor segments must be stored with the parent's casing, not the caller's"
+        );
+        assert_eq!(
+            moved.namespace.canonical_ident(),
+            &ident(&["parent", "child"]),
+            "the returned ident must match what was stored"
+        );
+        // The leaf keeps the caller's casing — that is what a rename is for.
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            movable.namespace_id(),
+            &ident(&["parent", "ChIlD"]),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_path(&pool, movable.namespace_id()).await,
+            vec!["parent".to_string(), "ChIlD".to_string()],
+            "the leaf must keep the caller's casing"
+        );
+        assert_eq!(
+            moved.namespace.parent_namespaces_id(),
+            Some(
+                get_namespace_ident(&pool, warehouse_id, &ident(&["parent"]))
+                    .await
+                    .into()
+            ),
+            "the parent id must still resolve"
+        );
+    }
+
+    /// A destination that differs from the current path only in the casing of *ancestor*
+    /// segments names the path the row already has: the parent is matched case-insensitively, so
+    /// the caller's spelling of it carries no information. It must therefore be a no-op, not a
+    /// write — a redundant UPDATE would bump `version` and `updated_at` while `is_noop()` still
+    /// reported true, so the event that tells other replicas about the bump is suppressed.
+    ///
+    /// Contrast `test_move_namespace_case_only_rename`: a case-only difference in the *leaf* is a
+    /// real rename, because the leaf is the name itself.
+    #[sqlx::test]
+    async fn test_move_namespace_ancestor_case_only_destination_is_noop(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        let child = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "child"]),
+            None,
+        )
+        .await;
+
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            child.namespace_id(),
+            &ident(&["PARENT", "child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stored_path(&pool, child.namespace_id()).await,
+            vec!["parent".to_string(), "child".to_string()],
+            "the stored path must be untouched"
+        );
+        assert_eq!(
+            *moved.namespace.version(),
+            *child.version(),
+            "an ancestor-case-only destination must not bump the version"
+        );
+        assert_eq!(
+            moved.namespace.updated_at(),
+            child.updated_at(),
+            "nor stamp updated_at"
+        );
+        assert!(
+            moved.is_noop(),
+            "callers rely on is_noop() to skip event emission"
+        );
+        assert!(!moved.changed_parent());
+    }
+
+    /// Helper: the id of a namespace by its exact stored path.
+    async fn get_namespace_ident(
+        pool: &sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        ns: &NamespaceIdent,
+    ) -> uuid::Uuid {
+        sqlx::query_scalar!(
+            r#"SELECT namespace_id FROM namespace WHERE warehouse_id = $1 AND namespace_name = $2"#,
+            *warehouse_id,
+            &ns.as_ref()[..],
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 
     #[sqlx::test]
