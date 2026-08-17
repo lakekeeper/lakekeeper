@@ -3065,7 +3065,23 @@ mod register_data_access {
                 client_managed.etag, vended.etag,
                 "the ETag must distinguish the delegation the response was built for"
             );
-            assert!(vended.etag.is_some());
+            // A vended credential expires, so the tag must carry its revalidation
+            // point — `lk1.<hash>.<revalidate-after-hex>`. Without the third
+            // segment the client holds a validator that can never yield a 304.
+            let vended_etag = vended.etag.expect("a vending response must be taggable");
+            assert_eq!(
+                vended_etag.as_str().split('.').count(),
+                3,
+                "expected a revalidation point in {}",
+                vended_etag.as_str()
+            );
+            let client_managed_etag = client_managed.etag.expect("still taggable without creds");
+            assert_eq!(
+                client_managed_etag.as_str().split('.').count(),
+                2,
+                "no credential means no revalidation point: {}",
+                client_managed_etag.as_str()
+            );
         }
     }
 }

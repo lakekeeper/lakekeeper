@@ -87,7 +87,7 @@ use crate::{
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::StoragePermissions,
+        storage::{StoragePermissions, credential_revalidate_after_ms},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -487,6 +487,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
         let storage_credentials = config.storage_credentials(&table_location);
+        let credentials_revalidate_after_ms = config
+            .credentials_expiration_ms
+            .map(credential_revalidate_after_ms);
 
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
@@ -556,12 +559,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(request),
             table_metadata.clone(),
             Arc::new(metadata_location),
+            data_access,
         );
 
         // Full snapshot list from the metadata file, tagged with the delegation
         // and permission scope the config above was built for. A read-only
         // caller's later load is scoped narrower, so it gets a distinct tag
-        // rather than matching this one.
+        // rather than matching this one. Now that register vends, the tag has to
+        // carry the credential's revalidation point too: without it a vending
+        // response yields a tag that can never produce a 304.
         let etag = etag::TableETag::new(
             &metadata_location_str,
             etag::TableResponseShape::new(
@@ -572,7 +578,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     warehouse_version: warehouse.version,
                 },
             ),
-            None,
+            credentials_revalidate_after_ms,
         )
         .into_etag();
 
