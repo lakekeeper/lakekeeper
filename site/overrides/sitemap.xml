@@ -1,0 +1,27 @@
+{#-
+  Overrides MkDocs' built-in sitemap.xml to list only canonical, indexable
+  URLs.
+
+  The default template emits every built page — ~480 URLs for ~185 real pages,
+  because each docs version is published as its own tree AND each tree is
+  published a second time one level deeper at `docs/<version>/docs/...` (see
+  the note in `overrides/main.html`). Listing pages we simultaneously mark
+  `noindex` sends Google contradictory signals and burns crawl budget on a
+  site where the pages that matter are a small minority.
+
+  The rule here MUST match the `is_canonical_page` test in
+  `overrides/main.html`.
+-#}
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{%- for file in pages -%}
+    {%- set url = file.page.url or "" -%}
+    {%- set is_canonical_page = (not url.startswith("docs/")) or (url.startswith("docs/latest/") and not url.startswith("docs/latest/docs/")) -%}
+    {% if is_canonical_page and not file.page.is_link and (file.page.abs_url or file.page.canonical_url) %}
+    <url>
+         <loc>{% if file.page.canonical_url %}{{ file.page.canonical_url|e }}{% else %}{{ file.page.abs_url|e }}{% endif %}</loc>
+         {% if file.page.update_date %}<lastmod>{{ file.page.update_date }}</lastmod>{% endif %}
+    </url>
+    {%- endif -%}
+{% endfor %}
+</urlset>

@@ -1,3 +1,7 @@
+---
+description: "Secure Lakekeeper with OpenID Connect, OAuth 2 or Kubernetes service accounts, and map identity provider tokens to catalog users and roles."
+---
+
 # Authentication
 
 Authentication is crucial for securing access to Lakekeeper. By enabling authentication, you ensure that only authorized users can access and interact with your data. Lakekeeper supports authentication via any OpenID (or OAuth 2) capable identity provider as well as authentication for Kubernetes service accounts, allowing you to integrate with your existing identity providers.

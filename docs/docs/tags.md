@@ -1,3 +1,7 @@
+---
+description: "Attach governance tags such as pii or sensitivity=restricted to warehouses, namespaces, tables, views and columns for classification and access control."
+---
+
 # Governance Tags
 
 Governance tags let you attach a controlled vocabulary of labels — `pii`, `sensitivity=restricted`, `deprecated` — to catalog objects (Warehouses, Namespaces, Tables, Views, Generic Tables, and columns). They are metadata for classification, discovery, and access control.

@@ -1,3 +1,7 @@
+---
+description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: declarative policies with attribute conditions, evaluated without an external service."
+---
+
 # Authorization with Cedar <span class="lkp"></span> {#authorization-with-cedar}
 
 !!! important "Using the Correct Cedar Schema Version"

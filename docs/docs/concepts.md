@@ -1,3 +1,7 @@
+---
+description: "Lakekeeper's architecture and core concepts: projects, warehouses, namespaces, tables and views, and the external dependencies the catalog builds on."
+---
+
 # Concepts
 
 ## Architecture

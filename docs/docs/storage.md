@@ -1,3 +1,7 @@
+---
+description: "Configure Lakekeeper warehouse storage profiles for S3, Google Cloud Storage, Azure Data Lake Storage and other backends, including credential vending."
+---
+
 # Storage
 
 Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a location defined by a `StorageProfile` attached to it.

@@ -1,3 +1,7 @@
+---
+description: "Common Lakekeeper problems and their causes: unexpected 403 responses, Helm and UI issues, and other frequently hit edge cases."
+---
+
 # Gotchas
 
 ## I got permissions but am still getting 403s

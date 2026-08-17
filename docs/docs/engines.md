@@ -1,3 +1,7 @@
+---
+description: "Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg and other query engines to Lakekeeper's Iceberg REST Catalog with per-user permissions."
+---
+
 # Query Engines
 
 In this page we document how query engines can be configured to connect to Lakekeeper. Please also check the documentation of your query engine to obtain additional information. All Query engines that support the Apache Iceberg REST Catalog (IRC) also support Lakekeeper.

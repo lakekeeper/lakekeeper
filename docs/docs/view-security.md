@@ -1,3 +1,7 @@
+---
+description: "Lakekeeper's DEFINER and INVOKER view security models, and how the referenced-by view chain decides whose permissions are checked."
+---
+
 # View Security
 
 Lakekeeper supports **DEFINER** and **INVOKER** security models for views, enabling catalogs to make context-aware authorization decisions when query engines load tables through view chains.

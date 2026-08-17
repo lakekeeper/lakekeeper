@@ -1,3 +1,7 @@
+---
+description: "Reference for Lakekeeper's environment variables: database, storage, authentication, authorization, logging, routing and server settings."
+---
+
 # Configuration
 
 Lakekeeper is configured via environment variables. Settings listed in this page are shared between all projects and warehouses. Previous to Lakekeeper Version `0.5.0` please prefix all environment variables with `ICEBERG_REST__` instead of `LAKEKEEPER__`.

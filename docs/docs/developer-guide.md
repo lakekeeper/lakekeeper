@@ -1,3 +1,7 @@
+---
+description: "Contribute to Lakekeeper: development setup, pull request and CI expectations, conventional commits, and the contributor licence agreement."
+---
+
 # Developer Guide
 
 All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first.

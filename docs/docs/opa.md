@@ -1,3 +1,7 @@
+---
+description: "Use the Lakekeeper OPA bridge to enforce catalog permissions in Trino and other engines that delegate access control to Open Policy Agent."
+---
+
 # Open Policy Agent (OPA)
 
 [Lakekeeper's Open Policy Agent bridge](https://github.com/lakekeeper/lakekeeper/tree/main/authz/opa-bridge) enables compute engines that support fine-grained access control via Open Policy Agent (OPA) as authorization engine to respect privileges in Lakekeeper. We have also prepared a self-contained [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced) to get started quickly.

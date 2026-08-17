@@ -1,3 +1,7 @@
+---
+description: "How Lakekeeper maintains Iceberg tables: metadata file cleanup, delete-after-commit behaviour and retention of previous metadata versions."
+---
+
 # Table Maintenance
 
 ## Metadata File Cleanup

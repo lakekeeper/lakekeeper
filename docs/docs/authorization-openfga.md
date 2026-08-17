@@ -1,3 +1,7 @@
+---
+description: "Run Lakekeeper's authorization on OpenFGA for hierarchical, inheritable permissions across warehouses, namespaces, tables and views."
+---
+
 # Authorization with OpenFGA
 
 Lakekeeper can use [OpenFGA](https://openfga.dev) to store and evaluate permissions. OpenFGA provides bi-directional inheritance, which is key for managing hierarchical namespaces in modern lakehouses. For query engines like Trino, Lakekeeper's OPA bridge translates OpenFGA permissions into Open Policy Agent (OPA) format. See the [OPA Bridge Guide](./opa.md) for details.

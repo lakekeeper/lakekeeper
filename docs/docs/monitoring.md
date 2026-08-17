@@ -1,3 +1,7 @@
+---
+description: "Monitor Lakekeeper with Prometheus metrics and per-project endpoint statistics, and wire them into a Kubernetes, Prometheus and Grafana stack."
+---
+
 # Monitoring Lakekeeper
 
 Lakekeeper exposes Prometheus metrics and per-project endpoint statistics. We recommend integrating these into your Kubernetes/Grafana/Prometheus stack.

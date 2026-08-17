@@ -1,6 +1,11 @@
 site_name: Lakekeeper Docs
 repo_url: https://github.com/lakekeeper/lakekeeper
-site_description: Lakekeeper is a rust native Iceberg REST Catalog
+# `site_url` is load-bearing for SEO, not cosmetic. Without it MkDocs emits an
+# empty `sitemap.xml`, mkdocs-material skips `<link rel="canonical">` entirely,
+# and `page.canonical_url` renders as the literal string "None" into the Open
+# Graph tags in `overrides/main.html`. Keep the trailing slash.
+site_url: https://docs.lakekeeper.io/
+site_description: Lakekeeper is an open source Apache Iceberg REST Catalog written in Rust, with fine-grained access control, multi-engine support and S3, GCS & Azure storage.
 site_author: Lakekeeper Team
 edit_uri: blob/main/docs/
 
@@ -105,6 +110,7 @@ copyright: Copyright &copy; {year} <a href="https://lakekeeper.io">Lakekeeper</a
 hooks:
   - ../docs/hooks/env_key_wrap.py
   - ../docs/hooks/copyright_year.py
+  - ../docs/hooks/llms_txt.py
 
 plugins:
   - monorepo

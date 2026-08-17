@@ -1,3 +1,7 @@
+---
+description: "Lakekeeper is open source under the Apache License 2.0. Read the full licence text for the Apache Iceberg REST Catalog."
+---
+
 # License
 
 ---

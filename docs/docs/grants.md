@@ -1,3 +1,7 @@
+---
+description: "Grant, list and revoke a single privilege for one principal on one resource with Lakekeeper's authorizer-independent Grants API."
+---
+
 # Grants API
 
 A grant gives one **principal** (a user or a role) one named **privilege** on one **resource**: *Alice may `select` on this warehouse*. You hand them out, list them, and take them back, one at a time. See [Authorization](./authorization.md#grants-privileges-and-roles) for how grants relate to your authorizer's model.

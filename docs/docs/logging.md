@@ -1,3 +1,7 @@
+---
+description: "Configure Lakekeeper's structured JSON logging and RUST_LOG filtering, and understand the fields emitted by the tracing pipeline."
+---
+
 # Logging
 
 ## Overview
