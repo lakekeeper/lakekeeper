@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.13.3](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.13.3) (2026-08-16)
+
+
+### Features
+
+* **authn:** configurable Kubernetes subject source (uid or username) ([#1899](https://github.com/lakekeeper/lakekeeper/issues/1899)) ([ad933a2](https://github.com/lakekeeper/lakekeeper/commit/ad933a29abbc12079606bd4cc98640b1981f0234))
+* **authz:** reject role writes in provider-managed namespaces ([#1891](https://github.com/lakekeeper/lakekeeper/issues/1891)) ([ce60d8a](https://github.com/lakekeeper/lakekeeper/commit/ce60d8a79dd1dcc803fa864e4380298553a834ae))
+
+
+### Bug Fixes
+
+* **authz:** stop evaluating discarded Select on target view load ([#1886](https://github.com/lakekeeper/lakekeeper/issues/1886)) ([001e50d](https://github.com/lakekeeper/lakekeeper/commit/001e50dc7aa91189cb1e2aad799f601b6e8f477b))
+* **ci:** unmask and harden kube-auth username subject-source test ([#1905](https://github.com/lakekeeper/lakekeeper/issues/1905)) ([ea62a52](https://github.com/lakekeeper/lakekeeper/commit/ea62a52e39817f7f2252348ac93aaefc03910e80))
+* **deps:** bump quick-xml to 0.41 (RUSTSEC-2026-0194/0195) ([#1885](https://github.com/lakekeeper/lakekeeper/issues/1885)) ([00745c7](https://github.com/lakekeeper/lakekeeper/commit/00745c714a6a208726367b179595a22456aee729))
+
+
+### Documentation
+
+* ui branding ([#1883](https://github.com/lakekeeper/lakekeeper/issues/1883)) ([3e7e6d2](https://github.com/lakekeeper/lakekeeper/commit/3e7e6d2a8ea2f7c53694594a659f47ace8c8ecad))
+
+
+### Miscellaneous Chores
+
+* backport iceberg-rust rev bump ([#1906](https://github.com/lakekeeper/lakekeeper/issues/1906)) ([9190faf](https://github.com/lakekeeper/lakekeeper/commit/9190faf1b02b9f4524d6dfe3bdbe932c38b0f7b4))
+* **docs:** Add 0.13.1 release notes ([382d951](https://github.com/lakekeeper/lakekeeper/commit/382d951db43a51e20f66da395e5f674b5e4d55cf))
+* **docs:** Add 0.13.x docs to site ([38b49cd](https://github.com/lakekeeper/lakekeeper/commit/38b49cd018557f3cf300d314cdb785351336ab33))
+* **docs:** Sync documentation from enterprise repo ([#1884](https://github.com/lakekeeper/lakekeeper/issues/1884)) ([d12eb6e](https://github.com/lakekeeper/lakekeeper/commit/d12eb6ee6045448acf4298158cc8346c1148a060))
+
 ## [0.13.1](https://github.com/lakekeeper/lakekeeper/compare/v0.13.0...v0.13.1) (2026-06-30)
 
 
