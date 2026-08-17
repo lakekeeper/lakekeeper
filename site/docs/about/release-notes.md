@@ -4,7 +4,7 @@ Highlights for each Lakekeeper release. For the full commit-level
 changelog, see the [GitHub Releases](https://github.com/lakekeeper/lakekeeper/releases)
 or [`CHANGELOG.md`](https://github.com/lakekeeper/lakekeeper/blob/main/CHANGELOG.md).
 
-For Lakekeeper Plus releases, see the [Lakekeeper Plus Release Notes](enterprise-release-notes.md).
+For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release-notes.md).
 
 <!-- Maintainers: how to update this page at release → .github/RELEASING.md -->
 

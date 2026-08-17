@@ -21,4 +21,24 @@ striptags %} {% endif %}
 <meta property="og:image:width" content="1080" />
 <meta property="og:image:height" content="568" />
 
+<!-- GoatCounter analytics — privacy-friendly, cookieless. Loads on every page
+     (home.html inherits this block via super()). Localhost/file:// are ignored
+     by count.js, so local `just serve` sends nothing. Dashboard:
+     https://lakekeeper.goatcounter.com -->
+<script
+  data-goatcounter="https://lakekeeper.goatcounter.com/count"
+  async src="//gc.zgo.at/count.js"></script>
+
+<!-- Tag the top-level "Production" nav entry so extra.css can highlight it in
+     the Lakekeeper+ gold — including when it is the active page (whose tab
+     links to `./`, which an href selector can't target). -->
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    var sel = ".md-tabs__link, .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link";
+    document.querySelectorAll(sel).forEach(function (a) {
+      if (a.textContent.trim() === "Production") a.classList.add("lk-nav-production");
+    });
+  });
+</script>
+
 {% endblock %}

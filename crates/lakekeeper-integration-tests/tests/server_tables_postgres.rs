@@ -2603,6 +2603,7 @@ async fn test_register_table_with_overwrite(pool: PgPool) {
     CatalogServer::register_table(
         ns_params.clone(),
         register_request.clone(),
+        DataAccess::not_specified(),
         ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
@@ -2620,6 +2621,7 @@ async fn test_register_table_with_overwrite(pool: PgPool) {
     let result = CatalogServer::register_table(
         ns_params.clone(),
         register_request_with_overwrite,
+        DataAccess::not_specified(),
         ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
@@ -2921,6 +2923,7 @@ async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool)
         CatalogServer::register_table(
             ns_params.clone(),
             request,
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2936,4 +2939,149 @@ async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool)
     register("registered_v2", FormatVersion::V2)
         .await
         .expect("a v2 file is allowed by the policy");
+}
+
+/// `data-access` on register is only observable against a storage profile that
+/// actually vends. The memory profile the rest of this file uses ignores it and
+/// returns an empty config, so these live against MinIO.
+mod register_data_access {
+    /// Named so nextest's default profile filters it out; CI runs it with MinIO up.
+    pub mod minio_integration_tests {
+        use lakekeeper::api::iceberg::v1::DataAccessMode;
+        use lakekeeper_integration_tests::s3_compatible_profile;
+
+        use super::super::*;
+
+        type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
+
+        async fn drop_keeping_data(ctx: &Ctx, ns_params: &NamespaceParameters, table: &TableIdent) {
+            CatalogServer::drop_table(
+                TableParameters {
+                    prefix: ns_params.prefix.clone(),
+                    table: table.clone(),
+                },
+                DropParams {
+                    purge_requested: false,
+                    force: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("dropping without purge must leave the metadata file in place");
+        }
+
+        async fn register(
+            ctx: &Ctx,
+            ns_params: &NamespaceParameters,
+            metadata_location: &str,
+            data_access: impl Into<DataAccessMode> + Send,
+        ) -> LoadTableResult {
+            CatalogServer::register_table(
+                ns_params.clone(),
+                iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                    .name("registered".to_string())
+                    .metadata_location(metadata_location.to_string())
+                    .build(),
+                data_access,
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+        }
+
+        #[sqlx::test]
+        async fn test_register_honors_the_requested_data_access(pool: PgPool) {
+            let (profile, cred) = s3_compatible_profile();
+            let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+                pool,
+                profile,
+                Some(cred),
+                AllowAllAuthorizer::default(),
+                TabularDeleteProfile::Hard {},
+                None,
+            )
+            .await;
+            let ns = create_ns(
+                ctx.clone(),
+                warehouse.warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let table = TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "registered".to_string(),
+            };
+
+            // Creating writes the metadata file that register then reads back.
+            let created = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request(Some("registered".to_string()), Some(false)),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+            let metadata_location = created.metadata_location.clone().unwrap();
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let client_managed = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccessMode::ClientManaged,
+            )
+            .await;
+            assert!(
+                client_managed.storage_credentials.is_none(),
+                "client-managed must suppress vending, got {:?}",
+                client_managed.storage_credentials
+            );
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let vended = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+            )
+            .await;
+            let credentials = vended
+                .storage_credentials
+                .expect("vended-credentials must reach the modern storage-credentials field");
+            assert_eq!(credentials.len(), 1);
+            // The tag encodes the delegation the config was built for, so the two
+            // registrations must not hand a client a validator for the other's scope.
+            assert_ne!(
+                client_managed.etag, vended.etag,
+                "the ETag must distinguish the delegation the response was built for"
+            );
+            // A vended credential expires, so the tag must carry its revalidation
+            // point — `lk1.<hash>.<revalidate-after-hex>`. Without the third
+            // segment the client holds a validator that can never yield a 304.
+            let vended_etag = vended.etag.expect("a vending response must be taggable");
+            assert_eq!(
+                vended_etag.as_str().split('.').count(),
+                3,
+                "expected a revalidation point in {}",
+                vended_etag.as_str()
+            );
+            let client_managed_etag = client_managed.etag.expect("still taggable without creds");
+            assert_eq!(
+                client_managed_etag.as_str().split('.').count(),
+                2,
+                "no credential means no revalidation point: {}",
+                client_managed_etag.as_str()
+            );
+        }
+    }
 }

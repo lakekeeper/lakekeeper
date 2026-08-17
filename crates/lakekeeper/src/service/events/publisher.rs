@@ -197,6 +197,7 @@ impl EventListener for CloudEventsPublisher {
             request,
             metadata,
             metadata_location: _metadata_location,
+            data_access: _data_access,
             request_metadata,
         } = event;
         self.publish(
