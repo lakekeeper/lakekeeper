@@ -2717,6 +2717,7 @@ async fn re_registering_a_table_that_keeps_its_id_keeps_its_owner(pool: PgPool) 
             .metadata_location(created.metadata_location.clone().unwrap())
             .overwrite(true)
             .build(),
+        DataAccess::not_specified(),
         ctx.clone(),
         metadata.clone(),
     )
