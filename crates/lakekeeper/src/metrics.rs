@@ -31,6 +31,15 @@ pub fn get_axum_layer_and_install_recorder(
             ),
             utils::SECONDS_DURATION_BUCKETS,
         )?
+        // Histograms without explicit buckets are rendered as Prometheus
+        // *summaries* (quantile series, no `_bucket`), which cannot be
+        // aggregated across replicas or fed to `histogram_quantile`. Give the
+        // admission-gate histograms real buckets; they measure sub-second
+        // request-path latency, so the HTTP duration buckets fit.
+        .set_buckets_for_metric(
+            Matcher::Prefix("lakekeeper_admission".to_string()),
+            utils::SECONDS_DURATION_BUCKETS,
+        )?
         .with_http_listener((CONFIG.bind_ip, metrics_port))
         .build()?;
     let handle = recorder.handle();

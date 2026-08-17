@@ -1,0 +1,28 @@
+# Scoped to Markdown only, on purpose. Rust formatting is owned by
+# rustfmt.toml and TOML by .taplo.toml; adding global rules here would change
+# save-time behaviour for those files without buying anything.
+#
+# Honoured natively by Neovim, Zed and JetBrains IDEs. VS Code has no built-in
+# EditorConfig support and needs the EditorConfig.EditorConfig extension.
+
+root = true
+
+[*.md]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+
+# Nested lists need 4 spaces for python-markdown (MkDocs); CommonMark's 2
+# silently fails to nest.
+indent_size = 4
+
+# Markdown uses two trailing spaces as a hard line break, so blanket trimming
+# would change rendering. markdownlint's MD009 polices this properly -- it
+# permits exactly 2 and strips the rest.
+trim_trailing_whitespace = false
+
+# Docs prose is one line per paragraph with no hard wrapping (see AGENTS.md).
+# Without this, JetBrains IDEs reflow paragraphs at the right margin on
+# Reformat Code.
+max_line_length = off

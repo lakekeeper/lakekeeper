@@ -239,6 +239,7 @@ impl StorageProfile {
                 overrides: std::collections::HashMap::new(),
                 defaults: std::collections::HashMap::new(),
                 endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
+                idempotency_key_lifetime: None,
             },
         }
     }

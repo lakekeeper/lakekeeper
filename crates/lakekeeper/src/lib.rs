@@ -50,6 +50,25 @@ pub use tower_http;
 #[cfg_attr(docsrs, doc(cfg(feature = "open-api")))]
 pub use utoipa;
 
+/// Exists only while `open-api` is **off**, so an authorizer crate can detect the one
+/// feature combination it cannot otherwise diagnose.
+///
+/// `Authorizer::api_doc` is required only under this crate's `open-api`, while an
+/// authorizer implements it under its *own* `open-api`. Cargo features propagate
+/// downward only, so enabling ours does not enable theirs, and that build fails with
+/// "missing `api_doc`" pointing at an implementation that is plainly present — its help
+/// text even suggests writing the method that already exists. An authorizer crate that
+/// imports this under `cfg(not(feature = "open-api"))` fails instead on the name below,
+/// which says what to do.
+#[cfg(not(feature = "open-api"))]
+#[doc(hidden)]
+pub mod enable_the_open_api_feature_of_your_authorizer_crate_too {
+    /// Name this from an authorizer crate in a type position — a `use` of the module
+    /// would warn as unused in the build where it resolves.
+    #[derive(Debug)]
+    pub struct Marker;
+}
+
 #[cfg(feature = "router")]
 #[cfg_attr(docsrs, doc(cfg(feature = "router")))]
 pub mod metrics;

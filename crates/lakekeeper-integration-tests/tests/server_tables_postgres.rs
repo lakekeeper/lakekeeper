@@ -30,8 +30,11 @@ use lakekeeper::{
             },
         },
         management::v1::{
-            ApiServer as ManagementApiServer, table::TableManagementService,
-            warehouse::TabularDeleteProfile,
+            ApiServer as ManagementApiServer,
+            table::TableManagementService,
+            warehouse::{
+                Service as _, TabularDeleteProfile, UpdateWarehouseFormatVersionPolicyRequest,
+            },
         },
     },
     server::{
@@ -44,7 +47,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table_request as create_request, impl_pagination_tests, memory_io_profile,
+    create_ns, create_table as create_table_helper, create_table_request as create_request,
+    create_view, drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile,
     setup_simple, tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_storage_postgres::{
@@ -2400,6 +2404,132 @@ async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
     assert_eq!(response.error.code, StatusCode::NOT_FOUND);
 }
 
+/// Tables, views and generic tables share one name space, so the spec's
+/// "already exists as a table **or view**" applies across types.
+#[sqlx::test]
+async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(ctx.clone(), prefix.clone(), "rename_ns", "the_table", false)
+        .await
+        .unwrap();
+    create_view(ctx.clone(), &prefix, "rename_ns", "the_view", None)
+        .await
+        .unwrap();
+
+    let err = CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_table".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace,
+                name: "the_view".to_string(),
+            },
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::CONFLICT);
+    assert_eq!(err.error.r#type, "AlreadyExistsException");
+}
+
+/// A soft-deleted table does not hold its name — `createTable` reuses it, so
+/// `renameTable` must too.
+#[sqlx::test]
+async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(3600),
+        },
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_source",
+        false,
+    )
+    .await
+    .unwrap();
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_dropped",
+        false,
+    )
+    .await
+    .unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        &prefix,
+        "rename_ns",
+        "the_dropped",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix.clone())),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_source".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_dropped".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent {
+                namespace: ns.namespace,
+                name: "the_dropped".to_string(),
+            },
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the renamed table must be loadable under the reused name");
+}
+
 #[sqlx::test]
 async fn test_register_table_with_overwrite(pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
@@ -2711,4 +2841,99 @@ async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
         .unwrap()
         .expect("table and metadata should still exist");
     }
+}
+
+/// `registerTable` is the only way a table enters a warehouse without going
+/// through `createTable`, so it has to honour the format-version policy too.
+/// Otherwise the setting is advisory: a warehouse restricted to v1/v2 quietly
+/// acquires a v3 table, and the failure surfaces later in whichever engine
+/// cannot read it.
+#[sqlx::test]
+async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+
+    // All three versions are allowed by default, so both tables can be created
+    // before the policy is tightened underneath them.
+    let mut metadata_locations = HashMap::new();
+    for (name, version) in [
+        ("v3_table", FormatVersion::V3),
+        ("v2_table", FormatVersion::V2),
+    ] {
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request_with_format(name, Some(version)),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(table.metadata.format_version(), version);
+
+        // Registering reuses the metadata file, so the original table has to go
+        // first — two tables cannot share one table UUID. Keep the data.
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: name.to_string(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        metadata_locations.insert(version, table.metadata_location.clone().unwrap());
+    }
+
+    ManagementApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V1, FormatVersion::V2],
+            default_format_version: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let register = |name: &str, version: FormatVersion| {
+        let request = iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name(name.to_string())
+            .metadata_location(metadata_locations[&version].clone())
+            .build();
+        CatalogServer::register_table(
+            ns_params.clone(),
+            request,
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let err = register("registered_v3", FormatVersion::V3)
+        .await
+        .expect_err("a v3 file must not register into a v1/v2 warehouse");
+    assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+
+    // A permitted version still registers, so the gate is not a blanket refusal.
+    register("registered_v2", FormatVersion::V2)
+        .await
+        .expect("a v2 file is allowed by the policy");
 }

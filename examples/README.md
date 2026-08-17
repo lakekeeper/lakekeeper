@@ -11,6 +11,7 @@ All examples are self-contained and run all services required for the specific s
 After starting the examples, please wait for a Minute after all images are pulled - especially keycloak takes some time to start and setup. Please check the `README.md`s in each examples folder for more information on this specific example.
 
 ## Development / Re-Build image
+
 Running `docker compose up` for each example starts the `latest-main` release of Lakekeeper. To build a fresh image use:
 
 ```bash

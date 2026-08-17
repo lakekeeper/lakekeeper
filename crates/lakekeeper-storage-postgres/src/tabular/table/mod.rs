@@ -1669,6 +1669,133 @@ pub mod tests {
     }
 
     #[sqlx::test]
+    async fn test_rename_onto_occupied_name_conflicts(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let source = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        let occupant = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(source.namespace.clone()),
+            None,
+            Some("occupied".to_string()),
+        )
+        .await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            source.table_id.into(),
+            &source.table_ident,
+            &occupant.table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularAlreadyExists(_)),
+            "unexpected error: {rename_err:?}"
+        );
+
+        transaction.rollback().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_rename_across_namespaces_onto_occupied_name_conflicts(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let source = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+
+        let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &new_namespace, None).await;
+        let occupant = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(new_namespace.clone()),
+            None,
+            Some("occupied".to_string()),
+        )
+        .await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            source.table_id.into(),
+            &source.table_ident,
+            &occupant.table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularAlreadyExists(_)),
+            "unexpected error: {rename_err:?}"
+        );
+
+        transaction.rollback().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_rename_onto_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let source = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        let dropped = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(source.namespace.clone()),
+            None,
+            Some("reused_name".to_string()),
+        )
+        .await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        mark_tabular_as_deleted(
+            warehouse_id,
+            dropped.table_id.into(),
+            false,
+            None,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // A soft-deleted name is not occupied — `deleted_at` is part of the
+        // uniqueness key, so create already reuses such names and rename must too.
+        let mut transaction = pool.begin().await.unwrap();
+        rename_tabular(
+            warehouse_id,
+            source.table_id.into(),
+            &source.table_ident,
+            &dropped.table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::Table(&dropped.table_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), source.table_id.into());
+    }
+
+    #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

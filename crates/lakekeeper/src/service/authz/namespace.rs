@@ -425,6 +425,10 @@ pub trait AuthzNamespaceOps: Authorizer {
                     )
                     .into()
                 })
+            } else if is_allowed && action == CatalogNamespaceAction::ReadGrants.into() {
+                // The grant-read action doubles as visibility; see the same arm in
+                // require_warehouse_action.
+                Ok(namespace)
             } else {
                 return Err(cant_see_err);
             }

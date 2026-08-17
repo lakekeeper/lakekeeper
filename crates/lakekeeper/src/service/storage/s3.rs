@@ -437,6 +437,7 @@ impl S3Profile {
             defaults,
             overrides: HashMap::new(),
             endpoints: supported_endpoints().to_vec(),
+            idempotency_key_lifetime: None,
         }
     }
 

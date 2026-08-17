@@ -95,6 +95,7 @@ tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
     "default",
     "request-id",
+    "set-header",
     "util",
     "cors",
 ] }

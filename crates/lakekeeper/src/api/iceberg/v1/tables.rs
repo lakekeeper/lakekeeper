@@ -68,7 +68,7 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotsQuery {
     /// Load all snapshots
@@ -679,14 +679,21 @@ pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
 }
 
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
-    let header = headers
+    // The parameter is an array serialized `style: simple, explode: false`, so
+    // a single header line may carry a comma-separated list. Values that are
+    // not valid ASCII name no known mechanism, so drop them rather than fail
+    // the request — an unrecognised delegation request is already treated as
+    // "server chooses".
+    let requested = headers
         .get_all(DATA_ACCESS_HEADER)
         .iter()
-        .map(|v| v.to_str().unwrap())
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
         .collect::<Vec<_>>();
-    let vended_credentials = header.contains(&"vended-credentials");
-    let remote_signing = header.contains(&"remote-signing");
-    let client_managed = header.contains(&"client-managed");
+    let vended_credentials = requested.contains(&"vended-credentials");
+    let remote_signing = requested.contains(&"remote-signing");
+    let client_managed = requested.contains(&"client-managed");
     if !vended_credentials && !remote_signing && client_managed {
         return DataAccessMode::ClientManaged;
     }
@@ -742,6 +749,102 @@ mod test {
             http::header::HeaderValue::from_static("vended-credentials"),
         );
         let data_access = super::parse_data_access(&headers);
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
+    }
+
+    fn data_access_headers(values: &[&'static str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append(
+                super::DATA_ACCESS_HEADER,
+                http::header::HeaderValue::from_static(value),
+            );
+        }
+        headers
+    }
+
+    /// The parameter is `style: simple, explode: false`, so one header line
+    /// may carry the whole list.
+    #[test]
+    fn parse_data_access_splits_a_comma_separated_list() {
+        let data_access =
+            super::parse_data_access(&data_access_headers(&["vended-credentials,remote-signing"]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    #[test]
+    fn parse_data_access_trims_whitespace_around_list_items() {
+        let data_access = super::parse_data_access(&data_access_headers(&[
+            " vended-credentials , remote-signing ",
+        ]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    /// Repeated header lines stay supported alongside the list form.
+    #[test]
+    fn parse_data_access_accepts_repeated_header_lines() {
+        let data_access = super::parse_data_access(&data_access_headers(&[
+            "vended-credentials",
+            "remote-signing",
+        ]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    /// `client-managed` only wins when nothing else was asked for, and a list
+    /// is how a client can now combine it with a fallback.
+    #[test]
+    fn parse_data_access_client_managed_alongside_a_delegated_mode() {
+        let data_access =
+            super::parse_data_access(&data_access_headers(&["client-managed,vended-credentials"]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
+    }
+
+    /// A non-ASCII value used to reach `to_str().unwrap()`, which
+    /// `CatchPanicLayer` turned into a 500.
+    #[test]
+    fn parse_data_access_ignores_a_non_ascii_value() {
+        let mut headers = data_access_headers(&["vended-credentials"]);
+        headers.append(
+            super::DATA_ACCESS_HEADER,
+            http::header::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+
+        let data_access = super::parse_data_access(&headers);
+
         assert_eq!(
             data_access,
             DataAccessMode::ServerDelegated(DataAccess {
@@ -1175,7 +1278,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            etag: Some(ETag::from("W/\"lk1.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 

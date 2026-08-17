@@ -976,6 +976,122 @@ async fn test_table_column_tag_by_name(pool: PgPool) {
     assert_eq!(listed.tags[0].tag_definition_id, def.id);
 }
 
+/// All column-tags: tag column `id` with two column definitions and `email` with one,
+/// plus a table-level tag, then read every column's tags in one call. Verifies per-column
+/// grouping (id's two tags merge into a single entry, not one entry per attachment) and
+/// that the table-level tag is excluded (columns only).
+#[sqlx::test]
+async fn test_list_column_tags(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+    let table_id = create_table_with_columns(&ctx, warehouse_id).await;
+
+    let col_def = create_def(
+        &ctx,
+        pid,
+        "column-pii",
+        vec![TagScope::Column],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    let col_def2 = create_def(
+        &ctx,
+        pid,
+        "column-sensitive",
+        vec![TagScope::Column],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    let tbl_def = create_def(
+        &ctx,
+        pid,
+        "table-owner",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // `column-pii` on both columns; `column-sensitive` additionally on `id` — so `id`
+    // (field-id 1) carries two column tags and must collapse into one grouped entry.
+    for col in ["id", "email"] {
+        Server::set_table_column_tag(
+            warehouse_id,
+            table_id,
+            col.to_string(),
+            "column-pii".to_string(),
+            SetTagRequest { value: None },
+            ctx.clone(),
+            request_metadata_with_project(pid),
+        )
+        .await
+        .unwrap();
+    }
+    Server::set_table_column_tag(
+        warehouse_id,
+        table_id,
+        "id".to_string(),
+        "column-sensitive".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    // A table-level tag on the same table must NOT show up in the column listing.
+    Server::set_table_tag(
+        warehouse_id,
+        table_id,
+        "table-owner".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    let resp = Server::list_column_tags(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Two column entries, ordered by field-id (1 = id, 2 = email). `id` merges its two
+    // tags into a single entry; `email` has one; the table-level tag is absent.
+    assert_eq!(resp.columns.len(), 2);
+    assert_eq!(resp.columns[0].field_id, 1);
+    assert_eq!(resp.columns[0].tags.len(), 2);
+    assert!(
+        resp.columns[0]
+            .tags
+            .iter()
+            .any(|t| t.tag_definition_id == col_def.id)
+    );
+    assert!(
+        resp.columns[0]
+            .tags
+            .iter()
+            .any(|t| t.tag_definition_id == col_def2.id)
+    );
+    assert_eq!(resp.columns[1].field_id, 2);
+    assert_eq!(resp.columns[1].tags.len(), 1);
+    assert_eq!(resp.columns[1].tags[0].tag_definition_id, col_def.id);
+    assert!(
+        resp.columns
+            .iter()
+            .all(|c| c.tags.iter().all(|t| t.tag_definition_id != tbl_def.id))
+    );
+}
+
 /// Applying a column tag to a non-existent column is rejected with `ColumnNotFound` (404).
 #[sqlx::test]
 async fn test_table_column_tag_unknown_column_not_found(pool: PgPool) {
@@ -2492,4 +2608,109 @@ async fn test_reapply_same_value_is_noop(pool: PgPool) {
         Some("silver"),
         "the response must carry the newly-applied value, not the previous one"
     );
+}
+
+/// Tag definitions were the one grantable level with no action-introspection
+/// endpoint, so every `CatalogTagAction` — including the grant-read gate — was
+/// enforceable but invisible to a console. Driven through the real router, which also
+/// proves the route is mounted; under AllowAll every action is permitted, pinning the
+/// full list.
+#[sqlx::test]
+async fn tag_actions_lists_every_action(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = (*warehouse.project_id).clone();
+    let definition = create_def(
+        &ctx,
+        &project_id,
+        "actions_pii",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let body = tag_actions_request(&ctx, &project_id, definition.id, StatusCode::OK).await;
+    let mut actions: Vec<&str> = body["allowed-actions"]
+        .as_array()
+        .expect("allowed-actions is an array")
+        .iter()
+        .map(|action| {
+            action["action"]
+                .as_str()
+                .expect("each action carries its name")
+        })
+        .collect();
+    actions.sort_unstable();
+    assert_eq!(
+        actions,
+        vec![
+            "apply",
+            "delete",
+            "read",
+            "read_attachments",
+            "read_grants",
+            "remove",
+            "update"
+        ]
+    );
+}
+
+/// A definition in another project must read as absent, not as a denial that would
+/// confirm it exists.
+#[sqlx::test]
+async fn tag_actions_hides_a_definition_from_another_project(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = (*warehouse.project_id).clone();
+    let definition = create_def(
+        &ctx,
+        &project_id,
+        "actions_other",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    tag_actions_request(
+        &ctx,
+        &ProjectId::new_random(),
+        definition.id,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+}
+
+/// `GET /management/v1/tag-definition/{id}/actions` through the built router, with the
+/// metadata extension the auth middleware would attach. Returns the parsed body.
+async fn tag_actions_request(
+    ctx: &Ctx,
+    project_id: &ProjectId,
+    tag_definition_id: lakekeeper::service::TagDefinitionId,
+    expected: StatusCode,
+) -> serde_json::Value {
+    use lakekeeper::axum::{Router, body::Body, http::Request};
+    use tower::ServiceExt as _;
+
+    let router: Router = Router::new()
+        .nest("/management/v1", Server::new_v1_router(&ctx.v1_state.authz))
+        .with_state(ctx.clone());
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/management/v1/tag-definition/{tag_definition_id}/actions"
+                ))
+                .extension(request_metadata_with_project(project_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), expected);
+    let bytes = lakekeeper::axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
 }

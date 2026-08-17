@@ -23,12 +23,34 @@
 //! The default — no gates configured — admits every request, so existing
 //! deployments are unaffected.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, LazyLock},
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
+use axum_prometheus::metrics;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::request_metadata::{RequestMetadata, TokenRoles};
+
+/// Histogram of each gate's evaluation time, labelled by `gate` and `outcome`.
+/// Its `_count` series is also the authoritative rejection rate: admission
+/// denials are indistinguishable from authorization denials in
+/// `axum_http_requests_total{status="403"}`, but separable here.
+const METRIC_ADMISSION_GATE_DURATION_SECONDS: &str = "lakekeeper_admission_gate_duration_seconds";
+
+/// Registers metric descriptions exactly once; forced before every emission in
+/// [`record_gate_duration`].
+static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
+    metrics::describe_histogram!(
+        METRIC_ADMISSION_GATE_DURATION_SECONDS,
+        "Duration of a single admission-gate evaluation in seconds. Labelled by \
+         `gate` and `outcome` (admitted/forbidden/unavailable). Time spent inside \
+         the gate's own cache is included, so this is the latency the request \
+         actually paid, not the upstream call time."
+    );
+});
 
 /// Why an [`AdmissionGate`] rejected a request.
 ///
@@ -215,7 +237,10 @@ impl AdmissionGates {
     pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
         let mut resolved_roles: Option<TokenRoles> = None;
         for gate in &self.gates {
-            match gate.admit(ctx).await {
+            let start = Instant::now();
+            let result = gate.admit(ctx).await;
+            record_gate_duration(gate.name(), &result, start.elapsed());
+            match result {
                 Ok(admission) => {
                     if let Some(roles) = admission.resolved_roles {
                         // Common case is a single role-resolving gate: just move
@@ -241,6 +266,31 @@ impl AdmissionGates {
         }
         Ok(Admission { resolved_roles })
     }
+}
+
+/// Label for how a gate resolved. `unavailable` is the fail-closed outcome, kept
+/// distinct from `forbidden` so an outage of an upstream a gate depends on shows
+/// up as an outage rather than as a wave of denials.
+fn outcome_label(result: &Result<Admission, AdmissionRejection>) -> &'static str {
+    match result {
+        Ok(_) => "admitted",
+        Err(AdmissionRejection::Forbidden(_)) => "forbidden",
+        Err(AdmissionRejection::Unavailable { .. }) => "unavailable",
+    }
+}
+
+fn record_gate_duration(
+    gate: &'static str,
+    result: &Result<Admission, AdmissionRejection>,
+    elapsed: Duration,
+) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::histogram!(
+        METRIC_ADMISSION_GATE_DURATION_SECONDS,
+        "gate" => gate,
+        "outcome" => outcome_label(result),
+    )
+    .record(elapsed.as_secs_f64());
 }
 
 #[cfg(test)]
@@ -444,6 +494,24 @@ mod tests {
             .expect("RolesGate admits");
         let roles = admission.resolved_roles.expect("roles were resolved");
         assert_eq!(roles.roles().len(), 2);
+    }
+
+    #[test]
+    fn outcome_labels_distinguish_deny_from_fail_closed() {
+        assert_eq!(outcome_label(&Ok(Admission::admit())), "admitted");
+        assert_eq!(
+            outcome_label(&Err(AdmissionRejection::forbidden("no", "T", None))),
+            "forbidden"
+        );
+        assert_eq!(
+            outcome_label(&Err(AdmissionRejection::unavailable(
+                "down",
+                "T",
+                Duration::from_secs(1),
+                None
+            ))),
+            "unavailable"
+        );
     }
 
     #[tokio::test]

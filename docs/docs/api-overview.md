@@ -20,7 +20,8 @@ All Management endpoints are served under `/management/v1/`. The API is grouped 
 | `tasks` | List, inspect, and control background tasks (e.g. soft-delete expiration and purge). |
 | `user` | Manage Users provisioned in the catalog. |
 | `role` | Manage Roles, which are first-class principals that can be granted permissions and assumed. |
-| `permissions-openfga` | View and manage fine-grained permissions when the OpenFGA authorizer is enabled. |
+| `grant` | Grant, revoke and review permissions on catalog resources. See [Grants API](./grants.md). |
+| `permissions-openfga` | The OpenFGA-specific permission surface, available only when that authorizer is enabled. New integrations should prefer `grant`. |
 
 ## Exploring the APIs
 

@@ -9,6 +9,16 @@
 
 use std::{str::FromStr as _, sync::LazyLock};
 
+// Turns the one undiagnosable feature combination into a directive error. `api_doc` is a
+// trait requirement under `lakekeeper/open-api` but is implemented here under *this*
+// crate's `open-api`, and Cargo cannot propagate a feature upward to keep them in step.
+// This import resolves only while lakekeeper's `open-api` is also off; with it on and
+// ours off it fails on a name that states the fix, instead of "missing `api_doc`"
+// pointing at an implementation that is right there.
+#[cfg(not(feature = "open-api"))]
+const _: Option<lakekeeper::enable_the_open_api_feature_of_your_authorizer_crate_too::Marker> =
+    None;
+
 pub use authorizer::OpenFGAAuthorizer;
 #[cfg(any(test, feature = "test-utils"))]
 pub use client::new_authorizer_in_empty_store_from_default_config;
@@ -26,6 +36,7 @@ mod client;
 mod config;
 mod entities;
 pub mod error;
+mod grant;
 mod health;
 mod migration;
 mod models;

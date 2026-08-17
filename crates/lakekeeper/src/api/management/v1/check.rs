@@ -70,6 +70,11 @@ use crate::{
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role
+///
+/// Exactly one of `user` and `role` is present. Naming both is rejected by the schema as
+/// well as by the server: it matches both `oneOf` branches, and `oneOf` admits exactly
+/// one. Leave the branches open — this type is flattened into the assignment schemas, so
+/// an `additionalProperties: false` on a branch would reject their own properties.
 pub enum UserOrRole {
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
@@ -123,6 +128,28 @@ impl AuthzUserOrRole {
             AuthzUserOrRole::User(user_id) => UserOrRole::User(user_id.clone()),
             AuthzUserOrRole::Role(role_assignee) => {
                 UserOrRole::Role(role_assignee.role().id().into_api_assignee())
+            }
+        }
+    }
+}
+
+// The id-only principal converts both ways without a role lookup, which is what
+// grant requests and responses need: they identify a principal, never resolve one.
+impl From<&UserOrRole> for crate::service::authz::UserOrRoleId {
+    fn from(value: &UserOrRole) -> Self {
+        match value {
+            UserOrRole::User(user_id) => Self::User(user_id.clone()),
+            UserOrRole::Role(assignee) => Self::Role(assignee.role_id()),
+        }
+    }
+}
+
+impl From<&crate::service::authz::UserOrRoleId> for UserOrRole {
+    fn from(value: &crate::service::authz::UserOrRoleId) -> Self {
+        match value {
+            crate::service::authz::UserOrRoleId::User(user_id) => UserOrRole::User(user_id.clone()),
+            crate::service::authz::UserOrRoleId::Role(role_id) => {
+                UserOrRole::Role(role_id.into_api_assignee())
             }
         }
     }
@@ -2000,4 +2027,26 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     collect_authz_results(&mut authz_tasks, &mut results).await?;
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserOrRole;
+
+    /// `UserOrRole` is externally tagged, so exactly one key is a user *or* a role.
+    /// Pinned against the published `oneOf`, which rejects a payload naming both because
+    /// it matches both branches. Were serde ever to start accepting both, the schema
+    /// would be stricter than the server and reject requests that work.
+    #[test]
+    fn a_principal_names_exactly_one_of_user_and_role() {
+        assert!(serde_json::from_str::<UserOrRole>(r#"{"user":"oidc~alice"}"#).is_ok());
+        assert!(
+            serde_json::from_str::<UserOrRole>(
+                r#"{"user":"oidc~alice","role":"00000000-0000-0000-0000-000000000001"}"#
+            )
+            .is_err(),
+            "naming both a user and a role must be rejected"
+        );
+        assert!(serde_json::from_str::<UserOrRole>("{}").is_err());
+    }
 }

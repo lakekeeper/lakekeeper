@@ -1,0 +1,122 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.tag_id, t.tag_definition_id, t.value,\n                t.source AS \"source: TagSource\", t.created_at, t.updated_at, td.name,\n                t.field_id AS \"field_id!\"\n           FROM tag t JOIN tag_definition td USING (tag_definition_id)\n           WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL\n             AND t.tabular_id = $2 AND t.field_id IS NOT NULL\n           ORDER BY t.field_id, t.created_at, t.tag_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source: TagSource",
+        "type_info": {
+          "Custom": {
+            "name": "tag_source",
+            "kind": {
+              "Enum": [
+                "manual"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag_definition",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "field_id!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "field_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "8b8f3c11001ca3118767bf03f39727184b19b31350c6c76acab36828bc52a44d"
+}
