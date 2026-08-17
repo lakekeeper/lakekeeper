@@ -360,7 +360,13 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         config: Some(config.config.into()),
         storage_credentials,
         etag: metadata_location.as_ref().map(|loc| {
-            TableETag::new(loc.as_str(), shape, credentials_revalidate_after_ms).into_etag()
+            TableETag::new(
+                warehouse_id,
+                loc.as_str(),
+                shape,
+                credentials_revalidate_after_ms,
+            )
+            .into_etag()
         }),
     };
 

@@ -150,6 +150,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<CommitTableResponse> {
+    let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
     // CommitTableResponse doesn't include storage credentials, so default access mode is fine.
     let r = replay_load_table::<C, A, S>(
         parameters,
@@ -167,7 +168,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
         )
     })?;
     Ok(CommitTableResponse {
-        etag: Some(etag::commit_etag(&metadata_location)),
+        etag: Some(etag::commit_etag(warehouse_id, &metadata_location)),
         metadata_location,
         metadata: r.metadata,
         config: None,
@@ -569,6 +570,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // carry the credential's revalidation point too: without it a vending
         // response yields a tag that can never produce a 304.
         let etag = etag::TableETag::new(
+            warehouse_id,
             &metadata_location_str,
             etag::TableResponseShape::new(
                 SnapshotsQuery::All,
@@ -691,6 +693,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
         // ------------------- VALIDATIONS -------------------
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
@@ -735,7 +738,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                 let metadata_location = item.new_metadata_location.to_string();
                 Ok(CommitTableResponse {
-                    etag: Some(etag::commit_etag(&metadata_location)),
+                    etag: Some(etag::commit_etag(warehouse_id, &metadata_location)),
                     metadata_location,
                     metadata: item.new_metadata.clone(),
                     config: None,

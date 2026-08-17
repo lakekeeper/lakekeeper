@@ -133,6 +133,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     };
     if let Some(etag) = match_not_modified(
         &etags,
+        warehouse_id,
         event_ctx
             .resolved()
             .table
@@ -229,6 +230,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         storage_credentials,
         etag: metadata_location_ref.as_ref().map(|loc| {
             TableETag::new(
+                warehouse_id,
                 loc.as_str(),
                 response_shape,
                 credentials_revalidate_after_ms,
@@ -315,13 +317,14 @@ fn require_not_staged<T>(
 /// received.
 fn match_not_modified(
     client_etags: &[ETag],
+    warehouse_id: WarehouseId,
     metadata_location: Option<&str>,
     shape: TableResponseShape,
     now_ms: i64,
     vends_credentials: bool,
 ) -> Option<ETag> {
     let metadata_location = metadata_location?;
-    let current = TableETag::new(metadata_location, shape, None);
+    let current = TableETag::new(warehouse_id, metadata_location, shape, None);
 
     for client in client_etags {
         let value = client.as_str();
@@ -415,6 +418,12 @@ mod etag_tests {
         )
     }
 
+    /// Fixed: the tag is scoped to a warehouse, and every helper here uses the
+    /// same one so a mismatch means a real shape difference.
+    fn wh() -> WarehouseId {
+        WarehouseId::new(uuid::uuid!("019bbf1a-0000-7000-8000-0000000000a1"))
+    }
+
     /// Build a client-supplied `ETag` for a given shape, in the form
     /// `parse_etags` yields. `revalidate_after` = `None` for a metadata-only
     /// cached response.
@@ -423,7 +432,7 @@ mod etag_tests {
         shape: TableResponseShape,
         revalidate_after: Option<i64>,
     ) -> ETag {
-        as_client_etag(&TableETag::new(loc, shape, revalidate_after).into_etag())
+        as_client_etag(&TableETag::new(wh(), loc, shape, revalidate_after).into_etag())
     }
 
     /// The shape a client echoes back: the wire value with the weak marker and
@@ -438,7 +447,7 @@ mod etag_tests {
     }
 
     fn matches_repr(etags: &[ETag], shape: TableResponseShape, vends_credentials: bool) -> bool {
-        match_not_modified(etags, Some(LOC), shape, NOW, vends_credentials).is_some()
+        match_not_modified(etags, wh(), Some(LOC), shape, NOW, vends_credentials).is_some()
     }
 
     fn matches(etags: &[ETag], vends_credentials: bool) -> bool {
@@ -454,9 +463,9 @@ mod etag_tests {
 
     #[test]
     fn unparseable_etag_triggers_reload() {
-        // A pre-upgrade bare-hash ETag (or any non-`lk1` value) can't be parsed,
+        // A pre-upgrade bare-hash ETag (or any non-`lk2` value) can't be parsed,
         // so it never yields a 304. The client reloads once and re-primes.
-        let legacy = ETag::from(TableETag::new(LOC, all(), None).hash());
+        let legacy = ETag::from(TableETag::new(wh(), LOC, all(), None).hash());
         assert!(!matches(&[legacy], false));
         assert!(!matches(&[ETag::from("not-our-etag")], false));
     }
@@ -470,7 +479,7 @@ mod etag_tests {
 
     #[test]
     fn no_match_when_metadata_location_absent() {
-        assert!(match_not_modified(&[ETag::from("*")], None, all(), NOW, false).is_none());
+        assert!(match_not_modified(&[ETag::from("*")], wh(), None, all(), NOW, false).is_none());
     }
 
     #[test]
@@ -491,6 +500,7 @@ mod etag_tests {
                 assert!(
                     match_not_modified(
                         std::slice::from_ref(&etag),
+                        wh(),
                         Some(LOC),
                         all(),
                         check_now,
@@ -524,7 +534,7 @@ mod etag_tests {
     #[test]
     fn credential_load_rejects_unparseable_and_wildcard() {
         // Unparseable ETag and wildcard carry no revalidation point → reload.
-        let legacy = ETag::from(TableETag::new(LOC, all(), None).hash());
+        let legacy = ETag::from(TableETag::new(wh(), LOC, all(), None).hash());
         assert!(!matches(&[legacy], true));
         assert!(!matches(&[ETag::from("*")], true));
     }
@@ -661,7 +671,7 @@ mod etag_tests {
     fn commit_etag_does_not_satisfy_a_delegated_load() {
         // A commit response carries `config: None`, which no load reproduces, so
         // its tag must not 304 a load that expects storage config.
-        let commit = as_client_etag(&super::super::etag::commit_etag(LOC));
+        let commit = as_client_etag(&super::super::etag::commit_etag(wh(), LOC));
         assert!(!matches(std::slice::from_ref(&commit), false));
         assert!(!matches_repr(&[commit], refs(), false));
     }
@@ -671,14 +681,14 @@ mod etag_tests {
         // `If-None-Match: *` carries no representation, so the tag we echo must be
         // the one for the body this request would have produced. Echoing the
         // default here would hand the client an `all` tag for a `refs` body.
-        let echoed = match_not_modified(&[ETag::from("*")], Some(LOC), refs(), NOW, false)
+        let echoed = match_not_modified(&[ETag::from("*")], wh(), Some(LOC), refs(), NOW, false)
             .expect("wildcard should 304 when no credentials are vended");
         // Compare against the quoted wire form — `client_etag_for` yields the
         // unquoted shape a client echoes back, which is not what we emit.
-        assert_eq!(echoed, TableETag::new(LOC, refs(), None).into_etag());
+        assert_eq!(echoed, TableETag::new(wh(), LOC, refs(), None).into_etag());
         assert_ne!(
             echoed,
-            TableETag::new(LOC, all(), None).into_etag(),
+            TableETag::new(wh(), LOC, all(), None).into_etag(),
             "wildcard echoed the default representation instead of the requested one"
         );
         // That echoed tag must then be accepted for `refs` and rejected for `all`.
@@ -689,6 +699,39 @@ mod etag_tests {
             false
         ));
         assert!(!matches_repr(&[echoed_bare], all(), false));
+    }
+
+    /// The defect the warehouse-id axis exists for, asserted at the decision
+    /// level rather than only on the hash. Every other helper here shares one
+    /// warehouse — correctly, so that a differing id cannot mask a shape bug —
+    /// which is exactly why this case needs its own test.
+    ///
+    /// `vends_credentials` is true with an open revalidation window on purpose:
+    /// that neuters the credential gate, so only the warehouse axis can refuse.
+    #[test]
+    fn no_304_across_warehouses_at_the_same_location() {
+        let other = WarehouseId::new(uuid::uuid!("f1000000-0000-7000-8000-00000000000f"));
+        let cached_a =
+            as_client_etag(&TableETag::new(wh(), LOC, all(), Some(NOW + 60_000)).into_etag());
+
+        assert!(
+            match_not_modified(
+                std::slice::from_ref(&cached_a),
+                other,
+                Some(LOC),
+                all(),
+                NOW,
+                true
+            )
+            .is_none(),
+            "304'd warehouse B's load from warehouse A's ETag"
+        );
+        // Same tag, its own warehouse: still a 304, so the refusal above is the
+        // warehouse axis and not the window.
+        assert!(
+            match_not_modified(&[cached_a], wh(), Some(LOC), all(), NOW, true).is_some(),
+            "the tag must still match its own warehouse"
+        );
     }
 
     #[test]
