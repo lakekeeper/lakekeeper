@@ -1367,7 +1367,10 @@ pub mod tests {
 
     use lakekeeper::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
-        service::{CachePolicy, CatalogNamespaceOps, Transaction as _},
+        service::{
+            CachePolicy, CatalogNamespaceOps, Transaction as _,
+            is_same_namespace_path_ignoring_ascii_case,
+        },
     };
 
     use super::{
@@ -3479,6 +3482,86 @@ pub mod tests {
             "callers rely on is_noop() to skip event emission"
         );
         assert!(!moved.changed_parent());
+    }
+
+    /// Guards the approximation in `is_same_namespace_path_ignoring_ascii_case` against the *live* collation.
+    ///
+    /// That helper decides whether a move re-parents a namespace, using ASCII case folding as a stand-in for
+    /// how Postgres compares `namespace_name`. The two need not agree in both directions. When the
+    /// database considers two paths equal and `UniCase` does not, a move is refused that could have
+    /// been allowed — annoying, safe. The reverse is the dangerous one: if `UniCase` says "same"
+    /// where the database says "different", the paths name *different* parents, and the
+    /// storage-layout guard would wave through a genuine re-parent and desync locations.
+    ///
+    /// So the invariant is one-directional — unicase-equal must imply collation-equal. A migration
+    /// that made the collation stricter, case-sensitive being the obvious way, breaks it here
+    /// rather than silently weakening the guard.
+    ///
+    /// The probe table copies its column type *and collation* from the real `namespace` table with
+    /// `CREATE TABLE AS ... LIMIT 0`, so it tracks the migration instead of restating it. All
+    /// queries run on one connection because a temp table belongs to its connection.
+    #[sqlx::test]
+    async fn test_namespace_path_comparison_is_no_looser_than_the_collation(pool: sqlx::PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+
+        sqlx::query(
+            "CREATE TEMP TABLE collation_probe AS
+             SELECT 0::int AS i, namespace_name AS a, namespace_name AS b
+             FROM namespace LIMIT 0",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        // Straddling the boundary on purpose: plain case, non-ASCII case, accents, a ligature,
+        // ignorable characters, sharp s, dotless i, prefix-similar names, differing depth.
+        let pairs: Vec<(Vec<String>, Vec<String>)> = vec![
+            (vec!["parent".into()], vec!["PARENT".into()]),
+            (vec!["a".into(), "b".into()], vec!["A".into(), "B".into()]),
+            (vec!["ärger".into()], vec!["ÄRGER".into()]),
+            (vec!["türkçe".into()], vec!["TÜRKÇE".into()]),
+            (vec!["straße".into()], vec!["STRASSE".into()]),
+            (vec!["straße".into()], vec!["STRAßE".into()]),
+            (vec!["resume".into()], vec!["résumé".into()]),
+            (vec!["ﬁle".into()], vec!["file".into()]),
+            (vec!["a\u{200d}b".into()], vec!["ab".into()]),
+            (vec!["sun\u{ad}day".into()], vec!["sunday".into()]),
+            (vec!["ıstanbul".into()], vec!["Istanbul".into()]),
+            (vec!["child_7".into()], vec!["child_7x".into()]),
+            (vec!["a".into()], vec!["a".into(), "b".into()]),
+        ];
+
+        for (i, (left, right)) in pairs.iter().enumerate() {
+            sqlx::query("INSERT INTO collation_probe (i, a, b) VALUES ($1, $2, $3)")
+                .bind(i32::try_from(i).unwrap())
+                .bind(left)
+                .bind(right)
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+        }
+
+        let collation: Vec<(i32, bool)> =
+            sqlx::query_as("SELECT i, (a = b) FROM collation_probe ORDER BY i")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(collation.len(), pairs.len(), "every pair must be probed");
+
+        let mut looser = Vec::new();
+        for (i, collation_same) in collation {
+            let (left, right) = &pairs[usize::try_from(i).unwrap()];
+            if is_same_namespace_path_ignoring_ascii_case(left, right) && !collation_same {
+                looser.push(format!("{left:?} vs {right:?}"));
+            }
+        }
+
+        assert!(
+            looser.is_empty(),
+            "is_same_namespace_path_ignoring_ascii_case is looser than the database collation for these \
+             paths, so the storage-layout guard could miss a real re-parent:\n  {}",
+            looser.join("\n  ")
+        );
     }
 
     /// Helper: the id of a namespace by its exact stored path.

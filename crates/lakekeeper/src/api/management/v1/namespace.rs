@@ -16,6 +16,7 @@ use crate::{
             CatalogWarehouseAction, NamespaceParent,
         },
         events::{APIEventContext, context::ResolvedNamespace},
+        is_same_namespace_path_ignoring_ascii_case,
     },
 };
 
@@ -199,8 +200,41 @@ fn ensure_storage_layout_permits_move(
     previous_ident: &NamespaceIdent,
     destination: &NamespaceIdent,
 ) -> Result<()> {
+    // Both sides are compared as *paths*, and the two sides are not the same kind of thing —
+    // which is what makes the comparison below look odder than it is.
+    //
+    // `previous_ident.parent()` is the source's own stored path minus its leaf, not a lookup of
+    // the parent row. That is sound because `move_namespace` writes the parent's stored spelling
+    // as the child's prefix, so a child's prefix always byte-matches its parent's name. (The
+    // hierarchy does carry the parent row, but there is no need to reach for it.)
+    //
+    // The destination side has no row to compare against yet: it is still only the path the caller
+    // asked for. Resolving it to a namespace needs a lookup under lock, which is the storage
+    // layer's job — this guard runs before the transaction opens, deliberately, so it can reject a
+    // structurally impossible move without doing any work. Hence path-vs-path.
+    //
+    // That asymmetry is why casing matters here at all: one side is canonical, the other is
+    // whatever the caller typed. The leaf and the ancestors then need opposite treatment.
+    //
+    // The leaf *is* the namespace's name, so changing only its casing is a real rename — and for
+    // a template containing `{name}` it really does change the rendered directory. It must count,
+    // so it is compared byte-exactly.
+    //
+    // The ancestors are a lookup key: the destination's parent is resolved under the
+    // case-insensitive collation, and `unique_namespace_per_warehouse` makes two collation-equal
+    // paths impossible, so `["PARENT"]` and `["parent"]` are necessarily the same row. Comparing
+    // them byte-wise would report a re-parent the catalog does not have, and on a `Full` layout
+    // that turns a request which changes nothing into a 400.
     let renamed = previous_ident.as_ref().last() != destination.as_ref().last();
-    let reparented = previous_ident.parent() != destination.parent();
+    let reparented = match (previous_ident.parent(), destination.parent()) {
+        (None, None) => false,
+        (Some(previous_parent), Some(new_parent)) => !is_same_namespace_path_ignoring_ascii_case(
+            previous_parent.as_ref(),
+            new_parent.as_ref(),
+        ),
+        // One is at the warehouse root and the other is not.
+        _ => true,
+    };
     if let Some(layout) = warehouse.storage_profile.layout()
         && layout.move_desyncs_location(renamed, reparented)
     {
@@ -407,7 +441,11 @@ where
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- STORAGE LAYOUT -------------------
-        ensure_storage_layout_permits_move(&warehouse, namespace.namespace_ident(), &destination)?;
+        // `canonical_ident`, not `namespace_ident`: the latter carries the casing of whichever
+        // request produced this hierarchy. It is the stored casing today because this endpoint
+        // resolves the namespace by id, but comparing against it would make the guard depend on
+        // that fact.
+        ensure_storage_layout_permits_move(&warehouse, namespace.canonical_ident(), &destination)?;
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse,

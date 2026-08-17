@@ -1870,6 +1870,71 @@ async fn test_move_namespace_refused_for_hierarchy_deriving_storage_layout(pool:
     assert_eq!(err.error.r#type, "StorageLayoutForbidsNamespaceMove");
 }
 
+/// The restriction above keys on whether the namespace is re-parented. A destination that spells an
+/// ancestor with different casing re-parents nothing — the parent is matched case-insensitively and
+/// two collation-equal paths cannot both exist, so it names the same parent row. Comparing the
+/// paths byte-wise would report a re-parent and reject a request that changes nothing, and only on
+/// hierarchy-deriving layouts, so the same request would behave differently per warehouse.
+#[sqlx::test]
+async fn test_move_namespace_ancestor_case_only_allowed_on_hierarchy_deriving_layout(pool: PgPool) {
+    use lakekeeper::service::storage::{
+        MemoryProfile, StorageProfile, storage_layout::StorageLayout,
+    };
+
+    let mut profile = MemoryProfile::default();
+    profile.storage_layout = Some(
+        StorageLayout::try_new_full("{name}-{uuid}".to_string(), "{uuid}".to_string()).unwrap(),
+    );
+    let storage_profile: StorageProfile = profile.into();
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile)
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    create_ns(&ctx, warehouse_id, &["p1"]).await;
+    let movable = create_ns(&ctx, warehouse_id, &["p1", "movable"]).await;
+
+    let response = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["P1", "movable"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("an ancestor-case-only destination re-parents nothing and must not be refused");
+
+    assert_eq!(
+        response.namespace,
+        ns_ident(&["p1", "movable"]),
+        "the stored path must be unchanged, with the parent's own casing"
+    );
+
+    // A genuine rename on the same layout is still refused when the template contains `{name}`.
+    let err = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["p1", "renamed"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "StorageLayoutForbidsNamespaceMove");
+}
+
 /// The default layout emits no namespace directories at all, so the restriction above must
 /// not fire for it — otherwise the feature would be unusable on ordinary warehouses.
 #[sqlx::test]

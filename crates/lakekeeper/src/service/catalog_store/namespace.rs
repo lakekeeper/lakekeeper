@@ -220,6 +220,17 @@ impl NamespaceHierarchy {
         self.namespace.namespace_ident()
     }
 
+    /// Returns the canonical (stored) ident, ignoring any user-requested case overlay.
+    ///
+    /// Prefer this over [`Self::namespace_ident`] whenever the ident is compared against
+    /// something else, rather than echoed back to the caller: `namespace_ident` may carry the
+    /// casing of whichever request produced this hierarchy, so comparisons against it silently
+    /// depend on how the namespace was looked up.
+    #[must_use]
+    pub fn canonical_ident(&self) -> &NamespaceIdent {
+        self.namespace.canonical_ident()
+    }
+
     /// Returns a copy of this hierarchy with the user's requested case applied to
     /// the leaf and every parent level. Each level gets a prefix of `user_ident`
     /// corresponding to its depth.
@@ -1315,3 +1326,83 @@ where
 }
 
 impl<T> CatalogNamespaceOps for T where T: CatalogStore {}
+
+/// Whether two namespace paths are the same **as far as this comparison can tell**.
+///
+/// Not a statement that they are the same namespace, only that they compare equal ignoring ASCII
+/// case — an approximation of how the catalog compares them.
+///
+/// The catalog matches `namespace_name` under the `case_insensitive` ICU collation
+/// (`und-u-ks-level2`, non-deterministic), so paths differing only in case cannot both exist and
+/// always name the same row. This comparison folds **ASCII** case only, which is deliberately
+/// narrower.
+///
+/// The direction matters. Callers use this to decide whether a move re-parents a namespace, so
+/// saying "same" when the database would say "different" is dangerous: the paths would name
+/// different parents and the storage-layout guard would wave through a genuine re-parent. Saying
+/// "different" when the database says "same" merely refuses a move that could have been allowed.
+///
+/// ASCII folding can only err in the safe direction, because a case-insensitive collation
+/// necessarily agrees about ASCII case. Richer folding does not: `unicase`, for instance, maps
+/// `ß` to `ss` and would call `straße` and `STRASSE` equal, while this collation calls them
+/// different — and since it does, both can exist as separate namespaces.
+///
+/// `test_namespace_path_comparison_is_no_looser_than_the_collation` in
+/// `lakekeeper-storage-postgres` pins that direction against the live collation, so a migration
+/// that changed it fails there rather than silently weakening the guard.
+#[must_use]
+pub fn is_same_namespace_path_ignoring_ascii_case(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(l, r)| l.eq_ignore_ascii_case(r))
+}
+
+#[cfg(test)]
+mod namespace_path_comparison_tests {
+    use super::is_same_namespace_path_ignoring_ascii_case as same_path;
+
+    fn path(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(ToString::to_string).collect()
+    }
+
+    /// The catalog cannot hold two paths differing only in ASCII case, so such paths always name
+    /// the same namespace and this comparison has to agree.
+    #[test]
+    fn ignores_ascii_case() {
+        assert!(same_path(&path(&["parent"]), &path(&["PARENT"])));
+        assert!(same_path(&path(&["a", "b", "c"]), &path(&["A", "b", "C"])));
+        // Non-ASCII characters are compared as-is, so a name whose only non-ASCII character is
+        // identical in both still matches on its ASCII letters.
+        assert!(same_path(&path(&["stra\u{df}e"]), &path(&["STRA\u{df}E"])));
+    }
+
+    #[test]
+    fn separates_different_namespaces() {
+        assert!(!same_path(&path(&["parent"]), &path(&["other"])));
+        // Different depth is a different place in the hierarchy.
+        assert!(!same_path(&path(&["a"]), &path(&["a", "b"])));
+        // Prefix-similar but distinct.
+        assert!(!same_path(&path(&["child_7"]), &path(&["child_7x"])));
+        // Accents are significant under `und-u-ks-level2`, and must be here too.
+        assert!(!same_path(&path(&["resume"]), &path(&["r\u{e9}sum\u{e9}"])));
+    }
+
+    /// Deliberately conservative: the collation folds non-ASCII case, this does not. Reporting a
+    /// difference the catalog does not have only refuses a move that could have been allowed,
+    /// whereas the reverse would let a real re-parent past the storage-layout guard.
+    #[test]
+    fn errs_toward_difference_for_non_ascii_case() {
+        assert!(!same_path(&path(&["\u{e4}rger"]), &path(&["\u{c4}RGER"])));
+        // The sharp-s case that makes richer folding unsafe here: this collation treats
+        // `stra\u{df}e` and `STRASSE` as different namespaces, so they may both exist.
+        assert!(!same_path(&path(&["stra\u{df}e"]), &path(&["STRASSE"])));
+    }
+
+    #[test]
+    fn handles_the_root() {
+        assert!(same_path(&[], &[]));
+        assert!(!same_path(&[], &path(&["a"])));
+    }
+}
