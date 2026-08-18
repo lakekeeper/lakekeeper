@@ -73,6 +73,27 @@ impl From<bool> for AuthorizationDecision {
 /// Enum-tagged so new producers (restriction-profile matched rules, native
 /// OSS-authorizer diagnostics) add a variant without breaking existing audit
 /// consumers.
+///
+/// # Optional fields: path 3 of 3 — key present, value `null`
+///
+/// `name`, `source` and `reason` are emitted **unconditionally**: `valuable-derive`
+/// supports only `rename`, `transparent` and unconditional `skip`
+/// (`valuable-derive-0.1.1/src/attr.rs:10-38`) — there is no `skip_serializing_if`
+/// equivalent — so the derive visits every field and `None` becomes JSON `null` via
+/// `impl Valuable for Option<T>`.
+///
+/// The audit record's other two optional-field paths, both in
+/// [`crate::service::events::backends::audit`]:
+///
+/// - **Top-level `tracing` field** — `user_agent_value`: also `null`, but because the
+///   field is always recorded rather than because a derive forced it. Same outcome by
+///   coincidence, not by design.
+/// - **Hand-written `visit`** — `Authorization::visit`: the key is **omitted** when
+///   `None`. This is the path that disagrees.
+///
+/// So a consumer cannot infer from one field how another behaves. Unifying the three
+/// is an `audit_format` 2.0 candidate — see the audit-log section of
+/// `docs/docs/developer-guide.md`.
 #[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
 pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based

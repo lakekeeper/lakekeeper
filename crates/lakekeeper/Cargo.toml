@@ -129,3 +129,10 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+[lints.rust]
+# `tracing_unstable` is set repo-wide in `.cargo/config.toml` and in CI. Declare it
+# so `#[cfg(not(tracing_unstable))]` in the audit backend — which turns a missing
+# cfg into a clear message instead of a confusing "cannot find function" error —
+# does not itself trip `unexpected_cfgs`. CI builds with `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tracing_unstable)'] }

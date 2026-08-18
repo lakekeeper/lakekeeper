@@ -40,7 +40,7 @@ LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 
 ## Log Types
 
-Lakekeeper produces three types of logs, distinguished by the `event_source` field:
+Lakekeeper produces four types of logs, distinguished by the `event_source` field:
 
 ### 1. Audit Logs {#audit-logs}
 
@@ -49,6 +49,33 @@ Authorization events tracking access to catalog resources. **Contains PII** (use
 **Identified by:** `"event_source": "audit"`
 
 Audit logs cover two distinct schemas depending on the source of the event:
+
+#### Format version and stability {#audit-format}
+
+Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` string. It is emitted unconditionally on every audit record, in every configuration.
+
+`event_source` and `audit_format` are stable contracts. `event_source: "audit"` will not be renamed or repurposed, and `audit_format` will not change shape or type.
+
+**MINOR** is bumped when fields are added and nothing existing changes. Additive fields may appear at any minor version, so consumers must ignore unknown keys.
+
+**MAJOR** is bumped when an existing field is renamed, retyped, or structurally moved — including a scalar becoming an object, an object becoming an array, or a key changing case or separator. Every major bump is called out in the release notes.
+
+Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
+
+##### Not covered by `audit_format`
+
+The following keys are added by the log subscriber (`tracing-subscriber`), not by Lakekeeper's audit code, and are **not** covered by `audit_format`. Their presence, spelling, order and content can change with a dependency upgrade, with no version bump:
+
+- `timestamp`
+- `level`
+- `message`
+- `target`
+- `span`
+- `spans`
+- `filename`
+- `line_number`
+
+Under the default binary configuration `span` is suppressed and `filename` / `line_number` appear only when extended debug logs are enabled. Note also that `message` precedes `event_source` in the flattened output. Do not build detection or routing rules on any of these keys — match on `event_source` instead.
 
 #### Authorization Events
 
@@ -88,7 +115,7 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 {"actor_type": "principal", "principal": "oidc~user@example.com"}
 
 // Assumed role
-{"actor_type": "assumed-role", "principal": "oidc~user@example.com", "assumed_role": "role-id"}
+{"actor_type": "assumed-role", "principal": "oidc~user@example.com", "assumed_role": {"role_id": "…", "provider_id": "…", "source_id": "…"}}
 
 // Internal system
 {"actor_type": "lakekeeper-internal"}
@@ -655,7 +682,20 @@ HTTP error responses returned to clients. **Does not contain PII.**
 
 **Note:** For 5xx errors, the `stack` and `source` fields are logged but hidden from the HTTP response body for security.
 
-### 3. General Application Logs
+### 3. Validation Check Logs
+
+Internal errors raised while validating a warehouse's storage profile or credentials. Emitted only for 5xx-class failures, and only when the error is not marked to skip logging.
+
+**Identified by:** `"event_source": "validation_check"`
+
+| Field   | Type   | Description                                                             |
+| ------- | ------ | ----------------------------------------------------------------------- |
+| `check` | String | Name of the validation check that failed                                |
+| `error` | String | The underlying error, `Debug`-formatted — not structured, and not a stable contract |
+
+Unlike audit logs, this source carries **no format version** and no stability guarantee: `error` is a `Debug` rendering whose content may change at any release. Use it for support correlation, not for automated parsing.
+
+### 4. General Application Logs
 
 Standard operational and debug logs from Lakekeeper. No `event_source` field.
 

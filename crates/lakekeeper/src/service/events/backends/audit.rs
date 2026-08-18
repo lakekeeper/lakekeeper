@@ -15,6 +15,70 @@ use crate::{
     },
 };
 
+/// Wire-format version of every `event_source = "audit"` record, emitted
+/// unconditionally as the `audit_format` field.
+///
+/// **MAJOR** is bumped when an existing field is renamed, retyped, or structurally
+/// moved — including a scalar becoming an object, an object becoming an array, or a
+/// key changing case or separator.
+///
+/// **MINOR** is bumped when a field is added and nothing existing changes.
+/// Consumers must ignore unknown keys.
+///
+/// Consumers must split on `'.'` and compare each half as an **integer**. Do not
+/// compare the string lexically: `"1.10"` sorts *before* `"1.9"`.
+///
+/// One counter covers both audit families, authorization and operational. Separate
+/// counters would be worse for the operational family: its `context` is supplied by
+/// whoever calls the exported [`audit_operation`] macro, including crates outside this
+/// repository, so no version stamped here could describe those shapes accurately.
+///
+/// See the audit-log section of `docs/docs/developer-guide.md` for what to do when
+/// the format changes, and `docs/docs/logging.md` for the consumer-facing contract.
+pub const AUDIT_FORMAT: &str = "1.0";
+
+/// Whether `s` is exactly `MAJOR.MINOR`, with at least one digit either side.
+///
+/// Hand-rolled over bytes because the obvious spelling is not const-evaluable:
+/// `AUDIT_FORMAT == "1.0"` fails with E0658 plus "`PartialEq` is not yet stable as a
+/// const trait" (rust-lang/rust#143874). `str::as_bytes`, `while` and integer
+/// arithmetic are all permitted in a `const fn`.
+const fn is_major_minor(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut dots = 0usize;
+    let mut digits_in_part = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            // A dot with no digits before it (".0") or a second dot ("1.0.0") is
+            // not `MAJOR.MINOR`.
+            b'.' => {
+                if digits_in_part == 0 || dots == 1 {
+                    return false;
+                }
+                dots += 1;
+                digits_in_part = 0;
+            }
+            b'0'..=b'9' => digits_in_part += 1,
+            _ => return false,
+        }
+        i += 1;
+    }
+    // Exactly one dot, and the minor part is non-empty ("1." is rejected).
+    dots == 1 && digits_in_part > 0
+}
+
+// `const _: () = …` forces evaluation at COMPILE time; the `_` name means the item is
+// never referenced, so it exists purely so that a failed assert fails the build.
+// This pins the *shape* of the version string only — it cannot check that the value
+// is correct, because a const panic message must be a literal `&'static str`
+// (a computed one is `error[E0015]: cannot call non-const formatting macro in
+// constants`). Correctness is the job of the golden fixtures.
+const _: () = assert!(
+    is_major_minor(AUDIT_FORMAT),
+    "AUDIT_FORMAT must be `MAJOR.MINOR`, e.g. \"1.0\""
+);
+
 /// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
 /// `Listable` for it without an orphan-rule violation. Borrowed because the
 /// audit emit path holds the Vec via `Arc`.
@@ -43,6 +107,24 @@ impl Valuable for Authorization {
         Value::Mappable(self)
     }
 
+    /// # Optional fields: path 2 of 3 — key **omitted**
+    ///
+    /// `id`, `for-principal` and `allowed` are skipped entirely when `None`, and
+    /// `determined_by` when empty, so those keys are **absent** from the JSON rather
+    /// than `null`. [`Mappable::size_hint`] below counts the same four conditions by
+    /// hand and must be kept in step with this body.
+    ///
+    /// The record's other two optional-field paths both emit `null` instead — this is
+    /// the one that disagrees:
+    ///
+    /// - **Top-level `tracing` field** — [`user_agent_value`] in this file: always
+    ///   recorded; `None` becomes `null` via `impl Valuable for Option<T>`.
+    /// - **Derived `Valuable`** — [`DeterminingFactor`] in
+    ///   [`crate::service::authz::decision`]: always recorded, because
+    ///   `valuable-derive` has no conditional skip.
+    ///
+    /// Unifying the three is an `audit_format` 2.0 candidate — see the audit-log
+    /// section of `docs/docs/developer-guide.md`.
     fn visit(&self, visit: &mut dyn Visit) {
         if let Some(id) = &self.id {
             visit.visit_entry(Value::String("id"), Value::String(id));
@@ -195,6 +277,7 @@ macro_rules! audit_log {
         match (__actions.len() == 1, __entities.entities.len() == 1) {
             (true, true) => tracing::info!(
                 event_source = "audit",
+                audit_format = AUDIT_FORMAT,
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
@@ -202,6 +285,7 @@ macro_rules! audit_log {
             ),
             (true, false) => tracing::info!(
                 event_source = "audit",
+                audit_format = AUDIT_FORMAT,
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
@@ -209,6 +293,7 @@ macro_rules! audit_log {
             ),
             (false, true) => tracing::info!(
                 event_source = "audit",
+                audit_format = AUDIT_FORMAT,
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
@@ -216,6 +301,7 @@ macro_rules! audit_log {
             ),
             (false, false) => tracing::info!(
                 event_source = "audit",
+                audit_format = AUDIT_FORMAT,
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
@@ -226,11 +312,34 @@ macro_rules! audit_log {
 }
 
 /// The `User-Agent` header for the `user_agent` audit field, or `None` when the
-/// caller sent none — which `valuable` renders as JSON `null`.
+/// caller sent none.
 ///
 /// Recorded verbatim and **unverified**: any caller can set the header to any
 /// value, including one naming another client. `actor` and `privilege_source`
 /// are the authenticated facts on the same event.
+///
+/// # Optional fields: path 1 of 3 — key present, value `null`
+///
+/// This is a top-level `tracing` field, so it is always recorded. `None` reaches the
+/// wire through `impl Valuable for Option<T>`, which maps it to `Value::Unit`
+/// (`valuable-0.1.1/src/valuable.rs:253-259`) and thence to JSON `null`. A consumer
+/// therefore always sees the `user_agent` key.
+///
+/// The audit record has two other optional-field paths, and only one of them agrees:
+///
+/// - **Hand-written `visit`** — [`Authorization::visit`] in this file: the key is
+///   **omitted** entirely when `None`. Affects `id`, `for-principal` and `allowed`.
+///   This is the path that disagrees.
+/// - **Derived `Valuable`** — [`DeterminingFactor`] in
+///   [`crate::service::authz::decision`]: also `null`, but for a different reason:
+///   `valuable-derive` has no conditional skip, so it visits every field
+///   unconditionally. Same outcome by coincidence, not by design — a change that
+///   unifies one will not automatically unify the other.
+///
+/// Net effect for consumers: *absent* and *`null`* both mean "not recorded", and
+/// which one you get depends on where in the record the field sits, so no field's
+/// behaviour can be inferred from another's. Unifying the three is an `audit_format`
+/// 2.0 candidate — see the audit-log section of `docs/docs/developer-guide.md`.
 fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
 }
@@ -613,6 +722,7 @@ macro_rules! audit_operation {
     ) => {
         $crate::tracing::info!(
             event_source = "audit",
+            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
             operation = $op,
             actor = $crate::tracing::field::valuable(&$actor),
             outcome = $outcome,
@@ -628,6 +738,7 @@ macro_rules! audit_operation {
     ) => {
         $crate::tracing::info!(
             event_source = "audit",
+            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
             operation = $op,
             actor = $crate::tracing::field::valuable(&$actor),
             outcome = $outcome,
@@ -676,24 +787,71 @@ mod tests {
         }
     }
 
-    /// Render one audit event through the same JSON formatter the binary
-    /// configures (`lakekeeper-bin`'s `main`), and return it parsed.
-    fn emit_and_capture(event: AuthorizationSucceededEvent) -> serde_json::Value {
+    /// Render audit events through the same JSON formatter the binary configures
+    /// (`crates/lakekeeper-bin/src/main.rs`), and return the parsed lines.
+    ///
+    /// Generic over the emitting call so the whole audit surface is reachable:
+    /// [`EventListener::authorization_succeeded`],
+    /// [`EventListener::authorization_failed`] and
+    /// [`EventListener::grants_changed`].
+    ///
+    /// Returns a `Vec` because `grants_changed` emits one record *per grant
+    /// triple*, not one per call. Use [`emit_and_capture_one`] where exactly one
+    /// record is expected.
+    fn emit_and_capture<F, Fut>(emit: F) -> Vec<serde_json::Value>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
         let logs = CapturedLogs::default();
+        // Mirrors the binary's subscriber. Every setting is pinned deliberately,
+        // including those that match today's defaults, so a `tracing-subscriber`
+        // upgrade that changes a default breaks this line rather than silently
+        // rewriting what every test sees.
         let subscriber = tracing_subscriber::fmt()
             .json()
             .flatten_event(true)
+            // Production sets this; `Json::default()` leaves it `true`. Without it
+            // the helper renders a `span` object the binary never emits — harmless
+            // while no span is active, wrong the moment a test runs under one (and
+            // production always does: the router installs a request span).
+            .with_current_span(false)
+            .with_span_list(true)
+            // Production gates these on `CONFIG_BIN.debug.extended_logs`, i.e. off
+            // by default. Pin them off so this file's own line numbers can never
+            // leak into a captured record.
+            .with_file(false)
+            .with_line_number(false)
             .with_writer(logs.clone())
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            futures::executor::block_on(AuditEventListener.authorization_succeeded(event))
-                .expect("emitting an audit event must not fail");
+            futures::executor::block_on(emit()).expect("emitting an audit event must not fail");
         });
 
         let bytes = logs.0.lock().expect("log buffer poisoned").clone();
-        let line = String::from_utf8(bytes).expect("log output must be utf-8");
-        serde_json::from_str(line.trim()).expect("log line must be valid json")
+        let text = String::from_utf8(bytes).expect("log output must be utf-8");
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("log line must be valid json"))
+            .collect()
+    }
+
+    /// [`emit_and_capture`] for the case where exactly one record is expected.
+    #[track_caller]
+    fn emit_and_capture_one<F, Fut>(emit: F) -> serde_json::Value
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        let mut records = emit_and_capture(emit);
+        assert_eq!(
+            records.len(),
+            1,
+            "expected exactly one audit record, got {}",
+            records.len()
+        );
+        records.pop().expect("length asserted above")
     }
 
     fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
@@ -718,11 +876,154 @@ mod tests {
             .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
             .build();
 
-        let event = emit_and_capture(succeeded_event(metadata));
+        let event = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+        });
 
         assert_eq!(
             event.get("user_agent").and_then(serde_json::Value::as_str),
             Some("Apache-Spark/3.5.1 (Scala/2.12)"),
+        );
+    }
+
+    /// The capture helper must render what the binary renders. Nothing else pins
+    /// that, and if it drifts every fixture captured through it silently describes
+    /// a shape production never emits.
+    ///
+    /// `with_current_span(false)` is the setting that is easy to lose, and it is
+    /// only observable while a span is active — which production always is, since
+    /// the router installs a request span around every call.
+    #[test]
+    fn the_capture_helper_omits_envelope_keys_production_omits() {
+        use tracing::Instrument as _;
+
+        let metadata = RequestMetadataTestBuilder::builder().build();
+        let record = emit_and_capture_one(|| {
+            // Built inside the closure, so the span is registered with the capture
+            // subscriber rather than whatever is globally installed, and
+            // `Instrument` makes it current while the future is polled.
+            let span = tracing::info_span!("request");
+            AuditEventListener
+                .authorization_succeeded(succeeded_event(metadata))
+                .instrument(span)
+        });
+
+        assert!(
+            record.get("span").is_none(),
+            "captured record carries a `span` key. Production sets \
+             `.with_current_span(false)` (crates/lakekeeper-bin/src/main.rs), so this \
+             helper must too — otherwise captured fixtures describe a shape the binary \
+             never emits. Got: {record}"
+        );
+    }
+
+    /// Every audit record must declare its wire format version. This covers the
+    /// authorization family, emitted through `audit_log!`.
+    #[test]
+    fn an_authorization_audit_record_declares_its_format_version() {
+        let metadata = RequestMetadataTestBuilder::builder().build();
+
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+        });
+
+        assert_eq!(
+            record
+                .get("audit_format")
+                .and_then(serde_json::Value::as_str),
+            Some(AUDIT_FORMAT),
+            "every audit record must declare its wire format version: {record}"
+        );
+    }
+
+    /// Every audit record must declare its wire format version. This covers the
+    /// operational family, emitted through the `#[macro_export]`ed
+    /// `audit_operation!`.
+    ///
+    /// It is also the only test that exercises the `$crate`-qualified path to
+    /// [`AUDIT_FORMAT`] that the exported macro needs, and the only one that emits
+    /// more than one record per call: `grants_changed` produces one record per grant
+    /// triple, not one per event.
+    #[test]
+    fn operational_audit_records_declare_their_format_version() {
+        let principal = UserOrRoleId::User(
+            crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
+        );
+        let spec = |privilege: &str| crate::service::authz::GrantSpec {
+            principal: principal.clone(),
+            resource: GrantResource::Server,
+            privilege: privilege.to_string(),
+        };
+        let event = GrantsChangedEvent::new(
+            vec![spec("revoked_privilege")],
+            vec![spec("created_privilege")],
+            Arc::new(RequestMetadataTestBuilder::builder().build()),
+        );
+
+        let records = emit_and_capture(|| AuditEventListener.grants_changed(event));
+
+        assert_eq!(
+            records.len(),
+            2,
+            "one record per grant triple — one revoked, one created: {records:?}"
+        );
+        for record in &records {
+            assert_eq!(
+                record
+                    .get("audit_format")
+                    .and_then(serde_json::Value::as_str),
+                Some(AUDIT_FORMAT),
+                "operational audit records must declare the format version too: {record}"
+            );
+        }
+    }
+
+    /// Makes "every audit record declares its format version" a gate rather than a
+    /// convention: every audit emission site in this file must set `audit_format` on
+    /// the following line.
+    ///
+    /// This is a lint that lives in `cargo test` because the repo has no lint
+    /// harness. A runtime test can only cover emission arms it actually exercises,
+    /// and the whole point is to cover the arms nobody thought to write a test for.
+    #[test]
+    fn every_audit_emission_site_carries_the_format_version() {
+        // Reads this file's own source: `include_str!` resolves relative to the
+        // containing file, so `"audit.rs"` is this file.
+        let src = include_str!("audit.rs");
+
+        // Assembled with `concat!`, which joins at compile time, so neither needle
+        // ever appears literally in this file. Written out, the scan would match its
+        // own source and fail against itself.
+        let needle = concat!("event_source", " = ", "\"audit\"");
+        let marker = concat!("audit_format", " =");
+
+        let lines: Vec<&str> = src.lines().collect();
+        let mut sites = 0;
+        for (i, line) in lines.iter().enumerate() {
+            // Skip comments: the doc comment on `AUDIT_FORMAT` quotes the needle,
+            // and future prose may too.
+            if !line.contains(needle) || line.trim_start().starts_with("//") {
+                continue;
+            }
+            sites += 1;
+            let next = lines.get(i + 1).copied().unwrap_or_default();
+            assert!(
+                next.contains(marker),
+                "audit.rs:{} starts an audit emission but line {} does not set \
+                 `audit_format`. Every audit record must declare its wire format \
+                 version. Line {}: {}",
+                i + 1,
+                i + 2,
+                i + 2,
+                next.trim()
+            );
+        }
+
+        assert_eq!(
+            sites, 6,
+            "expected 6 audit emission sites (4 `audit_log!` arity arms, 2 \
+             `audit_operation!` arms), found {sites}. An arm was added or removed — \
+             confirm it declares the format version, then update this count."
         );
     }
 
@@ -733,7 +1034,9 @@ mod tests {
     fn an_audit_event_without_a_user_agent_records_null() {
         let metadata = RequestMetadataTestBuilder::builder().build();
 
-        let event = emit_and_capture(succeeded_event(metadata));
+        let event = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+        });
 
         assert_eq!(
             event.get("user_agent"),

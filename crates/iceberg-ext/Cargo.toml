@@ -43,3 +43,9 @@ lakekeeper-io = { path = "../io", default-features = false, features = [
 ] }
 lazy_static = { workspace = true }
 tokio = { workspace = true }
+
+[lints.rust]
+# See the `compile_error!` in src/lib.rs: `tracing_unstable` is set repo-wide in
+# `.cargo/config.toml` and in CI. Declare it so the guard does not itself trip
+# `unexpected_cfgs` under `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tracing_unstable)'] }
