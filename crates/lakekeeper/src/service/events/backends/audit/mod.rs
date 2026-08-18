@@ -761,8 +761,9 @@ mod tests {
         service::{
             authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
             events::context::{
-                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_TABLE,
-                FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
+                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
+                FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
+                FIELD_NAME_WAREHOUSE_ID,
             },
         },
     };
@@ -1045,6 +1046,37 @@ mod tests {
             .build()
     }
 
+    /// A create action, carrying the client-requested name and id.
+    fn fixture_create_table_action() -> ActionDescriptor {
+        ActionDescriptor::builder()
+            .action_name("create_table")
+            .context_string("name", "orders")
+            .context_string("table_id", FIXTURE_TABLE_ID)
+            .build()
+    }
+
+    /// A drop action. `force` and `purge` are emitted only when the client asked for
+    /// them, so their presence here pins the "true" form and their absence elsewhere
+    /// pins the other.
+    fn fixture_drop_action() -> ActionDescriptor {
+        ActionDescriptor::builder()
+            .action_name("drop")
+            .context_string("force", "true")
+            .context_string("purge", "true")
+            .build()
+    }
+
+    /// A warehouse entity carrying `project-id`, which real requests emit and the other
+    /// fixtures do not.
+    fn fixture_warehouse_entity() -> EntityDescriptor {
+        EntityDescriptor::new("warehouse")
+            .field(
+                FIELD_NAME_PROJECT_ID,
+                &"00000000-0000-0000-0000-000000000000",
+            )
+            .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
+    }
+
     /// The simplest per-decision entry: no id, no `for-principal`, no
     /// `determined_by`. Pins which keys are omitted rather than emitted as null.
     fn fixture_plain_authorization() -> Authorization {
@@ -1124,6 +1156,7 @@ mod tests {
         "authz_succeeded_actions_entity",
         "authz_failed_single",
         "authz_failed_context",
+        "authz_succeeded_rich_context",
         "grant_created",
         "grant_revoked",
     ];
@@ -1411,6 +1444,28 @@ mod tests {
         });
 
         assert_matches_fixture("authz_succeeded_actions_entity", &contract_fields(record));
+    }
+
+    /// Action context and entity fields that real traffic emits but the other fixtures
+    /// do not: `name`, `table_id`, `force`, `purge`, and `project-id`.
+    ///
+    /// Added after comparing these fixtures against audit records from a running server,
+    /// which emitted all five. Without a fixture that carries them, nothing checks that
+    /// they stay documented — the documentation test walks the fixtures, so its reach is
+    /// exactly the fixtures' reach.
+    #[test]
+    fn fixture_authz_succeeded_rich_action_context() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::one(fixture_warehouse_entity())),
+                actions: Arc::new(vec![fixture_create_table_action(), fixture_drop_action()]),
+                extra_context: fixture_context(&[]),
+                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_succeeded_rich_context", &contract_fields(record));
     }
 
     /// A denied authorization. Carries `failure_reason` and `error`, which succeeded

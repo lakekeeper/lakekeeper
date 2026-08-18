@@ -86,7 +86,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | Field                  | Type            | Description                       |
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
-| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `name`, `properties`, `updated-properties`, `removed-properties`). See format below. |
+| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
@@ -173,7 +173,7 @@ Which of the following fields appear depends on the entity type and on what the 
 
 When only a single entity is involved it appears as the `entity` field; when several are checked, the `entities` field contains an array.
 
-**Action Format:**
+**Action Format** {#action-format}
 
 Each action is a structured object containing the operation name and optional context about the operation:
 
@@ -192,6 +192,29 @@ When only a single action is involved, it appears as the `action` field. When mu
 
 Commit actions carry two further context fields when the commit names them: `target-refs`, the branch or tag references the commit targets, and `update-kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
 
+
+Which context fields appear depends on the action. A field is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false.
+
+| Context field           | Type   | Emitted by                        | Description                                             |
+|-------------------------|--------|-----------------------------------|---------------------------------------------------------|
+| `name`                  | String | create actions                    | The name the client asked to create                     |
+| `properties`            | Object | create actions                    | Client-supplied properties, verbatim. Keys are arbitrary — this is user data, not part of the audit format |
+| `updated-properties`    | Object | property updates                  | The properties being set, verbatim                      |
+| `removed-properties`    | Array  | property updates                  | The property keys being removed                         |
+| `table_id`              | String | table creation                    | The table id the client requested                       |
+| `generic_table_id`      | String | generic-table creation            | The generic-table id the client requested               |
+| `format`                | String | generic-table creation            | The requested table format                              |
+| `base_location`         | String | generic-table creation            | The requested storage location                          |
+| `project_id`            | String | project creation                  | The project id the client requested                     |
+| `force`                 | String | delete and drop actions           | `"true"` when the client asked to force the operation   |
+| `purge`                 | String | delete and drop actions           | `"true"` when the client asked to purge the data        |
+| `recursive`             | String | delete actions                    | `"true"` when the client asked for a recursive delete   |
+| `target-refs`           | Array  | commits                           | The branch or tag references the commit targets         |
+| `update-kinds`          | Array  | commits                           | The kinds of update the commit contains                 |
+| `requested_provider_id` | String | source-system updates             | The role provider the client named                      |
+| `requested_source_id`   | String | source-system updates             | The source identifier the client named                  |
+
+New context fields may be added at any minor version, so consumers must not assume this list is closed. Note also that the values are client-*requested* inputs: an authorization event records the attempt, so a `table_id` here is what the caller asked for, not necessarily what was created.
 
 **Grant changes (`action_name = "apply_grants"`):**
 
