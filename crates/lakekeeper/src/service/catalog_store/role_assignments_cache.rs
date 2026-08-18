@@ -541,7 +541,7 @@ where
 
     let epoch_before = ROLE_ANCESTORS_EPOCH.load(Ordering::Acquire);
     let loaded = load(missing.clone()).await?;
-    let cacheable = enabled && ROLE_ANCESTORS_EPOCH.load(Ordering::Acquire) == epoch_before;
+    let mut cached_any = false;
 
     for role_id in missing {
         let ancestors = loaded.get(&role_id).ok_or_else(|| {
@@ -549,14 +549,18 @@ where
                 "role-ancestors load returned no entry for {role_id}"
             )))
         })?;
-        if cacheable {
+        // Re-read per insert, not once for the batch: this loop awaits, so a
+        // clear can land between two inserts, and a later insert would then
+        // outlive it and keep revoked nesting for a TTL.
+        if enabled && ROLE_ANCESTORS_EPOCH.load(Ordering::Acquire) == epoch_before {
             ROLE_ANCESTORS_CACHE
                 .insert(role_id, Arc::clone(ancestors))
                 .await;
+            cached_any = true;
         }
         resolved.insert(role_id, Arc::clone(ancestors));
     }
-    if cacheable {
+    if cached_any {
         update_ra_size_metric();
     }
 
