@@ -524,6 +524,56 @@ pub(crate) async fn list_role_assignments_for_user<
     })
 }
 
+// ─── list_role_ancestors ─────────────────────────────────────────────────────
+
+/// Every role `role_id` is a member of, transitively — its own row excluded.
+///
+/// Upward only, and flat: an authorizer needs the whole set at once, and one that expresses
+/// nesting as direct parent links needs it flattened, because a chain broken by a missing
+/// intermediate stops resolving. Excluding the seed row mirrors the shape of the other
+/// closure readers here — the caller already holds the role it asked about.
+///
+/// `UNION` (not `UNION ALL`) makes this terminate on a cyclic graph as well as deduplicate;
+/// cycles are rejected when an edge is written, so that is belt and braces.
+pub(crate) async fn list_role_ancestors<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    role_id: RoleId,
+    connection: E,
+) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+    let rows = sqlx::query!(
+        r#"
+        WITH RECURSIVE ancestors(role_id) AS (
+                SELECT rm.parent_role_id
+                FROM role_membership rm
+                WHERE rm.member_role_id = $1
+            UNION
+                SELECT rm.parent_role_id
+                FROM role_membership rm
+                JOIN ancestors a ON rm.member_role_id = a.role_id
+        )
+        SELECT r.id, r.source_id, r.provider_id, r.project_id
+        FROM ancestors a
+        JOIN "role" r ON r.id = a.role_id
+        "#,
+        *role_id,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AssignedRole {
+            role_id: RoleId::new(row.id),
+            role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
+        })
+        .collect())
+}
+
 // ─── list_role_assignments_for_role ──────────────────────────────────────────
 
 pub(crate) async fn list_role_assignments_for_role<
@@ -3533,6 +3583,56 @@ mod tests {
         assert_eq!(e.parent_role_id, p);
         assert_eq!(e.member_role_id, m);
         assert_eq!(e.max_depth, 0);
+    }
+
+    /// The reader returns the whole upward closure flat, not just the direct parent.
+    ///
+    /// Flat is the point: a consumer that turns these into direct links needs every level,
+    /// because a chain that skips one stops resolving there. The seed role is excluded — the
+    /// caller already has it — and a role nested in nothing yields an empty set rather than
+    /// an error, which is what makes the common case free of special handling.
+    #[sqlx::test]
+    async fn role_ancestors_are_the_whole_chain_flattened(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let grandparent = create_managed_role(&state, &project_id, "grandparent").await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // grandparent has member parent; parent has member leaf.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let ancestors = list_role_ancestors(leaf, &pool).await.unwrap();
+        let ids: HashSet<RoleId> = ancestors.iter().map(|r| r.role_id).collect();
+        assert_eq!(
+            ids,
+            HashSet::from([parent, grandparent]),
+            "both levels above the leaf, and not the leaf itself"
+        );
+
+        // Every entry carries what an external authorizer names a role by.
+        let parent_entry = ancestors
+            .iter()
+            .find(|r| r.role_id == parent)
+            .expect("the direct parent is in the closure");
+        assert_eq!(parent_entry.role_ident.source_id().as_str(), "parent");
+        assert_eq!(parent_entry.project_id.as_ref(), &project_id);
+
+        assert_eq!(
+            list_role_ancestors(grandparent, &pool).await.unwrap().len(),
+            0,
+            "the top of the chain is nested in nothing"
+        );
     }
 
     #[sqlx::test]

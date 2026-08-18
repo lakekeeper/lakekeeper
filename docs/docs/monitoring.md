@@ -23,7 +23,7 @@ Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Members. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Members, and Role Ancestors. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
@@ -31,7 +31,7 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [Admission Gate Metrics](#admission-gate-metrics)). A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [Admission Gate Metrics](#admission-gate-metrics)). A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
 
 Role-membership cache invalidation emits one additional metric:
 
@@ -40,6 +40,8 @@ Role-membership cache invalidation emits one additional metric:
 | <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users whose cached role assignments were invalidated by a single role-to-role membership edge change (`operation`: `add` / `remove`) |
 
 The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
+
+The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. Expect `lakekeeper_cache_size{cache_type="role_ancestors"}` to drop to zero on each such edit and refill on demand. Under the OpenFGA backend it stays at zero, since OpenFGA resolves role nesting from its own tuples and never reads this cache.
 
 ### Role Provider Metrics <span class="lkp"></span>
 

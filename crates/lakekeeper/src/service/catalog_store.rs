@@ -980,6 +980,11 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
+    async fn list_role_ancestors_impl(
+        role_id: RoleId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError>;
+
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
         role_ident: &RoleIdent,

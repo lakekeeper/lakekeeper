@@ -12,7 +12,9 @@ use crate::{
         authn::UserId,
         cache_metrics,
         cache_ttl::JitteredTtl,
-        catalog_store::role_assignment::{ListRoleMembersResult, ListUserRoleAssignmentsResult},
+        catalog_store::role_assignment::{
+            AssignedRole, ListRoleMembersResult, ListUserRoleAssignmentsResult,
+        },
     },
 };
 
@@ -412,6 +414,125 @@ where
 }
 
 // ============================================================================
+// Role ancestors cache  (RoleId → Arc<Vec<AssignedRole>>)
+// ============================================================================
+
+const CACHE_TYPE_RA: &str = "role_ancestors";
+
+/// One entry per role an authorization request has named, holding at most
+/// `CONFIG.role.max_nesting_depth` levels — the write path rejects an edge that would
+/// exceed it. Most roles are nested in nothing, so the common entry is an empty `Vec`:
+/// cheap to hold, and worth holding, since it saves the round-trip that proves it.
+pub(crate) static ROLE_ANCESTORS_CACHE: std::sync::LazyLock<Cache<RoleId, Arc<Vec<AssignedRole>>>> =
+    std::sync::LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(CONFIG.cache.role_ancestors.capacity)
+            .initial_capacity(100)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.role_ancestors.time_to_live_secs,
+            ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.role_ancestors.time_to_live_secs,
+            )))
+            .build()
+    });
+
+async fn role_ancestors_cache_get(role_id: RoleId) -> Option<Arc<Vec<AssignedRole>>> {
+    if !CONFIG.cache.role_ancestors.enabled {
+        return None;
+    }
+    update_ra_size_metric();
+    if let Some(result) = ROLE_ANCESTORS_CACHE.get(&role_id).await {
+        tracing::debug!("Role ancestors for {role_id} found in cache");
+        cache_metrics::record_cache_hit(CACHE_TYPE_RA);
+        Some(result)
+    } else {
+        cache_metrics::record_cache_miss(CACHE_TYPE_RA);
+        None
+    }
+}
+
+/// Drop every entry, because a single membership edge changes the ancestor set of the
+/// member *and* of everything nested beneath it.
+///
+/// Deliberately blunt. Evicting only the affected keys would mean walking the member's
+/// descendant closure — a second recursive query on a write path that already runs one to
+/// find affected users — and clearing more than necessary is never wrong, only wasteful.
+/// Role-membership edits are rare administrative writes, so the lost hit rate is a
+/// worthwhile trade for not having a second closure walk to keep correct. Call it wherever
+/// the membership graph, or the identity of any role in it, changes.
+///
+/// Local to this process. Other replicas keep serving their own entries until TTL, and the
+/// staleness is not symmetric: a *removed* edge stays visible, so a policy written against
+/// the parent role keeps applying to the former member for up to one TTL. That direction is
+/// permissive, which is why the TTL is short rather than generous.
+pub(crate) fn role_ancestors_cache_invalidate_all() {
+    if CONFIG.cache.role_ancestors.enabled {
+        tracing::debug!("Invalidating all role ancestors from cache");
+        ROLE_ANCESTORS_CACHE.invalidate_all();
+        update_ra_size_metric();
+    }
+}
+
+#[inline]
+fn update_ra_size_metric() {
+    cache_metrics::set_cache_size(CACHE_TYPE_RA, ROLE_ANCESTORS_CACHE.entry_count());
+}
+
+/// Single-flight read-through for the role-ancestors cache.
+///
+/// Concurrent misses for one role coalesce onto a single loader run. Unlike the other two
+/// read-throughs there is no per-key invalidation to race with — the only eviction is
+/// [`role_ancestors_cache_invalidate_all`], which is a whole-cache operation — so this uses
+/// `try_get_with` rather than the compute-lock dance those need. A clear landing mid-load
+/// can therefore be followed by that load's insert, leaving one stale entry for up to a TTL;
+/// the same TTL bound already applies to every other replica, so it changes nothing about
+/// the guarantee.
+pub(super) async fn role_ancestors_cache_get_or_load<Fut>(
+    role_id: RoleId,
+    load: Fut,
+) -> Result<Arc<Vec<AssignedRole>>, CatalogBackendError>
+where
+    Fut: std::future::Future<Output = Result<Arc<Vec<AssignedRole>>, CatalogBackendError>> + Send,
+{
+    if !CONFIG.cache.role_ancestors.enabled {
+        return load.await;
+    }
+
+    if let Some(cached) = role_ancestors_cache_get(role_id).await {
+        return Ok(cached);
+    }
+
+    let loaded = ROLE_ANCESTORS_CACHE
+        .entry(role_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok::<_, CatalogBackendError>(Op::Nop);
+            }
+            Ok(Op::Put(load.await?))
+        })
+        .await?;
+    update_ra_size_metric();
+
+    Ok(match loaded {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => entry.into_value(),
+        // Unreachable: the closure only emits `Put` or `Nop` on an existing entry. Re-read
+        // defensively, and fail rather than fall back to an empty set — fewer ancestors is
+        // not a smaller answer, it is a wrong one, and it silently widens access.
+        CompResult::StillNone(_) | CompResult::Removed(_) => {
+            role_ancestors_cache_get(role_id).await.ok_or_else(|| {
+                CatalogBackendError::new_unexpected(std::io::Error::other(
+                    "role-ancestors cache compute returned no entry",
+                ))
+            })?
+        }
+    })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -680,6 +801,52 @@ mod tests {
 
         let cached = user_assignments_cache_get(&user_id).await.unwrap();
         assert_eq!(cached.roles.len(), 1);
+    }
+
+    // ── Role ancestors ────────────────────────────────────────────────────────
+
+    /// The whole-cache clear is what bounds this cache's staleness, so it has to clear
+    /// every key, not the one whose role was named.
+    ///
+    /// One membership edge changes the ancestor set of the member and of everything nested
+    /// beneath it, and the write path does not know which roles those are without a second
+    /// closure walk — which is exactly why the clear is blunt. A clear that only removed
+    /// some keys would leave a removed edge visible, and a policy written against the
+    /// former parent still applying.
+    #[tokio::test]
+    async fn role_ancestors_invalidate_all_clears_every_entry() {
+        let nested = RoleId::new_random();
+        let unrelated = RoleId::new_random();
+        let ancestors = Arc::new(vec![AssignedRole {
+            role_id: RoleId::new_random(),
+            role_ident: test_role_ident("lakekeeper", "parent"),
+            project_id: Arc::new(ProjectId::new_random()),
+        }]);
+
+        ROLE_ANCESTORS_CACHE.insert(nested, ancestors).await;
+        ROLE_ANCESTORS_CACHE
+            .insert(unrelated, Arc::new(vec![]))
+            .await;
+        assert_eq!(
+            role_ancestors_cache_get(nested)
+                .await
+                .expect("just inserted")
+                .len(),
+            1,
+        );
+        assert!(role_ancestors_cache_get(unrelated).await.is_some());
+
+        role_ancestors_cache_invalidate_all();
+        ROLE_ANCESTORS_CACHE.run_pending_tasks().await;
+
+        assert!(
+            role_ancestors_cache_get(nested).await.is_none(),
+            "the named role's ancestors are gone"
+        );
+        assert!(
+            role_ancestors_cache_get(unrelated).await.is_none(),
+            "so are every other role's — an edge change is not scoped to one key"
+        );
     }
 
     /// Two independently-loaded results referencing the same role/project value
