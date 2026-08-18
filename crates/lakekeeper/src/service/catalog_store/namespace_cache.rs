@@ -19,7 +19,9 @@ use crate::{
         NamespaceId, NamespaceWithParent,
         cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
-        catalog_store::namespace::NamespaceHierarchy,
+        catalog_store::namespace::{
+            NamespaceHierarchy, is_same_namespace_path_ignoring_ascii_case,
+        },
     },
 };
 
@@ -268,20 +270,18 @@ pub(super) async fn namespace_cache_get_by_ident(
     // the move and would serve the pre-move path as a *hit*. Compare what we resolved against
     // what was requested and treat a mismatch as the miss it is.
     //
-    // Deliberately ASCII-only case folding: the DB's ICU collation matches more than that, so a
-    // non-ASCII case variant falls through to a DB read rather than being served from cache.
-    // Wrong in the direction of an extra query, never in the direction of a wrong answer.
+    // Shares `is_same_namespace_path_ignoring_ascii_case` with the move guard deliberately: both
+    // ask whether two paths name the same namespace, and both need its conservative direction.
+    // Reporting a difference the catalog does not have costs a DB read here; wrongly reporting a
+    // match would serve exactly the stale hit this check exists to prevent. See that helper for
+    // why the folding is ASCII-only, and the collation drift test that pins it.
     if let Some(hierarchy) = &result {
         // `NAMESPACE_CACHE` stores canonical-case entries with no `requested_ident`, so this is
         // the canonical path.
-        let resolved = hierarchy.namespace_ident().as_ref();
-        let requested = namespace_ident.as_ref();
-        let same_path = resolved.len() == requested.len()
-            && resolved
-                .iter()
-                .zip(requested)
-                .all(|(a, b)| a.eq_ignore_ascii_case(b));
-        if !same_path {
+        if !is_same_namespace_path_ignoring_ascii_case(
+            hierarchy.namespace_ident().as_ref(),
+            namespace_ident.as_ref(),
+        ) {
             tracing::debug!(
                 "Namespace id {namespace_id} no longer answers to {namespace_ident}; retiring the \
                  stale ident mapping"
