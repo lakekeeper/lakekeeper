@@ -487,7 +487,7 @@ _Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
 
 **Role Ancestors Cache**
 
-Caches which roles a role is nested inside, transitively (`RoleId → the roles it is a member of`). Read when a request is authorized for a role rather than a user — a caller who set the `x-assume-role` header, or a role named as the recipient of a grant — so a policy written for a parent role also covers the roles nested in it. Entries hold at most `LAKEKEEPER__ROLE__MAX_NESTING_DEPTH` levels (see [Roles](#roles)) and are usually empty, since most roles are nested in nothing.
+Caches which roles a role is nested inside, transitively (`RoleId → the roles it is a member of`). Read when a request is authorized for a role rather than a user — a caller who set the `x-assume-role` header, or a role named as the recipient of a grant — so a policy written for a parent role also covers the roles nested in it. Most entries are empty, since most roles are nested in nothing. An entry holds every role above the one it is keyed on, which a role with several parents per level can make much larger than `LAKEKEEPER__ROLE__MAX_NESTING_DEPTH` (see [Roles](#roles)) — that setting bounds how deep nesting goes, not how many roles a level holds.
 
 Only authorizers that resolve role nesting from Lakekeeper's own role store use this cache, such as [Cedar](./authorization-cedar.md)<span class="lkp"></span>. The OpenFGA backend keeps role membership in its own tuples and resolves nesting there, so under OpenFGA this cache is never populated and these settings have no effect.
 
@@ -497,7 +497,9 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
 
-Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so with more than one worker a change takes effect within the TTL. The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying. Shorten the TTL if that window is too wide, or set `ENABLED=false` to read from the database every time.
+Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
+
+The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL if the window is too wide, or set `ENABLED=false` to read from the database every time.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 

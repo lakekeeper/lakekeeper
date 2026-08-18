@@ -1,4 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use moka::{
     future::Cache,
@@ -466,9 +473,20 @@ async fn role_ancestors_cache_get(role_id: RoleId) -> Option<Arc<Vec<AssignedRol
 /// staleness is not symmetric: a *removed* edge stays visible, so a policy written against
 /// the parent role keeps applying to the former member for up to one TTL. That direction is
 /// permissive, which is why the TTL is short rather than generous.
+/// Bumped on every clear, so a load that started before it cannot cache what it read.
+///
+/// `invalidate_all` stamps a validity time rather than removing, so an insert with a later
+/// timestamp survives the clear -- and a bare invalidate is a different moka lock domain
+/// from the loader, so no per-key lock orders the two. `Op::Remove` through the compute
+/// lock is how the user-assignments cache solves this; it does not compose with a batched
+/// loader, which would make the batch the unit of locking and serialise unrelated roles.
+static ROLE_ANCESTORS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn role_ancestors_cache_invalidate_all() {
     if CONFIG.cache.role_ancestors.enabled {
         tracing::debug!("Invalidating all role ancestors from cache");
+        // Before the clear: a load finishing in between still sees a changed epoch.
+        ROLE_ANCESTORS_EPOCH.fetch_add(1, Ordering::AcqRel);
         ROLE_ANCESTORS_CACHE.invalidate_all();
         update_ra_size_metric();
     }
@@ -482,19 +500,15 @@ fn update_ra_size_metric() {
 /// Read-through for the role-ancestors cache, over any number of roles.
 ///
 /// `load` is called once with the roles that missed, and must return an entry for **every**
-/// one it was given. A seed missing from its result would be cached as absent and re-read on
-/// every request, and worse, a caller cannot tell "nested in nothing" from "nobody looked" —
-/// so a short result is treated as a backend error rather than as an answer.
+/// one it was given. A short result is a backend error, not an answer: an absent role cannot
+/// be told apart from one nested in nothing, and reading it as nothing silently unscopes
+/// every policy written for a parent role. Checked on the uncached path too -- the setting an
+/// operator disables because they distrust the cache must not remove the guarantee.
 ///
-/// No single-flight: concurrent misses on the same role each run a loader rather than
-/// coalescing onto one. Batching and per-key compute locks do not compose without making the
-/// batch itself the unit of locking, which would serialise unrelated roles. The cost is a
-/// few duplicate reads in the window after a TTL expiry or a clear, each one indexed and
-/// usually returning nothing; the alternative costs every batch the slowest role in it.
-///
-/// A clear landing mid-load can be followed by that load's insert, leaving one stale entry
-/// for up to a TTL. The same TTL bound already applies to every other replica, so it changes
-/// nothing about the guarantee.
+/// Not single-flight: concurrent misses on one role each run a loader rather than coalescing.
+/// [`ROLE_ANCESTORS_EPOCH`] is what keeps that safe -- a load whose result is already stale
+/// answers its own caller but is not cached, so neither a clear nor a faster loader can be
+/// undone by a slower one.
 pub(super) async fn role_ancestors_cache_get_or_load<F, Fut>(
     role_ids: &[RoleId],
     load: F,
@@ -505,38 +519,46 @@ where
             Output = Result<HashMap<RoleId, Arc<Vec<AssignedRole>>>, CatalogBackendError>,
         > + Send,
 {
-    if !CONFIG.cache.role_ancestors.enabled {
-        return load(role_ids.to_vec()).await;
-    }
-
+    let enabled = CONFIG.cache.role_ancestors.enabled;
     let mut resolved: HashMap<RoleId, Arc<Vec<AssignedRole>>> =
         HashMap::with_capacity(role_ids.len());
     let mut missing = Vec::new();
-    for role_id in role_ids {
-        match role_ancestors_cache_get(*role_id).await {
-            Some(cached) => {
-                resolved.insert(*role_id, cached);
+    if enabled {
+        for role_id in role_ids {
+            match role_ancestors_cache_get(*role_id).await {
+                Some(cached) => {
+                    resolved.insert(*role_id, cached);
+                }
+                None => missing.push(*role_id),
             }
-            None => missing.push(*role_id),
         }
+    } else {
+        missing.extend_from_slice(role_ids);
     }
     if missing.is_empty() {
         return Ok(resolved);
     }
 
+    let epoch_before = ROLE_ANCESTORS_EPOCH.load(Ordering::Acquire);
     let loaded = load(missing.clone()).await?;
+    let cacheable = enabled && ROLE_ANCESTORS_EPOCH.load(Ordering::Acquire) == epoch_before;
+
     for role_id in missing {
         let ancestors = loaded.get(&role_id).ok_or_else(|| {
             CatalogBackendError::new_unexpected(std::io::Error::other(format!(
                 "role-ancestors load returned no entry for {role_id}"
             )))
         })?;
-        ROLE_ANCESTORS_CACHE
-            .insert(role_id, Arc::clone(ancestors))
-            .await;
+        if cacheable {
+            ROLE_ANCESTORS_CACHE
+                .insert(role_id, Arc::clone(ancestors))
+                .await;
+        }
         resolved.insert(role_id, Arc::clone(ancestors));
     }
-    update_ra_size_metric();
+    if cacheable {
+        update_ra_size_metric();
+    }
 
     Ok(resolved)
 }
@@ -768,6 +790,40 @@ mod tests {
 
     /// A result with `provider_sync_times` populated but no roles must survive
     /// a cache round-trip intact — this is the "synced but no assignments" shape.
+    /// A batch that is partly cached loads only what it missed, and answers for all of it.
+    #[tokio::test]
+    async fn a_partly_cached_batch_loads_only_the_misses() {
+        let cached = RoleId::new_random();
+        let missed = RoleId::new_random();
+        let parent = Arc::new(vec![AssignedRole {
+            role_id: RoleId::new_random(),
+            role_ident: test_role_ident("lakekeeper", "parent"),
+            project_id: Arc::new(ProjectId::new_random()),
+        }]);
+        ROLE_ANCESTORS_CACHE
+            .insert(cached, Arc::clone(&parent))
+            .await;
+
+        let resolved = role_ancestors_cache_get_or_load(&[cached, missed], |missing| async move {
+            assert_eq!(
+                missing,
+                vec![missed],
+                "only the uncached role is loaded, so a warm batch costs one read for the rest"
+            );
+            Ok(HashMap::from([(missed, Arc::new(vec![]))]))
+        })
+        .await
+        .expect("both roles resolve");
+
+        assert_eq!(resolved.len(), 2, "the answer covers the whole batch");
+        assert_eq!(
+            resolved[&cached].len(),
+            1,
+            "the cached entry is reused as-is"
+        );
+        assert_eq!(resolved[&missed].len(), 0);
+    }
+
     #[tokio::test]
     async fn test_user_assignments_sync_without_roles() {
         let user_id = test_user_id("sync-no-roles");
@@ -795,6 +851,77 @@ mod tests {
         );
         assert_eq!(cached.provider_sync_times[0].provider_id, provider_id);
         assert_eq!(cached.provider_sync_times[0].synced_at, synced_at);
+    }
+
+    /// A clear landing while a load runs must not be undone by that load's insert.
+    ///
+    /// `invalidate_all` stamps a validity time rather than removing, so the later insert
+    /// would survive the clear and serve the pre-change ancestors for a full TTL -- with
+    /// nothing left to clear, since the write already did its clearing. That is the
+    /// permissive direction: the member keeps the parent's privileges after the edge is gone.
+    #[tokio::test]
+    async fn a_clear_during_a_load_is_not_undone_by_it() {
+        let nested = RoleId::new_random();
+        let stale = Arc::new(vec![AssignedRole {
+            role_id: RoleId::new_random(),
+            role_ident: test_role_ident("lakekeeper", "former-parent"),
+            project_id: Arc::new(ProjectId::new_random()),
+        }]);
+
+        let resolved = role_ancestors_cache_get_or_load(&[nested], |_| async {
+            // The membership edge is removed and the cache cleared while this load runs.
+            role_ancestors_cache_invalidate_all();
+            Ok(HashMap::from([(nested, Arc::clone(&stale))]))
+        })
+        .await
+        .expect("the load answers this caller");
+
+        assert_eq!(
+            resolved[&nested].len(),
+            1,
+            "the caller that ran the load still gets what it read"
+        );
+        ROLE_ANCESTORS_CACHE.run_pending_tasks().await;
+        assert!(
+            role_ancestors_cache_get(nested).await.is_none(),
+            "but nothing is cached, so the next request reads the post-removal state"
+        );
+    }
+
+    /// A slower load must not overwrite a fresher entry.
+    ///
+    /// Without single-flight there is no ordering between two loaders, so the stale one can
+    /// write last and take the cache from correct back to wrong -- with no further write to
+    /// trigger another clear.
+    #[tokio::test]
+    async fn a_stale_load_does_not_overwrite_a_fresh_entry() {
+        let nested = RoleId::new_random();
+        let stale = Arc::new(vec![AssignedRole {
+            role_id: RoleId::new_random(),
+            role_ident: test_role_ident("lakekeeper", "former-parent"),
+            project_id: Arc::new(ProjectId::new_random()),
+        }]);
+
+        // The slow loader read before the edge was removed; the clear happens while it runs,
+        // and the fresh (empty) answer is cached in between.
+        let resolved = role_ancestors_cache_get_or_load(&[nested], |_| async {
+            role_ancestors_cache_invalidate_all();
+            ROLE_ANCESTORS_CACHE.insert(nested, Arc::new(vec![])).await;
+            Ok(HashMap::from([(nested, Arc::clone(&stale))]))
+        })
+        .await
+        .expect("the load answers this caller");
+        assert_eq!(resolved[&nested].len(), 1);
+
+        ROLE_ANCESTORS_CACHE.run_pending_tasks().await;
+        assert_eq!(
+            role_ancestors_cache_get(nested)
+                .await
+                .expect("the fresh entry is still there")
+                .len(),
+            0,
+            "the fresh empty answer survives; the stale load did not write over it"
+        );
     }
 
     #[tokio::test]

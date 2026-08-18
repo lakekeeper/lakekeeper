@@ -41,7 +41,7 @@ Role-membership cache invalidation emits one additional metric:
 
 The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
 
-The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. Expect `lakekeeper_cache_size{cache_type="role_ancestors"}` to drop to zero on each such edit and refill on demand. Under the OpenFGA backend it stays at zero, since OpenFGA resolves role nesting from its own tuples and never reads this cache.
+The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance, so it falls after a clear rather than at the moment of one — do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all, since OpenFGA resolves role nesting from its own tuples and never reads this cache: alert on absence there, not on a zero value.
 
 ### Role Provider Metrics <span class="lkp"></span>
 

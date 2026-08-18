@@ -1152,6 +1152,11 @@ where
     /// Cycles are rejected: if `member` is already a transitive ancestor of
     /// `parent` (or `member == parent`), the call returns
     /// [`RoleMembershipCycle`] and no edges are written.
+    /// Caches are not touched. Use [`add_role_members_and_invalidate`] unless the caller
+    /// owns a transaction and no request is being served: an authorizer that reads nesting
+    /// from this store keeps a cache no code outside this crate can clear.
+    ///
+    /// [`add_role_members_and_invalidate`]: Self::add_role_members_and_invalidate
     async fn add_role_members<'a>(
         project_id: &ArcProjectId,
         parent_role_id: RoleId,
@@ -1163,6 +1168,8 @@ where
 
     /// Remove role->role edges: drop every `(parent_role_id, member)` edge for
     /// `member` in `member_role_ids`. Idempotent — absent edges are a no-op.
+    ///
+    /// Caches are not touched; see [`add_role_members`](Self::add_role_members).
     async fn remove_role_members<'a>(
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
