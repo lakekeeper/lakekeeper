@@ -18,11 +18,7 @@ publish = false
 # lakekeeper's, this one included: enabling `lakekeeper/open-api` on a
 # dependency edge instead would turn it on even in builds where this feature is
 # off, and the gates here would then compile against the wrong shape.
-open-api = [
-    "dep:utoipa",
-    "lakekeeper/open-api",
-    "lakekeeper-authz-openfga/open-api",
-]
+open-api = ["dep:utoipa", "lakekeeper/open-api", "lakekeeper-authz-openfga/open-api"]
 
 [dependencies]
 anyhow = { workspace = true }

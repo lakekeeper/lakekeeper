@@ -5,6 +5,7 @@ mod cache;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
+pub mod stackit;
 pub mod storage_layout;
 pub mod validation;
 
@@ -32,6 +33,9 @@ use lakekeeper_io::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
+pub use stackit::{
+    StackitAccessKeyCredential, StackitCredential, StackitProfile, StackitStorageService,
+};
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
@@ -83,6 +87,11 @@ pub enum StorageProfile {
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
     S3(S3Profile),
+    /// STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
+    /// set and STACKIT's own endpoint derivation and credentials-group STS.
+    #[serde(rename = "stackit")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileStackit"))]
+    Stackit(StackitProfile),
     #[serde(rename = "gcs")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileGcs"))]
     Gcs(GcsProfile),
@@ -96,6 +105,7 @@ enum StorageProfileBorrowed<'a> {
     Adls(&'a GenericAdlsProfile),
     OneLake(&'a OneLakeProfile),
     S3(&'a S3Profile),
+    Stackit(&'a StackitProfile),
     Gcs(&'a GcsProfile),
     #[cfg(feature = "test-utils")]
     Memory(&'a MemoryProfile),
@@ -231,6 +241,11 @@ impl StorageProfile {
             StorageProfile::S3(profile) => {
                 profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
+            StorageProfile::Stackit(profile) => profile
+                .generate_catalog_config(warehouse_id, request_metadata, delete_profile)
+                // Only fails for an un-normalized profile, which cannot be
+                // persisted; degrade to an empty config rather than panic.
+                .unwrap_or_default(),
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::OneLake(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
@@ -252,6 +267,9 @@ impl StorageProfile {
     pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
         match (self, other) {
             (StorageProfile::S3(this_profile), StorageProfile::S3(other_profile)) => {
+                this_profile.update_with(other_profile).map(Into::into)
+            }
+            (StorageProfile::Stackit(this_profile), StorageProfile::Stackit(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
@@ -287,6 +305,15 @@ impl StorageProfile {
                 .lakekeeper_io(
                     secret
                         .map(|s| s.try_to_s3())
+                        .transpose()
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
+            StorageProfile::Stackit(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_stackit())
                         .transpose()
                         .map_err(CredentialsError::from)?,
                 )
@@ -333,6 +360,7 @@ impl StorageProfile {
     pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         match self {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
+            StorageProfile::Stackit(profile) => profile.base_location(),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::OneLake(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
@@ -368,6 +396,7 @@ impl StorageProfile {
     pub fn storage_type(&self) -> &'static str {
         match self {
             StorageProfile::S3(_) => "s3",
+            StorageProfile::Stackit(_) => "stackit",
             StorageProfile::Adls(_) => "adls",
             StorageProfile::OneLake(_) => "onelake",
             StorageProfile::Gcs(_) => "gcs",
@@ -392,6 +421,7 @@ impl StorageProfile {
         match self {
             // Real backends vend expiring credentials — a new one should land here.
             StorageProfile::S3(_)
+            | StorageProfile::Stackit(_)
             | StorageProfile::Adls(_)
             | StorageProfile::OneLake(_)
             | StorageProfile::Gcs(_) => true,
@@ -423,6 +453,20 @@ impl StorageProfile {
         };
 
         match self {
+            StorageProfile::Stackit(profile) => {
+                profile
+                    .generate_table_config(
+                        data_access,
+                        secret
+                            .map(|s| s.try_to_stackit())
+                            .transpose()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        tabular_info,
+                        request_metadata,
+                    )
+                    .await
+            }
             StorageProfile::S3(profile) => {
                 profile
                     .generate_table_config(
@@ -523,6 +567,12 @@ impl StorageProfile {
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
+            StorageProfile::Stackit(prof) => prof.normalize(
+                credential
+                    .map(|s| s.try_to_stackit())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            ),
             StorageProfile::Adls(prof) => prof.normalize(),
             StorageProfile::OneLake(prof) => prof.normalize(
                 credential
@@ -576,6 +626,7 @@ impl StorageProfile {
         // Test vended-credentials access
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
+            StorageProfile::Stackit(profile) => profile.sts_enabled,
             StorageProfile::Adls(profile) => profile.sas_enabled,
             StorageProfile::OneLake(profile) => profile.sas_enabled,
             StorageProfile::Gcs(profile) => profile.sts_enabled,
@@ -897,6 +948,12 @@ impl StorageProfile {
                     .await?
                     .into()
             }
+            StorageProfile::Stackit(_) => {
+                tracing::debug!("Building STACKIT storage from vended credentials.");
+                s3::lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
+            }
             StorageProfile::OneLake(profile) => {
                 tracing::debug!("Building `OneLake` storage from vended credentials.");
                 profile
@@ -1075,6 +1132,9 @@ impl StorageProfile {
             (StorageProfile::S3(profile), StorageProfile::S3(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
+            (StorageProfile::Stackit(profile), StorageProfile::Stackit(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
             (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
@@ -1214,6 +1274,7 @@ impl StorageProfile {
     pub fn layout(&self) -> Option<&StorageLayout> {
         match self {
             StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Stackit(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
             StorageProfile::OneLake(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
@@ -1275,6 +1336,22 @@ pub enum StorageCredential {
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialS3"))]
     S3(S3Credential),
+    /// Credentials for STACKIT Object Storage.
+    ///
+    /// Example payload:
+    ///
+    /// ```
+    /// use lakekeeper::service::storage::StorageCredential;
+    /// let cred: StorageCredential = serde_json::from_str(r#"{
+    ///     "type": "stackit",
+    ///     "credential-type": "access-key",
+    ///     "access-key-id": "...",
+    ///     "secret-access-key": "..."
+    ///   }"#).unwrap();
+    /// ```
+    #[serde(rename = "stackit")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialStackit"))]
+    Stackit(StackitCredential),
     /// Credentials for Az storage
     ///
     /// Example payload:
@@ -1339,6 +1416,17 @@ pub enum StorageCredentialType {
     /// GCS credential type
     #[serde(rename = "gcs")]
     Gcs(GcsCredentialType),
+    /// STACKIT credential type
+    #[serde(rename = "stackit")]
+    Stackit(StackitCredentialType),
+}
+
+/// The type of STACKIT credential.
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StackitCredentialType {
+    AccessKey,
 }
 
 /// The type of S3 credential.
@@ -1391,6 +1479,9 @@ impl StorageCredential {
                 GcsCredential::ServiceAccountKey { .. } => GcsCredentialType::ServiceAccountKey,
                 GcsCredential::GcpSystemIdentity {} => GcsCredentialType::GcpSystemIdentity,
             }),
+            StorageCredential::Stackit(stackit) => StorageCredentialType::Stackit(match stackit {
+                StackitCredential::AccessKey(_) => StackitCredentialType::AccessKey,
+            }),
         }
     }
 }
@@ -1409,6 +1500,7 @@ impl StorageCredential {
     pub fn storage_type(&self) -> &'static str {
         match self {
             StorageCredential::S3(_) => "s3",
+            StorageCredential::Stackit(_) => "stackit",
             StorageCredential::Az(_) => "adls",
             StorageCredential::Gcs(_) => "gcs",
         }
@@ -1424,6 +1516,20 @@ impl StorageCredential {
             _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
                 to: "s3",
+            }),
+        }
+    }
+
+    /// Try to convert the credential into a STACKIT credential.
+    ///
+    /// # Errors
+    /// Fails if the credential is not a STACKIT credential.
+    pub fn try_to_stackit(&self) -> Result<&StackitCredential, UnexpectedStorageType> {
+        match self {
+            Self::Stackit(credential) => Ok(credential),
+            _ => Err(UnexpectedStorageType {
+                is: self.storage_type(),
+                to: "stackit",
             }),
         }
     }
@@ -2201,7 +2307,7 @@ mod tests {
                     .unwrap()
                     .into(),
             ),
-            StorageProfile::S3(_) => (
+            StorageProfile::S3(_) | StorageProfile::Stackit(_) => (
                 s3::lakekeeper_io_from_vended_table_config(&config1.config)
                     .await
                     .unwrap()
