@@ -14325,8 +14325,12 @@ components:
           format: uri
           description: |-
             Endpoint override. Normally omitted — the endpoint is derived from
-            `region` and `service`. Set this only for endpoints STACKIT has not
-            rolled into the public naming scheme.
+            `region`.
+
+            Set this only for a STACKIT endpoint outside the public naming scheme,
+            which STACKIT hands out per customer. Such an endpoint is a distinct
+            storage tenant, not another route to the same bucket, so it is immutable
+            once the warehouse exists.
         key-prefix:
           type:
             - string
@@ -14345,11 +14349,6 @@ components:
           description: |-
             Allow clients to have Lakekeeper sign their S3 requests. Defaults to
             enabled, and is the only client path when `sts-enabled` is false.
-        service:
-          $ref: '#/components/schemas/StackitStorageService'
-          description: |-
-            Which STACKIT object-storage product to talk to. Defaults to STACKIT
-            Object Storage.
         storage-layout:
           oneOf:
             - type: 'null'
@@ -14368,16 +14367,6 @@ components:
           format: int64
           description: Validity of vended credentials in seconds. Defaults to 3600.
           minimum: 0
-    StackitStorageService:
-      type: string
-      description: |-
-        Which STACKIT object-storage product serves this warehouse.
-
-        Only affects the derived endpoint host. Modelled as an enum rather than a
-        boolean so a third product does not force a breaking rename.
-      enum:
-        - object-storage
-        - dataplatform
     StorageCredential:
       oneOf:
         - allOf:

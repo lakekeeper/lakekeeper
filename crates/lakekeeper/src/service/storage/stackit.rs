@@ -37,32 +37,6 @@ use crate::{
     service::BasicTabularInfo,
 };
 
-/// Which STACKIT object-storage product serves this warehouse.
-///
-/// Only affects the derived endpoint host. Modelled as an enum rather than a
-/// boolean so a third product does not force a breaking rename.
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum StackitStorageService {
-    /// STACKIT Object Storage — `object.storage.{region}.onstackit.cloud`.
-    #[default]
-    ObjectStorage,
-    /// STACKIT Data Platform storage — `dataplatform.storage.{region}.onstackit.cloud`.
-    #[serde(alias = "data-platform")]
-    Dataplatform,
-}
-
-impl StackitStorageService {
-    /// Leading label of the derived endpoint host.
-    fn host_label(self) -> &'static str {
-        match self {
-            StackitStorageService::ObjectStorage => "object",
-            StackitStorageService::Dataplatform => "dataplatform",
-        }
-    }
-}
-
 const DEFAULT_STS_TOKEN_VALIDITY_SECONDS: u64 = 3600;
 
 fn fn_true() -> bool {
@@ -91,14 +65,13 @@ pub struct StackitProfile {
     pub key_prefix: Option<String>,
     /// STACKIT region, e.g. `eu01`.
     pub region: String,
-    /// Which STACKIT object-storage product to talk to. Defaults to STACKIT
-    /// Object Storage.
-    #[serde(default)]
-    #[builder(default)]
-    pub service: StackitStorageService,
     /// Endpoint override. Normally omitted — the endpoint is derived from
-    /// `region` and `service`. Set this only for endpoints STACKIT has not
-    /// rolled into the public naming scheme.
+    /// `region`.
+    ///
+    /// Set this only for a STACKIT endpoint outside the public naming scheme,
+    /// which STACKIT hands out per customer. Such an endpoint is a distinct
+    /// storage tenant, not another route to the same bucket, so it is immutable
+    /// once the warehouse exists.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub endpoint: Option<Url>,
@@ -141,7 +114,7 @@ pub struct StackitProfile {
 
 impl StackitProfile {
     /// Endpoint this profile talks to — the override if set, else derived from
-    /// `region` and `service`.
+    /// `region`.
     ///
     /// # Errors
     /// Fails if the derived host is not a valid URL, which requires a `region`
@@ -150,11 +123,7 @@ impl StackitProfile {
         if let Some(endpoint) = &self.endpoint {
             return Ok(endpoint.clone());
         }
-        let host = format!(
-            "https://{}.storage.{}.onstackit.cloud",
-            self.service.host_label(),
-            self.region
-        );
+        let host = format!("https://object.storage.{}.onstackit.cloud", self.region);
         Url::parse(&host).map_err(|e| {
             InvalidProfileError {
                 source: Some(Box::new(e)),
@@ -241,11 +210,9 @@ impl StackitProfile {
             return Err(InvalidProfileError {
                 source: None,
                 reason: format!(
-                    "STACKIT bucket names must not contain `.`: buckets are addressed as \
-                     `<bucket>.{}.storage.{}.onstackit.cloud`, and STACKIT's wildcard \
-                     certificate matches only a single label. Got `{}`.",
-                    self.service.host_label(),
-                    self.region,
+                    "STACKIT bucket names must not contain `.`: buckets are addressed as a \
+                     subdomain of the endpoint, and STACKIT's wildcard certificate matches \
+                     only a single label. Got `{}`.",
                     self.bucket
                 ),
                 entity: "bucket".to_string(),
@@ -334,8 +301,11 @@ impl StackitProfile {
         if self.region != other.region {
             return Err(UpdateError::ImmutableField("region".to_string()));
         }
-        if self.service != other.service {
-            return Err(UpdateError::ImmutableField("service".to_string()));
+        // A different STACKIT endpoint is a different storage tenant, so moving
+        // it would silently repoint the warehouse at other data. Unlike plain
+        // S3, where an endpoint change is usually just another route.
+        if self.endpoint != other.endpoint {
+            return Err(UpdateError::ImmutableField("endpoint".to_string()));
         }
         Ok(other)
     }
@@ -577,16 +547,10 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_defaults_to_object_storage_and_toggles_to_dataplatform() {
-        let mut p = profile();
+    fn endpoint_is_derived_from_the_region() {
         assert_eq!(
-            p.endpoint().unwrap().as_str(),
+            profile().endpoint().unwrap().as_str(),
             "https://object.storage.eu01.onstackit.cloud/"
-        );
-        p.service = StackitStorageService::Dataplatform;
-        assert_eq!(
-            p.endpoint().unwrap().as_str(),
-            "https://dataplatform.storage.eu01.onstackit.cloud/"
         );
     }
 
@@ -737,7 +701,8 @@ mod tests {
                 p
             },
             |mut p: StackitProfile| {
-                p.service = StackitStorageService::Dataplatform;
+                p.endpoint =
+                    Some(Url::parse("https://dataplatform.storage.eu01.onstackit.cloud").unwrap());
                 p
             },
             |mut p: StackitProfile| {
@@ -755,19 +720,24 @@ mod tests {
     }
 
     #[test]
-    fn service_round_trips_through_serde_with_the_documented_default() {
+    fn a_minimal_profile_deserializes_with_the_documented_defaults() {
         let p: StackitProfile = serde_json::from_str(
             r#"{"bucket":"b","region":"eu01","credentials-group-urn":"urn:sgws:identity::1:group/g"}"#,
         )
         .unwrap();
-        assert_eq!(p.service, StackitStorageService::ObjectStorage);
         assert!(p.sts_enabled);
+        assert!(p.remote_signing_enabled);
+        assert!(p.push_s3_delete_disabled);
         assert_eq!(p.sts_token_validity_seconds, 3600);
+        assert_eq!(p.endpoint, None);
+    }
 
-        let p: StackitProfile = serde_json::from_str(
-            r#"{"bucket":"b","region":"eu01","service":"dataplatform","credentials-group-urn":"urn:sgws:identity::1:group/g"}"#,
-        )
-        .unwrap();
-        assert_eq!(p.service, StackitStorageService::Dataplatform);
+    #[test]
+    fn a_custom_endpoint_is_honoured_and_frozen() {
+        let dataplatform = Url::parse("https://dataplatform.storage.eu01.onstackit.cloud").unwrap();
+        let mut p = profile();
+        p.endpoint = Some(dataplatform.clone());
+        p.normalize(None).unwrap();
+        assert_eq!(p.to_s3().unwrap().endpoint, Some(dataplatform));
     }
 }

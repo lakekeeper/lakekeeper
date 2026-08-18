@@ -33,9 +33,7 @@ use lakekeeper_io::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
-pub use stackit::{
-    StackitAccessKeyCredential, StackitCredential, StackitProfile, StackitStorageService,
-};
+pub use stackit::{StackitAccessKeyCredential, StackitCredential, StackitProfile};
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
