@@ -477,7 +477,14 @@ jobs:
             git grep -h -oE 'AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"' "$1" -- crates/ \
               2>/dev/null | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+)"/\1/' || true
           }
-          BASE_VERSION="$(declared_version "${BASE_SHA}")"
+          # Compare against the MERGE BASE, not against the base branch tip. The tip
+          # moves while a pull request is open, so reading the version there can report a
+          # change that came from the base branch rather than from this branch. The
+          # fixture comparison below already uses the merge base via three-dot syntax;
+          # this makes both look at the same point.
+          MERGE_BASE="$(git merge-base "${BASE_SHA}" HEAD)"
+          echo "Comparing against merge base ${MERGE_BASE} (base branch tip is ${BASE_SHA})."
+          BASE_VERSION="$(declared_version "${MERGE_BASE}")"
           HEAD_VERSION="$(declared_version HEAD)"
 
           if [ "${BASE_VERSION}" != "${HEAD_VERSION}" ]; then
@@ -497,7 +504,7 @@ jobs:
             MAJOR_CHANGED=false
           fi
 
-          if [ -n "$(git diff --name-only "${BASE_SHA}...HEAD" -- "${AUDIT_DIR}/fixtures/")" ]; then
+          if [ -n "$(git diff --name-only "${MERGE_BASE}" HEAD -- "${AUDIT_DIR}/fixtures/")" ]; then
             FIXTURES_CHANGED=true
           else
             FIXTURES_CHANGED=false
