@@ -210,6 +210,8 @@ Which context fields appear depends on the action. A field is omitted rather tha
 | `purge`                 | String | delete and drop actions           | `"true"` when the client asked to purge the data        |
 | `recursive`             | String | delete actions                    | `"true"` when the client asked for a recursive delete   |
 | `target-refs`           | Array  | commits                           | The branch or tag references the commit targets         |
+| `source`                | Array  | accepting a moved namespace       | The namespace path the entity is being moved from        |
+| `destination`           | Array  | move actions                      | The namespace path the entity is being moved to          |
 | `update-kinds`          | Array  | commits                           | The kinds of update the commit contains                 |
 | `requested_provider_id` | String | source-system updates             | The role provider the client named                      |
 | `requested_source_id`   | String | source-system updates             | The source identifier the client named                  |

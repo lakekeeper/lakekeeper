@@ -495,10 +495,13 @@ impl Valuable for EntityDescriptor {
     fn visit(&self, visit: &mut dyn Visit) {
         visit.visit_entry(
             Value::String("entity_type"),
-            Value::String(self.entity_type),
+            Value::String(self.entity_type.as_str()),
         );
         for field in &self.fields {
-            visit.visit_entry(Value::String(field.key), Value::String(&field.value));
+            visit.visit_entry(
+                Value::String(field.key.as_str()),
+                Value::String(&field.value),
+            );
         }
     }
 }
@@ -521,7 +524,7 @@ impl Valuable for ActionDescriptor {
             Value::String(self.action_name),
         );
         for (key, value) in &self.context {
-            visit.visit_entry(Value::String(key), value.as_value());
+            visit.visit_entry(Value::String(key.as_str()), value.as_value());
         }
     }
 }
@@ -761,9 +764,9 @@ mod tests {
         service::{
             authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
             events::context::{
-                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
-                FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-                FIELD_NAME_WAREHOUSE_ID,
+                ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
+                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
+                FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
             },
         },
     };
@@ -860,7 +863,7 @@ mod tests {
     }
 
     fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
-        let entities = Arc::new(EventEntities::one(EntityDescriptor::new("table")));
+        let entities = Arc::new(EventEntities::one(EntityDescriptor::new(EntityType::Table)));
         let actions = Arc::new(vec![
             ActionDescriptor::builder().action_name("read_data").build(),
         ]);
@@ -1020,14 +1023,14 @@ mod tests {
     }
 
     fn fixture_table_entity() -> EntityDescriptor {
-        EntityDescriptor::new("table")
+        EntityDescriptor::new(EntityType::Table)
             .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
             .field(FIELD_NAME_TABLE_ID, &FIXTURE_TABLE_ID)
             .field(FIELD_NAME_TABLE, &"sales.orders")
     }
 
     fn fixture_namespace_entity() -> EntityDescriptor {
-        EntityDescriptor::new("namespace")
+        EntityDescriptor::new(EntityType::Namespace)
             .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
             .field(FIELD_NAME_NAMESPACE_ID, &FIXTURE_NAMESPACE_ID)
             .field(FIELD_NAME_NAMESPACE, &"sales")
@@ -1041,8 +1044,11 @@ mod tests {
     fn fixture_action_with_context() -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name("update_table_properties")
-            .context_string("name", "orders")
-            .context_list("removed-properties", vec!["stale.key".to_string()])
+            .context_string(ActionContextKey::Name, "orders")
+            .context_list(
+                ActionContextKey::RemovedProperties,
+                vec!["stale.key".to_string()],
+            )
             .build()
     }
 
@@ -1050,8 +1056,8 @@ mod tests {
     fn fixture_create_table_action() -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name("create_table")
-            .context_string("name", "orders")
-            .context_string("table_id", FIXTURE_TABLE_ID)
+            .context_string(ActionContextKey::Name, "orders")
+            .context_string(ActionContextKey::TableId, FIXTURE_TABLE_ID)
             .build()
     }
 
@@ -1061,15 +1067,15 @@ mod tests {
     fn fixture_drop_action() -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name("drop")
-            .context_string("force", "true")
-            .context_string("purge", "true")
+            .context_string(ActionContextKey::Force, "true")
+            .context_string(ActionContextKey::Purge, "true")
             .build()
     }
 
     /// A warehouse entity carrying `project-id`, which real requests emit and the other
     /// fixtures do not.
     fn fixture_warehouse_entity() -> EntityDescriptor {
-        EntityDescriptor::new("warehouse")
+        EntityDescriptor::new(EntityType::Warehouse)
             .field(
                 FIELD_NAME_PROJECT_ID,
                 &"00000000-0000-0000-0000-000000000000",
@@ -1268,6 +1274,7 @@ mod tests {
     // Each match below has no wildcard arm, so a new variant stops the build *here*, at
     // the point where its wire tag has to be chosen and documented.
 
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn determining_factor_tag(factor: &DeterminingFactor) -> &'static str {
         match factor {
             DeterminingFactor::Policy { .. } => "Policy",
@@ -1275,6 +1282,7 @@ mod tests {
         }
     }
 
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn policy_effect_tag(effect: PolicyEffect) -> &'static str {
         match effect {
             PolicyEffect::Permit => "Permit",
@@ -1282,6 +1290,7 @@ mod tests {
         }
     }
 
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn failure_reason_tag(
         reason: &crate::service::events::AuthorizationFailureReason,
     ) -> &'static str {
@@ -1343,6 +1352,70 @@ mod tests {
                  change to the audit format."
             );
         }
+    }
+
+    /// Every key the audit log can emit must be documented — checked against the type
+    /// system, not against the fixtures.
+    ///
+    /// This is the one check here that is not sample-based. The fixture tests and the
+    /// documentation test above can only see keys some fixture happens to emit, so a key
+    /// on a path nobody wrote a fixture for is invisible to them. Comparing audit records
+    /// from a running server against these fixtures found five such keys, two of them
+    /// undocumented, which is what prompted closing the key spaces into enums.
+    ///
+    /// Because the sets below come from `VariantArray`, adding a key cannot escape this
+    /// check: a new variant is either listed here or the build fails in `as_str`.
+    ///
+    /// Keys are required as a **table row** rather than a bare mention, so that an
+    /// unrelated use of the same word elsewhere in the page cannot satisfy it — the
+    /// action context key `source` and the `determined_by` field `source` are different
+    /// things that happen to share a name.
+    #[test]
+    fn every_key_the_audit_log_can_emit_is_documented() {
+        use strum::VariantArray as _;
+
+        let mut missing: Vec<String> = Vec::new();
+
+        // A row whose FIRST column is the key. Matching anywhere on the line is not
+        // enough: `| `Policy` | `source` |` in the determining-factor table would then
+        // satisfy a lookup for the unrelated action context key `source`.
+        let has_row = |key: &str| {
+            let cell = format!("| `{key}`");
+            LOGGING_DOC
+                .lines()
+                .any(|line| line.trim_start().starts_with(&cell))
+        };
+
+        for field in EntityField::VARIANTS {
+            let key = field.as_str();
+            if !has_row(key) {
+                missing.push(format!("entity field `{key}` ({field:?})"));
+            }
+        }
+        for key in ActionContextKey::VARIANTS {
+            let name = key.as_str();
+            if !has_row(name) {
+                missing.push(format!("action context key `{name}` ({key:?})"));
+            }
+        }
+        // `entity_type` values are documented as a prose list rather than a table, so a
+        // plain mention is the right bar for these.
+        for entity_type in EntityType::VARIANTS {
+            let name = entity_type.as_str();
+            if !LOGGING_DOC.contains(&format!("`{name}`")) {
+                missing.push(format!("entity type `{name}` ({entity_type:?})"));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "the audit log can emit these keys, but docs/docs/logging.md does not \
+             document them:\n  {}\n\n\
+             Add a row to the relevant field table in docs/docs/logging.md. Every key the \
+             emitter can produce is part of the wire format, whether or not a fixture \
+             happens to exercise it.",
+            missing.join("\n  ")
+        );
     }
 
     /// The fixture directory and [`FIXTURE_NAMES`] must agree. Without this, deleting a
@@ -1920,7 +1993,7 @@ mod tests {
                 action_name: "read",
                 context: Vec::new(),
             },
-            entity: EntityDescriptor::new("table"),
+            entity: EntityDescriptor::new(EntityType::Table),
             allowed: Some(true),
             determined_by,
         }

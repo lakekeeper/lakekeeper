@@ -102,14 +102,52 @@ Regenerate with `just update-audit-fixtures`, then read the resulting diff: it i
 
 **Then, in the same change:**
 
-1. Update the field tables in `docs/docs/logging.md`. A test walks the fixtures and fails if any emitted field is undocumented, so an addition cannot be forgotten — but it cannot check that a *description* is still accurate, so re-read the row you touched.
+1. Update the field tables in `docs/docs/logging.md`. Two tests check this from different directions: one walks the fixtures and fails on any field they emit that is undocumented, and one iterates the key enums and fails on any key the emitter *can* produce that is undocumented. Neither can check that a *description* is still accurate, so re-read the row you touched.
 2. Put an `audit` mention in the pull request title, or a `## Release notes` section in the body, describing the change in consumer terms. Major bumps must appear in the release notes; a consumer that discovers a format change from a parse failure in production has been let down.
+
+**Adding a key, an action, or a variant.** These are compile errors by design — the build stops at the place where the wire name and the documentation have to be decided. Each is an *additive* change, so it wants a minor bump unless it also renames or replaces something.
+
+| The build fails at | You added | What to do |
+|---|---|---|
+| `EntityField::as_str` (`events/context.rs`) | an entity field key | Pick the wire name in the `match`, then add a row to the entity field table in `docs/docs/logging.md` |
+| `EntityType::as_str` (`events/context.rs`) | an `entity_type` value | Same, and add it to the `entity_type` list in the docs |
+| `ActionContextKey::as_str` (`events/context.rs`) | an action context key | Same, and add a row to the action context table |
+| `impl CatalogAction for Catalog*Action` (`service/authz/mod.rs`) | a catalog action | Decide what audit context the action should carry. If none, add it to the explicit no-context list in that `match` — the list exists so that this is a decision rather than a default |
+| `determining_factor_tag` / `policy_effect_tag` / `failure_reason_tag` (audit test module) | a variant of an enum that reaches the wire through `#[derive(Valuable)]` | Give it a wire tag and document what it means. These types have no hand-written `visit`, so the derive would otherwise emit a new variant with nothing to stop it |
+
+The first four fail a plain `cargo build`, because they are production code. The last lives in the audit test module, so it fails `cargo test` and `just check` but **not** `cargo build` — CI runs both, but a local `cargo build` will not tell you about it.
+
+**Do not add a `_ =>` arm to any of those matches.** Every one of them is exhaustive on purpose: the missing wildcard is the entire mechanism. A wildcard turns each of these build failures into silence — a new entity key would take some other key's wire name, and a new action would emit no audit context — and nothing downstream would notice, because a fixture can only exercise a variant that already exists.
+
+The rule is enforced rather than trusted to review: those functions carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails the build with *"wildcard match will also match any future added variants"*, and clippy even prints the explicit list to write instead. Note this one is a clippy lint, so it fails `just check` and CI but not a bare `cargo build`.
+
+Two things worth knowing if you are tempted:
+
+- Adding a wildcard *alongside* the full list is caught anyway, by rustc's own `unreachable_patterns`. The dangerous edit is **replacing** arms with a wildcard, which compiles clean without the deny above. That is the case the lint exists for.
+- The exhaustive lists make some of these functions long. One carries `#[allow(clippy::too_many_lines)]` for that reason. Do not "fix" the length by collapsing the list.
+
+There is deliberately no unit test for this. A test cannot observe a compile failure: if a probe variant exists, either the match covers it and the crate does not build (so no test runs), or a wildcard absorbs it and the test passes while proving nothing. The lint is the test.
+
+The key enums exist for exactly this reason. Before them the key space was only checked against the fixtures, so a key emitted on a path no fixture exercised was invisible — see the coverage note below.
 
 **What `audit_format` does not cover.** The keys the log subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber`, not to Lakekeeper, and can move on a dependency upgrade with no version bump. They are stripped before fixture comparison for that reason, and `docs/docs/logging.md` states it as a contract.
 
+**What the tests actually cover, and what they do not.** Worth knowing before you trust a green suite:
+
+| Part of the format | How it is checked |
+|---|---|
+| Entity field key names, `entity_type` values, action context key names | **Exhaustively, from the type system.** The enums are closed, so a key cannot exist without a `match` arm and a documented row |
+| Which variants the derived audit enums can emit | **Exhaustively**, via the tag functions above |
+| That every record declares `audit_format` | Structurally: one emission site, checked by a test |
+| Record **shape** — nesting, value types, which optional fields are omitted versus `null`, and the singular/plural arity switch | **By example only.** The fixtures pin the shape of the scenarios they cover, and nothing pins the shape of a scenario they do not |
+
+That last row is the real limit. A shape change on a path no fixture exercises will not fail anything. This is not hypothetical: comparing these fixtures against audit records from a running server found five keys no fixture emitted, two of them undocumented, and enumerating the action context keys afterwards found two more. Sampling missed all of them.
+
+So: **if you change a code path that no fixture exercises, add a fixture.** Adding one is cheap — write a test that builds the event, run `just update-audit-fixtures`, and register the name in `FIXTURE_NAMES`. Adding a fixture also widens the fixture-walking documentation test, which is the main reason to bother.
+
 **Changes deliberately deferred to the next major bump.** These are known warts. None is worth a major bump on its own, so batch them all into one, so consumers absorb a single break rather than several:
 
-- `warehouse-id` on an entity versus `warehouse_id` in a grant context (`events/context.rs` versus `events/backends/audit/mod.rs`) — the same logical field with two spellings in the same log stream. The action-context keys are similarly split, four kebab-case against sixteen snake_case; one convention has to be picked for all of them at once.
+- `warehouse-id` on an entity versus `warehouse_id` in a grant context (`events/context.rs` versus `events/backends/audit/mod.rs`) — the same logical field with two spellings in the same log stream. The action context keys are similarly split, four kebab-case against eighteen snake_case; one convention has to be picked for all of them at once. This is now a cheap change to make: every wire name lives in a single `as_str` per key enum, so the normalisation is a few `match` arms rather than a hunt through call sites.
 - The empty-array enum encoding: `{"Forbid": []}`, `{"ActionForbidden": []}`. The array is always empty — it is an artefact of how `valuable-serde` renders a Rust enum variant with no payload, not a design decision. Every code generator turns it into a wrapper class, and `jq` users need `keys[0]` instead of reading a string. Plain strings would be better.
 - The `action` / `actions` and `entity` / `entities` arity switch. A record carries the singular key when one item was checked and the plural key otherwise, so every consumer needs both paths. Always emitting arrays, even of length one, would be simpler for everyone.
 - `writes` and `deletes` in the `apply_grants` action context are counts encoded as JSON strings. They should be numbers.
