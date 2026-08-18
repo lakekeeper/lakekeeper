@@ -11,6 +11,13 @@ pub struct IdempotencyKey(Uuid);
 impl IdempotencyKey {
     /// Parse an idempotency key from a header value string.
     /// Returns `None` if the string is not a valid UUID.
+    ///
+    /// Any UUID version is accepted, deliberately. The spec asks for UUIDv7, but
+    /// that is a request for good key hygiene on the client's part, not something
+    /// the server needs in order to behave correctly: nothing here reads the
+    /// timestamp or the version bits, and uniqueness is enforced by the primary
+    /// key. Rejecting v4 would break clients that are already using this
+    /// correctly, in exchange for nothing.
     pub fn parse(value: &str) -> Option<Self> {
         Uuid::parse_str(value).ok().map(Self)
     }
@@ -103,6 +110,22 @@ mod tests {
             key.unwrap().as_uuid().to_string(),
             "550e8400-e29b-41d4-a716-446655440000"
         );
+    }
+
+    /// Pins the deliberate deviation from the spec's UUIDv7 requirement. See
+    /// [`IdempotencyKey::parse`] for why.
+    #[test]
+    fn any_uuid_version_is_accepted() {
+        for (version, value) in [
+            ("v1", "c232ab00-9414-11ec-b3c8-9f6bdeced846"),
+            ("v4", "550e8400-e29b-41d4-a716-446655440000"),
+            ("v7", "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"),
+        ] {
+            assert!(
+                IdempotencyKey::parse(value).is_some(),
+                "{version} must be accepted"
+            );
+        }
     }
 
     #[test]

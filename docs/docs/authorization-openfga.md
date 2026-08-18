@@ -132,6 +132,15 @@ Managed access combines elements of Role-Based Access Control (RBAC) and Discret
 
 Managed access can be enabled or disabled for warehouses and namespaces using the UI or the `../managed-access` Endpoints. Managed access settings are inherited down the object hierarchy, meaning if managed access is enabled on a higher-level entity, it applies to all child entities within it.
 
+### Moving namespaces under managed access
+
+Moving a namespace requires `manage_grants` at **both** ends — on the namespace being moved and on the destination parent (or on the warehouse, when moving to the root) — *plus* the ordinary write privilege at each end: `modify` on the namespace being moved, `create` on the destination. `manage_grants` alone is not sufficient at either end. Re-parenting is a grant-shaped operation rather than an ordinary write — every principal holding `select`, `modify`, or `describe` at the destination immediately gains it on the moved namespace and everything inside it, through inheritance and without an assignment being recorded. Requiring grant authority at the source means the move confers nothing you could not already have granted directly; requiring it at the destination stops a namespace being populated and granted somewhere permissive and then moved in, issuing grants in a managed subtree that you could never have issued there.
+
+Two consequences are worth knowing:
+
+* Managed access removes `manage_grants` from *owners*, so ownership alone does not let someone move a namespace out of a managed subtree — which is the point, since moving it out would restore their ability to grant on it. A principal **directly assigned** `manage_grants` on that namespace still holds it — the direct assignment is unaffected by managed access — and can move the namespace provided it also holds `modify` there; ownership supplies that, so an owner who was additionally granted `manage_grants` directly can still move out.
+* `can_move` is the conjunction of `manage_grants` and `modify`, so it is strictly stronger than `can_delete`: anyone who may move a namespace may also delete it, but not the reverse. A `security_admin` with no write access cannot restructure the hierarchy, and a principal granted only `modify` cannot either — moving needs both.
+
 ## Best Practices
 
 We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.

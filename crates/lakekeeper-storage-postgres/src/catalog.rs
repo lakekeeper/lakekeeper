@@ -6,6 +6,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper::{
     SecretId,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
             tables::LoadTableFilters,
@@ -28,10 +29,10 @@ use lakekeeper::{
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
         CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
+        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
+        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
         DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
@@ -43,17 +44,18 @@ use lakekeeper::{
         ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
         ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
         LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
-        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
+        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
+        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
         TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
         Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
         UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
@@ -78,8 +80,14 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    grant::{apply_grants, delete_grants_for_user, list_grants, list_grants_on_resources},
-    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
+    grant::{
+        apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
+        list_grants_on_resources,
+    },
+    namespace::{
+        create_namespace, drop_namespace, list_namespaces, move_namespace,
+        update_namespace_properties,
+    },
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     tag::{
@@ -412,6 +420,13 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<AppliedGrants, ApplyGrantsStoreError> {
         apply_grants(writes, deletes, transaction).await
+    }
+
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+        insert_grants_bounded(writes, transaction).await
     }
 
     async fn delete_grants_for_user_impl<'a>(
@@ -1096,6 +1111,16 @@ impl CatalogStore for super::PostgresBackend {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+        move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
+    }
+
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
@@ -1272,9 +1297,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: Self::State,
     ) -> Result<IdempotencyCheck> {
-        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+        Self::check_idempotency_key_impl(warehouse_id, key, endpoint, state).await
     }
 
     async fn try_insert_idempotency_key_impl<'a>(

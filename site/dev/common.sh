@@ -88,30 +88,30 @@ update_version () {
 
 create_nightly () {
     echo " --> create nightly"
-    
-    # Ensure the docs/docs directory exists
-    mkdir -p docs/docs/
-    
+
+    # Ensure the versions directory exists
+    mkdir -p versions/
+
     # Remove any existing 'nightly' directory and recreate it
-    rm -rf docs/docs/nightly/
-    mkdir docs/docs/nightly/
-    
+    rm -rf versions/nightly/
+    mkdir versions/nightly/
+
     # Create symbolic links and copy configuration files for the 'nightly' documentation
-    ln -s "../../../../docs/docs/" docs/docs/nightly/docs
-    cp "../docs/mkdocs.yml" docs/docs/nightly/
-    
-    cd docs/docs/
-    
+    ln -s "../../../docs/docs/" versions/nightly/docs
+    cp "../docs/mkdocs.yml" versions/nightly/
+
+    cd versions/
+
     # Update mkdocs version field within the 'nightly' documentation
     update_version "nightly"
     cd -
 }
 
 # Finds and retrieves the latest version of the documentation based on the directory structure.
-# Assumes the documentation versions are numeric folders within 'docs/docs/'.
+# Assumes the documentation versions are numeric folders within 'versions/'.
 get_latest_version () {
-  # Find the latest numeric folder within 'docs/docs/' structure
-  local latest=$(ls -d docs/docs/[0-9]* | sort -V | tail -1)
+  # Find the latest numeric folder within 'versions/' structure
+  local latest=$(ls -d versions/[0-9]* | sort -V | tail -1)
 
   # Extract the version number from the latest directory path
   local latest_version=$(basename "${latest}")
@@ -132,14 +132,14 @@ create_latest () {
 
 
   # Remove any existing 'latest' directory and recreate it
-  rm -rf docs/docs/latest/
-  mkdir docs/docs/latest/
+  rm -rf versions/latest/
+  mkdir versions/latest/
 
   # Create symbolic links and copy configuration files for the 'latest' documentation
-  ln -s "../${LAKEKEEPER_VERSION}/docs" docs/docs/latest/docs
-  cp "docs/docs/${LAKEKEEPER_VERSION}/mkdocs.yml" docs/docs/latest/
+  ln -s "../${LAKEKEEPER_VERSION}/docs" versions/latest/docs
+  cp "versions/${LAKEKEEPER_VERSION}/mkdocs.yml" versions/latest/
 
-  cd docs/docs/
+  cd versions/
 
   # Update version information within the 'latest' documentation
   update_version "latest"
@@ -155,8 +155,14 @@ pull_versioned_docs () {
 
   # Add local worktrees for documentation and javadoc either from the remote repository
   # or from a local branch.
+  #
+  # The worktree MUST stay outside mkdocs' docs_dir (`docs/`). The monorepo plugin
+  # copies the whole docs_dir into its temporary build directory and then layers each
+  # `!include`d unit on top, so a version living inside docs_dir gets rendered twice:
+  # once at its site_name alias (`/docs/0.13.x/…`) and once as an orphan page
+  # (`/docs/0.13.x/docs/…`), which duplicates every page in the search index.
   local docs_branch="${LAKEKEEPER_VERSIONED_DOCS_BRANCH:-${REMOTE}/docs}"
-  git worktree add -f docs/docs "${docs_branch}"
+  git worktree add -f versions "${docs_branch}"
 
   # Retrieve the latest version of documentation for processing
   local latest_version=$(get_latest_version)
@@ -175,10 +181,20 @@ clean () {
   set +e
 
   # Remove temp directories and related Git worktrees
-  rm -rf docs/docs/latest &> /dev/null
-  rm -rf docs/docs/nightly &> /dev/null
+  rm -rf versions/latest &> /dev/null
+  rm -rf versions/nightly &> /dev/null
 
-  git worktree remove docs/docs &> /dev/null
+  git worktree remove versions &> /dev/null
+  rm -rf versions &> /dev/null
+
+  # Drop a worktree from the previous layout, where the versioned docs were checked
+  # out inside docs_dir. Left in place it would keep shadowing every version page.
+  rm -rf docs/docs/latest docs/docs/nightly &> /dev/null
+  git worktree remove --force docs/docs &> /dev/null
+  rm -rf docs/docs &> /dev/null
+
+  # Deregister worktrees whose directories are now gone
+  git worktree prune &> /dev/null
 
   # Remove any remaining artifacts
   rm -rf site/

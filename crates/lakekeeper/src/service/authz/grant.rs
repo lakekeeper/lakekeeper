@@ -20,7 +20,7 @@
 //! grant on a parent resource is a grant on the parent. Resolving what a principal
 //! may *effectively* do is a separate question answered by the action-check API.
 
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -33,8 +33,13 @@ use super::{
 use crate::{
     api::{RequestMetadata, iceberg::v1::PaginationQuery},
     service::{
-        GenericTableId, NamespaceId, ProjectId, TableId, TagDefinitionId, ViewId, WarehouseId,
-        events::types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource},
+        ApplyGrantsStoreError, CatalogStore, GenericTableId, GenericTabularInfo,
+        NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId, TableInfo,
+        TagDefinition, TagDefinitionId, Transaction, ViewId, ViewInfo, WarehouseId,
+        events::{
+            EventDispatcher, GrantsChangedEvent,
+            types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource},
+        },
     },
 };
 
@@ -182,6 +187,101 @@ impl GrantResource {
     }
 }
 
+/// A grant's resource together with the ancestry needed to decide authority on it.
+///
+/// [`GrantResource`] names a resource; this places it. Each variant carries what that
+/// level's `are_allowed_*_actions` check already takes, so an authorizer answers a grant
+/// question against the same entities it answers an action question against — a policy
+/// written against a project covers the warehouses beneath it either way. Ids alone cannot
+/// do that: an authorizer resolving inheritance itself has nothing to hang a bare
+/// [`WarehouseId`] under.
+///
+/// Borrowed rather than owned, and nothing here is fetched for the authorizer's benefit:
+/// every handler resolves this chain before the gate anyway, to establish that the resource
+/// exists at all.
+#[derive(Debug, Clone, Copy)]
+pub enum GrantTarget<'a> {
+    Server,
+    Project(&'a ProjectId),
+    Warehouse(&'a ResolvedWarehouse),
+    Namespace {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+    },
+    Table {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        table: &'a TableInfo,
+    },
+    View {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        view: &'a ViewInfo,
+    },
+    GenericTable {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        generic_table: &'a GenericTabularInfo,
+    },
+    Tag(&'a TagDefinition),
+}
+
+impl GrantTarget<'_> {
+    /// The resource a grant on this target is held on: what gets stored, listed and
+    /// announced. Derived rather than passed alongside, so the placed and named forms
+    /// cannot disagree.
+    #[must_use]
+    pub fn resource(&self) -> GrantResource {
+        match self {
+            GrantTarget::Server => GrantResource::Server,
+            GrantTarget::Project(project_id) => GrantResource::Project((*project_id).clone()),
+            GrantTarget::Warehouse(warehouse) => GrantResource::Warehouse(warehouse.warehouse_id),
+            GrantTarget::Namespace {
+                warehouse,
+                namespace,
+            } => GrantResource::Namespace {
+                warehouse_id: warehouse.warehouse_id,
+                namespace_id: namespace.namespace.namespace_id(),
+            },
+            GrantTarget::Table {
+                warehouse, table, ..
+            } => GrantResource::Table {
+                warehouse_id: warehouse.warehouse_id,
+                table_id: table.tabular_id,
+            },
+            GrantTarget::View {
+                warehouse, view, ..
+            } => GrantResource::View {
+                warehouse_id: warehouse.warehouse_id,
+                view_id: view.tabular_id,
+            },
+            GrantTarget::GenericTable {
+                warehouse,
+                generic_table,
+                ..
+            } => GrantResource::GenericTable {
+                warehouse_id: warehouse.warehouse_id,
+                generic_table_id: generic_table.tabular_id,
+            },
+            GrantTarget::Tag(definition) => GrantResource::Tag(definition.tag_definition_id),
+        }
+    }
+
+    #[must_use]
+    pub fn resource_type(&self) -> ResourceType {
+        match self {
+            GrantTarget::Server => ResourceType::Server,
+            GrantTarget::Project(_) => ResourceType::Project,
+            GrantTarget::Warehouse(_) => ResourceType::Warehouse,
+            GrantTarget::Namespace { .. } => ResourceType::Namespace,
+            GrantTarget::Table { .. } => ResourceType::Table,
+            GrantTarget::View { .. } => ResourceType::View,
+            GrantTarget::GenericTable { .. } => ResourceType::GenericTable,
+            GrantTarget::Tag(_) => ResourceType::Tag,
+        }
+    }
+}
+
 /// One grant, identified entirely by its `(principal, privilege, resource)` triple.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GrantSpec {
@@ -308,7 +408,9 @@ impl From<InvalidGrantPrivilege> for ErrorModel {
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZGrantActionForbidden {
     resource_type: ResourceType,
-    privileges: Vec<String>,
+    /// `(privilege, refused granting it, refused revoking it)` — each name once, in
+    /// refusal order.
+    privileges: Vec<(String, bool, bool)>,
 }
 
 impl AuthZGrantActionForbidden {
@@ -317,14 +419,34 @@ impl AuthZGrantActionForbidden {
     /// round trip fixes them all, but bounded so the message stays readable.
     const MAX_NAMED: usize = 5;
 
+    /// Names each refused privilege once, with the directions it was refused in, so the
+    /// message says which entries to fix — a caller refused only on the grant side needs
+    /// to know their deletes would have gone through.
     #[must_use]
     pub fn new(
         resource: &GrantResource,
-        privileges: impl IntoIterator<Item = impl Into<String>>,
+        refused: impl IntoIterator<Item = (GrantOp, impl Into<String>)>,
     ) -> Self {
+        let mut privileges: Vec<(String, bool, bool)> = Vec::new();
+        for (op, privilege) in refused {
+            let privilege = privilege.into();
+            let (granting, revoking) = match op {
+                GrantOp::Grant => (true, false),
+                GrantOp::Revoke => (false, true),
+            };
+            if let Some((_, seen_granting, seen_revoking)) = privileges
+                .iter_mut()
+                .find(|(name, _, _)| *name == privilege)
+            {
+                *seen_granting |= granting;
+                *seen_revoking |= revoking;
+            } else {
+                privileges.push((privilege, granting, revoking));
+            }
+        }
         Self {
             resource_type: resource.resource_type(),
-            privileges: privileges.into_iter().map(Into::into).collect(),
+            privileges,
         }
     }
 }
@@ -335,22 +457,49 @@ impl AuthorizationFailureSource for AuthZGrantActionForbidden {
             resource_type,
             privileges,
         } = self;
-        let named = privileges
-            .iter()
-            .take(Self::MAX_NAMED)
-            .map(|p| format!("`{p}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let listed = if privileges.len() > Self::MAX_NAMED {
-            format!("{named} and {} more", privileges.len() - Self::MAX_NAMED)
+        // One segment per refused direction, so nothing is claimed forbidden that was
+        // not refused: a grant-side refusal must not read as if revoking were too.
+        // The name budget is shared across segments; past it the tail is counted, not
+        // named, and a direction whose names all fall past the budget goes with it.
+        let mut budget = Self::MAX_NAMED;
+        let mut segments: Vec<String> = Vec::new();
+        for (verb, granting, revoking) in [
+            ("granting", true, false),
+            ("revoking", false, true),
+            ("granting or revoking", true, true),
+        ] {
+            let named = privileges
+                .iter()
+                .filter(|(_, g, r)| (*g, *r) == (granting, revoking))
+                .take(budget)
+                .map(|(name, _, _)| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            if named.is_empty() {
+                continue;
+            }
+            budget -= named.len();
+            segments.push(format!("{verb} {}", named.join(", ")));
+        }
+        let described = match segments.as_slice() {
+            // No privilege at all is unreachable from the gate; kept total for safety.
+            [] => "granting or revoking".to_string(),
+            [one] => one.clone(),
+            [head @ .., last] => format!("{} and {last}", head.join(", ")),
+        };
+        let named_count = Self::MAX_NAMED - budget;
+        let listed = if privileges.len() > named_count {
+            format!("{described} and {} more", privileges.len() - named_count)
         } else {
-            named
+            described
+        };
+        // The segments read as one sentence, so only its first letter is capitalized.
+        let mut listed_chars = listed.chars();
+        let listed = match listed_chars.next() {
+            Some(first) => format!("{}{}", first.to_uppercase(), listed_chars.as_str()),
+            None => listed,
         };
         ErrorModel::forbidden(
-            format!(
-                "Granting or revoking {listed} on this {} is forbidden",
-                resource_type.as_str()
-            ),
+            format!("{listed} on this {} is forbidden", resource_type.as_str()),
             "GrantActionForbidden",
             None,
         )
@@ -538,14 +687,32 @@ impl AppliedGrants {
     }
 }
 
-/// One grant-authority question: may the subject grant and revoke `privilege` on the
-/// resource, to `grantee`?
+/// Which way a grant would move: handed out, or taken back.
 ///
-/// Extensible on purpose — construct with [`new`](Self::new) and read fields rather than
-/// destructuring, so a new term costs no out-of-workspace authorizer a compile error.
-/// Compiling is not honoring: a term that changes what may be authorized (grant versus
-/// revoke, say) belongs in a change its implementors cannot silently ignore.
+/// Exhaustive, unlike the check that carries it: a new *term* on the check should not break
+/// an authorizer that ignores it, but a new value of a term it already branches on must,
+/// or the authorizer would fold something it has never considered into whichever arm it
+/// happens to have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrantOp {
+    Grant,
+    Revoke,
+}
+
+/// One grant-authority question: may the subject `op` `privilege` on the resource, to
+/// `grantee`?
+///
+/// Extensible on purpose — construct with [`entry`](Self::entry) or [`any`](Self::any)
+/// and read fields rather than destructuring, so a new term costs no out-of-workspace
+/// authorizer a compile error.
+///
+/// Compiling is therefore not honoring, and the release notes carry what the compiler
+/// cannot: an authorizer that reads only the terms it knows keeps its previous answers,
+/// which is safe but silent. Every term here narrows the question, so ignoring one can
+/// only make an answer coarser than intended — never wider than the caller asked for.
+// No `Hash`: the resolved grantee is not hashable, and nothing keys a map by a whole
+// question — the tuple-based authorizer keys its plan by privilege.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GrantAuthorityCheck<'a> {
     /// A name from the authorizer's own vocabulary. An unrecognized name is answered
@@ -555,18 +722,64 @@ pub struct GrantAuthorityCheck<'a> {
     /// Who would come to hold the privilege — or lose it, for a revoke. An authorizer
     /// whose authority does not depend on the recipient ignores it.
     ///
-    /// `None` leaves the grantee out of the question: the grantable-privileges endpoint
-    /// asks whether the subject has authority over the privilege here at all. That
-    /// answer is advisory, since the apply path asks again for each grantee, so even an
-    /// authorizer that does distinguish grantees may answer this form from the privilege
-    /// alone.
-    pub grantee: Option<&'a UserOrRoleId>,
+    /// Resolved, not just identified: a role grantee carries the role itself, so an
+    /// authorizer can read its identity and attributes rather than only a `RoleId` it has
+    /// no way to look up.
+    ///
+    /// `None` means the question names nobody, which two callers do:
+    ///
+    /// - the grantable-privileges endpoint, asking whether the subject may grant the
+    ///   privilege here *to anyone*. Advisory, since the apply path asks again per entry,
+    ///   so an authorizer that distinguishes grantees may answer it from the privilege
+    ///   alone;
+    /// - a revoke whose role the catalog could not resolve. Grants cascade with their
+    ///   role, so the revoke is already a no-op; the gate runs before that is known, and
+    ///   the resolution ahead of it deliberately cannot fail, because refusing there
+    ///   would let an unauthorized caller probe which roles exist. A write naming such a
+    ///   role is still rejected, just after the gate.
+    ///
+    /// Both forms ask something broader than a named grantee would, so ignoring the term
+    /// or failing to match on it can only make an answer stricter, never wider.
+    pub grantee: Option<&'a UserOrRole>,
+    /// Which way the privilege would move. An authorizer that grants and revokes on the
+    /// same authority ignores it; one that separates them — a role that may take access
+    /// away without being able to hand it out — answers the two differently.
+    ///
+    /// Always present: every question is about moving a privilege in one direction. The
+    /// grantable-privileges endpoint asks about granting, so its answer is exact for an
+    /// authorizer that separates the directions rather than a blend of both.
+    pub op: GrantOp,
 }
 
 impl<'a> GrantAuthorityCheck<'a> {
+    /// The question one diff entry asks: may the subject move `privilege` in direction
+    /// `op`, to — or, for a revoke, from — `grantee`?
+    ///
+    /// `grantee` is `None` only when the entry names a role the catalog could not resolve;
+    /// see the field.
     #[must_use]
-    pub fn new(privilege: &'a str, grantee: Option<&'a UserOrRoleId>) -> Self {
-        Self { privilege, grantee }
+    pub fn entry(privilege: &'a str, grantee: Option<&'a UserOrRole>, op: GrantOp) -> Self {
+        Self {
+            privilege,
+            grantee,
+            op,
+        }
+    }
+
+    /// May the subject grant `privilege` here, to anyone? What the grantable-privileges
+    /// endpoint asks — advisory, since the apply path asks [`entry`](Self::entry)
+    /// questions again per entry, and those name the grantee.
+    ///
+    /// Granting, not revoking: the endpoint exists to say what a principal could hand
+    /// out. Revocation needs no discovery question of its own — what can be taken away
+    /// is read off the existing grants, and each removal is authorized as it is applied.
+    #[must_use]
+    pub fn grantable(privilege: &'a str) -> Self {
+        Self {
+            privilege,
+            grantee: None,
+            op: GrantOp::Grant,
+        }
     }
 }
 
@@ -575,8 +788,8 @@ impl<'a> GrantAuthorityCheck<'a> {
 /// [`are_allowed_grants_impl`](Authorizer::are_allowed_grants_impl) instead.
 #[async_trait::async_trait]
 pub trait AuthZGrantOps: Authorizer {
-    /// May the actor (or `for_user`, when given) grant and revoke each of `checks` on
-    /// `resource`? Returns exactly one decision per check, in order.
+    /// May the actor (or `for_user`, when given) administer each of `checks` on `target`?
+    /// Returns exactly one decision per check, in order.
     ///
     /// Grant *authority* is resolved here rather than modelled as a `Catalog*Action`
     /// because the privilege is a name from this authorizer's own vocabulary: it cannot
@@ -590,7 +803,7 @@ pub trait AuthZGrantOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
-        resource: &GrantResource,
+        target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Naming yourself asks the same question as naming nobody, so it must not trip
@@ -605,7 +818,7 @@ pub trait AuthZGrantOps: Authorizer {
         // by writing the very records its own permission API refuses them. Instance
         // admins provision; they do not administer permissions.
         let decisions = self
-            .are_allowed_grants_impl(metadata, for_user, resource, checks)
+            .are_allowed_grants_impl(metadata, for_user, target, checks)
             .await?;
         // Callers zip decisions against the checks, and `zip` stops at the shorter side —
         // a short vector would silently authorize the tail rather than deny it.
@@ -620,6 +833,86 @@ pub trait AuthZGrantOps: Authorizer {
 
 #[async_trait::async_trait]
 impl<T> AuthZGrantOps for T where T: Authorizer {}
+
+/// The grant rows a resource is born with.
+///
+/// Empty — and cheap, without touching the store — when the authorizer keeps its own
+/// grants, when it declares nothing for this kind of resource, or when nobody is acting.
+/// An anonymous create has no owner to name: the server-bootstrap path creates the
+/// default project that way when authentication is disabled.
+///
+/// The owner is the acting identity, so a request narrowed to a role makes the role the
+/// owner rather than the user behind it.
+pub(crate) fn bootstrap_grant_specs<A: Authorizer>(
+    authorizer: &A,
+    metadata: &RequestMetadata,
+    resource: &GrantResource,
+) -> Vec<GrantSpec> {
+    if authorizer.grants().is_some() {
+        return Vec::new();
+    }
+    let privileges = authorizer.bootstrap_grants(resource.resource_type());
+    if privileges.is_empty() {
+        return Vec::new();
+    }
+    let Some(owner) = metadata.actor().to_user_or_role() else {
+        return Vec::new();
+    };
+    let owner = UserOrRoleId::from(&owner);
+    privileges
+        .iter()
+        .map(|privilege| GrantSpec {
+            principal: owner.clone(),
+            resource: resource.clone(),
+            privilege: (*privilege).to_string(),
+        })
+        .collect()
+}
+
+/// Write the grants a resource is born with, in that resource's own transaction. Returns
+/// what was created, for the caller to announce once it commits.
+///
+/// Called after the authorizer's `create_*` hook so a hook failure still aborts first,
+/// and inside the create transaction because the rows reference a resource no other
+/// transaction can see yet.
+pub(crate) async fn write_bootstrap_grants<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    metadata: &RequestMetadata,
+    resource: &GrantResource,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+    let writes = bootstrap_grant_specs(authorizer, metadata, resource);
+    if writes.is_empty() {
+        return Ok(Vec::new());
+    }
+    C::insert_grants_impl(&writes, transaction).await
+}
+
+/// Announce grants a resource was born with, once their transaction committed.
+///
+/// They still have to reach the audit log: the backend derives its per-grant records from
+/// grant events, so a consumer mirroring them would otherwise never learn the creator
+/// holds anything. Spawned, like the resource's own creation event, so a listener's
+/// latency stays off the create path — and independent of it, so nothing orders which of
+/// the two a listener sees first.
+///
+/// Announces no removals. That is exact for every create except re-registering a table
+/// that keeps its id, where the drop this write follows cascaded the old grants away
+/// unannounced — as any hard delete of a resource does.
+pub(crate) fn emit_bootstrap_grants_async(
+    dispatcher: &EventDispatcher,
+    request_metadata: Arc<RequestMetadata>,
+    created: Vec<GrantSpec>,
+) {
+    if created.is_empty() {
+        return;
+    }
+    let event = GrantsChangedEvent::new(Vec::new(), created, request_metadata);
+    let dispatcher = dispatcher.clone();
+    tokio::spawn(async move {
+        dispatcher.grants_changed(event).await;
+    });
+}
 
 #[cfg(test)]
 mod tests {
@@ -680,29 +973,291 @@ mod tests {
     #[test]
     fn forbidden_grant_is_a_403_that_does_not_name_the_resource() {
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
-        let err = AuthZGrantActionForbidden::new(&resource, ["select"]).into_error_model();
+        let err = AuthZGrantActionForbidden::new(&resource, [(GrantOp::Grant, "select")])
+            .into_error_model();
         assert_eq!(err.code, 403);
         assert_eq!(err.r#type, "GrantActionForbidden");
         assert_eq!(
             err.message,
-            "Granting or revoking `select` on this warehouse is forbidden"
+            "Granting `select` on this warehouse is forbidden"
+        );
+    }
+
+    /// The refusal names the directions it is actually about, per privilege. A caller
+    /// refused only on one side must not be told the other is forbidden too — that
+    /// reading was free while authority was symmetric, and wrong as soon as an
+    /// authorizer separates the two.
+    #[test]
+    fn forbidden_grant_names_the_refused_directions() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let err = AuthZGrantActionForbidden::new(&resource, [(GrantOp::Revoke, "select")])
+            .into_error_model();
+        assert_eq!(
+            err.message,
+            "Revoking `select` on this warehouse is forbidden"
+        );
+
+        // Refused in different directions: each privilege sits under its own verb, so
+        // the message never claims a refusal that did not happen.
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Revoke, "modify")],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `select` and revoking `modify` on this warehouse is forbidden"
+        );
+
+        // All three groups at once, reading as one sentence.
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [
+                (GrantOp::Grant, "select"),
+                (GrantOp::Revoke, "modify"),
+                (GrantOp::Grant, "ownership"),
+                (GrantOp::Revoke, "ownership"),
+            ],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `select`, revoking `modify` and granting or revoking `ownership` \
+             on this warehouse is forbidden"
         );
     }
 
     #[test]
     fn forbidden_grant_names_every_refused_privilege_bounded() {
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
-        let err =
-            AuthZGrantActionForbidden::new(&resource, ["select", "modify"]).into_error_model();
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Grant, "modify")],
+        )
+        .into_error_model();
         assert_eq!(
             err.message,
-            "Granting or revoking `select`, `modify` on this warehouse is forbidden"
+            "Granting `select`, `modify` on this warehouse is forbidden"
         );
-        let err = AuthZGrantActionForbidden::new(&resource, ["a", "b", "c", "d", "e", "f", "g"])
-            .into_error_model();
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            ["a", "b", "c", "d", "e", "f", "g"].map(|p| (GrantOp::Grant, p)),
+        )
+        .into_error_model();
         assert_eq!(
             err.message,
-            "Granting or revoking `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
+            "Granting `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
         );
+    }
+
+    /// The name budget is shared across directions, so one direction can exhaust it and
+    /// leave the other's names in the count. Under-reporting *which* direction the tail
+    /// was refused in is the honest failure: the alternative — naming the budget's worth
+    /// under a verb covering both — would claim refusals that never happened. Pinned
+    /// because it is the one case where the message stops naming a direction it knows
+    /// about.
+    #[test]
+    fn forbidden_grant_lets_one_direction_exhaust_the_name_budget() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let refused = ["a", "b", "c", "d", "e"]
+            .map(|p| (GrantOp::Grant, p))
+            .into_iter()
+            .chain(["x", "y"].map(|p| (GrantOp::Revoke, p)));
+        let err = AuthZGrantActionForbidden::new(&resource, refused).into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
+        );
+
+        // One name left over, so the second direction is still named — and the count
+        // covers only what went unnamed.
+        let refused = ["a", "b", "c", "d"]
+            .map(|p| (GrantOp::Grant, p))
+            .into_iter()
+            .chain(["x", "y"].map(|p| (GrantOp::Revoke, p)));
+        let err = AuthZGrantActionForbidden::new(&resource, refused).into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `a`, `b`, `c`, `d` and revoking `x` and 1 more on this warehouse \
+             is forbidden"
+        );
+    }
+
+    /// One privilege refused in both directions is named once, not twice: it sits under
+    /// the one verb that carries both directions.
+    #[test]
+    fn forbidden_grant_names_a_privilege_refused_both_ways_once() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Revoke, "select")],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting or revoking `select` on this warehouse is forbidden"
+        );
+    }
+
+    mod bootstrap_grants {
+        use super::*;
+        use crate::{
+            request_metadata::RequestMetadataTestBuilder,
+            service::{
+                Role, RoleId,
+                authn::{Actor, UserId},
+                authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
+            },
+        };
+
+        fn as_user(user: &UserId) -> RequestMetadata {
+            RequestMetadataTestBuilder::builder()
+                .actor(Actor::Principal(user.clone()))
+                .build()
+        }
+
+        #[test]
+        fn a_full_vocabulary_alone_confers_no_ownership() {
+            // AllowAll publishes every privilege at every level and stores grants in the
+            // catalog, yet declares no bootstrap privileges: an authorizer has to opt in
+            // before creation starts writing rows.
+            let authorizer = AllowAllAuthorizer::default();
+            let metadata = as_user(&UserId::new_unchecked("oidc", "alice"));
+            assert_eq!(
+                bootstrap_grant_specs(
+                    &authorizer,
+                    &metadata,
+                    &GrantResource::Warehouse(WarehouseId::new_random())
+                ),
+                Vec::new()
+            );
+        }
+
+        #[test]
+        fn the_creating_user_gets_one_row_per_declared_privilege() {
+            let authorizer = HidingAuthorizer::new()
+                .with_bootstrap_grants(&[(ResourceType::Warehouse, &["ownership", "modify"])]);
+            let alice = UserId::new_unchecked("oidc", "alice");
+            let warehouse_id = WarehouseId::new_random();
+            let resource = GrantResource::Warehouse(warehouse_id);
+
+            assert_eq!(
+                bootstrap_grant_specs(&authorizer, &as_user(&alice), &resource),
+                vec![
+                    GrantSpec {
+                        principal: UserOrRoleId::User(alice.clone()),
+                        resource: resource.clone(),
+                        privilege: "ownership".to_string(),
+                    },
+                    GrantSpec {
+                        principal: UserOrRoleId::User(alice),
+                        resource,
+                        privilege: "modify".to_string(),
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn a_declaration_confers_only_on_the_type_it_names() {
+            // The whole point of the resource type parameter: ownership of tables need
+            // not imply ownership of the warehouse they are created in.
+            let authorizer = HidingAuthorizer::new()
+                .with_bootstrap_grants(&[(ResourceType::Table, &["ownership"])]);
+            let alice = UserId::new_unchecked("oidc", "alice");
+            let warehouse_id = WarehouseId::new_random();
+            let table_id = TableId::new_random();
+
+            let table = GrantResource::Table {
+                warehouse_id,
+                table_id,
+            };
+            assert_eq!(
+                bootstrap_grant_specs(&authorizer, &as_user(&alice), &table),
+                vec![GrantSpec {
+                    principal: UserOrRoleId::User(alice.clone()),
+                    resource: table,
+                    privilege: "ownership".to_string(),
+                }]
+            );
+            for undeclared in [
+                GrantResource::Server,
+                GrantResource::Warehouse(warehouse_id),
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: NamespaceId::new_random(),
+                },
+                GrantResource::View {
+                    warehouse_id,
+                    view_id: ViewId::new_random(),
+                },
+            ] {
+                assert_eq!(
+                    bootstrap_grant_specs(&authorizer, &as_user(&alice), &undeclared),
+                    Vec::new(),
+                    "{undeclared:?} was not declared"
+                );
+            }
+        }
+
+        #[test]
+        fn an_assumed_role_owns_what_it_creates() {
+            // The acting identity, not the user behind it: a token narrowed to a role must
+            // not make the whole user an owner.
+            let authorizer = HidingAuthorizer::new()
+                .with_bootstrap_grants(&[(ResourceType::Project, &["ownership"])]);
+            let role_id = RoleId::new_random();
+            let metadata = RequestMetadataTestBuilder::builder()
+                .actor(Actor::Role {
+                    principal: UserId::new_unchecked("oidc", "alice"),
+                    assumed_role: Role::new_random_with_id(role_id).into(),
+                })
+                .build();
+
+            let specs = bootstrap_grant_specs(
+                &authorizer,
+                &metadata,
+                &GrantResource::Project(ProjectId::new_random()),
+            );
+            assert_eq!(
+                specs
+                    .iter()
+                    .map(|spec| spec.principal.clone())
+                    .collect::<Vec<_>>(),
+                vec![UserOrRoleId::Role(role_id)]
+            );
+        }
+
+        #[test]
+        fn an_anonymous_create_leaves_no_owner() {
+            // The server-bootstrap path creates the default project this way when
+            // authentication is disabled: there is nobody to own it.
+            let authorizer = HidingAuthorizer::new()
+                .with_bootstrap_grants(&[(ResourceType::Warehouse, &["ownership"])]);
+            let metadata = RequestMetadataTestBuilder::builder()
+                .actor(Actor::Anonymous)
+                .build();
+            assert_eq!(
+                bootstrap_grant_specs(
+                    &authorizer,
+                    &metadata,
+                    &GrantResource::Warehouse(WarehouseId::new_random())
+                ),
+                Vec::new()
+            );
+        }
+
+        #[test]
+        fn declaring_nothing_writes_nothing() {
+            let authorizer = HidingAuthorizer::new();
+            assert_eq!(
+                bootstrap_grant_specs(
+                    &authorizer,
+                    &as_user(&UserId::new_unchecked("oidc", "alice")),
+                    &GrantResource::Warehouse(WarehouseId::new_random())
+                ),
+                Vec::new()
+            );
+        }
     }
 }

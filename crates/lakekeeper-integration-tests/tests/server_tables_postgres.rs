@@ -3066,7 +3066,7 @@ mod register_data_access {
                 "the ETag must distinguish the delegation the response was built for"
             );
             // A vended credential expires, so the tag must carry its revalidation
-            // point — `lk1.<hash>.<revalidate-after-hex>`. Without the third
+            // point — `lk2.<hash>.<revalidate-after-hex>`. Without the third
             // segment the client holds a validator that can never yield a 304.
             let vended_etag = vended.etag.expect("a vending response must be taggable");
             assert_eq!(

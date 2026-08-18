@@ -270,6 +270,10 @@ impl EventDispatcher {
         dispatch_event!(self, namespace_dropped, event);
     }
 
+    pub(crate) async fn namespace_moved(&self, event: types::MoveNamespaceEvent) {
+        dispatch_event!(self, namespace_moved, event);
+    }
+
     pub(crate) async fn namespace_properties_updated(
         &self,
         event: types::UpdateNamespacePropertiesEvent,
@@ -582,6 +586,15 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a namespace has been successfully dropped
     async fn namespace_dropped(&self, _event: types::DropNamespaceEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a namespace has been successfully moved (re-parented and/or renamed)
+    ///
+    /// Not invoked when the request changed nothing. The event carries the namespace's
+    /// previous ident and parent, which listeners mirroring the hierarchy need in order to
+    /// retire the old path.
+    async fn namespace_moved(&self, _event: types::MoveNamespaceEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

@@ -52,18 +52,21 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Production: production.md
+  # `versions/` is the docs-branch worktree, deliberately outside docs_dir — see
+  # dev/common.sh. Public URLs come from each unit's `site_name` (`docs/<version>`),
+  # not from this path, so they are unaffected by where the worktree lives.
   - Docs:
-      - nightly: "!include docs/docs/nightly/mkdocs.yml"
-      - latest: "!include docs/docs/latest/mkdocs.yml"
-      - Release 0.13.x: "!include docs/docs/0.13.x/mkdocs.yml"
-      - Release 0.12.x: "!include docs/docs/0.12.x/mkdocs.yml"
-      - Release 0.11.x: "!include docs/docs/0.11.x/mkdocs.yml"
-      - Release 0.10.x: "!include docs/docs/0.10.x/mkdocs.yml"
-      - Release 0.9.x: "!include docs/docs/0.9.x/mkdocs.yml"
-      - Release 0.8.x: "!include docs/docs/0.8.x/mkdocs.yml"
-      - Release 0.7.x: "!include docs/docs/0.7.x/mkdocs.yml"
-      - Release 0.6.x: "!include docs/docs/0.6.x/mkdocs.yml"
-      - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
+      - nightly: "!include versions/nightly/mkdocs.yml"
+      - latest: "!include versions/latest/mkdocs.yml"
+      - Release 0.13.x: "!include versions/0.13.x/mkdocs.yml"
+      - Release 0.12.x: "!include versions/0.12.x/mkdocs.yml"
+      - Release 0.11.x: "!include versions/0.11.x/mkdocs.yml"
+      - Release 0.10.x: "!include versions/0.10.x/mkdocs.yml"
+      - Release 0.9.x: "!include versions/0.9.x/mkdocs.yml"
+      - Release 0.8.x: "!include versions/0.8.x/mkdocs.yml"
+      - Release 0.7.x: "!include versions/0.7.x/mkdocs.yml"
+      - Release 0.6.x: "!include versions/0.6.x/mkdocs.yml"
+      - Release 0.5.x: "!include versions/0.5.x/mkdocs.yml"
   - Release Notes:
       - Stay Updated: about/subscribe.md
       - Lakekeeper (OSS): about/release-notes.md
@@ -109,18 +112,23 @@ hooks:
 plugins:
   - monorepo
   - search
+  # Only `latest` is searchable. Every version ships the same page titles, so
+  # indexing more than one makes a single query return a near-identical hit per
+  # version. Numbered snapshots and `nightly` stay fully browsable — this trims
+  # the index only. Patterns are fnmatch against the search record's page path,
+  # where `*` also matches `/`, so `docs/[0-9]*` covers every numbered release
+  # without needing an entry per version.
   - exclude-search:
       exclude:
-        - docs/0.9.x/*
-        - docs/0.8.x/*
-        - docs/0.7.x/*
-        - docs/0.6.x/*
-        - docs/0.5.x/*
+        - docs/[0-9]*
         - docs/nightly/*
+      # Backstop: anything not reachable from the nav stays out of the index.
+      exclude_unreferenced: true
   - autorefs
 
 watch:
   - docs
+  - versions
   - overrides
 
 extra:

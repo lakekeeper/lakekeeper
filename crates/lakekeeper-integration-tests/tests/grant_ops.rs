@@ -18,6 +18,7 @@ use lakekeeper::{
                 CreateNamespaceRequest, NamespaceParameters, PageToken, PaginationQuery,
                 namespace::NamespaceService as _,
                 tables::{DataAccess, TablesService as _},
+                views::ViewService as _,
             },
         },
         management::v1::{
@@ -42,10 +43,12 @@ use lakekeeper::{
             AllowAllAuthorizer, GrantFilter, GrantResource, GrantSpec, ResourceType, UserOrRoleId,
             tests::HidingAuthorizer,
         },
+        events::{EventListener, GrantsChangedEvent},
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, create_generic_table, create_view, memory_io_profile, random_request_metadata,
+    SetupTestCatalog, create_generic_table, create_view, create_view_request, memory_io_profile,
+    random_request_metadata,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -1745,9 +1748,10 @@ async fn an_authorizer_without_a_vocabulary_refuses_writes_but_allows_revokes(po
     .unwrap_err();
     assert_eq!(err.error.code, 403);
     assert_eq!(err.error.r#type, "GrantActionForbidden");
+    // A deletes-only diff, so the refusal is about revoking and says so.
     assert_eq!(
         err.error.message,
-        "Granting or revoking `get_metadata` on this warehouse is forbidden"
+        "Revoking `get_metadata` on this warehouse is forbidden"
     );
 }
 
@@ -2420,4 +2424,482 @@ async fn grantable_privileges_for_yourself_need_no_read_gate(pool: PgPool) {
     .await
     .expect("naming yourself is still a self-read");
     assert_eq!(explicit.privileges.len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Ownership bootstrap
+// ---------------------------------------------------------------------------
+//
+// An authorizer that stores grants in the catalog can declare what creation confers.
+// `HidingAuthorizer` opts in here — `AllowAllAuthorizer` deliberately does not, so no
+// other test in this file gains rows it did not ask for.
+
+/// What every test in this section declares: ownership at four levels, and deliberately
+/// nothing on projects, so the tests can tell a declaration apart from a blanket rule.
+const OWNS_FOUR_LEVELS: &[(ResourceType, &[&str])] = &[
+    (ResourceType::Warehouse, &["ownership"]),
+    (ResourceType::Namespace, &["ownership"]),
+    (ResourceType::Table, &["ownership"]),
+    (ResourceType::View, &["ownership"]),
+];
+
+/// Creating a resource writes the declared grants for the creating identity, at every
+/// level, in the transaction that creates it.
+#[sqlx::test]
+async fn creating_a_resource_grants_ownership_to_its_creator(pool: PgPool) {
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    // The setup helper creates the warehouse through the API as this user, so the
+    // warehouse row below comes from the real create path, not from a seeded row.
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_bootstrap_grants(OWNS_FOUR_LEVELS))
+        .user_id(Some(alice.clone()))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let project_id = (*warehouse.project_id).clone();
+    let metadata = as_principal(&alice, &project_id);
+
+    let owned = |resource: GrantResourceResponse| {
+        (
+            UserOrRole::User(alice.clone()),
+            "ownership".to_string(),
+            resource,
+        )
+    };
+
+    let page = DenyServer::list_warehouse_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata.clone(),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![owned(GrantResourceResponse::Warehouse { warehouse_id })]
+    );
+
+    // A namespace and a table created by the same user, through their own endpoints.
+    let prefix: Prefix = warehouse_id.to_string().into();
+    CatalogServer::create_namespace(
+        Some(prefix.clone()),
+        CreateNamespaceRequest {
+            namespace: NamespaceIdent::new("owned_ns".to_string()),
+            properties: None,
+        },
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    let namespace_id = PostgresBackend::get_namespace(
+        warehouse_id,
+        NamespaceIdent::new("owned_ns".to_string()),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .namespace_id();
+
+    let page = DenyServer::list_namespace_grants(
+        warehouse_id,
+        namespace_id,
+        ctx.clone(),
+        metadata.clone(),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![owned(GrantResourceResponse::Namespace {
+            warehouse_id,
+            namespace_id
+        })]
+    );
+
+    let schema = Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+        ])
+        .build()
+        .unwrap();
+    let created = CatalogServer::create_table(
+        NamespaceParameters {
+            namespace: NamespaceIdent::new("owned_ns".to_string()),
+            prefix: Some(prefix.clone()),
+        },
+        CreateTableRequest {
+            name: "owned_table".to_string(),
+            location: None,
+            schema,
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None,
+        },
+        DataAccess::not_specified(),
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    let table_id: lakekeeper::service::TableId = created.metadata.uuid().into();
+
+    let page = DenyServer::list_table_grants(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        metadata.clone(),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![owned(GrantResourceResponse::Table {
+            warehouse_id,
+            table_id
+        })]
+    );
+
+    // Views store their grants under the same shape as tables, discriminated only by the
+    // kind the store checks before writing: naming the wrong one here would fail the
+    // create rather than quietly file the row under a table.
+    let view = CatalogServer::create_view(
+        NamespaceParameters {
+            namespace: NamespaceIdent::new("owned_ns".to_string()),
+            prefix: Some(prefix),
+        },
+        create_view_request(Some("owned_view"), None),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    let view_id: lakekeeper::service::ViewId = view.metadata.uuid().into();
+
+    let page = DenyServer::list_view_grants(
+        warehouse_id,
+        view_id,
+        ctx.clone(),
+        metadata,
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![owned(GrantResourceResponse::View {
+            warehouse_id,
+            view_id
+        })]
+    );
+
+    // Projects are absent from the declaration, and the project this all lives in was
+    // created by the same user in the same run: a declaration confers on the types it
+    // names, not on creation as such.
+    let page = PostgresBackend::list_grants(
+        &GrantFilter::on(GrantResource::Project(project_id), None),
+        no_pagination(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants, Vec::new());
+}
+
+/// The default is off: an authorizer that declares nothing writes nothing, so upgrading
+/// does not silently start recording ownership.
+#[sqlx::test]
+async fn creating_a_resource_writes_nothing_without_a_declaration(pool: PgPool) {
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new())
+        .user_id(Some(alice.clone()))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let page = DenyServer::list_warehouse_grants(
+        warehouse.warehouse_id,
+        ctx.clone(),
+        as_principal(&alice, &warehouse.project_id),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants, Vec::new());
+}
+
+/// Re-registering a table that keeps its id runs no create hook, and the drop inside that
+/// same transaction cascades the old rows away — so unless the write sits outside the hook
+/// branches, the table comes back with no owner at all.
+#[sqlx::test]
+async fn re_registering_a_table_that_keeps_its_id_keeps_its_owner(pool: PgPool) {
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_bootstrap_grants(OWNS_FOUR_LEVELS))
+        .user_id(Some(alice.clone()))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let metadata = as_principal(&alice, &warehouse.project_id);
+    let prefix: Prefix = warehouse_id.to_string().into();
+    let namespace = NamespaceIdent::new("reg_ns".to_string());
+
+    CatalogServer::create_namespace(
+        Some(prefix.clone()),
+        CreateNamespaceRequest {
+            namespace: namespace.clone(),
+            properties: None,
+        },
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+
+    let ns_params = NamespaceParameters {
+        namespace,
+        prefix: Some(prefix),
+    };
+    let schema = Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+        ])
+        .build()
+        .unwrap();
+    let created = CatalogServer::create_table(
+        ns_params.clone(),
+        CreateTableRequest {
+            name: "reg_table".to_string(),
+            location: None,
+            schema,
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None,
+        },
+        DataAccess::not_specified(),
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    let table_id: lakekeeper::service::TableId = created.metadata.uuid().into();
+
+    // Its own metadata, over its own name: the registered table is the same table, so no
+    // create hook fires.
+    let registered = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("reg_table".to_string())
+            .metadata_location(created.metadata_location.clone().unwrap())
+            .overwrite(true)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        lakekeeper::service::TableId::from(registered.metadata.uuid()),
+        table_id,
+        "the registration has to keep the id for this to exercise the arm it is about"
+    );
+
+    let page = DenyServer::list_table_grants(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        metadata,
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![(
+            UserOrRole::User(alice),
+            "ownership".to_string(),
+            GrantResourceResponse::Table {
+                warehouse_id,
+                table_id
+            }
+        )]
+    );
+}
+
+/// Records the grant events a request produced, so a test can assert what a create
+/// announced rather than only what it stored.
+#[derive(Debug)]
+struct GrantEventCapture(tokio::sync::mpsc::UnboundedSender<GrantsChangedEvent>);
+
+impl std::fmt::Display for GrantEventCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GrantEventCapture")
+    }
+}
+
+#[async_trait::async_trait]
+impl EventListener for GrantEventCapture {
+    async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
+        let _ = self.0.send(event);
+        Ok(())
+    }
+}
+
+/// The rows a resource is born with are announced too. The audit backend derives its
+/// per-grant records from grant events alone, so a create that stored ownership without
+/// announcing it would leave no trace of who may act on the resource.
+#[sqlx::test]
+async fn creating_a_resource_announces_the_grants_it_wrote(pool: PgPool) {
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_bootstrap_grants(OWNS_FOUR_LEVELS))
+        .user_id(Some(alice.clone()))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse.warehouse_id;
+
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    ctx.v1_state
+        .events
+        .append(std::sync::Arc::new(GrantEventCapture(sender)))
+        .await;
+
+    CatalogServer::create_namespace(
+        Some(warehouse_id.to_string().into()),
+        CreateNamespaceRequest {
+            namespace: NamespaceIdent::new("announced_ns".to_string()),
+            properties: None,
+        },
+        ctx.clone(),
+        as_principal(&alice, &warehouse.project_id),
+    )
+    .await
+    .unwrap();
+    let namespace_id = PostgresBackend::get_namespace(
+        warehouse_id,
+        NamespaceIdent::new("announced_ns".to_string()),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .namespace_id();
+
+    // Announcing is fire-and-forget, so the warehouse the setup created may still be
+    // announcing itself. Wait for the namespace's own event; never receiving it is the
+    // failure this test is about, and the timeout reports it.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event: GrantsChangedEvent =
+                events.recv().await.expect("the capture outlives dispatch");
+            if event
+                .created
+                .iter()
+                .any(|spec| matches!(spec.resource, GrantResource::Namespace { .. }))
+            {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("the create announced the grants it wrote");
+    assert_eq!(event.removed, Vec::new());
+    assert_eq!(
+        event.created,
+        vec![GrantSpec {
+            principal: UserOrRoleId::User(alice.clone()),
+            resource: GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            privilege: "ownership".to_string(),
+        }]
+    );
+    assert_eq!(event.request_metadata.actor(), &Actor::Principal(alice));
+}
+
+/// Declaring a privilege commits to the creator being able to hold it. A principal the
+/// catalog has no user record for cannot, and the create fails saying so rather than
+/// committing a resource nobody owns.
+#[sqlx::test]
+async fn a_creator_without_a_user_record_is_refused(pool: PgPool) {
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_bootstrap_grants(OWNS_FOUR_LEVELS))
+        .user_id(Some(alice))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // Authorized by this authorizer, but never registered as a user: no `/config` call,
+    // no bootstrap, no create-user request.
+    let stranger = UserId::try_from("oidc~stranger").unwrap();
+    let err = CatalogServer::create_namespace(
+        Some(warehouse.warehouse_id.to_string().into()),
+        CreateNamespaceRequest {
+            namespace: NamespaceIdent::new("unowned_ns".to_string()),
+            properties: None,
+        },
+        ctx.clone(),
+        as_principal(&stranger, &warehouse.project_id),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "GrantUserNotFound");
+
+    // And the namespace it would have owned is not there either.
+    assert_eq!(
+        PostgresBackend::get_namespace(
+            warehouse.warehouse_id,
+            NamespaceIdent::new("unowned_ns".to_string()),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap(),
+        None
+    );
+}
+
+/// The three fields a bootstrap row is about, so a mismatch names what differs.
+fn listed_grants(
+    grants: Vec<lakekeeper::api::management::v1::grant::GrantResponse>,
+) -> Vec<(UserOrRole, String, GrantResourceResponse)> {
+    grants
+        .into_iter()
+        .map(|grant| (grant.principal, grant.privilege, grant.resource))
+        .collect()
 }

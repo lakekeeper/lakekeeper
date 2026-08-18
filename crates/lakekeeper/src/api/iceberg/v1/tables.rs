@@ -1283,7 +1283,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            etag: Some(ETag::from("W/\"lk1.deadbeef\"")),
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
