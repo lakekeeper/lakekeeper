@@ -241,9 +241,17 @@ impl StorageProfile {
             }
             StorageProfile::Stackit(profile) => profile
                 .generate_catalog_config(warehouse_id, request_metadata, delete_profile)
-                // Only fails for an un-normalized profile, which cannot be
-                // persisted; degrade to an empty config rather than panic.
-                .unwrap_or_default(),
+                .unwrap_or_else(|e| {
+                    // Only fails for an un-normalized profile, which cannot be
+                    // persisted. Still keep `endpoints` populated: clients read
+                    // it to discover what the server supports, and an empty list
+                    // reads as "nothing supported" rather than as a fault.
+                    tracing::warn!("Could not build a catalog config for the STACKIT profile: {e}");
+                    CatalogConfig {
+                        endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
+                        ..CatalogConfig::default()
+                    }
+                }),
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::OneLake(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),

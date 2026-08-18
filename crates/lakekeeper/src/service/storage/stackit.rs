@@ -116,6 +116,11 @@ impl StackitProfile {
     /// Endpoint this profile talks to — the override if set, else derived from
     /// `region`.
     ///
+    /// The region is re-validated here rather than trusted from
+    /// [`Self::normalize`]: it is interpolated into a hostname, so a value
+    /// containing `@`, `#` or `/` could otherwise redirect the derived URL to
+    /// another host entirely.
+    ///
     /// # Errors
     /// Fails if the derived host is not a valid URL, which requires a `region`
     /// that survived [`Self::normalize`].
@@ -123,6 +128,7 @@ impl StackitProfile {
         if let Some(endpoint) = &self.endpoint {
             return Ok(endpoint.clone());
         }
+        validate_region(&self.region)?;
         let host = format!("https://object.storage.{}.onstackit.cloud", self.region);
         Url::parse(&host).map_err(|e| {
             InvalidProfileError {
@@ -220,15 +226,8 @@ impl StackitProfile {
             .into());
         }
 
-        if self.region.trim().is_empty() {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "STACKIT `region` must not be empty, e.g. `eu01`.".to_string(),
-                entity: "region".to_string(),
-            }
-            .into());
-        }
         self.region = self.region.trim().to_string();
+        validate_region(&self.region)?;
 
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim().trim_matches('/').to_string();
@@ -291,7 +290,7 @@ impl StackitProfile {
     ///
     /// # Errors
     /// Fails if a field is changed that would move the warehouse's data.
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
@@ -306,6 +305,11 @@ impl StackitProfile {
         // S3, where an endpoint change is usually just another route.
         if self.endpoint != other.endpoint {
             return Err(UpdateError::ImmutableField("endpoint".to_string()));
+        }
+        // An update that omits the layout keeps the current one; resetting it
+        // would change where new tables are written. Matches `S3Profile`.
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
         Ok(other)
     }
@@ -449,6 +453,31 @@ fn trust_policy_hint(group_urn: &str) -> String {
     )
 }
 
+/// Validate a STACKIT region.
+///
+/// The region is interpolated into the derived hostname, so the character set
+/// is restricted to what cannot alter the URL's authority. Lowercase
+/// alphanumerics and `-` cover every STACKIT region (`eu01`) and leave room for
+/// AWS-style names without admitting `@`, `#`, `/`, `:` or `.`.
+fn validate_region(region: &str) -> Result<(), ValidationError> {
+    let valid = !region.is_empty()
+        && region
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if valid {
+        return Ok(());
+    }
+    Err(InvalidProfileError {
+        source: None,
+        reason: format!(
+            "STACKIT `region` must be non-empty and contain only lowercase letters, digits \
+             and `-`, e.g. `eu01`. Got `{region}`."
+        ),
+        entity: "region".to_string(),
+    }
+    .into())
+}
+
 /// Validate a STACKIT credentials-group URN.
 ///
 /// Shape: `urn:sgws:identity::<account>:group/<name>`. Checked up-front because
@@ -547,8 +576,8 @@ mod tests {
             *,
         };
         use crate::{
-            request_metadata::RequestMetadata, service::storage::StorageProfile,
-            service::storage::s3::test::test_block_on,
+            request_metadata::RequestMetadata,
+            service::storage::{StorageProfile, s3::test::test_block_on},
         };
 
         pub(crate) fn storage_profile(key_prefix: &str) -> (StackitProfile, StackitCredential) {
@@ -633,7 +662,10 @@ mod tests {
                     let credential: StorageCredential = StorageCredential::Stackit(credential);
                     let mut profile: StorageProfile = StorageProfile::Stackit(profile);
 
-                    let err = profile.normalize(Some(&credential)).unwrap_err().to_string();
+                    let err = profile
+                        .normalize(Some(&credential))
+                        .unwrap_err()
+                        .to_string();
                     assert!(err.contains("credentials-group-urn"), "{err}");
                 },
                 true,
@@ -744,6 +776,49 @@ mod tests {
         assert_eq!(
             p.credentials_group_urn.as_deref(),
             Some("urn:sgws:identity::87066461224079950546:group/credentials-group-8cd7b4")
+        );
+    }
+
+    #[test]
+    fn a_region_cannot_inject_a_different_host_into_the_derived_endpoint() {
+        // The region is interpolated into the hostname, so `@` (userinfo) and
+        // `#` (fragment) would otherwise move the authority off onstackit.cloud.
+        for region in [
+            "eu01@evil.example",
+            "eu01#.onstackit.cloud",
+            "eu01/x",
+            "eu01.evil",
+            "EU01",
+            "",
+        ] {
+            let mut p = profile();
+            p.region = region.to_string();
+            assert!(
+                p.clone().normalize(None).is_err(),
+                "expected region `{region}` to be rejected"
+            );
+            assert!(
+                p.endpoint().is_err(),
+                "endpoint() accepted region `{region}`"
+            );
+        }
+        // Hyphens stay valid, so an AWS-style region is not rejected.
+        let mut p = profile();
+        p.region = "eu-central-1".to_string();
+        p.normalize(None).unwrap();
+    }
+
+    #[test]
+    fn an_update_that_omits_the_layout_keeps_the_current_one() {
+        let mut before = profile();
+        before.storage_layout = Some(StorageLayout::default());
+        let mut after = before.clone();
+        after.storage_layout = None;
+
+        let merged = before.clone().update_with(after).unwrap();
+        assert_eq!(
+            merged.storage_layout, before.storage_layout,
+            "omitting storage-layout must not reset it"
         );
     }
 
