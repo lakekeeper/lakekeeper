@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum_prometheus::metrics;
 use http::StatusCode;
@@ -1416,7 +1420,11 @@ where
         .await
     }
 
-    /// Return every role the given role is a member of, transitively, excluding itself.
+    /// Return every role each of `role_ids` is a member of, transitively, excluding itself.
+    ///
+    /// One entry per requested role, so a role nested in nothing maps to an empty set rather
+    /// than being absent. Asking about a single role is a one-element slice; asking about
+    /// several costs one round trip, not several.
     ///
     /// Primary consumer: an authorizer deciding a request that names a role rather than a
     /// user — a caller acting as a role, or a role named as the recipient of a grant. A
@@ -1433,19 +1441,21 @@ where
     /// touches the membership graph clears the cache in-process
     /// ([`role_ancestors_cache_invalidate_all`]); other replicas converge by TTL.
     ///
-    /// Precondition: `role_id` is a role the caller has already resolved. A role that does
+    /// Precondition: every id is a role the caller has already resolved. A role that does
     /// not exist yields an empty set, indistinguishable from one nested in nothing — safe
     /// where the caller holds a resolved role, and a silent widening where it does not.
     ///
     /// [`role_ancestors_cache_invalidate_all`]: role_assignments_cache::role_ancestors_cache_invalidate_all
     async fn list_role_ancestors(
-        role_id: RoleId,
+        role_ids: &[RoleId],
         catalog_state: Self::State,
-    ) -> Result<Arc<Vec<AssignedRole>>, CatalogBackendError> {
-        role_assignments_cache::role_ancestors_cache_get_or_load(role_id, async move {
-            Ok(Arc::new(
-                Self::list_role_ancestors_impl(role_id, catalog_state).await?,
-            ))
+    ) -> Result<HashMap<RoleId, Arc<Vec<AssignedRole>>>, CatalogBackendError> {
+        role_assignments_cache::role_ancestors_cache_get_or_load(role_ids, |missing| async move {
+            Ok(Self::list_role_ancestors_impl(&missing, catalog_state)
+                .await?
+                .into_iter()
+                .map(|(role_id, ancestors)| (role_id, Arc::new(ancestors)))
+                .collect())
         })
         .await
     }

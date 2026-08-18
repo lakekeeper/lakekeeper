@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use moka::{
     future::Cache,
@@ -479,57 +479,66 @@ fn update_ra_size_metric() {
     cache_metrics::set_cache_size(CACHE_TYPE_RA, ROLE_ANCESTORS_CACHE.entry_count());
 }
 
-/// Single-flight read-through for the role-ancestors cache.
+/// Read-through for the role-ancestors cache, over any number of roles.
 ///
-/// Concurrent misses for one role coalesce onto a single loader run. Unlike the other two
-/// read-throughs there is no per-key invalidation to race with — the only eviction is
-/// [`role_ancestors_cache_invalidate_all`], which is a whole-cache operation — so this uses
-/// `try_get_with` rather than the compute-lock dance those need. A clear landing mid-load
-/// can therefore be followed by that load's insert, leaving one stale entry for up to a TTL;
-/// the same TTL bound already applies to every other replica, so it changes nothing about
-/// the guarantee.
-pub(super) async fn role_ancestors_cache_get_or_load<Fut>(
-    role_id: RoleId,
-    load: Fut,
-) -> Result<Arc<Vec<AssignedRole>>, CatalogBackendError>
+/// `load` is called once with the roles that missed, and must return an entry for **every**
+/// one it was given. A seed missing from its result would be cached as absent and re-read on
+/// every request, and worse, a caller cannot tell "nested in nothing" from "nobody looked" —
+/// so a short result is treated as a backend error rather than as an answer.
+///
+/// No single-flight: concurrent misses on the same role each run a loader rather than
+/// coalescing onto one. Batching and per-key compute locks do not compose without making the
+/// batch itself the unit of locking, which would serialise unrelated roles. The cost is a
+/// few duplicate reads in the window after a TTL expiry or a clear, each one indexed and
+/// usually returning nothing; the alternative costs every batch the slowest role in it.
+///
+/// A clear landing mid-load can be followed by that load's insert, leaving one stale entry
+/// for up to a TTL. The same TTL bound already applies to every other replica, so it changes
+/// nothing about the guarantee.
+pub(super) async fn role_ancestors_cache_get_or_load<F, Fut>(
+    role_ids: &[RoleId],
+    load: F,
+) -> Result<HashMap<RoleId, Arc<Vec<AssignedRole>>>, CatalogBackendError>
 where
-    Fut: std::future::Future<Output = Result<Arc<Vec<AssignedRole>>, CatalogBackendError>> + Send,
+    F: FnOnce(Vec<RoleId>) -> Fut,
+    Fut: std::future::Future<
+            Output = Result<HashMap<RoleId, Arc<Vec<AssignedRole>>>, CatalogBackendError>,
+        > + Send,
 {
     if !CONFIG.cache.role_ancestors.enabled {
-        return load.await;
+        return load(role_ids.to_vec()).await;
     }
 
-    if let Some(cached) = role_ancestors_cache_get(role_id).await {
-        return Ok(cached);
-    }
-
-    let loaded = ROLE_ANCESTORS_CACHE
-        .entry(role_id)
-        .and_try_compute_with(|maybe_entry| async move {
-            if maybe_entry.is_some() {
-                // Populated by another caller while we waited on the key lock.
-                return Ok::<_, CatalogBackendError>(Op::Nop);
+    let mut resolved: HashMap<RoleId, Arc<Vec<AssignedRole>>> =
+        HashMap::with_capacity(role_ids.len());
+    let mut missing = Vec::new();
+    for role_id in role_ids {
+        match role_ancestors_cache_get(*role_id).await {
+            Some(cached) => {
+                resolved.insert(*role_id, cached);
             }
-            Ok(Op::Put(load.await?))
-        })
-        .await?;
+            None => missing.push(*role_id),
+        }
+    }
+    if missing.is_empty() {
+        return Ok(resolved);
+    }
+
+    let loaded = load(missing.clone()).await?;
+    for role_id in missing {
+        let ancestors = loaded.get(&role_id).ok_or_else(|| {
+            CatalogBackendError::new_unexpected(std::io::Error::other(format!(
+                "role-ancestors load returned no entry for {role_id}"
+            )))
+        })?;
+        ROLE_ANCESTORS_CACHE
+            .insert(role_id, Arc::clone(ancestors))
+            .await;
+        resolved.insert(role_id, Arc::clone(ancestors));
+    }
     update_ra_size_metric();
 
-    Ok(match loaded {
-        CompResult::Inserted(entry)
-        | CompResult::ReplacedWith(entry)
-        | CompResult::Unchanged(entry) => entry.into_value(),
-        // Unreachable: the closure only emits `Put` or `Nop` on an existing entry. Re-read
-        // defensively, and fail rather than fall back to an empty set — fewer ancestors is
-        // not a smaller answer, it is a wrong one, and it silently widens access.
-        CompResult::StillNone(_) | CompResult::Removed(_) => {
-            role_ancestors_cache_get(role_id).await.ok_or_else(|| {
-                CatalogBackendError::new_unexpected(std::io::Error::other(
-                    "role-ancestors cache compute returned no entry",
-                ))
-            })?
-        }
-    })
+    Ok(resolved)
 }
 
 // ============================================================================
@@ -813,6 +822,33 @@ mod tests {
     /// closure walk — which is exactly why the clear is blunt. A clear that only removed
     /// some keys would leave a removed edge visible, and a policy written against the
     /// former parent still applying.
+    /// A loader that omits a role it was asked about is a backend error, not an answer.
+    ///
+    /// The two are indistinguishable downstream — an empty closure and an unread one look
+    /// identical — and guessing empty is the permissive guess: every policy written against a
+    /// parent role silently stops applying. So the read-through refuses to cache a gap.
+    #[tokio::test]
+    async fn a_loader_that_skips_a_requested_role_errors() {
+        let asked = RoleId::new_random();
+        let skipped = RoleId::new_random();
+
+        let err = role_ancestors_cache_get_or_load(&[asked, skipped], |missing| async move {
+            assert_eq!(missing.len(), 2, "neither role is cached yet");
+            Ok(HashMap::from([(asked, Arc::new(vec![]))]))
+        })
+        .await
+        .expect_err("a missing entry is an error");
+        assert!(
+            err.to_string().contains(&skipped.to_string()),
+            "the error names the role that went unanswered, got: {err}"
+        );
+
+        assert!(
+            role_ancestors_cache_get(skipped).await.is_none(),
+            "nothing is cached for the role the loader skipped"
+        );
+    }
+
     #[tokio::test]
     async fn role_ancestors_invalidate_all_clears_every_entry() {
         let nested = RoleId::new_random();

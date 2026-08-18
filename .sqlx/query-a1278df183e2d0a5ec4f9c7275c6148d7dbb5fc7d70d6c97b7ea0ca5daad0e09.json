@@ -1,10 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH RECURSIVE ancestors(role_id) AS (\n                SELECT rm.parent_role_id\n                FROM role_membership rm\n                WHERE rm.member_role_id = $1\n            UNION\n                SELECT rm.parent_role_id\n                FROM role_membership rm\n                JOIN ancestors a ON rm.member_role_id = a.role_id\n        )\n        SELECT r.id, r.source_id, r.provider_id, r.project_id\n        FROM ancestors a\n        JOIN \"role\" r ON r.id = a.role_id\n        ",
+  "query": "\n        WITH RECURSIVE ancestors(seed, role_id) AS (\n                SELECT rm.member_role_id, rm.parent_role_id\n                FROM role_membership rm\n                WHERE rm.member_role_id = ANY($1)\n            UNION\n                SELECT a.seed, rm.parent_role_id\n                FROM role_membership rm\n                JOIN ancestors a ON rm.member_role_id = a.role_id\n        )\n        SELECT a.seed AS \"seed!\", r.id, r.source_id, r.provider_id, r.project_id\n        FROM ancestors a\n        JOIN \"role\" r ON r.id = a.role_id\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "seed!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
         "name": "id",
         "type_info": "Uuid",
         "origin": {
@@ -15,7 +21,7 @@
         }
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "source_id",
         "type_info": "Text",
         "origin": {
@@ -26,7 +32,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "provider_id",
         "type_info": "Text",
         "origin": {
@@ -37,7 +43,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "project_id",
         "type_info": "Text",
         "origin": {
@@ -50,15 +56,16 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "UuidArray"
       ]
     },
     "nullable": [
+      null,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "ee244915043535847befdec306c86e25c25190e73132d7ec9151dcd0abb678f3"
+  "hash": "a1278df183e2d0a5ec4f9c7275c6148d7dbb5fc7d70d6c97b7ea0ca5daad0e09"
 }

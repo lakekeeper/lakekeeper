@@ -981,9 +981,9 @@ where
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
     async fn list_role_ancestors_impl(
-        role_id: RoleId,
+        role_ids: &[RoleId],
         catalog_state: Self::State,
-    ) -> Result<Vec<AssignedRole>, CatalogBackendError>;
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,

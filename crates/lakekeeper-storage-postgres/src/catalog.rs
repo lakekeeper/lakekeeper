@@ -640,10 +640,10 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_role_ancestors_impl(
-        role_id: RoleId,
+        role_ids: &[RoleId],
         catalog_state: Self::State,
-    ) -> Result<Vec<AssignedRole>, CatalogBackendError> {
-        super::role_assignment::list_role_ancestors(role_id, &catalog_state.read_pool()).await
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+        super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
     }
 
     async fn list_role_assignments_for_role_by_ident_impl(

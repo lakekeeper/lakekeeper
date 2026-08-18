@@ -526,12 +526,17 @@ pub(crate) async fn list_role_assignments_for_user<
 
 // ─── list_role_ancestors ─────────────────────────────────────────────────────
 
-/// Every role `role_id` is a member of, transitively — its own row excluded.
+/// Every role each of `role_ids` is a member of, transitively — their own rows excluded.
 ///
 /// Upward only, and flat: an authorizer needs the whole set at once, and one that expresses
 /// nesting as direct parent links needs it flattened, because a chain broken by a missing
 /// intermediate stops resolving. Excluding the seed row mirrors the shape of the other
 /// closure readers here — the caller already holds the role it asked about.
+///
+/// One query for any number of seeds, and the recursion carries the seed it started from:
+/// unioning the closures without it would say which roles are ancestors of *something* in
+/// the batch, which is not a question anyone asked. Asking about one role is this with a
+/// single-element slice.
 ///
 /// `UNION` (not `UNION ALL`) makes this terminate on a cyclic graph as well as deduplicate;
 /// cycles are rejected when an edge is written, so that is belt and braces.
@@ -540,38 +545,49 @@ pub(crate) async fn list_role_ancestors<
     'e: 'c,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
-    role_id: RoleId,
+    role_ids: &[RoleId],
     connection: E,
-) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+    let seeds: Vec<Uuid> = role_ids.iter().map(|role_id| **role_id).collect();
     let rows = sqlx::query!(
         r#"
-        WITH RECURSIVE ancestors(role_id) AS (
-                SELECT rm.parent_role_id
+        WITH RECURSIVE ancestors(seed, role_id) AS (
+                SELECT rm.member_role_id, rm.parent_role_id
                 FROM role_membership rm
-                WHERE rm.member_role_id = $1
+                WHERE rm.member_role_id = ANY($1)
             UNION
-                SELECT rm.parent_role_id
+                SELECT a.seed, rm.parent_role_id
                 FROM role_membership rm
                 JOIN ancestors a ON rm.member_role_id = a.role_id
         )
-        SELECT r.id, r.source_id, r.provider_id, r.project_id
+        SELECT a.seed AS "seed!", r.id, r.source_id, r.provider_id, r.project_id
         FROM ancestors a
         JOIN "role" r ON r.id = a.role_id
         "#,
-        *role_id,
+        &seeds,
     )
     .fetch_all(connection)
     .await
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| AssignedRole {
-            role_id: RoleId::new(row.id),
-            role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
-            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
-        })
-        .collect())
+    // Every seed gets an entry, ancestors or not. A role nested in nothing is the common
+    // case, and leaving it absent would make the caller unable to tell it from one nobody
+    // looked up — and would re-query for it on every request.
+    let mut by_seed: HashMap<RoleId, Vec<AssignedRole>> = role_ids
+        .iter()
+        .map(|role_id| (*role_id, Vec::new()))
+        .collect();
+    for row in rows {
+        by_seed
+            .entry(RoleId::new(row.seed))
+            .or_default()
+            .push(AssignedRole {
+                role_id: RoleId::new(row.id),
+                role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+                project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
+            });
+    }
+    Ok(by_seed)
 }
 
 // ─── list_role_assignments_for_role ──────────────────────────────────────────
@@ -3612,8 +3628,15 @@ mod tests {
             .unwrap();
         t.commit().await.unwrap();
 
-        let ancestors = list_role_ancestors(leaf, &pool).await.unwrap();
-        let ids: HashSet<RoleId> = ancestors.iter().map(|r| r.role_id).collect();
+        // One call, both seeds, and each closure attributed to the role it belongs to. A
+        // union of the two would answer neither question: `grandparent` is an ancestor of
+        // `leaf` and of nothing at all from its own row.
+        let by_seed = list_role_ancestors(&[leaf, grandparent], &pool)
+            .await
+            .unwrap();
+
+        let leaf_ancestors = &by_seed[&leaf];
+        let ids: HashSet<RoleId> = leaf_ancestors.iter().map(|r| r.role_id).collect();
         assert_eq!(
             ids,
             HashSet::from([parent, grandparent]),
@@ -3621,7 +3644,7 @@ mod tests {
         );
 
         // Every entry carries what an external authorizer names a role by.
-        let parent_entry = ancestors
+        let parent_entry = leaf_ancestors
             .iter()
             .find(|r| r.role_id == parent)
             .expect("the direct parent is in the closure");
@@ -3629,9 +3652,25 @@ mod tests {
         assert_eq!(parent_entry.project_id.as_ref(), &project_id);
 
         assert_eq!(
-            list_role_ancestors(grandparent, &pool).await.unwrap().len(),
+            by_seed[&grandparent].len(),
             0,
             "the top of the chain is nested in nothing"
+        );
+        assert_eq!(
+            by_seed.len(),
+            2,
+            "one entry per requested role, so `nested in nothing` is an answer and not a gap"
+        );
+
+        // The middle of the chain, asked on its own.
+        let only_parent = list_role_ancestors(&[parent], &pool).await.unwrap();
+        assert_eq!(
+            only_parent[&parent]
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([grandparent]),
+            "asking about one role is the same call with a one-element slice"
         );
     }
 
