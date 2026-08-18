@@ -34,6 +34,7 @@ jobs:
       - test
       - msrv-check
       - unused-deps
+      - check-audit-format-callout
     steps:
       - run: exit 0
 
@@ -412,3 +413,107 @@ jobs:
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  check-audit-format-callout:
+    name: audit format change is called out
+    runs-on: ubuntu-24.04
+    # Only a pull request has a title and body to inspect; this workflow also runs on
+    # pushes and manual dispatches, where there is nothing to gate. The condition sits
+    # on the steps rather than on the job: a skipped job skips everything that `needs`
+    # it, which would stop `tests-pass` reporting on pushes to main. With no job-level
+    # condition the job runs, does nothing, and succeeds.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          # The base commit has to be present to diff against it. The default shallow
+          # fetch does not include it.
+          fetch-depth: 0
+      - name: Require a release-notes callout when the audit log format changes
+        if: github.event_name == 'pull_request'
+        env:
+          # Passed as environment variables rather than interpolated into the script
+          # below: a pull request title or body is attacker-controlled text, and
+          # `${{ }}` substitution would splice it into the shell.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          AUDIT_DIR=crates/lakekeeper/src/service/events/backends/audit
+
+          # Three-dot so the comparison starts at the merge base: unrelated movement on
+          # the base branch must not trip this gate.
+          # Read the declared version at each end and compare the values, rather than
+          # grepping a diff for the constant. A diff limited to a path cannot pair the
+          # old and new file when the module moves, so the whole file reads as added and
+          # the version reads as changed when it did not. Searching the tree at each
+          # revision does not care where the constant lives.
+          #
+          # `grep` here is deliberately not `grep -q`: with `-q` grep exits on the first
+          # match, the producer gets SIGPIPE, and `pipefail` then reports the whole
+          # pipeline as failed — a match would be read as "no match".
+          declared_version() {
+            git grep -h -oE 'AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"' "$1" -- crates/ \
+              2>/dev/null | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+)"/\1/' || true
+          }
+          BASE_VERSION="$(declared_version "${BASE_SHA}")"
+          HEAD_VERSION="$(declared_version HEAD)"
+
+          if [ "${BASE_VERSION}" != "${HEAD_VERSION}" ]; then
+            VERSION_CHANGED=true
+          else
+            VERSION_CHANGED=false
+          fi
+
+          if [ -n "$(git diff --name-only "${BASE_SHA}...HEAD" -- "${AUDIT_DIR}/fixtures/")" ]; then
+            FIXTURES_CHANGED=true
+          else
+            FIXTURES_CHANGED=false
+          fi
+
+          if [ "${VERSION_CHANGED}" = false ] && [ "${FIXTURES_CHANGED}" = false ]; then
+            echo "Audit log format untouched — nothing to call out."
+            exit 0
+          fi
+
+          echo "Audit log format change detected. Declared version: '${BASE_VERSION}' -> '${HEAD_VERSION}' (changed: ${VERSION_CHANGED}); fixtures changed: ${FIXTURES_CHANGED}."
+
+          # Either signal is enough. A title naming the audit log is what the release
+          # notes are summarised from; an explicit `## Release notes` section says it
+          # outright.
+          if printf '%s' "${PR_TITLE:-}" | grep -i 'audit' >/dev/null; then
+            echo "Pull request title mentions the audit log. OK."
+            exit 0
+          fi
+          if printf '%s\n' "${PR_BODY:-}" | grep -iE '^##[[:space:]]*release notes' >/dev/null; then
+            echo "Pull request body has a '## Release notes' section. OK."
+            exit 0
+          fi
+
+          echo "::error::This pull request changes the audit log format but does not say so where a consumer would see it."
+          cat >&2 <<'MESSAGE'
+
+          This pull request changes the audit log wire format: it edits AUDIT_FORMAT,
+          the committed fixtures, or both. Operators parse these records, so a format
+          change has to be visible in the release notes rather than only in the diff.
+
+          Do one of the following:
+
+            * mention the audit log in the pull request title, e.g.
+              "feat(audit): record the request id on authorization events" — release
+              notes are summarised from pull request titles; or
+
+            * add a "## Release notes" section to the pull request body describing the
+              change in consumer terms: which field moved, and what a parser must do
+              about it.
+
+          If you bumped the major half of AUDIT_FORMAT, the release notes are not
+          optional: a consumer that discovers a breaking format change from a parse
+          failure in production has been let down.
+
+          See the audit log section of docs/docs/developer-guide.md.
+          MESSAGE
+          exit 1
