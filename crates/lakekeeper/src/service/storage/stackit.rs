@@ -535,6 +535,112 @@ impl From<StackitCredential> for S3Credential {
 mod tests {
     use super::*;
 
+    /// Live tests against STACKIT. Skipped unless `LAKEKEEPER_TEST__STACKIT_*`
+    /// is set; `unwrap` on the variables so a half-configured environment fails
+    /// loudly instead of passing without testing anything.
+    pub(crate) mod stackit_integration_tests {
+        use super::{
+            super::super::{
+                StorageCredential,
+                validation::{ValidationCheckName, ValidationCheckStatus},
+            },
+            *,
+        };
+        use crate::{
+            request_metadata::RequestMetadata, service::storage::StorageProfile,
+            service::storage::s3::test::test_block_on,
+        };
+
+        pub(crate) fn storage_profile(key_prefix: &str) -> (StackitProfile, StackitCredential) {
+            let mut profile = StackitProfile::builder()
+                .bucket(std::env::var("LAKEKEEPER_TEST__STACKIT_BUCKET").unwrap())
+                .region(std::env::var("LAKEKEEPER_TEST__STACKIT_REGION").unwrap())
+                .key_prefix(key_prefix.to_string())
+                .credentials_group_urn(
+                    std::env::var("LAKEKEEPER_TEST__STACKIT_CREDENTIALS_GROUP_URN").unwrap(),
+                )
+                .build();
+            // Optional: the endpoint is normally derived. Set while STACKIT's
+            // regular object storage predates the STS endpoint.
+            if let Ok(endpoint) = std::env::var("LAKEKEEPER_TEST__STACKIT_ENDPOINT") {
+                profile.endpoint = Some(endpoint.parse().unwrap());
+            }
+            let credential = StackitCredential::AccessKey(StackitAccessKeyCredential {
+                access_key_id: std::env::var("LAKEKEEPER_TEST__STACKIT_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__STACKIT_SECRET_ACCESS_KEY")
+                    .unwrap(),
+            });
+            (profile, credential)
+        }
+
+        /// Every storage check must actually *pass*, not merely not-fail.
+        ///
+        /// Asserted against the report rather than `validate_access`, which
+        /// collapses skipped into success — so a configuration that silently
+        /// skipped credential vending would otherwise look green here.
+        #[test]
+        fn test_can_validate() {
+            // Shared runtime: the S3 client behind this profile is a static.
+            test_block_on(
+                async {
+                    let (profile, credential) =
+                        storage_profile(&format!("validate-{}", uuid::Uuid::now_v7()));
+                    let credential: StorageCredential = StorageCredential::Stackit(credential);
+                    let mut profile: StorageProfile = StorageProfile::Stackit(profile);
+
+                    profile.normalize(Some(&credential)).unwrap();
+                    let report = Box::pin(profile.validate_access_report(
+                        Some(&credential),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await;
+                    assert!(report.valid, "{:?}", report.checks);
+
+                    for name in [
+                        ValidationCheckName::StorageClientInitialized,
+                        ValidationCheckName::LakekeeperReadWrite,
+                        ValidationCheckName::VendedCredentialsIssued,
+                        ValidationCheckName::VendedCredentialsReadWrite,
+                        ValidationCheckName::VendedCredentialsScopeEnforced,
+                        ValidationCheckName::Cleanup,
+                    ] {
+                        let check = report
+                            .checks
+                            .iter()
+                            .find(|c| c.name == name)
+                            .unwrap_or_else(|| panic!("report is missing {name}"));
+                        assert_eq!(
+                            check.status,
+                            ValidationCheckStatus::Passed,
+                            "{name} did not pass: {check:?}"
+                        );
+                    }
+                },
+                true,
+            );
+        }
+
+        /// Vending must be refused when no credentials group is configured,
+        /// rather than falling back to the un-downscoped parent credentials.
+        #[test]
+        fn test_vending_without_a_credentials_group_is_refused() {
+            test_block_on(
+                async {
+                    let (mut profile, credential) =
+                        storage_profile(&format!("nogroup-{}", uuid::Uuid::now_v7()));
+                    profile.credentials_group_urn = None;
+                    let credential: StorageCredential = StorageCredential::Stackit(credential);
+                    let mut profile: StorageProfile = StorageProfile::Stackit(profile);
+
+                    let err = profile.normalize(Some(&credential)).unwrap_err().to_string();
+                    assert!(err.contains("credentials-group-urn"), "{err}");
+                },
+                true,
+            );
+        }
+    }
+
     fn profile() -> StackitProfile {
         StackitProfile::builder()
             .bucket("my-warehouse".to_string())
