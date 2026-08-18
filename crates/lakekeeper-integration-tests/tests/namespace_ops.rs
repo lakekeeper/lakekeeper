@@ -2196,3 +2196,65 @@ async fn test_move_namespace_rejects_empty_destination(pool: PgPool) {
 
     assert_eq!(err.error.code, 400, "expected bad request, got {err:?}");
 }
+
+/// Create reports the path that was stored, which for a nested namespace can differ from the
+/// request: the ancestor segments come from the parent row. That keeps create consistent with
+/// `list_namespaces` and `move_namespace`, so a client can diff a listing against what create told
+/// it. A read addressed by an explicit path still echoes that path, and this pins both halves —
+/// they are deliberately different contracts, not an inconsistency.
+#[sqlx::test]
+async fn test_create_namespace_under_case_variant_parent_reports_stored_path(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let prefix = lakekeeper::api::iceberg::types::Prefix(warehouse_id.to_string());
+
+    for path in [vec!["a"], vec!["a", "B"]] {
+        CatalogServer::create_namespace(
+            Some(prefix.clone()),
+            CreateNamespaceRequest {
+                namespace: ns_ident(&path),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Caller spells the parent `a/b`; the stored parent row is `a/B`.
+    let created = CatalogServer::create_namespace(
+        Some(prefix.clone()),
+        CreateNamespaceRequest {
+            namespace: ns_ident(&["a", "b", "c"]),
+            properties: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        created.namespace,
+        ns_ident(&["a", "B", "c"]),
+        "create must report where the namespace actually is, with the parent's stored casing"
+    );
+
+    // A read addressed by an explicit path still echoes that path — a different contract.
+    let loaded = CatalogServer::load_namespace_metadata(
+        NamespaceParameters {
+            prefix: Some(prefix),
+            namespace: ns_ident(&["a", "b", "c"]),
+        },
+        lakekeeper::api::iceberg::v1::namespace::GetNamespacePropertiesQuery { return_uuid: false },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        loaded.namespace,
+        ns_ident(&["a", "b", "c"]),
+        "a by-name read echoes the path the caller addressed, unchanged by this fix"
+    );
+}

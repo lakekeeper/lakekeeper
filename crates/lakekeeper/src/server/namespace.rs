@@ -382,6 +382,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut properties = r_namespace.properties.clone().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(CreateNamespaceResponse {
+            // The stored path, which for a nested namespace may differ from the request: the
+            // ancestor segments are taken from the parent row, because a prefix references another
+            // entity rather than naming one the caller owns. Reporting where the namespace actually
+            // is keeps create consistent with `list_namespaces` and `move_namespace`, both of which
+            // return canonical paths, so a client can diff a listing against what create told it.
+            // Reads addressed by an explicit path — `load_namespace_metadata` — still echo that
+            // path, since there the caller supplied it.
             namespace: r_namespace.namespace_ident.clone(),
             properties: Some(properties),
         })
