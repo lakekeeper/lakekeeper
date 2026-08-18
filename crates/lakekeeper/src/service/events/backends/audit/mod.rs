@@ -988,8 +988,8 @@ mod tests {
     #[test]
     fn every_audit_emission_site_carries_the_format_version() {
         // Reads this file's own source: `include_str!` resolves relative to the
-        // containing file, so `"audit.rs"` is this file.
-        let src = include_str!("audit.rs");
+        // containing file, so `"mod.rs"` is this file.
+        let src = include_str!("mod.rs");
 
         // Assembled with `concat!`, which joins at compile time, so neither needle
         // ever appears literally in this file. Written out, the scan would match its
