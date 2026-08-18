@@ -46,6 +46,7 @@ Role-membership cache invalidation emits one additional metric:
 The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
 
 ### Role Provider Metrics { .lkp }
+
 When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
 
 | Metric                                                                                             | Type      | Labels                   | Description |

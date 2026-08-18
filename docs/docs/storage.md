@@ -505,7 +505,7 @@ The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the
 
 #### CORS Configuration
 
-For browser-based access to S3 buckets (required for [DuckDB WASM](engines.md#duckdb-wasm)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
+For browser-based access to S3 buckets (required for [LoQE, the in-browser query console](engines.md#loqe)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
 
 To configure CORS for your S3 bucket:
 

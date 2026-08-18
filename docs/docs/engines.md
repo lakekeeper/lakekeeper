@@ -23,15 +23,23 @@ All Apache Iceberg REST clients are compatible with Lakekeeper, as Lakekeeper fu
 
 When using Lakekeeper with authentication enabled, remember that you can follow the approaches described at the beginning of this page: either use credentials specific to individual users or leverage OAuth2 token exchange for shared query engines. The authentication parameters typically include credential pairs, OAuth2 server URIs, and scopes as shown in the examples above.
 
-## DuckDB WASM { #duckdb-wasm .engine data-icon="duckdb" }
-DuckDB WASM allows you to query Lakekeeper directly from your browser. If you are using the Lakekeeper UI, DuckDB WASM is pre-configured. To use DuckDB WASM from the Lakekeeper UI, there are two important requirements due to browser security restrictions:
+<!-- Alias for the section's former id. Released docs and anything already
+     linking to `engines/#duckdb-wasm` must keep landing here. -->
+<a id="duckdb-wasm"></a>
 
-**Requirements:**
+## LoQE: Local Query Engine (DuckDB WASM) { #loqe .engine data-icon="lakekeeper" }
 
-1. **Same-Origin Access**: The S3 endpoint must be accessible from your browser at the same URL/origin that Lakekeeper uses to access it. For example, if Lakekeeper accesses S3 at `http://my-s3-endpoint:9000`, your browser must also be able to reach it at `http://my-s3-endpoint:9000`. This means the Docker Compose examples won't work with DuckDB WASM out of the box, as the S3 endpoint is typically only accessible within the Docker network, while your browser is not in this network.
-2. **CORS Policy**: Your S3 storage must be configured with a CORS policy that allows requests from the Lakekeeper origin. See the [CORS Configuration guide](storage.md#cors-configuration) for setup instructions.
+**LoQE** (Local Query Engine) is Lakekeeper's built-in SQL console. It runs DuckDB WASM inside your browser, so you can browse a Warehouse and query it straight from the Lakekeeper UI — nothing to install, no engine to deploy. It ships pre-configured with the Lakekeeper UI and is part of the open-source console.
+
+<figure markdown="span">
+  ![The LoQE console in the Lakekeeper UI, running a SQL query against a Warehouse](../../assets/LoQE.png){ width="100%" }
+  <figcaption>LoQE: browse namespaces and tables, run SQL, then view the result as a table or chart — or export it as CSV.</figcaption>
+</figure>
+
+Because the queries execute in your browser rather than on the server, your S3 storage must return a CORS policy that allows requests from the Lakekeeper origin. See the [CORS Configuration guide](storage.md#cors-configuration) for setup instructions.
 
 ## DuckDB { .engine data-icon="duckdb" }
+
 Basic setup in DuckDB:
 
 ```python
@@ -90,6 +98,7 @@ duckdb.sql("""
 For a local or test storage that only serves plaintext HTTP, add `USE_SSL false` to the secret.
 
 ## Trino { .engine data-icon="trino" }
+
 The following docker compose examples are available for trino:
 
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
@@ -186,6 +195,7 @@ Basic setup in trino:
     ```
 
 ## Starburst { .engine data-icon="starburst" }
+
 If [Soft-Deletion](./concepts.md#soft-deletion) is enabled in Lakekeeper, make sure to set `"iceberg.unique-table-location" = 'true'`, to ensure that tables can be recreated in new locations while their dropped counterparts are waiting for expiration.
 
 As Lakekeeper supports nesting of namespaces, we recommend to set `"iceberg.rest-catalog.nested-namespace-enabled" = 'true'`.
@@ -278,6 +288,7 @@ Basic setup in Starburst:
     ```
 
 ## Spark { .engine data-icon="spark" }
+
 The following docker compose examples are available for spark:
 
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
@@ -333,6 +344,7 @@ Basic setup in spark:
     ```
 
 ## PyIceberg { .engine data-icon="python" }
+
 ```python
 import pyiceberg.catalog
 import pyiceberg.catalog.rest
@@ -355,6 +367,7 @@ print(catalog.list_namespaces())
 ```
 
 ## AWS Athena (Spark) { .engine data-icon="athena" }
+
 Amazon Athena is a serverless query service that allows you to use SQL or PySpark to query data in Lakekeeper without provisioning infrastructure. The following steps demonstrate how to connect Athena PySpark with Lakekeeper.
 
 **1. Create an Apache Spark workgroup in the AWS Athena console:**
@@ -391,6 +404,7 @@ spark.sql("select count(*) from lakekeeper.<namespace>.<table>").show()
 Amazon Athena has Iceberg pre-installed, so no additional package installations are required.
 
 ## Starrocks { .engine data-icon="starrocks" }
+
 Starrocks is improving the Iceberg REST support quickly. This guide is written for Starrocks 3.3, which does not support vended-credentials for AWS S3 with custom endpoints.
 
 The following docker compose examples are available for starrocks:
@@ -444,6 +458,7 @@ The following docker compose examples are available for starrocks:
     ```
 
 ## OLake { .engine data-icon="olake" }
+
 OLake is an open-source, quick and scalable tool for replicating Databases to Apache Iceberg or Data Lakehouses written in Go. Visit the [Olake Iceberg Documentation](https://olake.io/docs/writers/iceberg/catalog/rest#rest-catalog) for the full documentation, and additional information on Olake.
 
 === "S3-Compatible"
@@ -462,6 +477,7 @@ OLake is an open-source, quick and scalable tool for replicating Databases to Ap
     ```
 
 ## RisingWave { .engine data-icon="risingwave" }
+
 [RisingWave](https://www.risingwave.com/) is a distributed SQL streaming database that is wire-compatible with PostgreSQL, designed for real-time data ingestion, processing, and querying. Unlike many other query engines that use a `CATALOG` abstraction, RisingWave connects to Lakekeeper through a `CONNECTION` object, which allows it to use Iceberg tables for sources, sinks, and internal tables.
 
 For a hands-on example, a Docker Compose setup is available in the [RisingWave repository](https://github.com/risingwavelabs/risingwave). You can find detailed deployment instructions in the [official RisingWave documentation](https://docs.risingwave.com/iceberg/catalogs/lakekeeper#deploy-with-docker).
@@ -494,6 +510,7 @@ ALTER SYSTEM SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 ```
 
 ## Apache Fluss { .engine data-icon="fluss" }
+
 [Apache Fluss](https://fluss.apache.org/) is a streaming storage system that can tier streaming data into Iceberg tables via its [Streaming Lakehouse](https://fluss.apache.org/docs/streaming-lakehouse/overview/) feature. Lakekeeper can be used as the Iceberg REST catalog for this tiering, so that tiered data is immediately queryable by any Iceberg-compatible engine through Lakekeeper. For details on how Fluss integrates with Iceberg specifically, see the [Fluss Iceberg integration docs](https://fluss.apache.org/docs/streaming-lakehouse/integrate-data-lakes/iceberg/).
 
 To point Fluss at Lakekeeper, set the following properties in `server.yaml`. Fluss strips the `datalake.iceberg.` prefix and passes the remainder as native Iceberg REST catalog properties. The snippet below assumes Lakekeeper is running without authentication; if authentication is enabled, additional properties need to be set (see f. ex. [Spark](#spark)).
@@ -508,6 +525,7 @@ datalake.iceberg.warehouse: <warehouse-name>
 A Docker Compose example including Fluss, the tiering service, and Lakekeeper is available in the `examples/fluss` directory of the Lakekeeper repository.
 
 ## Firebolt { .engine data-icon="firebolt" }
+
 [Firebolt](https://www.firebolt.io/) is a high-performance, scale-out analytical database. [Firebolt Core](https://github.com/firebolt-db/firebolt-core) is the free, self-hosted edition packaged as a single Docker image. Both connect to Lakekeeper through the same `CREATE LOCATION` syntax.
 
 Firebolt supports vended-credentials from Iceberg REST Catalogs for S3, so no S3 credentials need to be configured on Firebolt. This works for both AWS S3 and self-hosted S3-compatible object stores (e.g. MinIO, RustFS).

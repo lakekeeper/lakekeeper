@@ -59,7 +59,7 @@ _SKIP_URL = re.compile(r"^docs/(?!latest/)")
 _INLINE_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _HTML_TAG = re.compile(r"<[^>]+>")
 _INLINE_MARK = re.compile(r"[*_`]+")
-_HEADING_ANCHOR = re.compile(r"\s*\{#[^}]*\}\s*$")
+
 
 # Lines that never make a usable description: headings, admonition markers,
 # fences, content tabs, tables, raw HTML and list items.
@@ -223,10 +223,27 @@ def _render_full(config, site_url):
     return "\n".join(out)
 
 
+def _strip_heading_anchor(text):
+    """Remove a trailing ``{#anchor}`` from a heading.
+
+    Done by scanning from the end rather than with a regex. The obvious
+    pattern (``\\s*\\{#[^}]*\\}\\s*$``) is quadratic: the engine retries at every
+    offset and rescans to the end each time, so an input of many ``{#`` runs
+    ~270 ms at 20 KB and ~55 s at 200 KB.
+    """
+    stripped = text.rstrip()
+    if not stripped.endswith("}"):
+        return text
+    open_at = stripped.rfind("{#")
+    if open_at == -1 or "}" in stripped[open_at + 2 : -1]:
+        return text
+    return stripped[:open_at].rstrip()
+
+
 def _clean(text):
     """Strip the HTML badges and heading anchors the docs embed in titles."""
     return _INLINE_MARK.sub(
-        "", _HTML_TAG.sub("", _HEADING_ANCHOR.sub("", text))
+        "", _HTML_TAG.sub("", _strip_heading_anchor(text))
     ).strip()
 
 

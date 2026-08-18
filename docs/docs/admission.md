@@ -3,6 +3,7 @@ description: "Configure admission gates in Lakekeeper Plus to allow or deny auth
 ---
 
 # Admission Gates { #admission-gates .lkp }
+
 An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, suspend a tenant or principal, or reject revoked tokens.
 
 Gates run on every authenticated request, in order, after the actor and instance-admin status are resolved; the first rejection wins. A gate returns either a terminal `403 Forbidden` or — when it fails closed because an upstream it depends on is unreachable — a `503` with a `Retry-After`.

@@ -319,6 +319,7 @@ We strongly recommend bootstrapping new deployments with authorization already e
 | `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 #### Cedar { .lkp }
+
 Please check the [Authorization User Guide](./authorization-cedar.md#authorization-with-cedar) for more information on Cedar.
 
 | Variable | Example | Default | Description |
@@ -612,6 +613,7 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
 ```
 
 ### Role Provider { .lkp }
+
 Authorizers such as `Cedar` support pluggable role providers that resolve a user's group memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured in parallel, each with a unique identifier. `OpenFGA` does not use role providers — roles are stored directly in OpenFGA.
 
 Role providers that resolve groups over HTTPS — the Microsoft Graph (Entra ID) provider — honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables for outbound requests. There is no per-provider proxy setting.

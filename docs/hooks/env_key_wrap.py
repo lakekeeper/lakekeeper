@@ -44,12 +44,31 @@ _NOBR_RE = re.compile(r"<nobr>((?:(?!</?nobr>).)*?)</nobr>", re.DOTALL)
 # A Markdown inline-code span. Used only on table rows (see `_is_table_row`).
 _CODE_RE = re.compile(r"`([^`\n]+)`")
 
-# Only keys shaped like an env var are candidates — never prose in backticks.
-_ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:__[A-Z0-9_]+)+$")
+# One `__`-delimited segment of an env key: uppercase/digit runs joined by
+# single underscores. It cannot match a `__`, which is what keeps `_is_env_key`
+# free of the ambiguity that makes a single whole-key regex backtrack.
+_SEGMENT_RE = re.compile(r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 
 
 def _is_table_row(line: str) -> bool:
     return line.lstrip().startswith("|")
+
+
+def _is_env_key(key: str) -> bool:
+    """True for `FOO__BAR_BAZ`-shaped keys — never for prose in backticks.
+
+    Splits on the `__` separator before validating, so each segment is matched
+    by a pattern that cannot consume a separator and the engine has no
+    alternative split to explore. Expressing the whole key as one regex
+    (`^[A-Z][A-Z0-9]*(?:__[A-Z0-9_]+)+$`) instead lets the segment class eat the
+    separator, which is exponential on a near-miss: a 122-character
+    non-matching candidate took ~90 ms, and every four extra segments
+    multiplied that by ~16.
+    """
+    if not key[:1].isascii() or not key[:1].isupper():
+        return False
+    parts = key.split("__")
+    return len(parts) > 1 and all(_SEGMENT_RE.fullmatch(p) for p in parts)
 
 
 def _wrap_key(key: str) -> str:
@@ -89,7 +108,7 @@ def _replace_nobr(match: "re.Match[str]") -> str:
 
 def _replace_code(match: "re.Match[str]") -> str:
     key = match.group(1)
-    if not _ENV_KEY_RE.match(key) or not _needs_wrap(key):
+    if not _is_env_key(key) or not _needs_wrap(key):
         return match.group(0)
     return f"<code>{_wrap_key(key)}</code>"
 

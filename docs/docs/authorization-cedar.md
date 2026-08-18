@@ -3,6 +3,7 @@ description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: decla
 ---
 
 # Authorization with Cedar { #authorization-with-cedar .lkp }
+
 !!! important "Using the Correct Cedar Schema Version"
     Always use the Cedar schema version that exactly matches your Lakekeeper deployment when developing policies. Schema mismatches can cause policy validation failures or unexpected authorization behavior. Download the schema from the Lakekeeper UI (Lakekeeper Plus 0.11.2+) or retrieve it via the `/management/v1/permissions/cedar/schema` endpoint.
 
