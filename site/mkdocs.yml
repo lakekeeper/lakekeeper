@@ -114,6 +114,7 @@ hooks:
   - ../docs/hooks/env_key_wrap.py
   - ../docs/hooks/copyright_year.py
   - ../docs/hooks/llms_txt.py
+  - ../docs/hooks/breadcrumbs.py
 
 plugins:
   - monorepo

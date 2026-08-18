@@ -149,13 +149,40 @@ striptags %} {% endif %}
   }
 }
 </script>
+{#
+  Breadcrumbs. The trail comes from `hooks/breadcrumbs.py`, which includes an
+  ancestor only when a real page backs it — this site has no landing page at
+  `/docs/`, `/docs/latest/` or `/about/`, and pointing `item` at a 404 is worse
+  than omitting the level. Every entry below therefore resolves.
+#}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": {{ config.site_url | tojson }}
+    }{% for crumb in page.meta.breadcrumbs %},
+    {
+      "@type": "ListItem",
+      "position": {{ loop.index + 1 }},
+      "name": {{ crumb.name | tojson }},
+      "item": {{ (config.site_url ~ crumb.url) | tojson }}
+    }{% endfor %},
+    {
+      "@type": "ListItem",
+      "position": {{ (page.meta.breadcrumbs | length) + 2 }},
+      "name": {{ (page.title | striptags) | tojson }},
+      "item": {{ page.canonical_url | tojson }}
+    }
+  ]
+}
+</script>
 {% endif %}
 
-<!-- Google Search Console site verification. Uncomment and paste the token
-     from Search Console › Add property › HTML tag. Needed to submit
-     https://docs.lakekeeper.io/sitemap.xml and to see indexing/query data.
-<meta name="google-site-verification" content="REPLACE_WITH_TOKEN" />
--->
 
 <!-- GoatCounter analytics — privacy-friendly, cookieless. Loads on every page
      (home.html inherits this block via super()). Localhost/file:// are ignored

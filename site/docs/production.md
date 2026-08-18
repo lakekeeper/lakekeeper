@@ -1,6 +1,6 @@
 ---
 title: "Production"
-description: "Run Lakekeeper in production: the open source high-availability checklist for Postgres, authentication, scaling and TLS, plus what Lakekeeper+ adds for enterprises."
+description: "Run Lakekeeper in production: the open-source checklist for Postgres, authentication, scaling and TLS, plus what Lakekeeper+ adds for enterprises."
 ---
 
 # Running Lakekeeper in Production
