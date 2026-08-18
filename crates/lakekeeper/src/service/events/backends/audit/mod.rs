@@ -270,43 +270,59 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
 
 /// Emits an audit `tracing::info!` event, using singular field names (`action`/`entity`)
 /// when only one item is present, and plural (`actions`/`entities`) otherwise.
+/// The one `tracing::info!` that emits an audit record.
+///
+/// Every audit event routes through here, so `event_source` and `audit_format` are
+/// stamped in exactly one place. Spelling them at each call site instead is what made
+/// the version field a convention that a test had to police by reading this file — a
+/// new emission path could simply omit it.
+///
+/// `#[doc(hidden)] #[macro_export]` rather than a private `macro_rules!`: the exported
+/// [`audit_operation`] expands in the caller's crate and so has to be able to name this
+/// macro there. It is not part of the public API.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __audit_emit {
+    ({ $($fields:tt)* }, $msg:literal) => {
+        $crate::tracing::info!(
+            event_source = "audit",
+            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
+            $($fields)*
+            $msg
+        )
+    };
+}
+
 macro_rules! audit_log {
     ($actions:expr, $entities:expr, { $($common:tt)* }, $msg:literal) => {{
         let __actions = $actions;
         let __entities = $entities;
+        // A `tracing` field name has to be a literal ident at the invocation, and the
+        // name is singular when one item was checked and plural otherwise, so the four
+        // combinations cannot be collapsed into one call here. What they no longer do is
+        // repeat `event_source` and `audit_format` — every arm funnels into
+        // `__audit_emit!`, which is the only place an audit record is emitted.
         match (__actions.len() == 1, __entities.entities.len() == 1) {
-            (true, true) => tracing::info!(
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
+            (true, true) => $crate::__audit_emit!({
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
-                $msg
-            ),
-            (true, false) => tracing::info!(
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
+            }, $msg),
+            (true, false) => $crate::__audit_emit!({
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
-                $msg
-            ),
-            (false, true) => tracing::info!(
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
+            }, $msg),
+            (false, true) => $crate::__audit_emit!({
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
-                $msg
-            ),
-            (false, false) => tracing::info!(
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
+            }, $msg),
+            (false, false) => $crate::__audit_emit!({
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
-                $msg
-            ),
+            }, $msg),
         }
     }};
 }
@@ -718,33 +734,17 @@ macro_rules! audit_operation {
         operation = $op:expr,
         actor     = $actor:expr,
         outcome   = $outcome:expr,
+        $(context = $ctx:expr,)?
         $msg:literal $(,)?
     ) => {
-        $crate::tracing::info!(
-            event_source = "audit",
-            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
+        $crate::__audit_emit!({
             operation = $op,
             actor = $crate::tracing::field::valuable(&$actor),
             outcome = $outcome,
-            $msg
-        )
-    };
-    (
-        operation = $op:expr,
-        actor     = $actor:expr,
-        outcome   = $outcome:expr,
-        context   = $ctx:expr,
-        $msg:literal $(,)?
-    ) => {
-        $crate::tracing::info!(
-            event_source = "audit",
-            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
-            operation = $op,
-            actor = $crate::tracing::field::valuable(&$actor),
-            outcome = $outcome,
-            context = $crate::tracing::field::valuable(&$ctx),
-            $msg
-        )
+            // `context` is optional; the `$(...)?` group emits the field only when the
+            // caller passed one, which is what keeps the key absent rather than null.
+            $(context = $crate::tracing::field::valuable(&$ctx),)?
+        }, $msg)
     };
 }
 
@@ -1624,52 +1624,95 @@ mod tests {
         }
     }
 
-    /// Makes "every audit record declares its format version" a gate rather than a
-    /// convention: every audit emission site in this file must set `audit_format` on
-    /// the following line.
+    /// The context-free form of [`audit_operation`].
     ///
-    /// This is a lint that lives in `cargo test` because the repo has no lint
-    /// harness. A runtime test can only cover emission arms it actually exercises,
-    /// and the whole point is to cover the arms nobody thought to write a test for.
+    /// Nothing in this repository emits an operational audit event without context, and
+    /// the macro's own example is marked `ignore` so it is never compiled — so without
+    /// this test the optional-context arm has no coverage at all, and a change to it
+    /// would compile and ship unnoticed. Also pins that omitting the context omits the
+    /// key rather than emitting it as null.
     #[test]
-    fn every_audit_emission_site_carries_the_format_version() {
-        // Reads this file's own source: `include_str!` resolves relative to the
+    fn an_operational_audit_record_without_context_omits_the_context_key() {
+        let user_id =
+            crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id");
+
+        let record = emit_and_capture_one(|| async {
+            audit_operation!(
+                operation = "probe_operation",
+                actor = AuditPrincipal(&user_id),
+                outcome = "success",
+                "probe"
+            );
+            Ok(())
+        });
+
+        assert_eq!(
+            record
+                .get("audit_format")
+                .and_then(serde_json::Value::as_str),
+            Some(AUDIT_FORMAT),
+        );
+        assert_eq!(
+            record.get("operation").and_then(serde_json::Value::as_str),
+            Some("probe_operation"),
+        );
+        assert!(
+            record.get("context").is_none(),
+            "an operation emitted without context must omit the key entirely, not emit \
+             null: {record}"
+        );
+    }
+
+    /// Audit records are emitted from exactly one place, and that place sets the
+    /// version field.
+    ///
+    /// This is the structural half of the guarantee: [`__audit_emit`] holds the only
+    /// `tracing::info!` that emits an audit record, so `event_source` and
+    /// `audit_format` are written once and a new emission path cannot omit the version
+    /// by forgetting to repeat it. The runtime tests above check the field arrives on
+    /// the wire; this checks the single-site property they depend on has not been
+    /// undone.
+    ///
+    /// Scanning source text is a blunt instrument, and this is the narrowest form that
+    /// still works. It counts occurrences rather than checking that one line follows
+    /// another, so reformatting the macro cannot break it, and the expected count is 1
+    /// — a structural invariant — rather than a tally of call sites that every
+    /// refactor would have to update.
+    #[test]
+    fn audit_records_are_emitted_from_a_single_site_that_sets_the_version() {
+        // Reads this file's own source. `include_str!` resolves relative to the
         // containing file, so `"mod.rs"` is this file.
         let src = include_str!("mod.rs");
 
-        // Assembled with `concat!`, which joins at compile time, so neither needle
-        // ever appears literally in this file. Written out, the scan would match its
-        // own source and fail against itself.
+        // Assembled with `concat!`, which joins at compile time, so neither needle ever
+        // appears literally in this file. Written out, the scan would match its own
+        // source and fail against itself.
         let needle = concat!("event_source", " = ", "\"audit\"");
         let marker = concat!("audit_format", " =");
 
-        let lines: Vec<&str> = src.lines().collect();
-        let mut sites = 0;
-        for (i, line) in lines.iter().enumerate() {
-            // Skip comments: the doc comment on `AUDIT_FORMAT` quotes the needle,
-            // and future prose may too.
-            if !line.contains(needle) || line.trim_start().starts_with("//") {
-                continue;
-            }
-            sites += 1;
-            let next = lines.get(i + 1).copied().unwrap_or_default();
-            assert!(
-                next.contains(marker),
-                "audit.rs:{} starts an audit emission but line {} does not set \
-                 `audit_format`. Every audit record must declare its wire format \
-                 version. Line {}: {}",
-                i + 1,
-                i + 2,
-                i + 2,
-                next.trim()
-            );
-        }
+        // Comments are skipped: the documentation on `AUDIT_FORMAT` quotes the needle,
+        // and future prose may too.
+        let code = || {
+            src.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+        };
 
+        let emission_sites = code().filter(|line| line.contains(needle)).count();
         assert_eq!(
-            sites, 6,
-            "expected 6 audit emission sites (4 `audit_log!` arity arms, 2 \
-             `audit_operation!` arms), found {sites}. An arm was added or removed — \
-             confirm it declares the format version, then update this count."
+            emission_sites, 1,
+            "expected exactly one place that emits `event_source = \"audit\"`, found \
+             {emission_sites}. Audit records must all be emitted through the \
+             `__audit_emit!` macro, which is what stamps `audit_format` on every record. \
+             A second emission site can silently omit the version field — route it \
+             through `__audit_emit!` instead."
+        );
+
+        let version_stamps = code().filter(|line| line.contains(marker)).count();
+        assert_eq!(
+            version_stamps, 1,
+            "expected exactly one place that sets `audit_format`, found \
+             {version_stamps}. Every audit record must declare its wire format version, \
+             and `__audit_emit!` is where that happens."
         );
     }
 
