@@ -268,8 +268,6 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
     }
 }
 
-/// Emits an audit `tracing::info!` event, using singular field names (`action`/`entity`)
-/// when only one item is present, and plural (`actions`/`entities`) otherwise.
 /// The one `tracing::info!` that emits an audit record.
 ///
 /// Every audit event routes through here, so `event_source` and `audit_format` are
@@ -293,6 +291,8 @@ macro_rules! __audit_emit {
     };
 }
 
+/// Emits an audit record, using singular field names (`action`/`entity`) when only one
+/// item is present and plural (`actions`/`entities`) otherwise.
 macro_rules! audit_log {
     ($actions:expr, $entities:expr, { $($common:tt)* }, $msg:literal) => {{
         let __actions = $actions;
@@ -1090,6 +1090,17 @@ mod tests {
         }
     }
 
+    /// A minimal entry for a denied decision. `CannotSeeResource`, `ResourceNotFound`
+    /// and `ActionForbidden` are definitive denials, so the per-decision `allowed` must
+    /// be `false` — a denied record carrying `allowed: true` describes a shape the
+    /// emitter cannot produce.
+    fn fixture_denied_authorization() -> Authorization {
+        Authorization {
+            allowed: Some(false),
+            ..fixture_plain_authorization()
+        }
+    }
+
     /// A fully-populated entry, so the fixtures pin the optional keys in their
     /// present form as well as their absent one, and both `DeterminingFactor`
     /// variants including its own `None` fields.
@@ -1156,7 +1167,7 @@ mod tests {
         "authz_succeeded_actions_entity",
         "authz_failed_single",
         "authz_failed_context",
-        "authz_succeeded_rich_context",
+        "authz_succeeded_rich_action_context",
         "grant_created",
         "grant_revoked",
     ];
@@ -1465,7 +1476,10 @@ mod tests {
             })
         });
 
-        assert_matches_fixture("authz_succeeded_rich_context", &contract_fields(record));
+        assert_matches_fixture(
+            "authz_succeeded_rich_action_context",
+            &contract_fields(record),
+        );
     }
 
     /// A denied authorization. Carries `failure_reason` and `error`, which succeeded
@@ -1500,7 +1514,7 @@ mod tests {
                     crate::service::events::AuthorizationFailureReason::CannotSeeResource,
                 error: fixture_error(),
                 extra_context: fixture_context(&[("self-read", "false")]),
-                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+                authorizations: Arc::new(vec![fixture_denied_authorization()]),
             })
         });
 

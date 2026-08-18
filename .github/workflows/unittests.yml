@@ -486,6 +486,17 @@ jobs:
             VERSION_CHANGED=false
           fi
 
+          # A change to the MAJOR half breaks existing consumers, so it has a stricter
+          # requirement below. An empty BASE_VERSION means the field is being introduced,
+          # which declares a format rather than breaking one.
+          BASE_MAJOR="${BASE_VERSION%%.*}"
+          HEAD_MAJOR="${HEAD_VERSION%%.*}"
+          if [ -n "${BASE_VERSION}" ] && [ "${BASE_MAJOR}" != "${HEAD_MAJOR}" ]; then
+            MAJOR_CHANGED=true
+          else
+            MAJOR_CHANGED=false
+          fi
+
           if [ -n "$(git diff --name-only "${BASE_SHA}...HEAD" -- "${AUDIT_DIR}/fixtures/")" ]; then
             FIXTURES_CHANGED=true
           else
@@ -499,15 +510,47 @@ jobs:
 
           echo "Audit log format change detected. Declared version: '${BASE_VERSION}' -> '${HEAD_VERSION}' (changed: ${VERSION_CHANGED}); fixtures changed: ${FIXTURES_CHANGED}."
 
-          # Either signal is enough. A title naming the audit log is what the release
-          # notes are summarised from; an explicit `## Release notes` section says it
-          # outright.
+          # A "## Release notes" section with something under it. The heading on its own
+          # is not a release note, so an empty section must not satisfy the requirement.
+          # `tolower` rather than a case-insensitive match, which is not portable across
+          # awk implementations.
+          RELEASE_NOTES=$(printf '%s\n' "${PR_BODY:-}" | awk '
+            tolower($0) ~ /^##[[:space:]]*release notes/ { inside = 1; next }
+            /^##[[:space:]]*[^[:space:]]/ { inside = 0 }
+            inside && $0 ~ /[^[:space:]]/ { found = 1 }
+            END { print (found ? "yes" : "no") }
+          ')
+
+          if [ "${MAJOR_CHANGED}" = true ]; then
+            if [ "${RELEASE_NOTES}" = yes ]; then
+              echo "Major version change, and the body has release notes. OK."
+              exit 0
+            fi
+            echo "::error::The audit log format changed incompatibly (major version ${BASE_MAJOR} -> ${HEAD_MAJOR}) and the pull request body has no release notes."
+            cat >&2 <<'MAJOR_MESSAGE'
+
+          The MAJOR half of AUDIT_FORMAT changed, which means existing consumers of the
+          audit log will break. A mention in the pull request title is not enough here:
+          add a "## Release notes" section to the body saying, in consumer terms, which
+          field moved and what a parser has to do about it.
+
+          A consumer that discovers a breaking format change from a parse failure in
+          production has been let down.
+
+          See the audit log section of docs/docs/developer-guide.md.
+          MAJOR_MESSAGE
+            exit 1
+          fi
+
+          # Additive or otherwise non-breaking: either signal is enough. A title naming
+          # the audit log is what the release notes are summarised from; an explicit
+          # section says it outright.
           if printf '%s' "${PR_TITLE:-}" | grep -i 'audit' >/dev/null; then
             echo "Pull request title mentions the audit log. OK."
             exit 0
           fi
-          if printf '%s\n' "${PR_BODY:-}" | grep -iE '^##[[:space:]]*release notes' >/dev/null; then
-            echo "Pull request body has a '## Release notes' section. OK."
+          if [ "${RELEASE_NOTES}" = yes ]; then
+            echo "Pull request body has release notes. OK."
             exit 0
           fi
 

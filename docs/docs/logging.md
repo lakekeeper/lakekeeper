@@ -40,7 +40,7 @@ LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 
 ## Log Types
 
-Lakekeeper produces four types of logs, distinguished by the `event_source` field:
+Lakekeeper produces four types of logs. The first three are structured and are distinguished by their `event_source` field; general application logs carry no `event_source` at all, which is what identifies them:
 
 ### 1. Audit Logs {#audit-logs}
 
@@ -86,7 +86,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | Field                  | Type            | Description                       |
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
-| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. See format below. |
+| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
