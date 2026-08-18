@@ -1166,16 +1166,17 @@ mod tests {
     ///
     /// Keys are matched as `` `key` `` — a field table entry or inline mention, not a
     /// bare appearance inside a JSON example, since an example is not a description.
+    /// The consumer-facing audit log reference, embedded at COMPILE time: if
+    /// `logging.md` is deleted or moved, this line fails the build with "couldn't read
+    /// …: No such file or directory". It can never silently read an empty string. The
+    /// path is relative to this file, so it climbs from `backends/audit/` to the
+    /// repository root; `crate::api::endpoints` uses the same technique for the
+    /// committed `OpenAPI` specs.
+    const LOGGING_DOC: &str = include_str!("../../../../../../../docs/docs/logging.md");
+
     #[test]
     fn every_emitted_audit_field_is_documented() {
-        // Resolved and embedded at COMPILE time: if `logging.md` is deleted or moved,
-        // this line fails the build with "couldn't read …: No such file or directory".
-        // It can never silently read an empty string. The path is relative to this
-        // file, so it climbs from `backends/audit/` to the repository root; the same
-        // technique is used in `crate::api::endpoints` for the committed OpenAPI specs.
-        const LOGGING_DOC: &str = include_str!("../../../../../../../docs/docs/logging.md");
-
-        // The check above only covers the file being gone. This covers the other
+        // The compile-time check on LOGGING_DOC only covers the file being gone. This covers the other
         // failure: the file is still there but no longer holds the audit reference —
         // split into another page, replaced by a stub, or gutted — which would
         // otherwise surface as one baffling failure per field.
@@ -1209,6 +1210,95 @@ mod tests {
              Adding a field is a minor change to the audit format: see the audit log \
              section of docs/docs/developer-guide.md."
         );
+    }
+
+    // ── Variant tags of the derived audit enums ─────────────────────────────────
+    //
+    // These three types reach the wire through `#[derive(valuable::Valuable)]`, which
+    // emits whatever variants the type has. Adding one therefore changes the audit log
+    // format with no code change anywhere, and no fixture can catch it: a fixture can
+    // only exercise a variant that already exists. Verified — adding a variant to
+    // `ContextValue`, which is matched by hand, fails to build with E0004, while adding
+    // one to `DeterminingFactor` compiles clean.
+    //
+    // Each match below has no wildcard arm, so a new variant stops the build *here*, at
+    // the point where its wire tag has to be chosen and documented.
+
+    fn determining_factor_tag(factor: &DeterminingFactor) -> &'static str {
+        match factor {
+            DeterminingFactor::Policy { .. } => "Policy",
+            DeterminingFactor::SystemAuthority { .. } => "SystemAuthority",
+        }
+    }
+
+    fn policy_effect_tag(effect: PolicyEffect) -> &'static str {
+        match effect {
+            PolicyEffect::Permit => "Permit",
+            PolicyEffect::Forbid => "Forbid",
+        }
+    }
+
+    fn failure_reason_tag(
+        reason: &crate::service::events::AuthorizationFailureReason,
+    ) -> &'static str {
+        use crate::service::events::AuthorizationFailureReason as Reason;
+        match reason {
+            Reason::ActionForbidden => "ActionForbidden",
+            Reason::ResourceNotFound => "ResourceNotFound",
+            Reason::CannotSeeResource => "CannotSeeResource",
+            Reason::InternalAuthorizationError => "InternalAuthorizationError",
+            Reason::InternalCatalogError => "InternalCatalogError",
+            Reason::InvalidRequestData => "InvalidRequestData",
+        }
+    }
+
+    /// Every variant tag a derived audit enum can put on the wire must be documented.
+    ///
+    /// The compile-time half of this is the wildcard-free matches above. This half
+    /// exercises them and checks the tag reached the reference, which is the part a
+    /// consumer actually reads.
+    #[test]
+    fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
+        use crate::service::events::AuthorizationFailureReason as Reason;
+
+        let factors = [
+            DeterminingFactor::Policy {
+                policy_id: String::new(),
+                name: None,
+                effect: PolicyEffect::Permit,
+                source: None,
+            },
+            DeterminingFactor::SystemAuthority {
+                source: None,
+                reason: None,
+            },
+        ];
+        let effects = [PolicyEffect::Permit, PolicyEffect::Forbid];
+        let reasons = [
+            Reason::ActionForbidden,
+            Reason::ResourceNotFound,
+            Reason::CannotSeeResource,
+            Reason::InternalAuthorizationError,
+            Reason::InternalCatalogError,
+            Reason::InvalidRequestData,
+        ];
+
+        let tags: Vec<&'static str> = factors
+            .iter()
+            .map(determining_factor_tag)
+            .chain(effects.iter().copied().map(policy_effect_tag))
+            .chain(reasons.iter().map(failure_reason_tag))
+            .collect();
+
+        for tag in tags {
+            assert!(
+                LOGGING_DOC.contains(&format!("`{tag}`")),
+                "the audit log can emit the variant `{tag}`, but docs/docs/logging.md \
+                 does not mention it. A variant of a derived audit enum is part of the \
+                 wire format: document what it means, and treat adding one as a minor \
+                 change to the audit format."
+            );
+        }
     }
 
     /// The fixture directory and [`FIXTURE_NAMES`] must agree. Without this, deleting a
