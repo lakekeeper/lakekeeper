@@ -34,6 +34,7 @@ Wired in via ``mkdocs.yml``:
       - hooks/llms_txt.py
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -119,7 +120,13 @@ def on_post_build(config, **_kwargs):
 
 
 def _write_raw_markdown(site_dir, site_url, url, entry):
-    """Write ``<page>.md`` next to the page's rendered ``<page>/index.html``."""
+    """Write ``<page>.md`` next to the page's rendered ``<page>/index.html``.
+
+    Front-matter values go through ``json.dumps``: JSON strings are valid YAML
+    scalars, and quoting them keeps a title or description containing a colon
+    (``Auth Method 1: Client Credentials``) from producing a file whose front
+    matter no longer parses.
+    """
     dest = Path(entry["dest"])
     if dest.stem == "index" and dest.parent != Path("."):
         # Directory URLs (the default): `docs/latest/configuration/index.html`
@@ -130,12 +137,16 @@ def _write_raw_markdown(site_dir, site_url, url, entry):
     else:
         target = site_dir / dest.with_suffix(".md")
     target.parent.mkdir(parents=True, exist_ok=True)
+    front = {
+        "title": entry["title"],
+        "description": entry["description"],
+        "source": f"{site_url}{url}",
+    }
+    lines = "".join(
+        f"{k}: {json.dumps(v)}\n" for k, v in front.items() if v
+    )
     target.write_text(
-        f"---\n"
-        f"title: {entry['title']}\n"
-        f"source: {site_url}{url}\n"
-        f"---\n\n"
-        f"{entry['markdown'].rstrip()}\n",
+        f"---\n{lines}---\n\n{entry['markdown'].rstrip()}\n",
         "utf-8",
     )
 

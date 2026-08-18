@@ -77,7 +77,12 @@ striptags %} {% endif %}
   Structured data. Feeds Google's entity graph (and the retrieval layer behind
   AI answers) an explicit statement of what Lakekeeper *is*, rather than
   leaving it to be inferred from prose. Skipped on non-canonical copies so the
-  same TechArticle isn't asserted at 480 URLs.
+  same TechArticle isn't asserted at every version of a page.
+
+  Every interpolated value goes through `tojson`, which emits the surrounding
+  quotes itself — a stray `"` or newline in a description would otherwise
+  produce a JSON-LD block that silently fails to parse, and a malformed block
+  is worse than none.
 #}
 {% if page and page.is_homepage %}
 <script type="application/ld+json">
@@ -89,7 +94,7 @@ striptags %} {% endif %}
       "@id": "https://lakekeeper.io/#organization",
       "name": "Lakekeeper",
       "url": "https://lakekeeper.io/",
-      "logo": "{{ config.site_url }}assets/logos/LAKEKEEPER_IMAGE_TEXT.svg",
+      "logo": {{ (config.site_url ~ "assets/logos/LAKEKEEPER_IMAGE_TEXT.svg") | tojson }},
       "sameAs": [
         "https://github.com/lakekeeper/lakekeeper",
         "https://discord.gg/jkAGG8p93B"
@@ -97,13 +102,13 @@ striptags %} {% endif %}
     },
     {
       "@type": "SoftwareApplication",
-      "@id": "{{ config.site_url }}#software",
+      "@id": {{ (config.site_url ~ "#software") | tojson }},
       "name": "Lakekeeper",
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "Apache Iceberg REST Catalog",
       "operatingSystem": "Linux, macOS, Windows",
-      "description": "{{ config.site_description }}",
-      "url": "{{ config.site_url }}",
+      "description": {{ config.site_description | tojson }},
+      "url": {{ config.site_url | tojson }},
       "downloadUrl": "https://github.com/lakekeeper/lakekeeper/releases",
       "programmingLanguage": "Rust",
       "license": "https://www.apache.org/licenses/LICENSE-2.0",
@@ -125,12 +130,12 @@ striptags %} {% endif %}
   "@type": "TechArticle",
   "headline": {{ (page.title | striptags) | tojson }},
   "description": {{ description | tojson }},
-  "url": "{{ page.canonical_url }}",
+  "url": {{ page.canonical_url | tojson }},
   "inLanguage": "en",
   "isPartOf": {
     "@type": "WebSite",
     "name": "Lakekeeper Docs",
-    "url": "{{ config.site_url }}"
+    "url": {{ config.site_url | tojson }}
   },
   "about": {
     "@type": "SoftwareApplication",

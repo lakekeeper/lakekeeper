@@ -112,13 +112,25 @@ def check_pages(site: Path) -> None:
         elif not is_canonical(url) and not noindexed:
             fail(f"{label}: duplicate page is missing noindex")
 
-        for prop, value in OG_RE.findall(text):
+        og = dict(OG_RE.findall(text))
+        # Iterating found tags alone would pass a page that emits none at all —
+        # which is most of what broke here before. Require both.
+        for prop in ("url", "image"):
+            if prop not in og:
+                fail(f"{label}: no og:{prop} tag")
+        for prop, value in og.items():
             if not value.startswith("https://"):
                 fail(f"{label}: og:{prop} is not an absolute URL: {value!r}")
-            elif prop == "image":
-                asset = site / value[len(SITE_URL) :]
-                if not asset.is_file():
-                    fail(f"{label}: og:image points at a missing file: {value}")
+        if og.get("image", "").startswith(SITE_URL):
+            asset = site / og["image"][len(SITE_URL) :]
+            if not asset.is_file():
+                fail(f"{label}: og:image points at a missing file: {og['image']}")
+        # og:url must name the page itself, not merely be a well-formed URL.
+        if canonical and og.get("url") and og["url"] != canonical.group(1):
+            fail(
+                f"{label}: og:url {og['url']} does not match canonical "
+                f"{canonical.group(1)}"
+            )
 
     indexable = sum(1 for p in pages if is_canonical(page_url(site, p)))
     print(f"  pages: {len(pages)} built, {indexable} indexable, rest noindex")

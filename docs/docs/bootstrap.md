@@ -1,5 +1,5 @@
 ---
-description: "Bootstrap a new Lakekeeper deployment through the UI or the /management/v1/bootstrap endpoint and claim the first instance admin."
+description: "Bootstrap a new Lakekeeper deployment through the UI or the /management/v1/bootstrap endpoint. What initial access this grants depends on the configured authorizer."
 ---
 
 # Bootstrap / Initialize
