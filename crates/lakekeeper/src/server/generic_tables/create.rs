@@ -20,7 +20,10 @@ use crate::{
         CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore,
         GenericTableCreation, GenericTableId, Result, SecretStore, State, TabularId, Transaction,
         WarehouseId,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -288,6 +291,17 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
         .await?;
     guard.mark_authorizer_created();
 
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
+        authorizer,
+        request_metadata,
+        &GrantResource::GenericTable {
+            warehouse_id,
+            generic_table_id: info.generic_table_id,
+        },
+        t.transaction(),
+    )
+    .await?;
+
     // Insert idempotency key in the same transaction.
     if let Some(key) = idempotency_key
         && !C::try_insert_idempotency_key(
@@ -310,6 +324,10 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
 
     t.commit().await?;
 
+    // Held across the create event below, which consumes the context.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
+
     let info = Arc::new(info);
     let response = LoadGenericTableResponse {
         table: GenericTableData {
@@ -327,6 +345,8 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     };
 
     event_ctx.emit_generic_table_created_async(info, Arc::new(request.clone()));
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(response)
 }

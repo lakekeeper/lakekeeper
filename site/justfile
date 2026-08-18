@@ -25,7 +25,7 @@ build:
 #      source version (released versions are frozen snapshots and may carry old links).
 #   2. File/asset existence — lychee resolves the cross-unit/shared-asset paths that
 #      mkdocs' per-unit validation can't. Fragments are skipped (lychee mis-resolves
-#      mkdocs' pretty `page/` URLs), and the doubled `nightly/docs` orphan is excluded.
+#      mkdocs' pretty `page/` URLs).
 # Needs lychee: `cargo install lychee` (CI installs it via taiki-e/install-action).
 linkcheck:
   #!/usr/bin/env bash
@@ -38,7 +38,6 @@ linkcheck:
     exit 1
   fi
   lychee --offline --root-dir "$PWD/site" --no-progress \
-    --exclude-path site/docs/nightly/docs \
     site/index.html site/getting-started site/support site/about site/docs/nightly
   just seo-check
 

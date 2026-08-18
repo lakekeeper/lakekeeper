@@ -1857,7 +1857,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this project publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this project's
         grants.
@@ -1866,7 +1866,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -1877,7 +1877,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -3091,7 +3091,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this server publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this server's
         grants.
@@ -3100,7 +3100,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -3111,7 +3111,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -3620,7 +3620,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this tag definition publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this tag definition's
         grants.
@@ -3629,7 +3629,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -3640,7 +3640,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -4595,7 +4595,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this generic table publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this generic table's
         grants.
@@ -4604,7 +4604,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -4615,7 +4615,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -5029,7 +5029,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this warehouse publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this warehouse's
         grants.
@@ -5038,7 +5038,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -5049,7 +5049,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -5321,7 +5321,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this namespace publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this namespace's
         grants.
@@ -5330,7 +5330,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -5341,7 +5341,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -6371,7 +6371,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this table publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this table's
         grants.
@@ -6380,7 +6380,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -6391,7 +6391,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -7220,7 +7220,7 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Every privilege this view publishes, each marked with whether the caller may
-        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        administer it here. Not filtered: a picker needs to show the ones it
         cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
         another principal's behalf, which requires authority to read this view's
         grants.
@@ -7229,7 +7229,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -7240,7 +7240,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -9611,14 +9611,16 @@ components:
           $ref: '#/components/schemas/GrantResourceResponse'
     GrantablePrivilege:
       type: object
-      description: One privilege of a resource's vocabulary, and whether the principal may grant it.
+      description: One privilege of a resource's vocabulary, and whether the principal may administer it.
       required:
         - privilege
         - allowed
       properties:
         allowed:
           type: boolean
-          description: Whether the principal may grant and revoke this privilege on this resource.
+          description: |-
+            Whether the principal may administer this privilege here — grant it, revoke it, or
+            both. Advisory: an apply checks each of its entries on its own.
         privilege:
           $ref: '#/components/schemas/PrivilegeDescriptor'
           description: |-
@@ -13154,7 +13156,7 @@ components:
       type: object
       description: |-
         This resource's whole vocabulary, each entry marked with whether the principal may
-        grant it.
+        administer it — grant it, revoke it, or both.
 
         The deployment-wide vocabulary answers "what does this server understand"; this
         answers "what may I do here", which is the question a grant dialog asks. Grant

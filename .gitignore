@@ -140,7 +140,8 @@ docs/_build/
 # website build
 docs/site/
 site/site/
-site/docs/docs/
+# Worktree of the `docs` branch, created by site/dev/setup_env.sh.
+site/versions/
 **.bkp
 
 # PyBuilder

@@ -79,7 +79,10 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    grant::{apply_grants, delete_grants_for_user, list_grants, list_grants_on_resources},
+    grant::{
+        apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
+        list_grants_on_resources,
+    },
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
@@ -413,6 +416,13 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<AppliedGrants, ApplyGrantsStoreError> {
         apply_grants(writes, deletes, transaction).await
+    }
+
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+        insert_grants_bounded(writes, transaction).await
     }
 
     async fn delete_grants_for_user_impl<'a>(

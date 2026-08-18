@@ -785,6 +785,19 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<AppliedGrants, ApplyGrantsStoreError>;
 
+    /// Insert grants, in the transaction that creates the resource they belong to.
+    /// Returns the grants actually created; an identical existing grant is skipped.
+    ///
+    /// Deliberately not [`Self::apply_grants_impl`] with an empty delete side: that path
+    /// serializes concurrent diffs per resource, and sets a transaction-local lock
+    /// timeout to do it that would then govern the rest of the caller's transaction.
+    /// The serialization exists for diffs that cross — each revoking what the other
+    /// adds — so an insert with no delete side has nothing to cross and needs none of it.
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
     /// Remove every grant held by a user, returning what was removed.
     ///
     /// Needed because users are soft-deleted, so no foreign key cascade fires for

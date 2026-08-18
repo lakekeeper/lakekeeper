@@ -31,7 +31,10 @@ use crate::{
     service::{
         AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
         State, TableCreation, TableId, TabularId, TabularListFlags, Transaction,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -399,6 +402,19 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     guard.mark_authorizer_created();
 
+    // Grants the table is born with, in the transaction that creates it: they reference
+    // a table no other transaction can see yet.
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
+        &authorizer,
+        &request_metadata,
+        &GrantResource::Table {
+            warehouse_id,
+            table_id,
+        },
+        t.transaction(),
+    )
+    .await?;
+
     // Insert idempotency key in the same transaction.
     if let Some(key) = idempotency_key
         && !C::try_insert_idempotency_key(
@@ -424,6 +440,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // Commit transaction
     t.commit().await?;
 
+    // Held across the create event below, which consumes the context.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
+
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {
         authorizer
@@ -440,6 +460,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         table.name,
         Arc::new(request),
     );
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(load_table_result)
 }

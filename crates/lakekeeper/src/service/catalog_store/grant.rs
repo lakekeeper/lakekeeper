@@ -180,3 +180,10 @@ where
 }
 
 impl<T> CatalogGrantOps for T where T: CatalogStore {}
+
+// Grant writes that happen on behalf of another operation — the rows a resource is born
+// with — surface through that operation's error. Each variant keeps its own status: a
+// missing user is the caller's 400, a lock conflict their retriable 409.
+crate::service::events::impl_authorization_failure_source!(
+    ApplyGrantsStoreError => InternalCatalogError
+);

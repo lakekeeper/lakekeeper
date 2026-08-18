@@ -75,8 +75,9 @@ use crate::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            RequireNamespaceActionError, RequireTableActionError,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
+            RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
@@ -549,8 +550,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
         }
 
+        // Outside the branches above on purpose. Re-registering over a table that keeps
+        // its id runs no create hook, and the drop above already took that table's grants
+        // with it, so the registered table would end up with no owner at all.
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            request_metadata,
+            &GrantResource::Table {
+                warehouse_id,
+                table_id: tabular_id,
+            },
+            t_write.transaction(),
+        )
+        .await?;
+
         // Commit the transaction
         t_write.commit().await?;
+
+        // Held across the register event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
@@ -580,6 +599,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(metadata_location),
             data_access,
         );
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         // Full snapshot list from the metadata file, tagged with the delegation
         // and permission scope the config above was built for. A read-only

@@ -1070,6 +1070,13 @@ where
         self.request_metadata.clone()
     }
 
+    /// For events this context has no `emit_*` of its own — a handler that creates a
+    /// resource also announces the grants it was born with.
+    #[must_use]
+    pub fn dispatcher(&self) -> &EventDispatcher {
+        &self.dispatcher
+    }
+
     pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.extra_context.insert(key.into(), value.into());
     }
@@ -1129,11 +1136,6 @@ where
     #[must_use]
     pub fn resolved_mut(&mut self) -> &mut T {
         &mut self.resolved_entity.data
-    }
-
-    #[must_use]
-    pub fn dispatcher(&self) -> &EventDispatcher {
-        &self.dispatcher
     }
 }
 

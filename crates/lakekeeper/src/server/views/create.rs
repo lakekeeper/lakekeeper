@@ -20,7 +20,10 @@ use crate::{
     service::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -190,16 +193,32 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
+    let view_id = ViewId::from(metadata_build_result.metadata.uuid());
     authorizer
         .create_view(
             &request_metadata,
             warehouse_id,
-            ViewId::from(metadata_build_result.metadata.uuid()),
+            view_id,
             ns_hierarchy.namespace_id(),
         )
         .await?;
 
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
+        authorizer,
+        &request_metadata,
+        &GrantResource::View {
+            warehouse_id,
+            view_id,
+        },
+        t.transaction(),
+    )
+    .await?;
+
     t.commit().await?;
+
+    // Held across the create event below, which consumes the context.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
 
     let view_metadata = Arc::new(metadata_build_result.metadata);
     let metadata_location_str = metadata_location.to_string();
@@ -212,6 +231,8 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         view.name,
         Arc::new(request),
     );
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     let load_view_result = LoadViewResult {
         metadata_location: metadata_location_str,

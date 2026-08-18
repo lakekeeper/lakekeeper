@@ -144,8 +144,10 @@ Grants say what a principal *may* do. They cannot express deny rules, conditions
 
 **Lifecycle.**
 
+- Creating a resource can grant the creator privileges on it, if the authorization backend says creation confers them.
 - Deleting a resource revokes its grants with it. Under OpenFGA this covers the deleted resource itself but not everything inside a deleted warehouse — see [grants outlive the resources they name](./authorization-openfga.md#managing-grants-through-the-grants-api).
 - Deleting a user revokes their grants, so a re-created user id never inherits access.
+- Grants removed *with* their principal or resource are not audited individually: deleting a user emits one revocation record per grant, but deleting a role or a resource does not. The deletion of the role or resource is the audit record, and the grants on it are gone by definition. Only explicit revocations through the grants API produce per-grant records.
 - Soft-deleted tables and views keep their grants until expiration, so an undrop restores the access that was there before. They stay visible on the resource's own listing and are left out of the project-scoped listing until the table is restored.
 - Deactivating a warehouse hides its children's grants but not its own, so an administrator can still audit and revoke at the warehouse level.
 

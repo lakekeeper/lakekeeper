@@ -20,7 +20,7 @@ Everything you need to run Lakekeeper OSS safely is covered in the docs. In shor
 - **TLS termination** at a reverse proxy or ingress — Lakekeeper does not terminate connections itself.
 - **Monitoring & observability** wired to your stack.
 
-See the full [Production Checklist](./docs/nightly/docs/production.md) for the complete, up-to-date list.
+See the full [Production Checklist](./docs/nightly/production.md) for the complete, up-to-date list.
 
 ## Lakekeeper+: the production-grade path <span class="lkp"></span>
 
@@ -32,19 +32,19 @@ Lakekeeper+ builds on the open-source catalog with the capabilities regulated an
 
     ---
 
-    Express access policy as versioned, reviewable [Cedar](./docs/nightly/docs/authorization-cedar.md) policies — RBAC, ABAC, and property-based access in one model. Every decision is inspectable, with a per-decision policy trace and audit log, so you can prove *why* access was granted. Built for **regulated industries** where access must be governed, testable, and provable.
+    Express access policy as versioned, reviewable [Cedar](./docs/nightly/authorization-cedar.md) policies — RBAC, ABAC, and property-based access in one model. Every decision is inspectable, with a per-decision policy trace and audit log, so you can prove *why* access was granted. Built for **regulated industries** where access must be governed, testable, and provable.
 
 - :material-robot: &nbsp; __Autonomous maintenance__
 
     ---
 
-    Keep query performance high and storage costs low without operating maintenance jobs yourself. [Table maintenance](./docs/nightly/docs/table-maintenance.md) — expiring snapshots and removing orphan files — runs automatically and adaptively, scheduling itself per table based on how fast reclaimable data builds up.
+    Keep query performance high and storage costs low without operating maintenance jobs yourself. [Table maintenance](./docs/nightly/table-maintenance.md) — expiring snapshots and removing orphan files — runs automatically and adaptively, scheduling itself per table based on how fast reclaimable data builds up.
 
 - :material-account-key: &nbsp; __Enterprise identity & governance__
 
     ---
 
-    Resolve roles through [role providers](./docs/nightly/docs/configuration.md#role-provider) — Okta, Microsoft Entra ID, and LDAP; gate access with an external admission check; protect provider-synced roles from drift. Structured audit logs make the catalog auditable end to end.
+    Resolve roles through [role providers](./docs/nightly/configuration.md#role-provider) — Okta, Microsoft Entra ID, and LDAP; gate access with an external admission check; protect provider-synced roles from drift. Structured audit logs make the catalog auditable end to end.
 
 - :material-lifebuoy: &nbsp; __Enterprise support & LTS__
 

@@ -43,8 +43,9 @@ use crate::{
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
-            InstanceAdminAuthorizer,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, GrantResource,
+            InstanceAdminAction, InstanceAdminAuthorizer, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         events::{
             APIEventContext,
@@ -435,6 +436,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+    #[allow(clippy::too_many_lines)]
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -548,9 +550,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            request_metadata,
+            &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
+            transaction.transaction(),
+        )
+        .await?;
+
         transaction.commit().await?;
 
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
+
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let response =
             GetWarehouseResponse::from_resolved((*resolved_warehouse).clone(), credential_type);

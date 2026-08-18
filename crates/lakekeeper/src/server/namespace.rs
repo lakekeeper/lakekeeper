@@ -31,7 +31,7 @@ use crate::{
         Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            NamespaceParent,
+            GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
@@ -357,9 +357,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            &GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            t.transaction(),
+        )
+        .await?;
+
         t.commit().await?;
 
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata().clone();
+
         event_ctx.emit_namespace_created_async(r.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let r_namespace = r.namespace.clone();
         let mut properties = r_namespace.properties.clone().unwrap_or_default();

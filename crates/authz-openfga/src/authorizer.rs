@@ -18,7 +18,7 @@ use lakekeeper::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, GrantAuthorityCheck, GrantResource, IsAllowedActionError,
+            CatalogUserAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
             ListProjectsResponse, ListRoleAssignmentsError, ListRoleAssignmentsResultPage,
             MalformedRoleAssignment, ManagesGrants, ManagesRoleAssignments, NamespaceParent,
             PrivilegeDescriptor, ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole,
@@ -1014,10 +1014,13 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        resource: &GrantResource,
+        target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        self.grant_authority(metadata, for_user, resource, checks)
+        // Only the ids are used: the resolved ancestry the target carries is for
+        // authorizers that resolve inheritance themselves, and this one reads it from its
+        // own tuples instead.
+        self.grant_authority(metadata, for_user, &target.resource(), checks)
             .await
     }
 }
