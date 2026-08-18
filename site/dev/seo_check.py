@@ -28,9 +28,7 @@ SITE_URL = "https://docs.lakekeeper.io/"
 
 # Mirrors `is_canonical_page` in overrides/main.html and overrides/sitemap.xml.
 def is_canonical(url: str) -> bool:
-    if not url.startswith("docs/"):
-        return True
-    return url.startswith("docs/latest/") and not url.startswith("docs/latest/docs/")
+    return not url.startswith("docs/") or url.startswith("docs/latest/")
 
 
 CANONICAL_RE = re.compile(r'<link rel="canonical" href="([^"]*)"')
@@ -41,7 +39,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _SITE = _REPO / "site" / "docs"
 
 # Editable source pages that back the published site; each needs a description.
-# `site/docs/docs/` is deliberately absent: it is the generated worktree of the
+# `site/versions/` is deliberately absent: it is the generated worktree of the
 # released version trees, rebuilt by `dev/common.sh` on every build. Fixes for
 # those pages belong on the `docs` branch, not here.
 SOURCE_GLOBS = (

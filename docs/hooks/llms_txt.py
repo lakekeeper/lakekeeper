@@ -50,13 +50,9 @@ SECTIONS = (
 )
 
 # Non-canonical URLs, matching the `is_canonical_page` test in
-# `site/overrides/main.html`:
-#   - `docs/0.13.x/...`, `docs/nightly/...` — frozen or unreleased copies of
-#     the same pages `docs/latest/` already serves.
-#   - `docs/*/docs/...` — every version tree is published a second time one
-#     level deeper, because the tree is built from a symlink mkdocs follows
-#     twice (see `site/dev/common.sh`).
-_SKIP_URL = re.compile(r"^docs/(?!latest/)|^docs/latest/docs/")
+# `site/overrides/main.html`: `docs/0.13.x/...` and `docs/nightly/...` are
+# frozen or unreleased copies of the pages `docs/latest/` already serves.
+_SKIP_URL = re.compile(r"^docs/(?!latest/)")
 
 # Markdown/HTML noise to strip when deriving a description from page prose.
 _INLINE_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")

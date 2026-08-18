@@ -31,63 +31,63 @@ The default permission model is focused on collaborating on data. Permissions ar
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
 
-##### Ownership
+### Ownership
 
 Owners of objects have all rights on the specific object. When principals create new objects, they automatically become owners of these objects. This enables powerful self-service scenarios where users can act autonomously in a (sub-)namespace. By default, Owners of objects are also able to access grants on objects, which enables them to expand the access to their owned objects to new users. Enabling [Managed Access](#managed-access) for a Warehouse or Namespace removes the `grant` privilege from owners.
 
-##### Server: Admin
+### Server: Admin
 
 A `server`'s `admin` role is the most powerful role (apart from `operator`) on the server. In order to guarantee auditability, this role can list and administrate all Projects, but does not have access to data in projects. While the `admin` can assign himself the `project_admin` role for a project, this assignment is tracked by `OpenFGA` for audits. `admin`s can also manage all projects (but no entities within it), server settings and users.
 
-##### Server: Operator
+### Server: Operator
 
 The `operator` has unrestricted access to all objects in Lakekeeper. It is designed to be used by technical users (e.g., a Kubernetes Operator) managing the Lakekeeper deployment.
 
-##### Project: Security Admin
+### Project: Security Admin
 
 A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. However, they cannot modify or access the content of any object, except for listing and browsing purposes.
 
-##### Project: Data Admin
+### Project: Data Admin
 
 A `data_admin` in a project can manage all data-related aspects, including creating, modifying, and deleting objects within the project. They can delegate the `data_admin` role they already hold (for example to team members), but they do not have general grant or ownership administration capabilities.
 
-##### Project: Admin
+### Project: Admin
 
 A `project_admin` in a project has the combined responsibilities of both `security_admin` and `data_admin`. They can manage all security-related aspects, including grants and ownership, as well as all data-related aspects, including creating, modifying, and deleting objects within the project.
 
-##### Project: Role Creator
+### Project: Role Creator
 
 A `role_creator` in a project can create new roles within it. This role is essential for delegating the creation of roles without granting broader administrative privileges.
 
-##### Project: Tag Creator
+### Project: Tag Creator
 
 A `tag_creator` in a project can create new governance tag definitions within it, without holding broader administrative privileges — the tag analogue of `role_creator`. Managing an *existing* definition (update, delete, delegating who may apply it) is not conferred by `tag_creator`; it keys off the definition's `ownership` or `security_admin`. See [Tags](#tags).
 
-##### Describe
+### Describe
 
 The `describe` grant allows a user to view metadata and details about an object without modifying it. This includes listing objects and viewing their properties. The `describe` grant is inherited down the object hierarchy, meaning if a user has the `describe` grant on a higher-level entity, they can also describe all child entities within it. The `describe` grant is implicitly included with the `select`, `create`, and `modify` grants.
 
-##### Select
+### Select
 
 The `select` grant allows a user to read data from an object, such as tables or views. This includes querying and retrieving data. The `select` grant is inherited down the object hierarchy, meaning if a user has the `select` grant on a higher-level entity, they can select all views and tables within it. The `select` grant implicitly includes the `describe` grant.
 
-##### Create
+### Create
 
 The `create` grant allows a user to create new objects within an entity, such as tables, views, or namespaces. The `create` grant is inherited down the object hierarchy, meaning if a user has the `create` grant on a higher-level entity, they can also create objects within all child entities. The `create` grant implicitly includes the `describe` grant.
 
-##### Modify
+### Modify
 
 The `modify` grant allows a user to change the content or properties of an object, such as updating data in tables or altering views. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `select` and `describe` grants.
 
-##### Pass Grants
+### Pass Grants
 
 The `pass_grants` grant allows a user to pass their own privileges to other users. This means that if a user has certain permissions on an object, they can grant those same permissions to others. However, the `pass_grants` grant does not include the ability to pass the `pass_grants` privilege itself.
 
-##### Manage Grants
+### Manage Grants
 
 The `manage_grants` grant allows a user to manage all grants on an object, including creating, modifying, and revoking grants. This also includes `manage_grants` and `pass_grants`.
 
-##### Manage Tags
+### Manage Tags
 
 The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
 

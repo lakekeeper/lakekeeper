@@ -174,3 +174,41 @@
   color: var(--lakekeeper-warning-color) !important;
   opacity: 0.85;
 }
+/* Config-reference tables list env-var keys as inline code. Keep each key on
+   one line so it stays selectable and scannable as a single token; keys too
+   long for their column get an explicit `<br>` at a `__` boundary from the
+   `env_key_wrap.py` hook, which emits raw <code> and so is unaffected by this
+   rule. Prose code spans are untouched. */
+.md-typeset table code {
+  white-space: nowrap;
+}
+
+/* Query-engine section headings. The brand mark used to live inside the
+   heading as an <img>, which put markup into the heading text that every
+   consumer of the page structure — table of contents, search index, and
+   anything reading the Markdown — had to strip. It is a decoration, so it
+   is drawn from CSS and the heading is left as plain text. */
+.md-typeset h2.engine::before {
+  content: "";
+  display: inline-block;
+  width: 1.4em;
+  height: 1.4em;
+  margin-right: 0.4em;
+  vertical-align: -0.3em;
+  background-image: var(--lk-engine-icon);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.md-typeset h2.engine[data-icon="athena"] { --lk-engine-icon: url("/assets/athena.svg"); }
+.md-typeset h2.engine[data-icon="duckdb"] { --lk-engine-icon: url("/assets/duckdb.svg"); }
+.md-typeset h2.engine[data-icon="firebolt"] { --lk-engine-icon: url("/assets/firebolt.svg"); }
+.md-typeset h2.engine[data-icon="fluss"] { --lk-engine-icon: url("/assets/fluss.svg"); }
+.md-typeset h2.engine[data-icon="olake"] { --lk-engine-icon: url("/assets/olake.svg"); }
+.md-typeset h2.engine[data-icon="python"] { --lk-engine-icon: url("/assets/python.svg"); }
+.md-typeset h2.engine[data-icon="risingwave"] { --lk-engine-icon: url("/assets/risingwave.svg"); }
+.md-typeset h2.engine[data-icon="spark"] { --lk-engine-icon: url("/assets/spark.svg"); }
+.md-typeset h2.engine[data-icon="starburst"] { --lk-engine-icon: url("/assets/starburst.svg"); }
+.md-typeset h2.engine[data-icon="starrocks"] { --lk-engine-icon: url("/assets/starrocks.svg"); }
+.md-typeset h2.engine[data-icon="trino"] { --lk-engine-icon: url("/assets/trino.svg"); }

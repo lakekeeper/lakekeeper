@@ -35,28 +35,21 @@ striptags %} {% endif %}
 {% set image = config.site_url ~ 'assets/img/og-banner.png' %}
 
 {#
-  Indexing policy for the versioned docs. Only one copy of any given page is
-  allowed into search; everything else is `noindex,follow` (dropped from the
-  index, links still crawled).
-
-  Two independent sources of duplication:
-
-  1. One tree per version — `docs/latest/`, `docs/0.13.x/`, ...
-     `docs/nightly/` — where `latest` is a byte-identical copy of the newest
-     numbered release. Consolidate on `latest`.
-  2. Each tree is *additionally* published one level deeper at
-     `docs/<version>/docs/...`, because `dev/common.sh` builds the tree from
-     a `docs` symlink that mkdocs then follows twice. Roughly 480 published
-     URLs for ~185 real pages.
+  Indexing policy for the versioned docs. The docs publish one tree per version
+  — `docs/latest/`, `docs/0.13.x/`, ... `docs/nightly/` — where `latest` is a
+  byte-identical copy of the newest numbered release. Only one copy of a page
+  may enter the index, so everything outside `docs/latest/` is `noindex,follow`
+  (dropped from the index, links still crawled).
 
   This must stay a meta tag rather than a `Disallow:` in robots.txt — a
-  disallowed page is never fetched, so Google never *sees* the noindex and
-  the duplicate can linger in the index indefinitely.
+  disallowed page is never fetched, so Google never *sees* the noindex and the
+  duplicate can linger in the index indefinitely.
 
-  `overrides/sitemap.xml` applies the same rule; keep the two in sync.
+  `overrides/sitemap.xml` and `dev/seo_check.py` apply the same rule; keep the
+  three in sync.
 #}
 {% set page_url = page.url if page and page.url else "" %}
-{% set is_canonical_page = (not page_url.startswith("docs/")) or (page_url.startswith("docs/latest/") and not page_url.startswith("docs/latest/docs/")) %}
+{% set is_canonical_page = not page_url.startswith("docs/") or page_url.startswith("docs/latest/") %}
 {% if not is_canonical_page %}
 <meta name="robots" content="noindex,follow" />
 {% endif %}

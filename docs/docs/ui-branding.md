@@ -2,8 +2,7 @@
 description: "Re-skin the Lakekeeper Plus console with custom colors and a partner logo from a single environment variable, with no rebuild required."
 ---
 
-# UI Branding <span class="lkp"></span> {#ui-branding}
-
+# UI Branding { #ui-branding .lkp }
 Lakekeeper Plus lets you **customize the built-in UI** for a deployment: replace the color scheme and place a partner logo next to the Lakekeeper+ logo — with **no rebuild**. Branding is applied at container start from a single environment variable, so the same image can be re-skinned per customer or per environment.
 
 Branding is a **Lakekeeper Plus** feature. The open-source console ships the standard Lakekeeper theme and cannot be re-skinned.

@@ -52,7 +52,7 @@ The lifetime of this token is specified in the corresponding application in your
 
 We are creating two Client: The first client with a "public" profile for the Lakekeeper API & UI and the second client for a machine client (e.g. Spark). Repeat step 2 for each machine client that is needed.
 
-##### Client 1: Lakekeeper
+#### Client 1: Lakekeeper
 
 1. Create a new "Client":
     - **Client Type**: choose "OpenID Connect"
@@ -81,7 +81,7 @@ LAKEKEEPER__UI__OPENID_CLIENT_ID="lakekeeper" (ID of Client 1)
 # LAKEKEEPER__UI__OPENID_SCOPE="lakekeeper" (Name of the created scope, not required if scope was added as default)
 ```
 
-##### Client 2: Machine User
+#### Client 2: Machine User
 
 Repeat this process for each query engine / machine user that is required:
 
@@ -155,7 +155,7 @@ If Authorization is enabled, the client will throw an error as no permissions ha
 
 We are creating three App-Registrations: The first for Lakekeeper itself, the second for the Lakekeeper UI the third for a machine client (e.g. Spark) to access Lakekeeper. Repeat step 3 for each machine client that is needed. While App-Registrations can also be shared, the recommended setup we propose here offers more flexibility and better security.
 
-##### App 1: Lakekeeper UI Application
+#### App 1: Lakekeeper UI Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper-UI`
@@ -190,7 +190,7 @@ Alternatively, the following snippets will setup the resources mentioned above:
   }
   ```
 
-##### App 2: Lakekeeper Application
+#### App 2: Lakekeeper Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
@@ -317,7 +317,7 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
 
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
-##### App 3: Machine User
+#### App 3: Machine User
 
 Repeat this process for each query engine / machine user that is required:
 
@@ -437,7 +437,7 @@ If you're using Google Cloud Platform, please advocate for proper OAuth standard
 
 Due to these OAuth2 limitations in Google Identity Platform, we cannot recommend it for production deployments. Nevertheless, if you wish to proceed, here's how:
 
-##### Google Auth Platform Project: Lakekeeper Application
+#### Google Auth Platform Project: Lakekeeper Application
 
 Create a new GCP Project - each Project serves a single application as part of the "Google Auth Platform". When the new project is created, create the new internal Lakekeeper Application:
 
@@ -449,7 +449,7 @@ Create a new GCP Project - each Project serves a single application as part of t
     - **Contact Information / Email address**: Email Addresses of Lakekeeper Admins or Team Email Address
 1. After the Branding is created, select "Data access" in the left menu, and add the following non-sensitive scopes: `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
 
-##### Client 1: Lakekeeper UI
+#### Client 1: Lakekeeper UI
 
 1. After the app is created, click in the left menu on "Clients" in the "Google Auth Platform" service
 1. Click on "+Create credentials"
