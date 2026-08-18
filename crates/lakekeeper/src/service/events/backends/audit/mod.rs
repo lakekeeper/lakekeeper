@@ -752,6 +752,7 @@ macro_rules! audit_operation {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
     use valuable::{Valuable, Value, Visit};
 
     use super::*;
@@ -759,7 +760,10 @@ mod tests {
         request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
         service::{
             authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
-            events::context::EventEntities,
+            events::context::{
+                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_TABLE,
+                FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
+            },
         },
     };
 
@@ -865,6 +869,558 @@ mod tests {
             actions,
             extra_context: Arc::new(std::collections::HashMap::new()),
             authorizations: Arc::new(vec![sample(Vec::new())]),
+        }
+    }
+
+    // ── Wire-format fixtures ────────────────────────────────────────────────────
+    //
+    // Each fixture is a committed record of exactly what one audit event renders to
+    // on the wire. Together they are the only thing in the tree that observes the
+    // emitted JSON, and therefore the only thing that can detect an unintended
+    // change to the audit format.
+    //
+    // Every value below is fixed. Random ids or a clock would make each run differ,
+    // and at most one `extra_context` key is used per fixture: `extra_context` is a
+    // `HashMap`, so two or more keys render in an unstable order and the fixtures
+    // would fail at random.
+    //
+    // To regenerate after a deliberate change: `just update-audit-fixtures`.
+
+    const FIXTURE_WAREHOUSE_ID: &str = "019684ff-0000-7000-8000-000000000001";
+    const FIXTURE_TABLE_ID: &str = "019684ff-0000-7000-8000-000000000002";
+    const FIXTURE_NAMESPACE_ID: &str = "019684ff-0000-7000-8000-000000000003";
+
+    /// Keys the log subscriber adds, which `AUDIT_FORMAT` deliberately does not
+    /// cover — see the stability section of `docs/docs/logging.md`. They are stripped
+    /// before comparison so that a `tracing-subscriber` upgrade, or moving this
+    /// module (which changes `target`), cannot be mistaken for a format change.
+    const ENVELOPE_KEYS: &[&str] = &[
+        "timestamp",
+        "level",
+        "message",
+        "target",
+        "span",
+        "spans",
+        "filename",
+        "line_number",
+    ];
+
+    /// Strip the subscriber-owned envelope, leaving only the fields `AUDIT_FORMAT`
+    /// makes promises about, in the order they were emitted.
+    ///
+    /// `retain` rather than `remove`: with `serde_json`'s `preserve_order` feature (which
+    /// this workspace enables) a `Map` is index-backed and `remove` is a *swap*-remove,
+    /// which would shuffle the surviving keys. Order is worth keeping — a fixture that
+    /// reads in wire order is a fixture a reviewer can check against a real log line.
+    fn contract_fields(mut record: serde_json::Value) -> serde_json::Value {
+        record
+            .as_object_mut()
+            .expect("an audit record is a JSON object")
+            .retain(|key, _| !ENVELOPE_KEYS.contains(&key.as_str()));
+        record
+    }
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/service/events/backends/audit/fixtures/v1")
+            .join(format!("{name}.json"))
+    }
+
+    /// Assert that `emitted` still matches the committed fixture, and classify any
+    /// difference as a major or a minor change to [`AUDIT_FORMAT`].
+    ///
+    /// Read and written at runtime rather than embedded with `include_str!`, so the
+    /// same code path can also regenerate the file. A brand-new fixture would
+    /// otherwise fail to compile before it could be generated.
+    #[track_caller]
+    fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
+        let path = fixture_path(name);
+
+        if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
+            std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+                .expect("creating the fixture directory");
+            let mut json =
+                serde_json::to_string_pretty(emitted).expect("an audit record serialises");
+            json.push('\n');
+            std::fs::write(&path, json)
+                .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+            return;
+        }
+
+        let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the committed audit fixture {}: {e}\n\n\
+                 If this fixture is new, generate it with `just update-audit-fixtures`. \
+                 If it was moved or deleted, restore it: it is the record of what \
+                 audit_format {AUDIT_FORMAT} puts on the wire, and without it nothing \
+                 detects a change to the audit log format.",
+                path.display()
+            )
+        });
+        let committed: serde_json::Value = serde_json::from_str(&committed)
+            .unwrap_or_else(|e| panic!("fixture {} is not valid JSON: {e}", path.display()));
+
+        // A fixture of `{}` satisfies the subset check below unconditionally, so an
+        // emptied or truncated file would switch the breaking-change check off while
+        // leaving a green test. Floor the key count.
+        assert!(
+            committed
+                .as_object()
+                .is_some_and(|object| object.len() >= 6),
+            "fixture {} has fewer than 6 keys and looks truncated. Compared against a \
+             near-empty fixture, the check below asserts almost nothing.",
+            path.display()
+        );
+
+        // Is every key the fixture records still present, with the same type and
+        // value? `CompareMode::Inclusive` walks the right-hand value and requires the
+        // left to contain it, so with the fixture on the right this asserts
+        // "fixture is a subset of emitted": extra keys in `emitted` pass.
+        //
+        // Do not re-derive that direction from assert-json-diff's own documentation,
+        // which describes `Inclusive` the other way round; the behaviour above is
+        // what its `diff.rs` implements and what this test relies on. Reversed, this
+        // check would pass while a field was being deleted.
+        if let Err(difference) =
+            assert_json_matches_no_panic(emitted, &committed, Config::new(CompareMode::Inclusive))
+        {
+            panic!(
+                "the audit log format changed in a way that BREAKS CONSUMERS: a field \
+                 recorded in {name} is now missing, renamed, or has a different type \
+                 or value.\n\n{difference}\n\n\
+                 If this change is intended, bump the MAJOR half of AUDIT_FORMAT \
+                 (currently {AUDIT_FORMAT}), start a new fixture directory for it, and \
+                 keep the old one passing — consumers replaying older logs still need \
+                 it. Then update docs/docs/logging.md and say so in the release notes. \
+                 If it is not intended, this is the bug.\n\n\
+                 Note: a changed *value* fails here too, and reads the same as a \
+                 changed type. If the value is nondeterministic, the fixture needs to \
+                 stop depending on it.\n\n\
+                 See the audit log section of docs/docs/developer-guide.md."
+            );
+        }
+
+        // Reaching here means nothing recorded in the fixture moved, so the only way
+        // to differ is a key present in `emitted` and absent from the fixture: a
+        // purely additive change, which existing consumers can ignore.
+        if let Err(difference) =
+            assert_json_matches_no_panic(emitted, &committed, Config::new(CompareMode::Strict))
+        {
+            panic!(
+                "the audit log format gained a field. Nothing existing changed, so this \
+                 is additive and existing consumers keep working.\n\n{difference}\n\n\
+                 Bump the MINOR half of AUDIT_FORMAT (currently {AUDIT_FORMAT}), \
+                 regenerate the fixtures with `just update-audit-fixtures`, document \
+                 the new field in docs/docs/logging.md, and say so in the release \
+                 notes.\n\n\
+                 See the audit log section of docs/docs/developer-guide.md."
+            );
+        }
+    }
+
+    fn fixture_table_entity() -> EntityDescriptor {
+        EntityDescriptor::new("table")
+            .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
+            .field(FIELD_NAME_TABLE_ID, &FIXTURE_TABLE_ID)
+            .field(FIELD_NAME_TABLE, &"sales.orders")
+    }
+
+    fn fixture_namespace_entity() -> EntityDescriptor {
+        EntityDescriptor::new("namespace")
+            .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
+            .field(FIELD_NAME_NAMESPACE_ID, &FIXTURE_NAMESPACE_ID)
+            .field(FIELD_NAME_NAMESPACE, &"sales")
+    }
+
+    fn fixture_read_action() -> ActionDescriptor {
+        ActionDescriptor::builder().action_name("read_data").build()
+    }
+
+    /// An action carrying context, so the fixtures pin that nesting too.
+    fn fixture_action_with_context() -> ActionDescriptor {
+        ActionDescriptor::builder()
+            .action_name("update_table_properties")
+            .context_string("name", "orders")
+            .context_list("removed-properties", vec!["stale.key".to_string()])
+            .build()
+    }
+
+    /// The simplest per-decision entry: no id, no `for-principal`, no
+    /// `determined_by`. Pins which keys are omitted rather than emitted as null.
+    fn fixture_plain_authorization() -> Authorization {
+        Authorization {
+            id: None,
+            for_principal: None,
+            action: fixture_read_action(),
+            entity: fixture_table_entity(),
+            allowed: Some(true),
+            determined_by: Vec::new(),
+        }
+    }
+
+    /// A fully-populated entry, so the fixtures pin the optional keys in their
+    /// present form as well as their absent one, and both `DeterminingFactor`
+    /// variants including its own `None` fields.
+    fn fixture_detailed_authorization() -> Authorization {
+        Authorization {
+            id: Some("check-0".to_string()),
+            for_principal: Some(UserOrRoleId::User(
+                crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id"),
+            )),
+            action: fixture_read_action(),
+            entity: fixture_namespace_entity(),
+            allowed: Some(false),
+            determined_by: vec![
+                DeterminingFactor::Policy {
+                    policy_id: "policy-42".to_string(),
+                    name: Some("deny-stale-namespaces".to_string()),
+                    effect: PolicyEffect::Forbid,
+                    source: Some("cedar".to_string()),
+                },
+                DeterminingFactor::SystemAuthority {
+                    source: None,
+                    reason: None,
+                },
+            ],
+        }
+    }
+
+    fn fixture_context(entries: &[(&str, &str)]) -> Arc<std::collections::HashMap<String, String>> {
+        Arc::new(
+            entries
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect(),
+        )
+    }
+
+    /// An authenticated caller with a `User-Agent`, so the fixtures pin the populated
+    /// form of both `actor` and `user_agent`.
+    fn fixture_metadata() -> RequestMetadata {
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(
+                crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
+            ))
+            .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
+            .build()
+    }
+
+    fn fixture_error() -> Arc<crate::service::events::AuthorizationError> {
+        Arc::new(crate::service::events::AuthorizationError {
+            r#type: "NotAuthorized".to_string(),
+            code: 403,
+            message: "Principal is not allowed to read this table".to_string(),
+            stack: vec!["authorizer: no matching grant".to_string()],
+            error_id: "019684ff-0000-7000-8000-0000000000ff".to_string(),
+        })
+    }
+
+    /// Every fixture, so that both tests below cover the whole committed set rather
+    /// than whichever files happen to exist.
+    const FIXTURE_NAMES: &[&str] = &[
+        "authz_succeeded_single",
+        "authz_succeeded_plural",
+        "authz_succeeded_action_entities",
+        "authz_succeeded_actions_entity",
+        "authz_failed_single",
+        "authz_failed_context",
+        "grant_created",
+        "grant_revoked",
+    ];
+
+    fn read_fixture(name: &str) -> serde_json::Value {
+        let path = fixture_path(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("fixture {} is not valid JSON: {e}", path.display()))
+    }
+
+    /// Collect every JSON object key in `value`, at any depth.
+    fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, nested) in fields {
+                    out.push(key.clone());
+                    collect_keys(nested, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_keys(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every field the audit log puts on the wire must be documented, so the reference
+    /// in `docs/docs/logging.md` cannot quietly fall behind the code.
+    ///
+    /// Driven off the committed fixtures, so it covers what is actually emitted rather
+    /// than what some type declares. Add a field and this fails, naming it.
+    ///
+    /// Coverage is therefore bounded by the fixtures: a key emitted only by a code path
+    /// no fixture exercises is invisible here. Widening the fixture set widens this
+    /// check too, which is the main reason to add one.
+    ///
+    /// Keys are matched as `` `key` `` — a field table entry or inline mention, not a
+    /// bare appearance inside a JSON example, since an example is not a description.
+    #[test]
+    fn every_emitted_audit_field_is_documented() {
+        // Resolved and embedded at COMPILE time: if `logging.md` is deleted or moved,
+        // this line fails the build with "couldn't read …: No such file or directory".
+        // It can never silently read an empty string. The path is relative to this
+        // file, so it climbs from `backends/audit/` to the repository root; the same
+        // technique is used in `crate::api::endpoints` for the committed OpenAPI specs.
+        const LOGGING_DOC: &str = include_str!("../../../../../../../docs/docs/logging.md");
+
+        // The check above only covers the file being gone. This covers the other
+        // failure: the file is still there but no longer holds the audit reference —
+        // split into another page, replaced by a stub, or gutted — which would
+        // otherwise surface as one baffling failure per field.
+        assert!(
+            LOGGING_DOC.contains("{#audit-logs}"),
+            "docs/docs/logging.md no longer contains the `{{#audit-logs}}` anchor. The \
+             audit log documentation has moved, been split, or been deleted. This test \
+             asserts that every field the audit log emits is documented there, so point \
+             it at the new location and update the `#audit-logs` links in the other docs."
+        );
+
+        let mut keys = Vec::new();
+        for name in FIXTURE_NAMES {
+            collect_keys(&read_fixture(name), &mut keys);
+        }
+        keys.sort();
+        keys.dedup();
+
+        let undocumented: Vec<&String> = keys
+            .iter()
+            .filter(|key| !LOGGING_DOC.contains(&format!("`{key}`")))
+            .collect();
+
+        assert!(
+            undocumented.is_empty(),
+            "these audit log fields are emitted but not documented in \
+             docs/docs/logging.md: {undocumented:?}\n\n\
+             Add each one to the relevant field table. A field nobody documented is a \
+             field consumers have to reverse-engineer from example output, which is how \
+             the reference fell out of step with the code before.\n\n\
+             Adding a field is a minor change to the audit format: see the audit log \
+             section of docs/docs/developer-guide.md."
+        );
+    }
+
+    /// The fixture directory and [`FIXTURE_NAMES`] must agree. Without this, deleting a
+    /// test leaves an orphan fixture that nothing asserts, and a fixture added by hand
+    /// is never compared against anything.
+    #[test]
+    fn the_fixture_directory_matches_the_declared_set() {
+        let directory = fixture_path("unused")
+            .parent()
+            .expect("fixture path has a parent")
+            .to_path_buf();
+
+        let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", directory.display()))
+            .map(|entry| entry.expect("readable directory entry").file_name())
+            .filter_map(|name| {
+                name.to_str()
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .map(str::to_owned)
+            })
+            .collect();
+        on_disk.sort();
+
+        let mut declared: Vec<String> = FIXTURE_NAMES.iter().map(|n| (*n).to_string()).collect();
+        declared.sort();
+
+        assert_eq!(
+            on_disk, declared,
+            "the fixtures on disk and the ones declared in FIXTURE_NAMES have drifted. A \
+             fixture with no test asserting it detects nothing; a declared fixture with \
+             no file makes the tests fail on a missing file instead of on a real change. \
+             Regenerate with `just update-audit-fixtures`."
+        );
+    }
+
+    /// One action, one entity: `audit_log!` emits the singular `action` / `entity`
+    /// keys. No `extra_context`, and an anonymous caller with no `User-Agent`, so
+    /// this fixture is the one that pins the absent and null forms.
+    #[test]
+    fn fixture_authz_succeeded_single_action_single_entity() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+                request_metadata: Arc::new(RequestMetadataTestBuilder::builder().build()),
+                entities: Arc::new(EventEntities::one(fixture_table_entity())),
+                actions: Arc::new(vec![fixture_read_action()]),
+                extra_context: fixture_context(&[]),
+                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_succeeded_single", &contract_fields(record));
+    }
+
+    /// Several actions and several entities: `audit_log!` switches to the plural
+    /// `actions` / `entities` keys. Also carries `extra_context`, an action with its
+    /// own context, and a fully-populated per-decision entry.
+    #[test]
+    fn fixture_authz_succeeded_plural_actions_plural_entities() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::many([
+                    fixture_table_entity(),
+                    fixture_namespace_entity(),
+                ])),
+                actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
+                extra_context: fixture_context(&[("invoked-by", "maintenance-task")]),
+                authorizations: Arc::new(vec![
+                    fixture_plain_authorization(),
+                    fixture_detailed_authorization(),
+                ]),
+            })
+        });
+
+        assert_matches_fixture("authz_succeeded_plural", &contract_fields(record));
+    }
+
+    /// One action, several entities: the singular `action` key with the plural
+    /// `entities` key. This mixed arity is its own arm of `audit_log!`.
+    #[test]
+    fn fixture_authz_succeeded_single_action_plural_entities() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::many([
+                    fixture_table_entity(),
+                    fixture_namespace_entity(),
+                ])),
+                actions: Arc::new(vec![fixture_read_action()]),
+                extra_context: fixture_context(&[]),
+                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_succeeded_action_entities", &contract_fields(record));
+    }
+
+    /// Several actions, one entity: the remaining arm, plural `actions` with the
+    /// singular `entity` key.
+    #[test]
+    fn fixture_authz_succeeded_plural_actions_single_entity() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::one(fixture_table_entity())),
+                actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
+                extra_context: fixture_context(&[]),
+                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_succeeded_actions_entity", &contract_fields(record));
+    }
+
+    /// A denied authorization. Carries `failure_reason` and `error`, which succeeded
+    /// events do not, and records `decision: "denied"`.
+    #[test]
+    fn fixture_authz_failed_single_action_single_entity() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::one(fixture_table_entity())),
+                actions: Arc::new(vec![fixture_read_action()]),
+                failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
+                error: fixture_error(),
+                extra_context: fixture_context(&[]),
+                authorizations: Arc::new(vec![fixture_detailed_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_failed_single", &contract_fields(record));
+    }
+
+    /// A denied authorization that also carries `extra_context`, which is emitted by
+    /// a different arm of the listener from the one above.
+    #[test]
+    fn fixture_authz_failed_with_context() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+                request_metadata: Arc::new(fixture_metadata()),
+                entities: Arc::new(EventEntities::one(fixture_namespace_entity())),
+                actions: Arc::new(vec![fixture_read_action()]),
+                failure_reason:
+                    crate::service::events::AuthorizationFailureReason::CannotSeeResource,
+                error: fixture_error(),
+                extra_context: fixture_context(&[("self-read", "false")]),
+                authorizations: Arc::new(vec![fixture_plain_authorization()]),
+            })
+        });
+
+        assert_matches_fixture("authz_failed_context", &contract_fields(record));
+    }
+
+    /// The operational family, emitted through `audit_operation!` rather than
+    /// `audit_log!` — a different shape entirely, with `operation` / `outcome` /
+    /// `context` and no `entity` or `decision`.
+    ///
+    /// One `grants_changed` event emits one record per grant triple, revocations
+    /// first, so this covers both operations in the order a consumer sees them.
+    #[test]
+    fn fixture_grants_changed_emits_one_record_per_triple() {
+        let principal = UserOrRoleId::User(
+            crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
+        );
+        let spec = |privilege: &str, resource: GrantResource| crate::service::authz::GrantSpec {
+            principal: principal.clone(),
+            resource,
+            privilege: privilege.to_string(),
+        };
+        let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+        let table = || GrantResource::Table {
+            warehouse_id: crate::service::WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+            table_id: crate::service::TableId::new(uuid(FIXTURE_TABLE_ID)),
+        };
+
+        let records = emit_and_capture(|| {
+            AuditEventListener.grants_changed(GrantsChangedEvent::new(
+                vec![spec("modify", table())],
+                vec![spec("select", table())],
+                Arc::new(fixture_metadata()),
+            ))
+        });
+
+        assert_eq!(
+            records.len(),
+            2,
+            "one record per grant triple, revocation first: {records:?}"
+        );
+        let mut records = records.into_iter();
+        let revoked = records.next().expect("the revoked record");
+        let created = records.next().expect("the created record");
+
+        assert_matches_fixture("grant_revoked", &contract_fields(revoked));
+        assert_matches_fixture("grant_created", &contract_fields(created));
+    }
+
+    /// The envelope keys are deliberately outside the format contract, so no fixture
+    /// records them — which means nothing would notice if the subscriber stopped
+    /// emitting them entirely. Assert the ones a consumer genuinely relies on.
+    #[test]
+    fn audit_records_carry_the_envelope_keys_consumers_rely_on() {
+        let record = emit_and_capture_one(|| {
+            AuditEventListener.authorization_succeeded(succeeded_event(fixture_metadata()))
+        });
+
+        for key in ["timestamp", "level", "message", "target"] {
+            assert!(
+                record.get(key).is_some(),
+                "the log subscriber stopped emitting `{key}`. It is outside the \
+                 audit_format contract, so no fixture covers it, but consumers do rely \
+                 on it: {record}"
+            );
         }
     }
 

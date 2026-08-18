@@ -76,6 +76,17 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
+# Regenerate the committed audit-log wire-format fixtures after a deliberate change
+# to the audit log format. Two passes are needed: the fixtures are read at test time,
+# so the run that writes them was still comparing against the previous contents.
+# Review the resulting diff — it is the change consumers will see — then decide
+# whether it needs a MAJOR or MINOR bump of AUDIT_FORMAT. See the audit log section of
+# docs/docs/developer-guide.md.
+update-audit-fixtures:
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
+      service::events::backends::audit::tests::fixture_
+    cargo test -p lakekeeper --lib service::events::backends::audit::tests::fixture_
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml

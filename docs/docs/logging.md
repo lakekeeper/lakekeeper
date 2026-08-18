@@ -86,14 +86,14 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | Field                  | Type            | Description                       |
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
-| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
+| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `name`, `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
 | `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
-| `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
+| `context`              | Object          | Optional. Additional request context as a flat string-to-string map. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
 | `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
@@ -121,6 +121,58 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 {"actor_type": "lakekeeper-internal"}
 ```
 
+| Field          | Type   | Description                                                                                       |
+|----------------|--------|---------------------------------------------------------------------------------------------------|
+| `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed-role"`, or `"lakekeeper-internal"`. Always present.        |
+| `principal`    | String | The authenticated principal. Present for `principal` and `assumed-role`.                           |
+| `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed-role`. |
+
+**Principal references.** Where a principal is named as a *target* rather than as the caller — `authorizations[].for-principal`, and `context.principal` on grant events — it is a single-key object: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`.
+
+
+**Context fields** {#audit-context-fields}
+
+The `context` object on an authorization event is a flat string-to-string map that a request handler adds to when there is something worth recording that is not an action or an entity. Only the keys relevant to that request appear; the object is omitted entirely when there are none.
+
+| Key                        | Description                                                                                  |
+|----------------------------|----------------------------------------------------------------------------------------------|
+| `invoked-by`               | The higher-level operation this authorization was performed on behalf of, when the check is not directly caused by the API call — currently `register_table_overwrite`, for the drop authorized as part of overwriting a registered table |
+| `self-provisioning`        | `"true"` when a user record was created by the authenticated caller for themselves rather than by an administrator |
+| `self-read`                | `"true"` when the caller is reading their own grants rather than another principal's          |
+| `queue_name`               | The task queue the request addressed                                                          |
+| `entity_id`                | Identifier of the entity the task acts on                                                     |
+
+New keys may be added at any minor version, so consumers must not assume this list is closed. On operational audit events the `context` object is a different, per-operation structure — see [Operational Audit Events](#operational-audit-events).
+
+**Entity Format:**
+
+Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined).
+
+Which of the following fields appear depends on the entity type and on what the request supplied — a field is omitted rather than emitted empty. Every value is a string.
+
+| Field                | Description                                                        |
+|----------------------|--------------------------------------------------------------------|
+| `server-id`          | The server                                                         |
+| `project-id`         | The containing project                                             |
+| `warehouse-id`       | The containing warehouse                                           |
+| `namespace`          | Namespace name, dot-joined for nested namespaces                   |
+| `namespace-id`       | Namespace identifier                                               |
+| `table`              | Table name, qualified by its namespace                             |
+| `table-id`           | Table identifier                                                   |
+| `table-location`     | Storage location of the table                                      |
+| `view`               | View name, qualified by its namespace                              |
+| `view-id`            | View identifier                                                    |
+| `generic-table`      | Generic-table name, qualified by its namespace                     |
+| `generic-table-id`   | Generic-table identifier                                           |
+| `task-id`            | Task identifier                                                    |
+| `role-id`            | Role identifier                                                    |
+| `role-source-id`     | Identifier of the role in its originating source                   |
+| `role-provider-id`   | Identifier of the provider the role was resolved from              |
+| `user-id`            | User identifier                                                    |
+| `tag-definition-id`  | Tag-definition identifier                                          |
+
+When only a single entity is involved it appears as the `entity` field; when several are checked, the `entities` field contains an array.
+
 **Action Format:**
 
 Each action is a structured object containing the operation name and optional context about the operation:
@@ -137,6 +189,9 @@ Each action is a structured object containing the operation name and optional co
 ```
 
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
+
+Commit actions carry two further context fields when the commit names them: `target-refs`, the branch or tag references the commit targets, and `update-kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
+
 
 **Grant changes (`action_name = "apply_grants"`):**
 
@@ -184,6 +239,19 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `entity`        | Object  | Same shape as the top-level `entity` field.                                          |
 | `allowed`       | Boolean | The decision for *this* tuple. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
 | `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `Permit` or `Forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. |
+
+Each `determined_by` element is a single-key object naming the kind of factor, whose value carries its fields:
+
+| Factor            | Field       | Type           | Description                                                                 |
+|-------------------|-------------|----------------|-----------------------------------------------------------------------------|
+| `Policy`          | `policy_id` | String         | Authorizer-assigned identifier of the policy. Always present.               |
+| `Policy`          | `name`      | String or null | Author-supplied policy name. `null` when the author provided none. Not guaranteed unique. |
+| `Policy`          | `effect`    | Object         | `{"Permit": []}` or `{"Forbid": []}`. The empty array is the variant payload. |
+| `Policy`          | `source`    | String or null | Opaque origin of the policy. `null` when the producer cannot attribute one.  |
+| `SystemAuthority` | `source`    | String or null | Opaque identifier of the built-in authority tier. `null` when none can be attributed. |
+| `SystemAuthority` | `reason`    | String or null | Human-facing reason the tier applied. `null` when the producer gives none.    |
+
+Note that these fields are emitted as `null` when absent, whereas the optional fields of an `authorizations` entry — `id`, `for-principal`, `allowed`, `determined_by` — are omitted entirely. Both mean "not recorded"; the encoding differs by where the field sits.
 
 **Top-level vs. per-entry semantics.** The top-level `actor` always reflects the *API caller* (the bearer token holder); `authorizations[].for-principal` reflects *whose permissions were checked*. For most calls these are the same and `for-principal` is omitted. For introspection endpoints like `GET /lakekeeper/v1/permissions/...?for-user=X` the actor is the caller while every entry's `for-principal` is `X` — both facts are recorded structurally on the same event, no `context.for-user` string needed.
 

@@ -89,6 +89,32 @@ We try to keep unit-tests close to the code they are testing. E.g., all tests fo
 
 You'll start at `api` and add the endpoint function to either `management` or `iceberg` depending on whether the endpoint belongs to official iceberg REST specification. The likely next step is to extend the respective `Service` trait so that there's a function to be called from the REST handler. Within the trait function, depending on your feature, you may need to store or fetch something from the storage backend. Depending on if the functionality already exists, you can do so via the respective function on the `C` generic and either the `state: ApiContext<State<...>>` struct or by first getting a transaction via `C::Transaction::begin_<write|read>(state.v1_state.catalog.clone()).await?;`. If you need to add a new function to the storage backend, extend the `Catalog` trait and implement it in the respective modules within `implementations`. Remember to do appropriate AuthZ checks within the function of the respective `Service` trait.
 
+### I changed the audit log format
+
+Audit log records — every line with `"event_source": "audit"` — carry a `MAJOR.MINOR` version in their `audit_format` field, declared as `AUDIT_FORMAT` in `crates/lakekeeper/src/service/events/backends/audit/mod.rs`. Consumers use it to pick a parser, so it has to be accurate. Nothing else in the tree observes the emitted JSON, which is why the fixtures below exist.
+
+**The tests tell you which kind of change you made.** Run `just test`. If a fixture test fails, the failure message says whether the change is breaking or additive, and which JSON path moved:
+
+- **Failure says "BREAKS CONSUMERS"** — a field was removed, renamed, retyped, or its value changed. Bump the **major**: `1.4` becomes `2.0`. Copy `fixtures/v1/` to `fixtures/v2/`, regenerate, and **leave `v1/` in place and passing** — anyone replaying older logs still needs it to be correct.
+- **Failure says "gained a field"** — the change is purely additive and existing consumers keep working. Bump the **minor**: `1.4` becomes `1.5`, and regenerate the fixtures.
+
+Regenerate with `just update-audit-fixtures`, then read the resulting diff: it is exactly what a consumer's pipeline will see. If it contains anything you did not intend, that is the bug.
+
+**Then, in the same change:**
+
+1. Update the field tables in `docs/docs/logging.md`. A test walks the fixtures and fails if any emitted field is undocumented, so an addition cannot be forgotten — but it cannot check that a *description* is still accurate, so re-read the row you touched.
+2. Put an `audit` mention in the pull request title, or a `## Release notes` section in the body, describing the change in consumer terms. Major bumps must appear in the release notes; a consumer that discovers a format change from a parse failure in production has been let down.
+
+**What `audit_format` does not cover.** The keys the log subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber`, not to Lakekeeper, and can move on a dependency upgrade with no version bump. They are stripped before fixture comparison for that reason, and `docs/docs/logging.md` states it as a contract.
+
+**Changes deliberately deferred to the next major bump.** These are known warts. None is worth a major bump on its own, so batch them all into one, so consumers absorb a single break rather than several:
+
+- `warehouse-id` on an entity versus `warehouse_id` in a grant context (`events/context.rs` versus `events/backends/audit/mod.rs`) — the same logical field with two spellings in the same log stream. The action-context keys are similarly split, four kebab-case against sixteen snake_case; one convention has to be picked for all of them at once.
+- The empty-array enum encoding: `{"Forbid": []}`, `{"ActionForbidden": []}`. The array is always empty — it is an artefact of how `valuable-serde` renders a Rust enum variant with no payload, not a design decision. Every code generator turns it into a wrapper class, and `jq` users need `keys[0]` instead of reading a string. Plain strings would be better.
+- The `action` / `actions` and `entity` / `entities` arity switch. A record carries the singular key when one item was checked and the plural key otherwise, so every consumer needs both paths. Always emitting arrays, even of length one, would be simpler for everyone.
+- `writes` and `deletes` in the `apply_grants` action context are counts encoded as JSON strings. They should be numbers.
+- Optional fields are encoded inconsistently: some are omitted when absent, others are emitted as `null`. Three code paths produce two different outcomes; each is documented at its definition, marked `Optional fields: path N of 3`. One rule should apply everywhere.
+
 ## Debugging complex issues and prototyping using our examples
 
 To debug more complex issues, work on prototypes or simply an initial manual test, you can use one of the `examples`. Unless you are working on AuthN or AuthZ, you'll most likely want to use the minimal example. All examples come with a `docker-compose-build.yaml` which will build the catalog image from source. The invocation looks like this: `docker compose -f docker-compose.yaml -f docker-compose-build.yaml up -d --build`. Aside from building the catalog, the `docker-compose-build.yaml` overlay also exposes the docker services to your host, so you can also use it as a development environment by e.g. pointing your env vars to the docker container to test against its minio instance.
