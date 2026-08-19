@@ -67,6 +67,10 @@ When a trusted engine sends a `loadTable` or `loadView` request with the `refere
 
 Without a trusted engine, the `referenced-by` parameter is ignored and only the calling user's permissions on the target resource are checked (standard behavior).
 
+### Chain Depth
+
+The number of views a client may declare in one `referenced-by` chain is capped by [`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`](./configuration.md#referenced-by-chains) (default `10`). Every entry widens the authorization work for that single request, so a deeper chain is rejected with `ReferencedByDepthExceeded` (HTTP 400) — the request is malformed, not unauthorized. The cap is applied to the raw list the client sent, so it holds whether or not a trusted engine matched. Every entry is validated like the target of the request — same maximum namespace depth, same restrictions on identifier parts.
+
 ## Configuration
 
 ### Prerequisites
@@ -94,7 +98,7 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-
 
 **What happens when a request is not matched as a trusted engine:**
 
-- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned.
+- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The one exception is a chain deeper than the configured maximum, which is rejected with `400 ReferencedByDepthExceeded` before engine trust is considered.
 - Only **commits that actually attempt to set or remove a protected owner property** (`create-view` or `commit-view` writing `trino.run-as-owner`) are rejected with `403 ProtectedPropertyModification`. An ignored `referenced-by` on a load does **not** trigger this error.
 
 !!! note "When using the OPA bridge"

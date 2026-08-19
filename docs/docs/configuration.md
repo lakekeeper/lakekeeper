@@ -530,6 +530,18 @@ This bound is enforced on the catalog (Postgres) write path. When using the Open
 |-----------------------------------------------------|---------|-------------|
 | <nobr>`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH`</nobr>  | `10`    | Maximum number of role→role edges in any nesting chain. Default: `10` |
 
+### Referenced-By Chains
+
+Bounds the view chain a client may declare on a load request.
+
+`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH` caps how many views a client may list in the `referenced-by` parameter of `loadTable` / `loadView` / `loadCredentials`, including the generic-table credentials endpoint. Every entry widens the authorization work for that single request — each view is resolved, authorized and ordered alongside the target — so the chain a client supplies is bounded. A deeper chain is rejected with `ReferencedByDepthExceeded` (HTTP 400): the request is malformed, not unauthorized. The error message carries both the supplied depth and the configured maximum. Each entry is also held to the same identifier rules as the target of the request, so the bound covers the size of a chain and not only its depth.
+
+The bound is applied to the raw list the client sent, before Lakekeeper decides whether the chain is honoured at all. It therefore applies regardless of whether a [trusted engine](./view-security.md) matched: an untrusted caller whose `referenced-by` would have been ignored still gets a `400` for an over-deep chain.
+
+| Variable                                                    | Example | Description |
+|-------------------------------------------------------------|---------|-------------|
+| <nobr>`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`</nobr> | `10`    | Maximum number of views accepted in a `referenced-by` chain. Default: `10` |
+
 ### Maintenance Mode
 
 Captured at startup; not dynamic. While `read-only`:

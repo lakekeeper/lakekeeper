@@ -4,7 +4,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::ETag;
 
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::iceberg::v1::{
         ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
         TableParameters,
@@ -16,7 +16,7 @@ use crate::{
         tables::{
             authorize_load_table,
             etag::{StorageAccess, TableETag, TableResponseShape},
-            parse_location, validate_table_or_view_ident,
+            parse_location, validate_referenced_by, validate_table_or_view_ident,
         },
     },
     service::{
@@ -93,6 +93,10 @@ pub(crate) async fn load_table_with_flags<
         }
         return Err(e);
     }
+    validate_referenced_by(
+        referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
