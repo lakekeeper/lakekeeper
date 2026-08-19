@@ -11,6 +11,9 @@
 
 Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
 
+!!! note "Permissions are policies, not grants"
+    Cedar decides from policies you author and deploy, so there is nothing to hand out at runtime: the [Grants API](./grants.md) publishes no grantable privileges here and its writes are rejected. Grant support for Cedar is planned for 0.14. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md). If you want permissions managed at runtime by admins and object owners instead, see [OpenFGA](./authorization-openfga.md).
+
 ## How it Works
 
 Lakekeeper uses the built-in Cedar Authorizer to evaluate whether a request is allowed. Each Cedar authorization request consists of three components:
@@ -31,6 +34,7 @@ Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` a
 Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have their own `Lakekeeper::GenericTable` entity and a parallel set of action groups — `GenericTableActions`, `GenericTableDescribeActions`, `GenericTableSelectActions` and `GenericTableModifyActions` — that mirror the regular `Table` actions. Use them in policies exactly as you would the `Table` equivalents.
 
 ## RBAC and ABAC Support
+
 Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
 
 ## Token-Based Role Matching with `project_roles`
@@ -374,7 +378,6 @@ The following table documents the ID format used for each Cedar entity type. The
 See [Entity Definition Example](#entity-definition-example) below for the JSON format.
 
 **Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
-
 
 ## Policy Examples
 
@@ -722,6 +725,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
 ## Entity Definition Example
+
 Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View. Additionally, if `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, also User and Roles are provided to Cedar. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
 
 ??? example "Entities provided to Cedar internally"
@@ -977,7 +981,6 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 4. **Error Handling**: If any reload fails, the previous configuration is retained, an error is logged, and health checks report unhealthy status
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
-
 
 ## Cedar Actions
 

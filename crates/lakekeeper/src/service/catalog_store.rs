@@ -38,6 +38,10 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
+        authz::{
+            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
+            UserOrRoleId,
+        },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -80,6 +84,8 @@ pub mod generic_table;
 pub use generic_table::*;
 mod tag;
 pub use tag::*;
+mod grant;
+pub use grant::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -549,6 +555,35 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError>;
 
+    /// Move a namespace to `destination`, re-parenting and/or renaming it.
+    ///
+    /// `destination` is the full new path of the namespace. Its last element is the new
+    /// name, the preceding elements identify the new parent; an empty prefix moves the
+    /// namespace to the warehouse root. Moving within a warehouse only — there is no
+    /// cross-warehouse form.
+    ///
+    /// Callers must validate `destination` (depth, illegal characters, reserved names)
+    /// *before* calling. This layer only enforces the invariants that require the
+    /// transaction, mirroring how `create_namespace_impl` relies on caller-side
+    /// validation.
+    ///
+    /// Namespaces that have child namespaces cannot be moved: the stored path of every
+    /// descendant would have to be rewritten, which is deliberately out of scope for now.
+    ///
+    /// A `destination` byte-identical to the namespace's current path is a no-op and
+    /// returns the unchanged namespace, so that retrying a successful move succeeds
+    /// rather than colliding with itself. Callers detect this via
+    /// [`MovedNamespace::is_noop`].
+    ///
+    /// `force` overrides protection, as it does for `drop_namespace_impl`.
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError>;
+
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,
@@ -768,6 +803,76 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
 
+    // ---------------- Grants ----------------
+    /// Apply a grant diff in one transaction, returning the grants actually created
+    /// and removed. Idempotent: re-granting creates nothing, re-revoking removes
+    /// nothing. Deletes are applied before writes, so a diff carrying the same grant
+    /// on both sides ends in the granted state.
+    async fn apply_grants_impl<'a>(
+        writes: &[GrantSpec],
+        deletes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AppliedGrants, ApplyGrantsStoreError>;
+
+    /// Insert grants, in the transaction that creates the resource they belong to.
+    /// Returns the grants actually created; an identical existing grant is skipped.
+    ///
+    /// Deliberately not [`Self::apply_grants_impl`] with an empty delete side: that path
+    /// serializes concurrent diffs per resource, and sets a transaction-local lock
+    /// timeout to do it that would then govern the rest of the caller's transaction.
+    /// The serialization exists for diffs that cross — each revoking what the other
+    /// adds — so an insert with no delete side has nothing to cross and needs none of it.
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// Remove every grant held by a user, returning what was removed.
+    ///
+    /// Needed because users are soft-deleted, so no foreign key cascade fires for
+    /// them, and a returning account would otherwise regain its old grants.
+    async fn delete_grants_for_user_impl<'a>(
+        user_id: &UserId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// List direct grants matching `filter`.
+    async fn list_grants_impl(
+        filter: &GrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
+
+    /// Every grant held by any of `principals` on any of `resources`.
+    ///
+    /// The authorization-evaluation fetch: an authorizer that resolves inherited
+    /// permissions itself asks for the request's resolved chain — server, project,
+    /// warehouse, the target's ancestor namespaces, and the targets — for the
+    /// principals the decision runs as. Narrowed on **both** axes, so neither a coarse
+    /// resource holding one grant per principal in the deployment nor a principal
+    /// holding one grant per table can make the answer large: the result is bounded by
+    /// chain size times privileges per level. Unpaginated and unordered.
+    ///
+    /// `principals` must be the **effective** set: the acting principal plus every role
+    /// they hold, transitively. `resources` must name everything that should count,
+    /// including [`GrantResource::Server`](crate::service::authz::GrantResource) —
+    /// nothing is implied. This resolves nothing itself, so an omitted role or ancestor
+    /// costs access rather than granting it. Tag definitions are not part of any
+    /// chain: a grant on a tag never bears on a decision about the objects it is
+    /// attached to unless the caller asks for that tag explicitly.
+    ///
+    /// Each returned grant echoes the matching entry of `resources`, so tables, views
+    /// and generic tables keep the kind the caller asked with — nothing is re-fetched
+    /// to reconstruct it. Entries must therefore be distinct per resource: naming the
+    /// same tabular twice with different kinds gets an unspecified one of them echoed.
+    /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
+    /// soft-deleted tabulars are included.
+    async fn list_grants_on_resources_impl(
+        principals: &[UserOrRoleId],
+        resources: &[GrantResource],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantSpec>, ListGrantsStoreError>;
+
     // ---------------- Tag Management ----------------
     async fn create_tag_definition_impl<'a>(
         project_id: &ProjectId,
@@ -849,6 +954,15 @@ where
     /// The tags directly on `target`, each paired with its definition's name.
     async fn list_tags_for_target_impl(
         target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
+    /// All direct column tags on `tabular_id` (every column with a tag), each paired
+    /// with its definition's name; the column is carried as the field-id in each
+    /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.
+    async fn list_column_tags_for_tabular_impl(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
@@ -1207,6 +1321,7 @@ where
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &crate::service::idempotency::IdempotencyKey,
+        endpoint: crate::api::endpoints::EndpointFlat,
         state: Self::State,
     ) -> Result<crate::service::idempotency::IdempotencyCheck>;
 

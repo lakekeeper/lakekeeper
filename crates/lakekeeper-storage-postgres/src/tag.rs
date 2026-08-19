@@ -767,6 +767,55 @@ where
         .collect())
 }
 
+/// All governance tags attached to any column of `tabular_id` (`field_id IS NOT NULL`),
+/// each carrying its column's field-id in the reconstructed `Column` target. Ordered by
+/// field-id so the caller can group per column. Unpaginated, like the other forward
+/// per-target tag lists.
+pub(crate) async fn list_column_tags_for_tabular<'e, 'c: 'e, E>(
+    warehouse_id: WarehouseId,
+    tabular_id: TabularId,
+    connection: E,
+) -> Result<Vec<TagWithName>, CatalogBackendError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    let wh = *warehouse_id;
+    let rows = sqlx::query!(
+        r#"SELECT t.tag_id, t.tag_definition_id, t.value,
+                t.source AS "source: TagSource", t.created_at, t.updated_at, td.name,
+                t.field_id AS "field_id!"
+           FROM tag t JOIN tag_definition td USING (tag_definition_id)
+           WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL
+             AND t.tabular_id = $2 AND t.field_id IS NOT NULL
+           ORDER BY t.field_id, t.created_at, t.tag_id"#,
+        wh,
+        *tabular_id.as_ref(),
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| TagWithName {
+            tag: Tag {
+                tag_id: TagId::new(r.tag_id),
+                tag_definition_id: TagDefinitionId::new(r.tag_definition_id),
+                target: TagTarget::Column {
+                    warehouse_id,
+                    tabular_id,
+                    field_id: r.field_id,
+                },
+                value: r.value,
+                source: r.source,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+            definition_name: r.name,
+        })
+        .collect())
+}
+
 /// Rebuild a domain [`TagTarget`] from a `tag` row's nullable target columns plus the
 /// tabular subtype recovered from the `tabular` join. Inverse of [`TagTargetColumns::from_target`]:
 /// the row stores a bare `tabular_id`, so the Table/View/GenericTable discriminator comes from the
@@ -1696,6 +1745,110 @@ mod tests {
             err,
             UpdateTagDefinitionError::TagNameAlreadyExists(_)
         ));
+    }
+
+    #[sqlx::test]
+    async fn test_list_column_tags_for_tabular(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let def_id = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        create_tag_definition(
+            &project_id,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(def_id)
+                .name("pii")
+                .scope(&[TagScope::Column])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let (table_id, _schema) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+        let tabular_id = TabularId::Table(table_id);
+
+        // Tag both columns (field-ids 1 and 2 in `two_col_schema`).
+        for field_id in [1, 2] {
+            let mut txn = pool.begin().await.unwrap();
+            apply_tag(
+                TagId::new_random(),
+                def_id,
+                TagTarget::Column {
+                    warehouse_id,
+                    tabular_id,
+                    field_id,
+                },
+                None,
+                TagSource::Manual,
+                &mut txn,
+            )
+            .await
+            .unwrap();
+            txn.commit().await.unwrap();
+        }
+
+        // A table-level tag on the same table must NOT show up (columns only).
+        let table_def = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        create_tag_definition(
+            &project_id,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(table_def)
+                .name("owner")
+                .scope(&[TagScope::Table])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        apply_tag(
+            TagId::new_random(),
+            table_def,
+            TagTarget::Tabular {
+                warehouse_id,
+                tabular_id,
+            },
+            None,
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let tags = list_column_tags_for_tabular(warehouse_id, tabular_id, &pool)
+            .await
+            .unwrap();
+
+        // Exactly the two column tags, ordered by field-id; the table tag is excluded.
+        assert_eq!(
+            tags.iter().map(|t| t.tag.target).collect::<Vec<_>>(),
+            vec![
+                TagTarget::Column {
+                    warehouse_id,
+                    tabular_id,
+                    field_id: 1,
+                },
+                TagTarget::Column {
+                    warehouse_id,
+                    tabular_id,
+                    field_id: 2,
+                },
+            ]
+        );
+        assert_eq!(
+            tags.iter()
+                .map(|t| t.definition_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pii", "pii"]
+        );
     }
 
     #[sqlx::test]

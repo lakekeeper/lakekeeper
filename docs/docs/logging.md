@@ -11,6 +11,7 @@ Lakekeeper emits structured JSON logs through the Rust `tracing` ecosystem. All 
 The `RUST_LOG` variable controls which logs are emitted based on their **level** and **target** (the Rust module that produced the log). This applies to all log types including audit logs, error responses, and general application logs.
 
 **Basic syntax:**
+
 ```bash
 # Set global minimum level
 RUST_LOG=info              # Show INFO, WARN, ERROR
@@ -35,7 +36,7 @@ To disable audit logs entirely:
 LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 ```
 
-**Note:** Audit logs contain PII. When disabling them, ensure you have alternative mechanisms for compliance and security monitoring.
+**Note:** Audit logs contain PII — user identities, and a caller-supplied `user_agent` string that some clients populate with hostnames or OS usernames. When disabling them, ensure you have alternative mechanisms for compliance and security monitoring.
 
 ## Log Types
 
@@ -61,7 +62,8 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
-| `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./authorization.md#instance-admins). |
+| `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
+| `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
@@ -69,6 +71,12 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
+
+**`user_agent` is client-supplied and unverified.** It is the `User-Agent` request header, recorded as sent. Any caller can set it to any value, including one that names a different client, and Lakekeeper neither validates it nor cross-checks it against the token. Treat it as a hint — fleet inventory, spotting an unexpected client library, triaging why one client started failing — never as identity, and never as an authorization or attribution input. The authoritative statements of *who* and *as what* are `actor` and `privilege_source` on the same event. A detection rule keyed on `user_agent` can be evaded by changing one header; one keyed on `actor` cannot.
+
+Lakekeeper records the header rather than a parsed client name, so a consumer can classify it however it needs and no information is lost to normalisation. Two consequences worth planning for: values are free-form and some clients embed hostnames or usernames in them, so treat the field as potentially disclosing infrastructure detail; and browsers cannot set `User-Agent`, so requests from the web UI are recorded with the browser's own value.
+
+**Ordering:** An authorization event records the *attempt*, and is dispatched to the audit log before the authorized operation issues its write. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. Audit consumers should treat authorization events as attempts rather than as confirmation that state changed.
 
 **Actor Types:**
 
@@ -102,6 +110,36 @@ Each action is a structured object containing the operation name and optional co
 ```
 
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
+
+**Grant changes (`action_name = "apply_grants"`):**
+
+Applying a grant diff is authorized once for the whole request, so a single `apply_grants` action describes the entire diff:
+
+| Context field | Type   | Description                                                                 |
+|---------------|--------|-----------------------------------------------------------------------------|
+| `principals`  | Array  | The distinct principals the grants were destined for, each prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `privileges`  | Array  | The distinct privilege names named anywhere in the diff                     |
+| `writes`      | String | Number of entries requested as grants, before deduplication                 |
+| `deletes`     | String | Number of entries requested as revocations, before deduplication            |
+
+The resource the grants apply to is the event's `entity`, not part of the action.
+
+`principals` and `privileges` are deduplicated, so neither is a per-entry list and neither can be matched positionally against the other — a diff naming two principals and two privileges records both sets, not which pairing was requested. The counts are the request's, so `writes: "3"` with one entry in `principals` means three grants for one principal. Requests are capped at 100 entries, which bounds both lists.
+
+**This records the attempt.** What actually changed is recorded separately, one record per grant, under `operation = "grant_created"` / `"grant_revoked"`. Both are audit-log records; neither is published to the configured event stream (Kafka, NATS, CloudEvents). Read this one for what was asked and whether it was allowed, and those for what took effect.
+
+Because the event records the attempt, a *denied* apply is logged with the same detail as an allowed one: what was asked for, for whom, and on which resource. A refused privilege escalation is attributable to its intended beneficiary, not merely to the caller who attempted it.
+
+```json
+// Denied attempt to grant `modify` to two principals
+{
+  "action_name": "apply_grants",
+  "principals": ["role:1f7b…", "user:oidc~alice"],
+  "privileges": ["modify"],
+  "writes": "2",
+  "deletes": "0"
+}
+```
 
 #### Per-decision breakdown (`authorizations`)
 
@@ -145,6 +183,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
   "privilege_source": "authorizer",
+  "user_agent": "PyIceberg/0.9.1",
   "decision": "allowed",
   "authorizations": [
     {
@@ -163,6 +202,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 <details>
@@ -187,6 +227,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "principal": "oidc~user@example.com"
   },
   "privilege_source": "authorizer",
+  "user_agent": "Trino/476",
   "decision": "denied",
   "authorizations": [
     {
@@ -215,6 +256,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 <details>
@@ -247,6 +289,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
   "privilege_source": "authorizer",
+  "user_agent": "curl/8.7.1",
   "decision": "allowed",
   "authorizations": [
     {
@@ -284,6 +327,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 #### Operational Audit Events
@@ -301,6 +345,35 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 | `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
 
 **Outcomes are not binary allow/deny** — they describe the result of the system operation. No `decision` field is present.
+
+**Grant changes (`operation = "grant_created"` / `"grant_revoked"`):**
+
+Emitted after the change is committed, one event per grant the backend reported as applied. `outcome` is always `success`: the event asserts the state the apply left behind, not that the grant differed from what was there before.
+
+These are the confirmed counterpart to the `apply_grants` authorization event. The authorization event records the *attempt* and deduplicates principals and privileges into separate lists, so it cannot say which principal received which privilege; these events carry the full triple, one per grant:
+
+| Context field  | Description                                                                 |
+|----------------|-----------------------------------------------------------------------------|
+| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`                   |
+| `privilege`    | The privilege name, verbatim from the authorizer's vocabulary                |
+| `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition` |
+| `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |
+| `warehouse_id` | The containing warehouse, for warehouse-scoped resources only               |
+
+Grants are hard-deleted and keep no history, so a `grant_revoked` event is the only lasting trace of the revocation. It is not proof the access existed: these events report post-apply state, so revoking a grant nobody held can emit one too. Retain them if you need to answer who held what, when.
+
+**These events do not cover every way a grant disappears.** Two paths remove grants without emitting one:
+
+- **Deleting the resource.** Dropping a warehouse, namespace, table, view or tag definition removes its grants in the database directly; the removal is never seen as individual grants, so no event is emitted. The resource's own deletion event is the record.
+- **Deleting a user, under an authorizer that owns its grants.** The authorizer removes the principal's grants along with its other relations, without enumerating them. Where grants live in the catalog database, user deletion *does* emit one event per revoked grant.
+
+So a `grant_created` event with no matching `grant_revoked` does **not** imply the grant is still held. To determine current access, read `GET .../grants`; use these events for attribution and change history, not as a ledger you can replay to a current balance.
+
+**These events assert state, not transitions, and may repeat.** A `grant_created` means *this grant is now in effect as of this request* — not that it did not exist before. A `grant_revoked` means *this grant is now not in effect*. Applying the same diff twice can therefore emit the same events twice, and revoking a grant nobody held can emit a `grant_revoked`.
+
+**Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
+
+That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
 
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 
@@ -350,6 +423,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -375,6 +449,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -401,6 +476,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -427,6 +503,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 **Role resolution (`operation = "resolve_roles"`):**
@@ -463,6 +540,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "message": "No role provider handled user; user will have no provider-assigned roles"
 }
 ```
+
 </details>
 
 <details>
@@ -487,6 +565,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "message": "Resolved role assignments for user"
 }
 ```
+
 </details>
 
 **Role assignment cache (`operation = "cached_role_provider"`):**
@@ -517,6 +596,7 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
   "message": "stale provider(s) failed to refresh; serving cached roles"
 }
 ```
+
 </details>
 
 **jq filters for operational audit events:**
@@ -538,7 +618,6 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome 
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "stale_cache_fallback")'
 ```
 
-
 ### 2. Error Response Logs
 
 HTTP error responses returned to clients. **Does not contain PII.**
@@ -555,6 +634,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 **Note:** Empty arrays are omitted. If `stack` or `source` are empty, they will not appear in the log.
 
 **Example:**
+
 ```json
 {
   "timestamp": "2026-02-15T14:22:15.456789Z",
@@ -580,6 +660,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 Standard operational and debug logs from Lakekeeper. No `event_source` field.
 
 **Example:**
+
 ```json
 {
   "timestamp": "2026-02-15T14:20:42.425131Z",
@@ -629,6 +710,15 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.aut
 
 # Permissions checked on behalf of a specific user (introspection / batch-check)
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .["for-principal"].user == "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"))'
+
+# Every grant change, allowed or refused
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants")'
+
+# Which client libraries are calling, and how often (remember: caller-supplied, unverified)
+cat logs.json | jq -R -r 'fromjson? | select(.event_source == "audit") | .user_agent // "(none sent)"' | sort | uniq -c | sort -rn
+
+# Refused attempts to grant privileges TO a specific principal (not by them)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants" and any((.action.principals // [])[]; . == "user:oidc~alice") and any((.authorizations // [])[]; .allowed == false))'
 ```
 
 ## Best Practices

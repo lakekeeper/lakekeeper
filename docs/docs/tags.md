@@ -124,4 +124,4 @@ GET /management/v1/tag-definition/{tag_definition_id}/attachments?value=restrict
 
 ## API reference
 
-The exact request/response schemas for your running version are in the interactive Swagger UI at `/swagger-ui/#/` and in the [Management API reference](api/management.md). Authorization relations for tags are detailed under [Authorization (OpenFGA)](authorization-openfga.md).
+The exact request/response schemas for your running version are in the interactive Swagger UI at `/swagger-ui/#/` and in the [Management API reference](api/management.md). Under OpenFGA, the relations behind these capabilities are detailed in [Tags in the OpenFGA model](authorization-openfga.md#tags); under Cedar they are decided by policy.

@@ -5,6 +5,15 @@
 //! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_members"`,
 //! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`,
 //! `"shared_role_idents"`, `"shared_project_ids"`).
+//!
+//! Caches owned by code outside this crate — an
+//! [`AdmissionGate`](crate::service::admission::AdmissionGate), an
+//! [`Authorizer`](crate::service::authz::Authorizer), or any other pluggable
+//! implementation registered by a host binary — report into the same three
+//! series through [`record_cache_hit`], [`record_cache_miss`] and
+//! [`set_cache_size`]. Reusing them keeps one dashboard and one alerting rule
+//! valid for every cache, whichever crate owns it; a new cache only needs a new
+//! `cache_type` value.
 
 use std::sync::LazyLock;
 
@@ -32,3 +41,25 @@ pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
         "Number of users whose cached role assignments were invalidated by a single role-membership edge change"
     );
 });
+
+/// Record one cache hit for `cache_type`.
+pub fn record_cache_hit(cache_type: &'static str) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::counter!(METRIC_CACHE_HITS_TOTAL, "cache_type" => cache_type).increment(1);
+}
+
+/// Record one cache miss for `cache_type`.
+pub fn record_cache_miss(cache_type: &'static str) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::counter!(METRIC_CACHE_MISSES_TOTAL, "cache_type" => cache_type).increment(1);
+}
+
+/// Publish the current number of entries held by `cache_type`.
+///
+/// For moka caches pass `entry_count()`, which is approximate until pending
+/// maintenance tasks are drained.
+#[allow(clippy::cast_precision_loss)]
+pub fn set_cache_size(cache_type: &'static str, entries: u64) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::gauge!(METRIC_CACHE_SIZE, "cache_type" => cache_type).set(entries as f64);
+}

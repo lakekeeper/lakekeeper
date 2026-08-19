@@ -473,6 +473,75 @@ mod tests {
         assert_eq!(tuple_set(combined), expected);
     }
 
+    /// Golden tuples for a move: the hook writes the destination's hierarchy pair and
+    /// deletes the source's, so both halves come from the same helper.
+    ///
+    /// Pins the shape the original move-namespace attempt got wrong by hand-rolling it: the
+    /// inverse relation differs by parent kind (`namespace` for a warehouse, `child` for a
+    /// namespace), so a re-parent that crosses those kinds must not reuse one form for both.
+    #[test]
+    fn move_namespace_out_of_namespace_to_warehouse_root_tuples_are_exactly_specified() {
+        let warehouse = fixed_warehouse_id();
+        let old_parent_ns = NamespaceId::new(uuid_of('8'));
+        let moved = fixed_namespace_id();
+
+        let writes = hierarchy_tuples_for_namespace(&NamespaceParent::Warehouse(warehouse), moved);
+        let deletes =
+            hierarchy_tuples_for_namespace(&NamespaceParent::Namespace(old_parent_ns), moved);
+
+        // Added: the namespace becomes a direct child of the warehouse.
+        assert_eq!(
+            tuple_set(writes),
+            [
+                (
+                    "warehouse:22222222-2222-2222-2222-222222222222".to_string(),
+                    "parent".to_string(),
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                ),
+                (
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                    "namespace".to_string(),
+                    "warehouse:22222222-2222-2222-2222-222222222222".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>()
+        );
+
+        // Removed: the edges to the former parent namespace. Note `child`, not `namespace` —
+        // deleting the warehouse-shaped inverse here would leave the old edge in place.
+        assert_eq!(
+            tuple_set(deletes),
+            [
+                (
+                    "namespace:88888888-8888-8888-8888-888888888888".to_string(),
+                    "parent".to_string(),
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                ),
+                (
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                    "child".to_string(),
+                    "namespace:88888888-8888-8888-8888-888888888888".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>()
+        );
+    }
+
+    /// A rename leaves the parent unchanged, so writes and deletes are identical — which is
+    /// why the caller must skip the hook entirely rather than apply both halves.
+    #[test]
+    fn move_namespace_within_same_parent_produces_identical_write_and_delete_sets() {
+        let parent = NamespaceParent::Namespace(NamespaceId::new(uuid_of('8')));
+        let moved = fixed_namespace_id();
+
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_namespace(&parent, moved)),
+            tuple_set(hierarchy_tuples_for_namespace(&parent, moved)),
+        );
+    }
+
     #[test]
     fn create_namespace_under_namespace_tuples_are_exactly_specified() {
         let parent_ns = NamespaceId::new(uuid_of('8'));

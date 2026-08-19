@@ -6,14 +6,12 @@
 [![Helm Chart](https://img.shields.io/badge/Helm-0F1689?style=for-the-badge&logo=Helm&labelColor=0F1689)](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/lakekeeper&color=3f6ec6&labelColor=&style=for-the-badge&logoColor=white)](https://artifacthub.io/packages/helm/lakekeeper/lakekeeper)
 
-
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Unittests](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml)
 [![Spark Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml)
 [![Pyiceberg Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml)
 [![Trino Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml)
 [![Starrocks Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml)
-
 
 Please visit [https://docs.lakekeeper.io](https://docs.lakekeeper.io) for Documentation!
 
@@ -59,7 +57,6 @@ The Iceberg Catalog REST interface has become the standard for catalogs in open 
 - **Fine Grained Access (FGA):** Lakekeeper's default Authorization system leverages [OpenFGA](https://openfga.dev/). If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `Authorizer` trait.
 
 If you are missing something, we would love to hear about it in a [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/new).
-
 
 # Status
 
@@ -129,7 +126,6 @@ Operations outside of the Iceberg REST specification that are supported by Lakek
 | UI                 | Status  | Comment |
 |--------------------|:-------:|---------|
 | [Lakekeeper Console](https://github.com/lakekeeper/console) | ![done] | Open-source web UI, bundled via the `ui` feature. Manage warehouses, namespaces, tables, views, users, roles and permissions |
-
 
 # Contributors
 

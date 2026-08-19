@@ -1,10 +1,11 @@
 # Developer Guide
 
-All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first. 
+All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first.
 
 If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
 
 ## Foundation & CLA
+
 We hate red tape. Currently, all committers need to sign the CLA in GitHub. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently, we prefer to spend our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
 
 ## Initial Setup
@@ -35,6 +36,7 @@ just check-clippy
 # You may have to install nightly rust toolchain
 just fix-format
 ```
+
 Keep in mind that some tests are excluded by the `default-filter` in `.config/nextest.toml`. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for modules whose name contains `_integration_tests` within files ending with `.rs`.
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
 If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx) before submitting your PR.
@@ -63,7 +65,7 @@ yq --version
 
 ### What is where?
 
-We have three crates, `lakekeeper`, `lakekeeper-bin` and `iceberg-ext`. The bulk of the code is in `lakekeeper`. The `lakekeeper-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`. 
+We have three crates, `lakekeeper`, `lakekeeper-bin` and `iceberg-ext`. The bulk of the code is in `lakekeeper`. The `lakekeeper-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`.
 
 **lakekeeper**
 
@@ -100,6 +102,7 @@ This crate uses sqlx. For development and compilation a Postgres Database is req
 If your database credentials used differ, please modify the `.env` accordingly and run `source .env` again.
 
 Run:
+
 ```sh
 # Migrate db. Make sure you have sqlx-cli install with `cargo install sqlx-cli`
 # Run this locally if you change the db schema via `crates/lakekeeper-storage-postgres/migrations`,
@@ -110,6 +113,7 @@ sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
 # If you changed any of the SQL statements embedded in Rust code, run this before pushing to GitHub.
 just sqlx-prepare
 ```
+
 This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 Be careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on GitHub so there's no way of really breaking things.
 
@@ -118,6 +122,7 @@ Be careful, if the command failed, `.sqlx` will be empty. But do not worry, it w
 **IMPORTANT**: When adding new migrations, do **NOT** schema qualify references to any database objects. Schema qualification will break deployments that place the application in a schema different than the public one.
 
 **❌ Incorrect - Do NOT do this:**
+
 ```sql
 -- This will break deployments in non-public schemas
 CREATE TABLE public.my_new_table (
@@ -131,6 +136,7 @@ ALTER TABLE public.existing_table ADD COLUMN new_column INTEGER;
 ```
 
 **✅ Correct - Do this instead:**
+
 ```sql
 -- This will work in any schema
 CREATE TABLE my_new_table (
@@ -144,6 +150,8 @@ ALTER TABLE existing_table ADD COLUMN new_column INTEGER;
 ```
 
 The migration system will automatically apply the migration in the correct schema context, so explicit schema qualification is unnecessary and will cause issues in deployments where Lakekeeper is deployed to a custom schema.
+
+Operators pick that schema with [`LAKEKEEPER__PG_SCHEMA`](configuration.md#using-a-non-public-postgres-schema). Do not export it in a shell you build or test from: `cargo sqlx prepare` ignores it and uses `DATABASE_URL`, and the postgres crate reads `LAKEKEEPER_TEST__` in its own tests but `LAKEKEEPER__` when compiled as a dependency, so it would apply unevenly.
 
 ### Inspecting the db
 
@@ -369,6 +377,7 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
    (Requires the `fga` CLI — download from the [OpenFGA repo](https://github.com/openfga/cli/releases/).)
 1. In `crates/authz-openfga/src/migration.rs` bump `ACTIVE_MODEL_VERSION` to the new version. For backward-compatible changes, repoint the current `add_model_*_current` call (schema-path `include_str!` + version). For tuple-migrating changes, add another `add_model` call carrying the migration fn.
 1. Record the change under the new version heading in `authz/openfga/README.md`.
+
 ## Building the docs locally
 
 ```bash

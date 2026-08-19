@@ -30,7 +30,8 @@ use crate::{
             AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogTableAction, CatalogTagAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireTagActionError,
+            GrantResource, GrantSpec, RequireTagActionError, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         events::{
             APIEventContext,
@@ -243,6 +244,37 @@ pub struct ListTagsResponse {
 }
 
 impl IntoResponse for ListTagsResponse {
+    fn into_response(self) -> axum::response::Response {
+        (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+/// A column and the governance tags attached directly to it. The column is identified
+/// by Iceberg field-id only; resolve it to a name against the table metadata client-side
+/// (field-ids are stable across schema evolution, names are not).
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ColumnTags {
+    /// Iceberg field-id of the column.
+    pub field_id: i32,
+    /// Tags attached directly to this column. Always non-empty — a column with no tags
+    /// is omitted from the response entirely.
+    #[cfg_attr(feature = "open-api", schema(min_items = 1))]
+    pub tags: Vec<TargetTag>,
+}
+
+/// Every column of a table that carries at least one tag, each with its direct tags;
+/// columns without tags are omitted. Column tags are never inherited, so this is a
+/// direct-only listing (no effective view).
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListColumnTagsResponse {
+    pub columns: Vec<ColumnTags>,
+}
+
+impl IntoResponse for ListColumnTagsResponse {
     fn into_response(self) -> axum::response::Response {
         (http::StatusCode::OK, Json(self)).into_response()
     }
@@ -581,7 +613,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &request,
         )
         .await;
-        let (event_ctx, tag_definition) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, (tag_definition, bootstrap_grants)) = event_ctx.emit_authz(authz_result)?;
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
         let event_ctx = event_ctx.resolve(tag_definition);
         let mut result: TagDefinition = (**event_ctx.resolved()).clone().into();
         // Echo the validated allowed values, sorted, so create and get agree on order.
@@ -592,6 +627,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             });
         }
         event_ctx.emit_tag_definition_created();
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+
         Ok(result)
     }
 
@@ -1208,6 +1246,39 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(tags)
     }
 
+    /// A table's column tags in one call, grouped by column — the table-wide counterpart
+    /// of `list_table_column_tags` (which lists a single column). Gated once on
+    /// `GetMetadata` for the table. Direct tags only (columns do not inherit tags).
+    async fn list_column_tags(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ListColumnTagsResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // -------------------- AUTHZ --------------------
+        let event_ctx = APIEventContext::for_table(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            table_id,
+            CatalogTableAction::GetMetadata,
+        );
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let authz_result = authorize_list_column_tags::<A, C>(
+            &authorizer,
+            catalog_state,
+            &event_ctx,
+            table_id,
+            &project_id,
+        )
+        .await;
+        let (_event_ctx, columns) = event_ctx.emit_authz(authz_result)?;
+        Ok(columns)
+    }
+
     // -------------------- View tags --------------------
 
     async fn set_view_tag(
@@ -1443,12 +1514,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
+/// Also returns the grants the definition was born with, for the caller to announce once
+/// the transaction has committed.
 async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
     request: &CreateTagDefinitionRequest,
-) -> Result<Arc<crate::service::TagDefinition>, AuthZError> {
+) -> Result<(Arc<crate::service::TagDefinition>, Vec<GrantSpec>), AuthZError> {
     let project_id = event_ctx.user_provided_entity_arc_ref();
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
@@ -1494,12 +1567,21 @@ async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
         .map_err::<CreateTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
+    // Kept typed rather than folded into a backend error: a missing user row is the
+    // caller's 400 and a lock conflict their retriable 409, not "the catalog is down".
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
+        &authorizer,
+        request_metadata,
+        &GrantResource::Tag(tag_definition_id),
+        t.transaction(),
+    )
+    .await?;
     t.commit()
         .await
         .map_err::<CreateTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
-    Ok(Arc::new(tag_definition))
+    Ok((Arc::new(tag_definition), bootstrap_grants))
 }
 
 async fn authorize_list_tag_definitions<A: Authorizer, C: CatalogStore>(
@@ -2461,6 +2543,73 @@ async fn authorize_list_table_column_tags<A: Authorizer, C: CatalogStore>(
     )
     .await?;
     list_tags_dispatch::<C>(effective, catalog_state, target).await
+}
+
+/// Authorize the table (`GetMetadata`), then list every column's direct tags in one
+/// query and group them per column. Direct-only: columns do not inherit tags.
+async fn authorize_list_column_tags<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedTable, Unresolved, CatalogTableAction>,
+    table_id: TableId,
+    project_id: &ProjectId,
+) -> Result<ListColumnTagsResponse, AuthZError> {
+    // Authorizes the table for the event's action (`GetMetadata`) and checks project.
+    authorize_table_tag_target::<A, C>(
+        authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        table_id,
+        project_id,
+    )
+    .await?;
+    let warehouse_id = event_ctx.user_provided_entity().warehouse_id;
+    let tabular_id = TabularId::Table(table_id);
+
+    let tags = C::list_column_tags_for_tabular(warehouse_id, tabular_id, catalog_state)
+        .await
+        .map_err(RequireTagActionError::from)?;
+    Ok(group_column_tags(tags))
+}
+
+/// Group a field-id-ordered list of column tags into per-column entries. Columns are
+/// identified by field-id only; callers resolve names against the table metadata.
+fn group_column_tags(tags: Vec<crate::service::TagWithName>) -> ListColumnTagsResponse {
+    let mut columns: Vec<ColumnTags> = Vec::new();
+    let mut prev_field_id: Option<i32> = None;
+    for t in tags {
+        // The store returns only column tags; skip anything else defensively.
+        let TagTarget::Column { field_id, .. } = t.tag.target else {
+            continue;
+        };
+        // Grouping relies on the store's field-id ordering so equal field-ids are
+        // contiguous (only the last column is checked when merging). Guard it in debug
+        // builds; unordered input would silently split a column into several entries.
+        if let Some(prev) = prev_field_id {
+            debug_assert!(
+                field_id >= prev,
+                "column tags must arrive field-id-ordered for grouping"
+            );
+        }
+        prev_field_id = Some(field_id);
+        let tag = TargetTag {
+            tag_definition_id: t.tag.tag_definition_id,
+            name: t.definition_name,
+            value: t.tag.value,
+            source: t.tag.source,
+            created_at: t.tag.created_at,
+            updated_at: t.tag.updated_at,
+            inherited_from: None,
+        };
+        match columns.last_mut() {
+            Some(c) if c.field_id == field_id => c.tags.push(tag),
+            _ => columns.push(ColumnTags {
+                field_id,
+                tags: vec![tag],
+            }),
+        }
+    }
+    ListColumnTagsResponse { columns }
 }
 
 async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(

@@ -115,9 +115,26 @@
   border: 0;
 }
 
-/* Short Lakekeeper Plus Badge with auto-generated content */
+/* Short Lakekeeper+ Badge with auto-generated content */
+.lkp-preview::after {
+  content: "preview";
+  color: var(--md-default-fg-color--light) !important;
+  background: var(--md-code-bg-color);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 700;
+  border: 0.5px solid var(--md-default-fg-color--lighter);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
 .lkp::after {
-  content: "★ lakekeeper +";
+  content: "★ lakekeeper+";
   color: var(--lakekeeper-warning-color) !important;
   background: rgba(253, 176, 34, 0.1);
   padding: 1px 4px;
@@ -131,4 +148,29 @@
   display: inline-flex;
   align-items: center;
   vertical-align: middle;
+}
+
+/* Highlight the top-level "Production" nav entry in the Lakekeeper+ gold
+   accent so it stands out from the OSS tabs and visually ties to the commercial
+   offering. The `.lk-nav-production` class is added by a small script in
+   overrides/main.html to the matching tab-bar and mobile-drawer links, so the
+   highlight also applies when Production is the active page (whose tab links to
+   `./`, not `production/`) — a plain href selector can't cover that case. */
+.md-tabs__link.lk-nav-production,
+.md-nav__link.lk-nav-production {
+  color: var(--lakekeeper-warning-color) !important;
+  font-weight: 700;
+  opacity: 1;
+}
+.md-tabs__link.lk-nav-production::before {
+  content: "★";
+  margin-right: 4px;
+  font-size: 0.85em;
+  vertical-align: baseline;
+}
+/* Keep it legible on hover/active. */
+.md-tabs__link.lk-nav-production:hover,
+.md-tabs__link.lk-nav-production:focus {
+  color: var(--lakekeeper-warning-color) !important;
+  opacity: 0.85;
 }

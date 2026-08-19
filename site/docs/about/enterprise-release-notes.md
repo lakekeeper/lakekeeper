@@ -1,4 +1,17 @@
-# Lakekeeper Plus Release Notes
+# Lakekeeper+ Release Notes
+
+## v0.13.4 (2026-08-14)
+
+_Based on Lakekeeper OSS v0.13.3._
+
+### Bug Fixes
+- **Audit log fields are emitted as structured JSON.** `actor`, `action`/`actions`, `entity`/`entities`, `authorizations` and `context` were emitted as strings containing escaped pseudo-JSON, so audit pipelines could not read them as objects without decoding each field first. They are now nested JSON objects, as documented. See *Upgrade Notes*.
+- **Reduced memory growth from allocator fragmentation.** The server now uses jemalloc as its global allocator. Deployments that saw `container_memory_working_set_bytes` climb steadily without returning to baseline — a glibc malloc fragmentation pattern — should see flatter memory use. The effect depends on workload, and this changes the allocator only.
+- **JSON logs no longer carry duplicate span data.** Every line included both a `span` object and a `spans` array with the same content; only `spans` is emitted now. Applies to `lakekeeper-plus` and `lakekeeper-maintenance`.
+- **`LAKEKEEPER__DEBUG__LOG_AUTHORIZATION_HEADER` now applies to UI-server routes.** The setting was silently ignored there, so enabling it produced no `authorization` field on those request spans.
+
+### Upgrade Notes
+- **Audit log consumers must read objects, not strings.** If your pipeline JSON-decodes the audit fields a second time to get at their contents, that step now fails or double-decodes — read them directly instead. The previous string form parsed only by luck: Rust `Debug` escapes non-ASCII as `\u{1F600}`, which is not valid JSON, so any field carrying such text would have broken the parse outright. Consumers that already tolerate both shapes need no change, and rollout order does not matter for them.
 
 ## v0.13.3 (2026-07-24)
 

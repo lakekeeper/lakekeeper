@@ -46,7 +46,7 @@ Then open your browser and head to `localhost:8888` to load the example Jupyter 
 
 ### Option 2: 🐳 Docker Compose
 
-For a Docker-Compose deployment that is used with external object storage, and external Identity Providers, you can use the [`docker-compose` Setup](https://github.com/lakekeeper/lakekeeper/tree/main/docker-compose). Please also check the [Examples](#option-1-examples) and our [User Guides](./docs/nightly/docs/configuration.md) for additional information on customization.
+For a Docker-Compose deployment that is used with external object storage, and external Identity Providers, you can use the [`docker-compose` Setup](https://github.com/lakekeeper/lakekeeper/tree/main/docker-compose). Please also check the [Examples](#option-1-examples) and our [User Guides](./docs/nightly/configuration.md) for additional information on customization.
 
 While you can start the "🐳 Unsecured" variant without any external dependencies, you will need at least an external object store (S3, ADLS, GCS) to create a Warehouse.
 
@@ -60,7 +60,7 @@ While you can start the "🐳 Unsecured" variant without any external dependenci
 
 === "🐳 Authentication & Authorization"
 
-    Please follow the [Authentication Guide](./docs/nightly/docs/authentication.md) to prepare your Identity Provider. Additional environment variables might be required.
+    Please follow the [Authentication Guide](./docs/nightly/authentication.md) to prepare your Identity Provider. Additional environment variables might be required.
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
@@ -101,7 +101,7 @@ The default `LAKEKEEPER__BASE_URI` is `http://localhost:8181`.
 
 ### Option 5: 👨‍💻 Build from Sources
 
-To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](./docs/nightly/docs/developer-guide.md) for more information.
+To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](./docs/nightly/developer-guide.md) for more information.
 
 ## First Steps
 
@@ -163,7 +163,7 @@ If you want to use a different storage backend, see the [Storage Guide](docs/nig
 
 ### Connect Compute
 
-That's it - we can now use the catalog. The example below targets the **unsecured** deployment: it sends the literal token `dummy` because no Authentication is configured, so any bearer token is accepted. If you enabled Authentication, replace `"dummy"` with a real OAuth2 token (or configure your engine's OAuth2 flow) — see the [Authentication Guide](./docs/nightly/docs/authentication.md).
+That's it - we can now use the catalog. The example below targets the **unsecured** deployment: it sends the literal token `dummy` because no Authentication is configured, so any bearer token is accepted. If you enabled Authentication, replace `"dummy"` with a real OAuth2 token (or configure your engine's OAuth2 flow) — see the [Authentication Guide](./docs/nightly/authentication.md).
 
 !!! tip
 

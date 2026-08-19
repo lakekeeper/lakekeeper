@@ -270,6 +270,10 @@ impl EventDispatcher {
         dispatch_event!(self, namespace_dropped, event);
     }
 
+    pub(crate) async fn namespace_moved(&self, event: types::MoveNamespaceEvent) {
+        dispatch_event!(self, namespace_moved, event);
+    }
+
     pub(crate) async fn namespace_properties_updated(
         &self,
         event: types::UpdateNamespacePropertiesEvent,
@@ -321,6 +325,14 @@ impl EventDispatcher {
 
     pub(crate) async fn tag_removed(&self, event: types::TagRemovedEvent) {
         dispatch_event!(self, tag_removed, event);
+    }
+
+    // ===== Grant Events =====
+
+    // Emitted once per request, carrying everything it created and removed. Emitters:
+    // the grant apply endpoints, and the cascade when a user is deleted.
+    pub(crate) async fn grants_changed(&self, event: types::GrantsChangedEvent) {
+        dispatch_event!(self, grants_changed, event);
     }
 
     // ===== Role Assignment Sync Events =====
@@ -577,6 +589,15 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    /// Invoked after a namespace has been successfully moved (re-parented and/or renamed)
+    ///
+    /// Not invoked when the request changed nothing. The event carries the namespace's
+    /// previous ident and parent, which listeners mirroring the hierarchy need in order to
+    /// retire the old path.
+    async fn namespace_moved(&self, _event: types::MoveNamespaceEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Invoked after namespace properties have been successfully updated
     async fn namespace_properties_updated(
         &self,
@@ -682,6 +703,15 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a tag has been successfully removed from a target
     async fn tag_removed(&self, _event: types::TagRemovedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Grant Events =====
+
+    /// Invoked once after a request has successfully changed grants, with everything it
+    /// created and everything it removed. Either list may be empty — revoking only, or
+    /// deleting a user, emits removals alone.
+    async fn grants_changed(&self, _event: types::GrantsChangedEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

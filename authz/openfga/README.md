@@ -4,14 +4,27 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.8`
+## `v4.9`
 
 ```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+Adds namespace moves and governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+
+### Namespace moves
+
+`namespace`:
+
+- Add `can_move` (from `manage_grants and modify`). A move re-issues every privilege the destination subtree confers onto this namespace's contents, leaving no assignment record — so it requires grant authority on top of ordinary write access: if you can already grant at the destination, the move confers nothing you could not have granted directly. Under `managed_access` ownership does not confer `manage_grants`, so this also blocks moving out of a managed subtree to escape that control. `can_move` is therefore strictly stronger than `can_delete`: everyone who may move may also delete, but not vice versa.
+- Add `can_accept_moved_namespace` (from `manage_grants and create`) — the destination-side check, strictly stronger than `can_create_namespace` (from `create`): `create` adds an empty child (exposing nothing), whereas a move arrives carrying contents and their direct grants. Gating acceptance on `create` alone would let a namespace be populated and granted under a permissive parent and then moved in, smuggling those grants past the `managed_access` control the destination subtree relies on.
+
+`warehouse`:
+
+- Add `can_accept_moved_namespace` (from `manage_grants and create`) — same gate for moves targeting the warehouse root.
+
+### Governance tags
 
 New type `lakekeeper_catalog_tag` (one instance per tag definition):
 
@@ -82,8 +95,8 @@ ADDS_TUPLES:     TRUE
 ```
 
 - Adds types `lakekeeper_table` and `lakekeeper_view`. Their definitions are copied from `table` and `view`, however the way these objects are represented changes.
-  - For `table` it is `table_id`, for `lakekeeper_table` it is `warehouse_id/table_id`.
-  - For `view` it is `view_id`, for `lakekeeper_view` it is `warehouse_id/view_id`.
-  - This reflects the change that view and table ids can be re-used across warehouses.
+    - For `table` it is `table_id`, for `lakekeeper_table` it is `warehouse_id/table_id`.
+    - For `view` it is `view_id`, for `lakekeeper_view` it is `warehouse_id/view_id`.
+    - This reflects the change that view and table ids can be re-used across warehouses.
 - For each tuple referencing a table or view, the migration adds a new tuple according to the new object representation.
 - Types `table` and `view` are deprecated and scheduled for deletion.
