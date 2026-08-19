@@ -34,7 +34,7 @@ jobs:
       # on every run and hits the per-IP rate limit). Sideloaded below.
       CURL_IMAGE: curlimages/curl:8.16.0
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
@@ -43,7 +43,7 @@ jobs:
       # secret is absent (e.g. fork PRs) so those still run with anonymous pulls.
       - name: Login to Docker Hub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -76,10 +76,10 @@ jobs:
 
       - name: Restore Docker image
         run:  docker load -i artifacts/lakekeeper-local-amd64.tar &&  kind load docker-image localhost/lakekeeper-local:amd64
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         id: install
         with:
-          version: v3.18.3
+          version: v3.21.3
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
       # kind's containerd can't see the host docker credentials, so anonymous
