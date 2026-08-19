@@ -54,6 +54,10 @@ use crate::{
     },
 };
 
+/// The commercial AWS partition. Also the fallback whenever we cannot establish a partition,
+/// and the partition that S3-compatible stores expect in policy ARNs.
+const AWS_COMMERCIAL_PARTITION: &str = "aws";
+
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 #[derive(
@@ -64,12 +68,6 @@ static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client
 pub struct S3Profile {
     /// Name of the S3 bucket
     pub bucket: String,
-    /// AWS partition used when constructing S3 ARNs for vended-credential policies.
-    /// Defaults to the AWS commercial partition (`aws`). Use `aws-us-gov` for the
-    /// `us-gov-*` regions and `aws-cn` for the `cn-*` regions.
-    #[serde(default = "default_partition")]
-    #[builder(default = default_partition())]
-    pub partition: String,
     /// Subpath in the bucket to use.
     #[builder(default, setter(strip_option))]
     pub key_prefix: Option<String>,
@@ -339,7 +337,6 @@ impl S3Profile {
     /// - Fails if the key prefix is too long.
     /// - Fails if the region or endpoint is missing.
     /// - Fails if the endpoint is not a valid URL.
-    /// - Fails if the partition is empty or malformed.
     pub(super) fn normalize(
         &mut self,
         s3_credential: Option<&S3Credential>,
@@ -350,7 +347,6 @@ impl S3Profile {
             entity: "bucket".to_string(),
         })?;
         validate_region(&self.region)?;
-        validate_partition(&self.partition)?;
         self.validate_session_tags()?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
@@ -413,13 +409,6 @@ impl S3Profile {
 
         if other.storage_layout.is_none() {
             other.storage_layout = self.storage_layout;
-        }
-
-        if self.region == other.region {
-            // The partition is a function of the (immutable) region. Carry the previous value
-            // forward so a full-replace update that omits it does not silently reset a
-            // configured `aws-us-gov` / `aws-cn` profile to the `aws` serde default.
-            other.partition = self.partition;
         }
 
         Ok(other)
@@ -1143,7 +1132,10 @@ impl S3Profile {
 
         let v = assume_role_builder.send().await.map_err(|e| {
             let err_str = format!("{e:?}");
-            tracing::warn!("Failed to assume role via STS: {err_str}");
+            tracing::warn!(
+                "Failed to assume role via STS with partition `{}`: {err_str}",
+                self.sts_policy_partition()
+            );
             CredentialsError::ShortTermCredential {
                 source: Some(Box::new(e)),
                 reason: format!("Failed to assume role via STS: {err_str}").to_string(),
@@ -1242,6 +1234,39 @@ impl S3Profile {
         }
     }
 
+    /// The AWS partition to write into the ARNs of a vended-credential policy.
+    ///
+    /// Derived rather than configured. Only AWS itself has partitions: the `region` and role
+    /// ARN of an S3-compatible store are free-form and would produce false positives, so those
+    /// keep the commercial partition that every S3-compatible store expects.
+    ///
+    /// A profile without an `endpoint` is the only one we know reaches AWS itself, because the
+    /// SDK resolves the endpoint from the region; there a region whose partition is known
+    /// decides. Every other profile — an explicit endpoint, a commercial region, a
+    /// pseudo-region such as `aws-us-gov-global`, or a region of a partition AWS adds after
+    /// this release — takes the partition of the role ARN, which is mandatory on the AWS STS
+    /// path.
+    fn sts_policy_partition(&self) -> &str {
+        if !matches!(self.flavor, S3Flavor::Aws) {
+            return AWS_COMMERCIAL_PARTITION;
+        }
+
+        self.endpoint
+            .is_none()
+            .then(|| partition_from_region(&self.region))
+            .flatten()
+            .or_else(|| {
+                [
+                    self.sts_role_arn.as_deref(),
+                    self.assume_role_arn.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .find_map(partition_from_arn)
+            })
+            .unwrap_or(AWS_COMMERCIAL_PARTITION)
+    }
+
     fn get_sts_policy_string(
         &self,
         table_location: &Location,
@@ -1255,7 +1280,7 @@ impl S3Profile {
         })?;
         let bucket_arn = format!(
             "arn:{}:s3:::{}",
-            self.partition,
+            self.sts_policy_partition(),
             table_location.bucket_name().trim_end_matches('/')
         );
         let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
@@ -1740,29 +1765,62 @@ fn validate_region(region: &str) -> Result<(), InvalidProfileError> {
     })
 }
 
-fn validate_partition(partition: &str) -> Result<(), InvalidProfileError> {
-    if partition.is_empty() {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`partition` must not be empty.".to_string(),
-            entity: "partition".to_string(),
-        });
+/// Extract the AWS partition from `arn:<partition>:<service>:...`.
+///
+/// Returns `None` for anything that is not an ARN naming an AWS partition, leaving the caller
+/// with its own default.
+fn partition_from_arn(arn: &str) -> Option<&str> {
+    let mut parts = arn.split(':');
+    if parts.next()? != "arn" {
+        return None;
+    }
+    let partition = parts.next()?;
+    // A partition is always followed by a non-empty service, for example `iam`.
+    if parts.next()?.is_empty() {
+        return None;
     }
 
     if !partition
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: format!(
-                "`partition` must consist of lowercase alphanumeric characters and hyphens, e.g. `aws`, `aws-us-gov` or `aws-cn`. Got `{partition}`."
-            ),
-            entity: "partition".to_string(),
-        });
+        return None;
     }
 
-    Ok(())
+    // Every AWS partition is named `aws` or `aws-<something>`. Other ARN namespaces exist and
+    // must not reach a policy: MinIO issues roles as `arn:minio:iam:::role/<id>`, and an
+    // `arn:minio:s3:::bucket` resource matches nothing in its policy engine.
+    if partition != AWS_COMMERCIAL_PARTITION && !partition.starts_with("aws-") {
+        return None;
+    }
+
+    Some(partition)
+}
+
+/// Map an AWS region to its partition, or `None` if no partition claims the region.
+///
+/// The prefixes are reduced from the `regionRegex` entries of the `partitions.json` that AWS
+/// publishes and that the AWS SDKs embed. They are mutually exclusive, so the order does not
+/// matter. Two deliberate inexactnesses: a string like `us-gov-1` is claimed here although AWS
+/// resolves it to the commercial partition, and `eusc-de-` is narrower than its regex group so
+/// that a future `eusc-fr-` region falls through rather than being guessed at. Regions of the
+/// commercial partition are not listed — the caller decides what `None` means.
+///
+/// If AWS adds a partition, add its prefix here.
+fn partition_from_region(region: &str) -> Option<&'static str> {
+    const PARTITION_PREFIXES: &[(&str, &str)] = &[
+        ("cn-", "aws-cn"),
+        ("us-gov-", "aws-us-gov"),
+        ("us-iso-", "aws-iso"),
+        ("us-isob-", "aws-iso-b"),
+        ("us-isof-", "aws-iso-f"),
+        ("eu-isoe-", "aws-iso-e"),
+        ("eusc-de-", "aws-eusc"),
+    ];
+
+    PARTITION_PREFIXES
+        .iter()
+        .find_map(|(prefix, partition)| region.starts_with(prefix).then_some(*partition))
 }
 
 fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
@@ -1779,10 +1837,6 @@ fn fn_true() -> bool {
 
 fn fn_3600() -> u64 {
     3600
-}
-
-fn default_partition() -> String {
-    "aws".to_string()
 }
 
 impl From<S3CloudflareR2Credential> for S3Credential {
@@ -3505,82 +3559,205 @@ pub(crate) mod test {
         assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
     }
 
-    #[test]
-    fn policy_string_uses_configured_aws_partition() {
-        let table_location = "s3://bucket-name/wh/ns/table";
-        let profile = S3Profile::builder()
+    fn govcloud_profile() -> S3Profile {
+        S3Profile::builder()
             .bucket("bucket-name".to_string())
-            .partition("aws-us-gov".to_string())
             .region("us-gov-west-1".to_string())
             .flavor(S3Flavor::Aws)
             .sts_enabled(true)
             .sts_role_arn("arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts".to_string())
-            .build();
+            .build()
+    }
+
+    /// Every `Resource` of the vended-credential policy, keyed by `Sid`.
+    fn policy_resources(profile: &S3Profile) -> HashMap<String, String> {
         let policy = profile
             .get_sts_policy_string(
-                &table_location.parse().unwrap(),
+                &"s3://bucket-name/wh/ns/table".parse().unwrap(),
                 StoragePermissions::ReadWriteDelete,
             )
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
 
-        assert_eq!(
-            parsed["Statement"][0]["Resource"],
-            "arn:aws-us-gov:s3:::bucket-name/wh/ns/table/*"
-        );
-        assert_eq!(
-            parsed["Statement"][1]["Resource"],
-            "arn:aws-us-gov:s3:::bucket-name"
-        );
+        parsed["Statement"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|statement| {
+                (
+                    statement["Sid"].as_str().unwrap().to_string(),
+                    statement["Resource"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
     }
 
     #[test]
-    fn partition_defaults_to_aws_when_omitted() {
-        let profile: S3Profile = serde_json::from_value(serde_json::json!({
-            "bucket": "bucket-name",
-            "region": "us-east-1",
-            "sts-enabled": false,
-        }))
-        .unwrap();
+    fn policy_string_partitions_every_bucket_arn() {
+        // All three bucket ARNs have to carry the partition, not just the first one.
+        let resources = policy_resources(&govcloud_profile());
 
-        assert_eq!(profile.partition, "aws");
+        assert_eq!(
+            resources,
+            HashMap::from([
+                (
+                    "TableAccess".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name/wh/ns/table/*".to_string()
+                ),
+                (
+                    "ListBucketForFolder".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name".to_string()
+                ),
+                (
+                    "GetBucketLocation".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name".to_string()
+                ),
+            ])
+        );
+    }
+
+    /// The partition of an AWS profile whose endpoint the SDK resolves from the region.
+    fn partition_for(
+        region: &str,
+        sts_role_arn: Option<&str>,
+        assume_role_arn: Option<&str>,
+    ) -> String {
+        let mut profile = govcloud_profile();
+        profile.region = region.to_string();
+        profile.sts_role_arn = sts_role_arn.map(ToString::to_string);
+        profile.assume_role_arn = assume_role_arn.map(ToString::to_string);
+
+        profile.sts_policy_partition().to_string()
     }
 
     #[test]
-    fn test_validate_partition() {
-        for partition in ["aws", "aws-cn", "aws-us-gov", "aws-iso-b"] {
-            validate_partition(partition).unwrap();
-        }
+    fn partition_precedence() {
+        const GOV: &str = "arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts";
+        const COMMERCIAL: &str = "arn:aws:iam::123456789012:role/lakekeeper-sts";
+        const CN: &str = "arn:aws-cn:iam::123456789012:role/lakekeeper";
 
-        for partition in ["", "AWS", "aws cn", "aws_us_gov", "arn:aws"] {
-            assert!(
-                validate_partition(partition).is_err(),
-                "expected `{partition}` to be rejected"
+        // A region whose partition is known decides, including against a role ARN that names
+        // another partition - that is a typo, not a reason to downscope elsewhere.
+        assert_eq!(
+            partition_for("us-gov-west-1", Some(GOV), None),
+            "aws-us-gov"
+        );
+        assert_eq!(
+            partition_for("us-gov-west-1", Some(COMMERCIAL), None),
+            "aws-us-gov"
+        );
+
+        // No prefix claims a commercial region, so there the role ARN decides - as it does for a
+        // region of a partition that AWS adds after this release.
+        assert_eq!(partition_for("us-east-1", Some(GOV), None), "aws-us-gov");
+        assert_eq!(
+            partition_for(
+                "xx-1",
+                Some("arn:aws-future:iam::123456789012:role/x"),
+                None
+            ),
+            "aws-future"
+        );
+
+        // The assume-role ARN is read when the sts-role ARN is absent, and when it is not an ARN.
+        assert_eq!(partition_for("xx-1", None, Some(CN)), "aws-cn");
+        assert_eq!(
+            partition_for("xx-1", Some("lakekeeper-sts"), Some(CN)),
+            "aws-cn"
+        );
+
+        // Defensive: `normalize` rejects an AWS profile that has STS enabled and no role ARN.
+        assert_eq!(partition_for("xx-1", None, None), "aws");
+    }
+
+    #[test]
+    fn the_region_decides_only_for_an_sdk_resolved_aws_endpoint() {
+        // An explicit endpoint can point anywhere, so an AWS-shaped region says nothing about the
+        // partition. This is the S3-compatible store that never set `flavor`.
+        let mut profile = govcloud_profile();
+        profile.endpoint = Some("https://obs.cn-north-4.myhuaweicloud.com".parse().unwrap());
+        profile.region = "cn-north-4".to_string();
+        profile.sts_role_arn = None;
+
+        assert_eq!(profile.sts_policy_partition(), "aws");
+
+        // With an endpoint set, the role ARN is all that is left to go on, and it still counts.
+        profile.sts_role_arn =
+            Some("arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts".to_string());
+
+        assert_eq!(profile.sts_policy_partition(), "aws-us-gov");
+
+        // Deliberately without an endpoint, so that only the flavor stops the region from being
+        // believed. MinIO accepts nothing but `arn:aws:s3:::` resources in a session policy, and
+        // issues its own roles as `arn:minio:iam:::role/<id>`.
+        let mut minio = govcloud_profile();
+        minio.flavor = S3Flavor::S3Compat;
+        minio.region = "cn-north-1".to_string();
+        minio.sts_role_arn = Some("arn:minio:iam:::role/lakekeeper".to_string());
+
+        assert_eq!(minio.sts_policy_partition(), "aws");
+    }
+
+    #[test]
+    fn partition_from_region_matches_the_aws_partition_data() {
+        // Every partition of the `partitions.json` that AWS publishes.
+        for (region, expected) in [
+            ("us-east-1", None),
+            ("eu-central-1", None),
+            ("mx-central-1", None),
+            ("cn-north-1", Some("aws-cn")),
+            ("us-gov-west-1", Some("aws-us-gov")),
+            ("us-iso-east-1", Some("aws-iso")),
+            ("us-isob-east-1", Some("aws-iso-b")),
+            ("us-isof-south-1", Some("aws-iso-f")),
+            ("eu-isoe-west-1", Some("aws-iso-e")),
+            ("eusc-de-east-1", Some("aws-eusc")),
+            // S3-compatible stores use arbitrary region strings.
+            ("local-01", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                partition_from_region(region),
+                expected,
+                "unexpected partition for region `{region}`"
             );
         }
     }
 
     #[test]
-    fn test_update_keeps_partition_if_omitted() {
-        let profile = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .partition("aws-us-gov".to_string())
-            .region("us-gov-west-1".to_string())
-            .flavor(S3Flavor::Aws)
-            .sts_enabled(false)
-            .build();
+    fn partition_from_arn_rejects_anything_but_an_arn() {
+        assert_eq!(
+            partition_from_arn("arn:aws:iam::123456789012:role/lakekeeper"),
+            Some("aws")
+        );
+        assert_eq!(
+            partition_from_arn("arn:aws-us-gov:iam::123456789012:role/lakekeeper"),
+            Some("aws-us-gov")
+        );
 
-        // A full-replace update that does not carry the partition deserializes to the default.
-        let updated = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .region("us-gov-west-1".to_string())
-            .flavor(S3Flavor::Aws)
-            .sts_enabled(false)
-            .build();
-        assert_eq!(updated.partition, "aws");
-
-        let result = profile.update_with(updated).unwrap();
-        assert_eq!(result.partition, "aws-us-gov");
+        // ARNs of other namespaces name no AWS partition.
+        for not_an_arn in [
+            "arn:minio:iam:::role/lakekeeper",
+            "arn:sgws:identity::123:group/credentials-group-1",
+            "arn:aws2:iam::123456789012:role/lakekeeper",
+            // An `aws-` prefix does not excuse the rest of the segment.
+            "arn:aws-US-GOV:iam::123456789012:role/lakekeeper",
+            "arn:aws-cn_2:iam::123456789012:role/lakekeeper",
+            "",
+            "arn",
+            "arn:aws",
+            "arn:aws:",
+            "arn::iam::123456789012:role/lakekeeper",
+            "urn:aws:iam::123456789012:role/lakekeeper",
+            "arn:AWS:iam::123456789012:role/lakekeeper",
+            "lakekeeper-sts",
+        ] {
+            assert_eq!(
+                partition_from_arn(not_an_arn),
+                None,
+                "expected `{not_an_arn}` to yield no partition"
+            );
+        }
     }
 
     #[test]

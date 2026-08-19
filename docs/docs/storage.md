@@ -275,8 +275,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | Parameter                     | Type    | Required | Default                    | Description |
 |-------------------------------|---------|----------|----------------------------|-----|
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
-| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
-| `partition`                   | String  | No       | `aws`                      | AWS partition used to build the S3 ARNs of the policy that is sent when vending credentials. Set to `aws-us-gov` for GovCloud regions and `aws-cn` for the China regions. Only relevant if `flavor` is `aws` and `sts-enabled` is true. |
+| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). For `flavor` `aws` without an explicit `endpoint`, a `us-gov-*`, `cn-*`, ISO or `eusc-de-*` region also selects the AWS partition of the vended-credential policy; otherwise the role ARN does. |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
 | `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
@@ -390,11 +389,9 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
 
-###### GovCloud and China Regions
+##### AWS Partitions (GovCloud, China, ISO)
 
-Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are not prefixed with `arn:aws:` but with `arn:aws-us-gov:` and `arn:aws-cn:` respectively.
-Set the `partition` field of the storage profile to `aws-us-gov` or `aws-cn` accordingly. If it is left at the default `aws`, the downscoped policy that Lakekeeper sends when vending credentials references bucket ARNs of the commercial partition, and `AssumeRole` fails.
-The role ARNs (`sts-role-arn` / `assume-role-arn`) and the `aws-kms-key-arn` must use the same partition prefix:
+Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are prefixed with `arn:aws-us-gov:` and `arn:aws-cn:` instead of `arn:aws:`. Lakekeeper builds the S3 ARNs of the downscoped policy it sends when vending credentials with the matching prefix, so there is nothing to configure beyond using ARNs of that partition for `sts-role-arn`, `assume-role-arn` and `aws-kms-key-arn`:
 
 ```json
 {
@@ -402,13 +399,14 @@ The role ARNs (`sts-role-arn` / `assume-role-arn`) and the `aws-kms-key-arn` mus
         "type": "s3",
         "bucket": "<name of the bucket>",
         "region": "us-gov-west-1",
-        "partition": "aws-us-gov",
         "sts-enabled": true,
         "flavor": "aws",
         "sts-role-arn": "arn:aws-us-gov:iam::<aws account id>:role/LakekeeperWarehouseDevRole"
     }
 }
 ```
+
+A `us-gov-*` or `cn-*` region determines the partition, as do the ISO regions (`us-iso-*`, `us-isob-*`, `us-isof-*`, `eu-isoe-*`) and the European Sovereign Cloud (`eusc-de-*`). This applies to profiles that let the AWS SDK resolve the endpoint from the region. For every other profile — an explicit `endpoint`, a commercial region, or a region of a partition newer than your Lakekeeper release — the partition of `sts-role-arn` or `assume-role-arn` is used, and `aws` if neither names an AWS partition. Storage profiles with a `flavor` other than `aws` always use `aws`.
 
 ##### System Identities / Managed Identities
 
