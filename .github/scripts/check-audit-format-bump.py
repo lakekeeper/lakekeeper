@@ -10,6 +10,7 @@ It needs both the old and the new state, so it lives in CI rather than in a Rust
 
 Run locally:   python3 .github/scripts/check-audit-format-bump.py <base-ref>
 Self-test:     python3 .github/scripts/check-audit-format-bump.py --self-test
+Read version:  python3 .github/scripts/check-audit-format-bump.py --print-version <rev>
 """
 
 from __future__ import annotations
@@ -21,8 +22,13 @@ import sys
 
 AUDIT_DIR = "crates/lakekeeper/src/service/events/backends/audit"
 # Two patterns for the same thing: `git grep -E` is POSIX ERE, which has no `\s`.
-GIT_PATTERN = r'AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"'
-VERSION_RE = re.compile(r'AUDIT_FORMAT:\s*&str\s*=\s*"(\d+)\.(\d+)"')
+#
+# Both are anchored to a `pub const` DECLARATION rather than to any occurrence of the text.
+# Without the anchor, prose that merely quotes the constant — a doc comment explaining the
+# format, say — counts as a second declaration and fails the build, while a commented-out
+# declaration would count as a real one.
+GIT_PATTERN = r'^[[:space:]]*pub const AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"'
+VERSION_RE = re.compile(r'^\s*pub const AUDIT_FORMAT:\s*&str\s*=\s*"(\d+)\.(\d+)"')
 
 
 # ── git plumbing ────────────────────────────────────────────────────────────────
@@ -34,18 +40,57 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def declared_version(rev: str) -> tuple[int, int] | None:
-    """The version declared at `rev`, or None if the field does not exist yet.
+class AmbiguousVersion(Exception):
+    """More than one file declares the version, so no single one is authoritative."""
 
-    Searched across the tree rather than read from a fixed path, so that moving the
-    module does not look like the version disappearing.
+
+def declared_versions(rev: str) -> dict[str, tuple[int, int]]:
+    """Every declaration of the version at `rev`, keyed by the file that holds it.
+
+    Searched across the tree rather than read from a fixed path, so that moving the module
+    does not look like the version disappearing. Returned per path rather than as a single
+    value because "the first match" is not a safe answer: any other text in `crates/`
+    matching the pattern — a doc comment quoting it, for instance — would silently become
+    the version this checker scores the change against.
     """
     try:
-        out = _git("grep", "-h", "-E", GIT_PATTERN, rev, "--", "crates/")
+        out = _git("grep", "-E", GIT_PATTERN, rev, "--", "crates/")
     except subprocess.CalledProcessError:
-        return None
-    match = VERSION_RE.search(out)
-    return (int(match.group(1)), int(match.group(2))) if match else None
+        return {}
+    found: dict[str, tuple[int, int]] = {}
+    for line in out.splitlines():
+        # `git grep <rev>` prefixes each hit with `rev:path:`, and a path cannot contain a
+        # colon in git, so splitting from the left twice is exact.
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        match = VERSION_RE.search(parts[2])
+        if match:
+            found[parts[1]] = (int(match.group(1)), int(match.group(2)))
+    return found
+
+
+def single_version(found: dict[str, tuple[int, int]], rev: str = "HEAD") -> tuple[int, int] | None:
+    """The one declared version, or None if there is none. Raises if there is more than one.
+
+    Agreeing values do not make two declarations acceptable: they are two places a future
+    bump has to be applied, and which one this checker reads is decided by sort order.
+
+    Separate from the git lookup so the rule can be tested without a repository.
+    """
+    if len(found) > 1:
+        listed = ", ".join(f"{path} ({v[0]}.{v[1]})" for path, v in sorted(found.items()))
+        raise AmbiguousVersion(
+            f"{len(found)} files declare AUDIT_FORMAT at {rev}: {listed}. Exactly one "
+            f"declaration must exist — even when the values agree, because a bump then has "
+            f"to be applied twice and this check reads whichever comes first."
+        )
+    return next(iter(found.values()), None)
+
+
+def declared_version(rev: str) -> tuple[int, int] | None:
+    """The single declared version at `rev`, or None if the field does not exist yet."""
+    return single_version(declared_versions(rev), rev)
 
 
 def fixture_dirs_at(rev: str) -> list[str]:
@@ -335,6 +380,21 @@ def self_test() -> int:
     check("introduced", classify_bump(None, (1, 0)), ("introduced", None))
     check("removed", classify_bump((1, 0), None)[1] is not None, True)
 
+    # Exactly one declaration is required, and agreeing values do not excuse a second one.
+    def ambiguity(found):
+        try:
+            return single_version(found)
+        except AmbiguousVersion as error:
+            return f"ambiguous: {error}"
+
+    check("no declaration", ambiguity({}), None)
+    check("one declaration", ambiguity({"a.rs": (1, 4)}), (1, 4))
+    differing = ambiguity({"a.rs": (1, 4), "b.rs": (2, 0)})
+    agreeing = ambiguity({"a.rs": (1, 4), "b.rs": (1, 4)})
+    check("two declarations, differing", str(differing).startswith("ambiguous"), True)
+    check("two declarations, agreeing", str(agreeing).startswith("ambiguous"), True)
+    check("both paths named", "a.rs" in str(agreeing) and "b.rs" in str(agreeing), True)
+
     a = {"x": {"a": 1}}
 
     # `unknown`: a fixture that existed before has no counterpart now, so "no difference
@@ -499,14 +559,40 @@ def self_test() -> int:
     return 1 if failures else 0
 
 
+def print_version(rev: str) -> int:
+    """Print `MAJOR.MINOR` at `rev`, or nothing if undeclared.
+
+    Exists so that anything else needing the version — the CI shell, for one — calls this
+    rather than keeping its own copy of the grep. Two implementations of the same lookup
+    is one of them being wrong later.
+    """
+    version = declared_version(rev)
+    if version is not None:
+        print(f"{version[0]}.{version[1]}")
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         sys.exit(self_test())
+    if len(sys.argv) == 3 and sys.argv[1] == "--print-version":
+        try:
+            sys.exit(print_version(sys.argv[2]))
+        except AmbiguousVersion as error:
+            print(f"::error::{error}", file=sys.stderr)
+            sys.exit(2)
+        except subprocess.CalledProcessError as error:
+            print(f"::error::`{' '.join(error.cmd)}` failed.", file=sys.stderr)
+            sys.exit(2)
     if len(sys.argv) not in (2, 3):
         print(__doc__)
         sys.exit(2)
     try:
         sys.exit(run(sys.argv[1], *sys.argv[2:]))
+    except AmbiguousVersion as error:
+        # A broken declaration, not a rejected bump — exit 2 so the two are distinguishable.
+        print(f"::error::{error}", file=sys.stderr)
+        sys.exit(2)
     except subprocess.CalledProcessError as error:
         # A bad revision or a shallow clone is a usage problem, not a format problem, and
         # a raw traceback in a CI log obscures which of the two happened.

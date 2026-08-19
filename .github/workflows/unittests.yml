@@ -488,12 +488,11 @@ jobs:
           # the version reads as changed when it did not. Searching the tree at each
           # revision does not care where the constant lives.
           #
-          # `grep` here is deliberately not `grep -q`: with `-q` grep exits on the first
-          # match, the producer gets SIGPIPE, and `pipefail` then reports the whole
-          # pipeline as failed — a match would be read as "no match".
+          # The version lookup lives in the checker script, which errors when more than
+          # one file declares the constant. A second implementation here was a second
+          # thing to get wrong: it took the first match and could not see a duplicate.
           declared_version() {
-            git grep -h -oE 'AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"' "$1" -- crates/ \
-              2>/dev/null | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+)"/\1/' || true
+            python3 .github/scripts/check-audit-format-bump.py --print-version "$1"
           }
           # Compare against the MERGE BASE, not against the base branch tip. The tip
           # moves while a pull request is open, so reading the version there can report a

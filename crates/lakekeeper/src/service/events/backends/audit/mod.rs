@@ -1022,6 +1022,45 @@ mod tests {
         }
     }
 
+    /// Pin the direction of [`CompareMode::Inclusive`], which the fixture comparison
+    /// above depends on and which cannot be read off the dependency.
+    ///
+    /// `assert-json-diff` is a caret dependency, and its own documentation describes
+    /// `Inclusive` the opposite way round from what it implements. So the direction is
+    /// neither obvious from the call nor safe to re-derive from the docs, and a minor
+    /// upgrade that "fixed" the implementation to match the documentation would silently
+    /// invert the fixture check: a deleted field would start reading as an addition, and
+    /// a breaking change would be classified as a minor one.
+    ///
+    /// The two assertions here are deliberately each other's mirror. Swapping them makes
+    /// this test fail, which is the point — it fails here, loudly, instead of in the
+    /// classification of somebody else's change.
+    #[test]
+    fn inclusive_comparison_requires_the_right_hand_side_to_be_contained_in_the_left() {
+        let subset = serde_json::json!({ "kept": 1 });
+        let superset = serde_json::json!({ "kept": 1, "extra": 2 });
+        let inclusive = || Config::new(CompareMode::Inclusive);
+
+        // Extra keys on the LEFT are allowed. This is the case the fixture check relies
+        // on: `assert_json_matches!(&emitted, &fixture, Inclusive)` must tolerate an
+        // emitted record that has gained a field.
+        assert!(
+            assert_json_matches_no_panic(&superset, &subset, inclusive()).is_ok(),
+            "Inclusive must accept extra keys in the left-hand value. If this fails, the \
+             crate has inverted the comparison and the fixture check now treats an added \
+             field as a removed one."
+        );
+
+        // Extra keys on the RIGHT are a failure. This is what makes a removed field a
+        // breaking change rather than an additive one.
+        assert!(
+            assert_json_matches_no_panic(&subset, &superset, inclusive()).is_err(),
+            "Inclusive must reject keys present in the right-hand value and missing from \
+             the left. If this fails, the fixture check would pass while a field is being \
+             deleted from the audit log."
+        );
+    }
+
     fn fixture_table_entity() -> EntityDescriptor {
         EntityDescriptor::new(EntityType::Table)
             .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
