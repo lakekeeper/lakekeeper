@@ -21,12 +21,23 @@ use crate::{
 /// themselves — only the caller that ran the migrations knows what this run applied. It passes the
 /// answer here. Backend-specific knowledge (which migration version gates what) stays in the
 /// binary, so this stays generic over the catalog store.
+///
+/// Every gate on this struct must guard a hook that is **idempotent and safe to retry**, because
+/// `migrate --force-idempotent-post-migration-hooks` turns them all on at once to recover from an
+/// earlier failure. A hook that cannot be re-run does not belong behind one of these flags.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostMigrationHookOptions {
     /// Repair namespace path prefixes stored with the caller's casing instead of the parent's.
     /// Set when the migration the repair is pinned to was applied by this run — see
     /// `lakekeeper-storage-postgres`'s `NAMESPACE_PATH_CASING_REPAIR_AFTER`.
     pub repair_namespace_path_casing: bool,
+    /// Treat a failure of any gated hook above as fatal instead of logging it.
+    ///
+    /// Off for a normal migration: a transient failure should not block an upgrade, since these
+    /// hooks repair or backfill rather than gatekeep. On when an operator asked for the hooks
+    /// explicitly (`--force-idempotent-post-migration-hooks`), because someone who requested a
+    /// repair needs to be told it did not happen rather than having to find it in the logs.
+    pub fail_on_idempotent_hook_error: bool,
 }
 
 /// Runs post-migration housekeeping. `system_roles` is the spec set the
@@ -49,13 +60,21 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // This is a non-critical hook, so we log the error but do not fail the migration.
         tracing::error!("Failed to initialize cron tasks in post-migration hook: {e:?}");
     }
-    if options.repair_namespace_path_casing
-        && let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await
-    {
-        // Non-critical: the catalog serves correct results either way, only cache hit rate suffers.
-        tracing::error!(
-            "Failed to repair namespace path prefix casing in post-migration hook: {e:?}"
-        );
+    if options.repair_namespace_path_casing {
+        if let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await {
+            // Not fatal by default: the catalog serves correct results either way, only cache hit
+            // rate suffers, and a blip should not block an upgrade. But this hook is gated on the
+            // migration that introduced it, so it will not run again by itself once that migration
+            // is recorded — say how to retry it, or the drift is silently permanent.
+            let e = e.context(
+                "Namespace path prefix casing was not repaired. This hook is idempotent and safe \
+                 to retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
+            );
+            if options.fail_on_idempotent_hook_error {
+                return Err(e);
+            }
+            tracing::error!("{e:?}");
+        }
     }
     backfill_registered_system_roles::<C>(state)
         .await

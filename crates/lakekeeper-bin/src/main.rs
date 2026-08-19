@@ -41,7 +41,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Migrate the database
-    Migrate {},
+    Migrate {
+        /// Re-run post-migration hooks that are idempotent and safe to retry, even though the
+        /// migration gating them has already been applied.
+        ///
+        /// NOT for routine use — a normal `migrate` already runs every hook it needs, and this
+        /// changes nothing on a healthy database. Use it only after a post-migration hook reported
+        /// a failure in an earlier run: those hooks are gated on the migration that introduced
+        /// them, so once that migration is recorded they never run again on their own. Unlike the
+        /// normal path, a hook failure here is fatal and the command exits non-zero.
+        #[clap(long, default_value_t = false)]
+        force_idempotent_post_migration_hooks: bool,
+    },
     /// Wait for the database to be up and migrated
     WaitForDB {
         #[clap(
@@ -208,9 +219,11 @@ async fn main() -> anyhow::Result<()> {
 
             wait_for_db::wait_for_db(check_migrations, retries, backoff, check_db).await?;
         }
-        Some(Commands::Migrate {}) => {
+        Some(Commands::Migrate {
+            force_idempotent_post_migration_hooks,
+        }) => {
             print_info();
-            migrate().await?;
+            migrate(force_idempotent_post_migration_hooks).await?;
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
@@ -284,7 +297,8 @@ async fn main() -> anyhow::Result<()> {
 async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
     if CONFIG_BIN.debug.migrate_before_serve {
         wait_for_db::wait_for_db(false, 15, 2, true).await?;
-        migrate().await?;
+        // Never forced here: recovery is a deliberate operator action via `migrate`.
+        migrate(false).await?;
     }
     serve(force_start).await
 }
@@ -409,7 +423,10 @@ async fn openfga_reconcile(
     Ok(())
 }
 
-async fn migrate() -> anyhow::Result<()> {
+/// `force_idempotent_hooks` re-runs the gated, idempotent post-migration hooks regardless of what
+/// this run applied, and makes their failure fatal. See the
+/// `--force-idempotent-post-migration-hooks` help text.
+async fn migrate(force_idempotent_hooks: bool) -> anyhow::Result<()> {
     tracing::info!("Migrating database...");
     let write_pool = lakekeeper_storage_postgres::get_writer_pool(
         lakekeeper_storage_postgres::config::CONFIG.to_pool_opts(),
@@ -432,8 +449,11 @@ async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Running post-migration hooks...");
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
     let hook_options = lakekeeper::service::PostMigrationHookOptions {
-        repair_namespace_path_casing: !applied_before
-            .contains(&lakekeeper_storage_postgres::migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+        repair_namespace_path_casing: force_idempotent_hooks
+            || !applied_before.contains(
+                &lakekeeper_storage_postgres::migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER,
+            ),
+        fail_on_idempotent_hook_error: force_idempotent_hooks,
     };
     lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(
         catalog_state,

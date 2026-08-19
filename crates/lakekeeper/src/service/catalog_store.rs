@@ -594,9 +594,12 @@ where
     /// cache, because `is_parent_ident` compares the prefix byte-wise and the reload re-inserts the
     /// same bytes and fails identically.
     ///
-    /// Implementations must be idempotent: this runs on every startup, and derives what needs
-    /// repairing from the data rather than from a marker, so a hole introduced by some future write
-    /// path is repaired without anything having to be re-pinned.
+    /// Implementations must be idempotent and safe to retry. The caller gates this on the migration
+    /// the repair is pinned to having just been applied, so it normally runs once per upgrade — but
+    /// `migrate --force-idempotent-post-migration-hooks` re-runs it on demand to recover from an
+    /// earlier failure, and re-pinning it to a later migration re-runs it for a newly found hole.
+    /// Both rely on repeat runs being harmless, and on what needs repairing being derived from the
+    /// data rather than from a stored marker.
     async fn repair_namespace_path_casing_impl(
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<u64, CatalogBackendError>;

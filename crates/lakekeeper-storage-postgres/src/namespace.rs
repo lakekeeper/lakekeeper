@@ -753,7 +753,19 @@ pub(crate) async fn create_namespace(
 /// Rewrite namespace path prefixes that disagree with their parent row's spelling, returning the
 /// number of rows changed.
 ///
-/// Maintenance, run from the post-migration hooks rather than as a migration. `create_namespace`
+/// Maintenance, run from the post-migration hooks rather than as a migration, and gated there on the
+/// migration it is pinned to having just been applied — so it runs once per upgrade, not on every
+/// startup. Deliberately not a migration itself: migrations run inside one transaction under
+/// `SET LOCAL statement_timeout = '60min'` while holding the advisory lock, with `serve` waiting on
+/// them, so a slow data rewrite there can abort an upgrade and keep the server down. As a hook it
+/// runs outside that transaction, and its failure is logged rather than fatal unless an operator
+/// asked for it explicitly.
+///
+/// Written to be idempotent regardless, because both recovery paths depend on it:
+/// `migrate --force-idempotent-post-migration-hooks` re-runs it after a failure, and re-pinning it to
+/// a later migration re-runs it for a newly found hole.
+///
+/// `create_namespace`
 /// used to insert the caller's whole path verbatim while resolving the parent under the
 /// `case_insensitive` collation, so creating `a/b/c` under a parent stored `a/B` stored the child as
 /// {a,b,c}. Nothing in the database is broken by that — the parent id is right, every SQL comparison
@@ -3515,7 +3527,8 @@ pub mod tests {
         assert_eq!(version, 0, "a case-only repair must not bump the version");
         assert!(updated_at.is_none(), "nor stamp updated_at");
 
-        // Idempotent: the hook runs on every startup, so a second pass must change nothing.
+        // Idempotent: `--force-idempotent-post-migration-hooks` re-runs this to recover from a
+        // failure, and re-pinning it re-runs it for a new hole, so a second pass must change nothing.
         let repaired_again = {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
