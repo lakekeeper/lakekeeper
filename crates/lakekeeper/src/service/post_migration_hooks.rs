@@ -23,8 +23,8 @@ use crate::{
 /// binary, so this stays generic over the catalog store.
 ///
 /// Every gate on this struct must guard a hook that is **idempotent and safe to retry**, because
-/// `migrate --force-idempotent-post-migration-hooks` turns them all on at once to recover from an
-/// earlier failure. A hook that cannot be re-run does not belong behind one of these flags.
+/// `lakekeeper migrate --force-idempotent-post-migration-hooks` turns them all on at once to recover
+/// from an earlier failure. A hook that cannot be re-run does not belong behind one of these flags.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostMigrationHookOptions {
     /// Repair namespace path prefixes stored with the caller's casing instead of the parent's.
