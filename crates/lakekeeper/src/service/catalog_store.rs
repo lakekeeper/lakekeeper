@@ -555,6 +555,35 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError>;
 
+    /// Move a namespace to `destination`, re-parenting and/or renaming it.
+    ///
+    /// `destination` is the full new path of the namespace. Its last element is the new
+    /// name, the preceding elements identify the new parent; an empty prefix moves the
+    /// namespace to the warehouse root. Moving within a warehouse only — there is no
+    /// cross-warehouse form.
+    ///
+    /// Callers must validate `destination` (depth, illegal characters, reserved names)
+    /// *before* calling. This layer only enforces the invariants that require the
+    /// transaction, mirroring how `create_namespace_impl` relies on caller-side
+    /// validation.
+    ///
+    /// Namespaces that have child namespaces cannot be moved: the stored path of every
+    /// descendant would have to be rewritten, which is deliberately out of scope for now.
+    ///
+    /// A `destination` byte-identical to the namespace's current path is a no-op and
+    /// returns the unchanged namespace, so that retrying a successful move succeeds
+    /// rather than colliding with itself. Callers detect this via
+    /// [`MovedNamespace::is_noop`].
+    ///
+    /// `force` overrides protection, as it does for `drop_namespace_impl`.
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError>;
+
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,

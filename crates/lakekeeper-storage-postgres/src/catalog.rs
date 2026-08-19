@@ -29,10 +29,10 @@ use lakekeeper::{
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
         CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
+        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
+        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
         DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
@@ -44,17 +44,18 @@ use lakekeeper::{
         ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
         ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
         LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
-        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
+        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
+        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
+        SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
         TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
         Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
         UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
@@ -83,7 +84,10 @@ use super::{
         apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
         list_grants_on_resources,
     },
-    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
+    namespace::{
+        create_namespace, drop_namespace, list_namespaces, move_namespace,
+        update_namespace_properties,
+    },
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     tag::{
@@ -1112,6 +1116,16 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
+    }
+
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+        move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
     }
 
     async fn set_warehouse_protected_impl(

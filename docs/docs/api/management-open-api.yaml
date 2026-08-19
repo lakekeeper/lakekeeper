@@ -5382,6 +5382,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/move:
+    post:
+      tags:
+        - warehouse
+      summary: Move a Namespace
+      description: |-
+        Moves a namespace to a new location in the warehouse's namespace hierarchy,
+        re-parenting it and/or renaming it. The request body carries the full destination path:
+        its last element is the new name, the preceding elements identify the new parent, so a
+        single-element path moves the namespace to the warehouse root. The path must not be
+        empty.
+
+        Requires grant authority at **both** ends, because re-parenting makes the namespace's
+        contents inherit the destination subtree's permissions without any assignment being
+        recorded:
+
+        - `move` on the namespace being moved,
+        - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
+          the warehouse, when moving to the root).
+
+        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
+        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
+        alone is not sufficient at the destination: it authorizes adding an *empty* child,
+        whereas a move arrives carrying existing contents and their grants.
+
+        Constraints:
+        - Namespaces that contain child namespaces cannot be moved.
+        - Moves stay within one warehouse.
+        - Protected namespaces require `force`.
+        - Rejected for warehouses whose storage layout derives physical locations from
+          namespace names or from the namespace hierarchy.
+
+        A destination equal to the namespace's current path is a no-op and returns 200, so a
+        retried request cannot fail with a spurious conflict.
+      operationId: move_namespace
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveNamespaceRequest'
+        required: true
+      responses:
+        '200':
+          description: Namespace moved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoveNamespaceResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
       tags:
@@ -7673,54 +7740,45 @@ components:
       additionalProperties: false
     AzCredential:
       oneOf:
-        - $ref: '#/components/schemas/AzCredentialClientCredentials'
-        - $ref: '#/components/schemas/AzCredentialSharedAccessKey'
-        - $ref: '#/components/schemas/AzCredentialManagedIdentity'
-      discriminator:
-        propertyName: credential-type
-        mapping:
-          azure-system-identity: '#/components/schemas/AzCredentialManagedIdentity'
-          client-credentials: '#/components/schemas/AzCredentialClientCredentials'
-          shared-access-key: '#/components/schemas/AzCredentialSharedAccessKey'
-    AzCredentialClientCredentials:
-      type: object
-      required:
-        - client-id
-        - tenant-id
-        - client-secret
-        - credential-type
-      properties:
-        client-id:
-          type: string
-        client-secret:
-          type: string
-        credential-type:
-          type: string
-          enum:
-            - client-credentials
-        tenant-id:
-          type: string
-    AzCredentialManagedIdentity:
-      type: object
-      required:
-        - credential-type
-      properties:
-        credential-type:
-          type: string
-          enum:
-            - azure-system-identity
-    AzCredentialSharedAccessKey:
-      type: object
-      required:
-        - key
-        - credential-type
-      properties:
-        credential-type:
-          type: string
-          enum:
-            - shared-access-key
-        key:
-          type: string
+        - type: object
+          title: AzCredentialClientCredentials
+          required:
+            - client-id
+            - tenant-id
+            - client-secret
+            - credential-type
+          properties:
+            client-id:
+              type: string
+            client-secret:
+              type: string
+            credential-type:
+              type: string
+              enum:
+                - client-credentials
+            tenant-id:
+              type: string
+        - type: object
+          title: AzCredentialSharedAccessKey
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - shared-access-key
+            key:
+              type: string
+        - type: object
+          title: AzCredentialManagedIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - azure-system-identity
     AzCredentialType:
       type: string
       description: The type of Azure credential.
@@ -8618,8 +8676,36 @@ components:
           description: Internal type definition of the error
     GcsCredential:
       oneOf:
-        - $ref: '#/components/schemas/GcsCredentialServiceAccountKey'
-        - $ref: '#/components/schemas/GcsCredentialSystemIdentity'
+        - type: object
+          title: GcsCredentialServiceAccountKey
+          description: |-
+            Service Account Key
+
+            The key is the JSON object obtained when creating a service account key in the GCP console.
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - service-account-key
+            key:
+              $ref: '#/components/schemas/GcsServiceKey'
+        - type: object
+          title: GcsCredentialSystemIdentity
+          description: |-
+            GCP System Identity
+
+            Use the service account that the application is running as.
+            This can be a Compute Engine default service account or a user-assigned service account.
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - gcp-system-identity
       description: |-
         GCS Credentials
 
@@ -8640,41 +8726,6 @@ components:
               "universe_domain": "googleapis.com"
             }
         ```
-      discriminator:
-        propertyName: credential-type
-        mapping:
-          gcp-system-identity: '#/components/schemas/GcsCredentialSystemIdentity'
-          service-account-key: '#/components/schemas/GcsCredentialServiceAccountKey'
-    GcsCredentialServiceAccountKey:
-      type: object
-      description: |-
-        Service Account Key
-
-        The key is the JSON object obtained when creating a service account key in the GCP console.
-      required:
-        - key
-        - credential-type
-      properties:
-        credential-type:
-          type: string
-          enum:
-            - service-account-key
-        key:
-          $ref: '#/components/schemas/GcsServiceKey'
-    GcsCredentialSystemIdentity:
-      type: object
-      description: |-
-        GCP System Identity
-
-        Use the service account that the application is running as.
-        This can be a Compute Engine default service account or a user-assigned service account.
-      required:
-        - credential-type
-      properties:
-        credential-type:
-          type: string
-          enum:
-            - gcp-system-identity
     GcsCredentialType:
       type: string
       description: The type of GCS credential.
@@ -9813,10 +9864,13 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionListGenericTables'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionManageTags'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionCreateTable'
@@ -9830,9 +9884,33 @@ components:
           list_tables: '#/components/schemas/LakekeeperNamespaceActionListTables'
           list_views: '#/components/schemas/LakekeeperNamespaceActionListViews'
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionManageTags'
+          move: '#/components/schemas/LakekeeperNamespaceActionMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionUpdateProperties'
+    LakekeeperNamespaceActionAcceptMovedNamespace:
+      type: object
+      description: |-
+        Accept a namespace being moved in from elsewhere as a child of this entity.
+
+        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        this subtree's grantees exposes nothing. A move arrives carrying existing contents
+        and their direct grants, which is why this is gated on grant authority in addition to
+        `create` — without it, a namespace could be populated and granted somewhere
+        permissive and then moved into a `managed_access` subtree, smuggling grants past the
+        control that subtree exists to enforce.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
+        source:
+          type: array
+          items:
+            type: string
+          description: Path the namespace is being moved from.
     LakekeeperNamespaceActionCreateGenericTable:
       type: object
       required:
@@ -9997,10 +10075,13 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindListGenericTables'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionKindCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateTable'
@@ -10014,9 +10095,19 @@ components:
           list_tables: '#/components/schemas/LakekeeperNamespaceActionKindListTables'
           list_views: '#/components/schemas/LakekeeperNamespaceActionKindListViews'
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
+          move: '#/components/schemas/LakekeeperNamespaceActionKindMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionKindSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionKindUpdateProperties'
+    LakekeeperNamespaceActionKindAcceptMovedNamespace:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
     LakekeeperNamespaceActionKindCreateGenericTable:
       type: object
       required:
@@ -10134,6 +10225,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperNamespaceActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperNamespaceActionKindReadGrants:
       type: object
       required:
@@ -10216,6 +10316,36 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperNamespaceActionMove:
+      type: object
+      description: |-
+        Move this namespace to a new path, re-parenting and/or renaming it.
+
+        Gated on grant-level authority *in addition to* plain write access. Re-parenting a
+        namespace re-issues every privilege the destination subtree confers onto the
+        namespace's contents, with no assignment record anywhere — so the actor must
+        already be able to grant on the namespace being moved. Inside a `managed_access`
+        subtree ownership does not confer that, which is precisely the case where moving
+        out would otherwise defeat the control.
+
+        Only the source half of a move's authorization; the destination is gated by
+        `CreateNamespace` plus `AcceptMovedNamespace`.
+      required:
+        - destination
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Full destination path, including the new leaf name.
+        force:
+          type: boolean
+          description: Whether protection is overridden, as for `Delete`.
     LakekeeperNamespaceActionReadGrants:
       type: object
       description: Can list the grants held on this namespace.
@@ -11677,10 +11807,12 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
           activate: '#/components/schemas/LakekeeperWarehouseActionActivate'
           control_all_tasks: '#/components/schemas/LakekeeperWarehouseActionControlAllTasks'
           create_namespace: '#/components/schemas/LakekeeperWarehouseActionCreateNamespace'
@@ -11704,6 +11836,29 @@ components:
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
+    LakekeeperWarehouseActionAcceptMovedNamespace:
+      type: object
+      description: |-
+        Accept a namespace being moved in from elsewhere as a child of this entity.
+
+        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        this subtree's grantees exposes nothing. A move arrives carrying existing contents
+        and their direct grants, which is why this is gated on grant authority in addition to
+        `create` — without it, a namespace could be populated and granted somewhere
+        permissive and then moved into a `managed_access` subtree, smuggling grants past the
+        control that subtree exists to enforce.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
+        source:
+          type: array
+          items:
+            type: string
+          description: Path the namespace is being moved from.
     LakekeeperWarehouseActionActivate:
       type: object
       required:
@@ -11838,10 +11993,12 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
           activate: '#/components/schemas/LakekeeperWarehouseActionKindActivate'
           control_all_tasks: '#/components/schemas/LakekeeperWarehouseActionKindControlAllTasks'
           create_namespace: '#/components/schemas/LakekeeperWarehouseActionKindCreateNamespace'
@@ -11865,6 +12022,15 @@ components:
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
+    LakekeeperWarehouseActionKindAcceptMovedNamespace:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
     LakekeeperWarehouseActionKindActivate:
       type: object
       required:
@@ -12548,6 +12714,52 @@ components:
       enum:
         - self-managed
         - instance-admin
+    MoveNamespaceRequest:
+      type: object
+      description: Request to move a namespace to a new location in the hierarchy.
+      required:
+        - destination
+      properties:
+        destination:
+          type: array
+          items:
+            type: string
+          description: |-
+            Full new path of the namespace, including its new name as the last element.
+
+            The preceding elements identify the new parent; a single-element destination moves the
+            namespace to the warehouse root. Must not be empty. Renaming in place is expressed by
+            keeping the same parent and changing only the last element. Mirrors the `destination`
+            of Iceberg REST rename-table request.
+
+            A destination equal to the namespace's current path succeeds without changing
+            anything, so retrying a request that already went through is safe.
+        force:
+          type: boolean
+          description: Move the namespace even if it is protected.
+      additionalProperties: false
+    MoveNamespaceResponse:
+      type: object
+      description: The namespace after a successful move.
+      required:
+        - namespace
+        - namespace-id
+      properties:
+        namespace:
+          type: array
+          items:
+            type: string
+          description: The namespace's new path.
+        namespace-id:
+          type: string
+          format: uuid
+          description: Unchanged by the move; returned so callers can confirm identity.
+        parent-namespace-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Id of the new parent namespace, or `null` if the namespace is now top-level.
     NamespaceAction:
       type: string
       enum:
@@ -12556,6 +12768,8 @@ components:
         - create_generic_table
         - create_namespace
         - delete
+        - move
+        - accept_moved_namespace
         - update_properties
         - get_metadata
         - read_assignments
@@ -13481,81 +13695,70 @@ components:
             This is used to fetch downscoped temporary credentials for vended credentials.
     S3Credential:
       oneOf:
-        - $ref: '#/components/schemas/S3CredentialAccessKey'
-        - $ref: '#/components/schemas/S3CredentialAwsSystemIdentity'
-        - $ref: '#/components/schemas/S3CredentialCloudflareR2'
-        - $ref: '#/components/schemas/S3CredentialAliyunOss'
-      discriminator:
-        propertyName: credential-type
-        mapping:
-          access-key: '#/components/schemas/S3CredentialAccessKey'
-          aliyun-oss: '#/components/schemas/S3CredentialAliyunOss'
-          aws-system-identity: '#/components/schemas/S3CredentialAwsSystemIdentity'
-          cloudflare-r2: '#/components/schemas/S3CredentialCloudflareR2'
-    S3CredentialAccessKey:
-      allOf:
-        - $ref: '#/components/schemas/S3AccessKeyCredential'
+        - allOf:
+            - $ref: '#/components/schemas/S3AccessKeyCredential'
+              description: Authenticate to AWS using access-key and secret-key.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - access-key
+          title: S3CredentialAccessKey
           description: Authenticate to AWS using access-key and secret-key.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - access-key
-      description: Authenticate to AWS using access-key and secret-key.
-    S3CredentialAliyunOss:
-      allOf:
-        - $ref: '#/components/schemas/S3AccessKeyCredential'
+        - allOf:
+            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+              description: |-
+                Authenticate to AWS using the identity configured on the system
+                 that runs lakekeeper. The AWS SDK is used to load the credentials.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - aws-system-identity
+          title: S3CredentialAwsSystemIdentity
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - allOf:
+            - $ref: '#/components/schemas/S3CloudflareR2Credential'
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - cloudflare-r2
+          title: S3CredentialCloudflareR2
+        - allOf:
+            - $ref: '#/components/schemas/S3AccessKeyCredential'
+              description: |-
+                **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+                future release.
+
+                Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+                Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - aliyun-oss
+          title: S3CredentialAliyunOss
           description: |-
             **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
             future release.
 
             Authenticate to Alibaba Cloud OSS using access-key and secret-key.
             Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - aliyun-oss
-      description: |-
-        **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
-        future release.
-
-        Authenticate to Alibaba Cloud OSS using access-key and secret-key.
-        Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
-    S3CredentialAwsSystemIdentity:
-      allOf:
-        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
-          description: |-
-            Authenticate to AWS using the identity configured on the system
-             that runs lakekeeper. The AWS SDK is used to load the credentials.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - aws-system-identity
-      description: |-
-        Authenticate to AWS using the identity configured on the system
-         that runs lakekeeper. The AWS SDK is used to load the credentials.
-    S3CredentialCloudflareR2:
-      allOf:
-        - $ref: '#/components/schemas/S3CloudflareR2Credential'
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - cloudflare-r2
     S3CredentialType:
       type: string
       description: The type of S3 credential.
@@ -14052,240 +14255,307 @@ components:
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
+    StackitAccessKeyCredential:
+      type: object
+      title: StackitCredentialAccessKey
+      required:
+        - access-key-id
+        - secret-access-key
+      properties:
+        access-key-id:
+          type: string
+          description: Access key ID of a key created in the STACKIT credentials group.
+        secret-access-key:
+          type: string
+          description: Secret shown once when the access key was created.
+    StackitCredential:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/StackitAccessKeyCredential'
+              description: Access key and secret, created inside a STACKIT credentials group.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - access-key
+          title: StackitCredentialAccessKey
+          description: Access key and secret, created inside a STACKIT credentials group.
+      description: |-
+        Credentials for STACKIT Object Storage.
+
+        Its own enum rather than a reuse of `S3Credential`, so STACKIT can gain
+        authentication methods without inheriting AWS-only ones.
+    StackitCredentialType:
+      type: string
+      description: The type of STACKIT credential.
+      enum:
+        - access-key
+    StackitProfile:
+      type: object
+      description: Storage profile for STACKIT Object Storage.
+      required:
+        - bucket
+        - region
+      properties:
+        bucket:
+          type: string
+          description: |-
+            Name of the STACKIT bucket.
+
+            Must not contain `.`: STACKIT addresses buckets as a subdomain of the
+            endpoint, and its wildcard certificate covers only a single label.
+        credentials-group-urn:
+          type:
+            - string
+            - 'null'
+          description: |-
+            URN of the STACKIT credentials group to assume when vending credentials,
+            e.g. `urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3`.
+
+            Copy it verbatim from the credentials group; it is not derivable.
+            Required when `sts-enabled` is true, optional otherwise — but validated
+            whenever it is present.
+        endpoint:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            Endpoint override. Normally omitted — the endpoint is derived from
+            `region`.
+
+            Set this only for a STACKIT endpoint outside the public naming scheme,
+            which STACKIT hands out per customer. Such an endpoint is a distinct
+            storage tenant, not another route to the same bucket, so it is immutable
+            once the warehouse exists.
+        key-prefix:
+          type:
+            - string
+            - 'null'
+          description: Subpath within the bucket to use.
+        push-s3-delete-disabled:
+          type: boolean
+          description: |-
+            Push `s3.delete-enabled=false` to clients, discouraging Spark from
+            deleting files directly and bypassing soft-deletion. Defaults to true.
+        region:
+          type: string
+          description: STACKIT region, e.g. `eu01`.
+        remote-signing-enabled:
+          type: boolean
+          description: |-
+            Allow clients to have Lakekeeper sign their S3 requests. Defaults to
+            enabled, and is the only client path when `sts-enabled` is false.
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
+        sts-enabled:
+          type: boolean
+          description: |-
+            Vend temporary downscoped credentials via STS. Defaults to enabled.
+
+            Requires `credentials-group-urn`, and requires the credentials group to
+            carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
+            to remote signing on storage that predates `StorageGRID` 12.0.
+        sts-token-validity-seconds:
+          type: integer
+          format: int64
+          description: Validity of vended credentials in seconds. Defaults to 3600.
+          minimum: 0
     StorageCredential:
       oneOf:
-        - $ref: '#/components/schemas/StorageCredentialAccessKey'
-        - $ref: '#/components/schemas/StorageCredentialAwsSystemIdentity'
-        - $ref: '#/components/schemas/StorageCredentialCloudflareR2'
-        - $ref: '#/components/schemas/StorageCredentialAliyunOss'
-        - $ref: '#/components/schemas/StorageCredentialClientCredentials'
-        - $ref: '#/components/schemas/StorageCredentialSharedAccessKey'
-        - $ref: '#/components/schemas/StorageCredentialAzureSystemIdentity'
-        - $ref: '#/components/schemas/StorageCredentialServiceAccountKey'
-        - $ref: '#/components/schemas/StorageCredentialGcpSystemIdentity'
+        - allOf:
+            - $ref: '#/components/schemas/S3Credential'
+              description: |-
+                Credentials for S3 storage
+
+                Example payload in the code-snippet below:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "s3",
+                    "credential-type": "access-key",
+                    "access-key-id": "minio-root-user",
+                    "secret-access-key": "minio-root-password"
+                  }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - s3
+          title: StorageCredentialS3
+          description: |-
+            Credentials for S3 storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "s3",
+                "credential-type": "access-key",
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
+              }"#).unwrap();
+            ```
+        - allOf:
+            - $ref: '#/components/schemas/StackitCredential'
+              description: |-
+                Credentials for STACKIT Object Storage.
+
+                Example payload:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "stackit",
+                    "credential-type": "access-key",
+                    "access-key-id": "...",
+                    "secret-access-key": "..."
+                  }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - stackit
+          title: StorageCredentialStackit
+          description: |-
+            Credentials for STACKIT Object Storage.
+
+            Example payload:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "stackit",
+                "credential-type": "access-key",
+                "access-key-id": "...",
+                "secret-access-key": "..."
+              }"#).unwrap();
+            ```
+        - allOf:
+            - $ref: '#/components/schemas/AzCredential'
+              description: |-
+                Credentials for Az storage
+
+                Example payload:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "az",
+                    "credential-type": "client-credentials",
+                    "client-id": "...",
+                    "client-secret": "...",
+                    "tenant-id": "..."
+                  }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - az
+          title: StorageCredentialAz
+          description: |-
+            Credentials for Az storage
+
+            Example payload:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "az",
+                "credential-type": "client-credentials",
+                "client-id": "...",
+                "client-secret": "...",
+                "tenant-id": "..."
+              }"#).unwrap();
+            ```
+        - allOf:
+            - $ref: '#/components/schemas/GcsCredential'
+              description: |
+                Credentials for GCS storage
+
+                Example payload in the code-snippet below:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "gcs",
+                    "credential-type": "service-account-key",
+                    "key": {
+                      "type": "service_account",
+                      "project_id": "example-project-1234",
+                      "private_key_id": "....",
+                      "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                      "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                      "client_id": "123456789012345678901",
+                      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                      "token_uri": "https://oauth2.googleapis.com/token",
+                      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                      "universe_domain": "googleapis.com"
+                    }
+                }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - gcs
+          title: StorageCredentialGcs
+          description: |
+            Credentials for GCS storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "gcs",
+                "credential-type": "service-account-key",
+                "key": {
+                  "type": "service_account",
+                  "project_id": "example-project-1234",
+                  "private_key_id": "....",
+                  "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                  "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                  "client_id": "123456789012345678901",
+                  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                  "token_uri": "https://oauth2.googleapis.com/token",
+                  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                  "universe_domain": "googleapis.com"
+                }
+            }"#).unwrap();
+            ```
       description: Storage secret for a warehouse.
-      discriminator:
-        propertyName: credential-type
-        mapping:
-          access-key: '#/components/schemas/StorageCredentialAccessKey'
-          aliyun-oss: '#/components/schemas/StorageCredentialAliyunOss'
-          aws-system-identity: '#/components/schemas/StorageCredentialAwsSystemIdentity'
-          azure-system-identity: '#/components/schemas/StorageCredentialAzureSystemIdentity'
-          client-credentials: '#/components/schemas/StorageCredentialClientCredentials'
-          cloudflare-r2: '#/components/schemas/StorageCredentialCloudflareR2'
-          gcp-system-identity: '#/components/schemas/StorageCredentialGcpSystemIdentity'
-          service-account-key: '#/components/schemas/StorageCredentialServiceAccountKey'
-          shared-access-key: '#/components/schemas/StorageCredentialSharedAccessKey'
-    StorageCredentialAccessKey:
-      allOf:
-        - $ref: '#/components/schemas/S3AccessKeyCredential'
-          description: Authenticate to AWS using access-key and secret-key.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - access-key
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - s3
-    StorageCredentialAliyunOss:
-      allOf:
-        - $ref: '#/components/schemas/S3AccessKeyCredential'
-          description: |-
-            **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
-            future release.
-
-            Authenticate to Alibaba Cloud OSS using access-key and secret-key.
-            Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - aliyun-oss
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - s3
-    StorageCredentialAwsSystemIdentity:
-      allOf:
-        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
-          description: |-
-            Authenticate to AWS using the identity configured on the system
-             that runs lakekeeper. The AWS SDK is used to load the credentials.
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - aws-system-identity
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - s3
-    StorageCredentialAzureSystemIdentity:
-      allOf:
-        - type: object
-          title: AzCredentialManagedIdentity
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - azure-system-identity
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - az
-    StorageCredentialClientCredentials:
-      allOf:
-        - type: object
-          title: AzCredentialClientCredentials
-          required:
-            - client-id
-            - tenant-id
-            - client-secret
-            - credential-type
-          properties:
-            client-id:
-              type: string
-            client-secret:
-              type: string
-            credential-type:
-              type: string
-              enum:
-                - client-credentials
-            tenant-id:
-              type: string
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - az
-    StorageCredentialCloudflareR2:
-      allOf:
-        - $ref: '#/components/schemas/S3CloudflareR2Credential'
-        - type: object
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - cloudflare-r2
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - s3
-    StorageCredentialGcpSystemIdentity:
-      allOf:
-        - type: object
-          title: GcsCredentialSystemIdentity
-          description: |-
-            GCP System Identity
-
-            Use the service account that the application is running as.
-            This can be a Compute Engine default service account or a user-assigned service account.
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - gcp-system-identity
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - gcs
-    StorageCredentialServiceAccountKey:
-      allOf:
-        - type: object
-          title: GcsCredentialServiceAccountKey
-          description: |-
-            Service Account Key
-
-            The key is the JSON object obtained when creating a service account key in the GCP console.
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - service-account-key
-            key:
-              $ref: '#/components/schemas/GcsServiceKey'
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - gcs
-    StorageCredentialSharedAccessKey:
-      allOf:
-        - type: object
-          title: AzCredentialSharedAccessKey
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - shared-access-key
-            key:
-              type: string
-        - type: object
-          required:
-            - type
-          properties:
-            type:
-              type: string
-              enum:
-                - az
     StorageCredentialType:
       oneOf:
         - $ref: '#/components/schemas/StorageCredentialTypeS3'
         - $ref: '#/components/schemas/StorageCredentialTypeAz'
         - $ref: '#/components/schemas/StorageCredentialTypeGcs'
+        - $ref: '#/components/schemas/StorageCredentialTypeStackit'
       description: |-
         The type of storage credential configured for a warehouse, without secret values.
 
@@ -14297,6 +14567,7 @@ components:
           az: '#/components/schemas/StorageCredentialTypeAz'
           gcs: '#/components/schemas/StorageCredentialTypeGcs'
           s3: '#/components/schemas/StorageCredentialTypeS3'
+          stackit: '#/components/schemas/StorageCredentialTypeStackit'
     StorageCredentialTypeAz:
       type: object
       description: Azure credential type
@@ -14339,6 +14610,20 @@ components:
           type: string
           enum:
             - s3
+    StorageCredentialTypeStackit:
+      type: object
+      description: STACKIT credential type
+      required:
+        - credential-type
+        - type
+      properties:
+        credential-type:
+          $ref: '#/components/schemas/StackitCredentialType'
+          description: STACKIT credential type
+        type:
+          type: string
+          enum:
+            - stackit
     StorageLayout:
       oneOf:
         - $ref: '#/components/schemas/StorageLayoutDefault'
@@ -14443,6 +14728,7 @@ components:
         - $ref: '#/components/schemas/StorageProfileAdls'
         - $ref: '#/components/schemas/StorageProfileOneLake'
         - $ref: '#/components/schemas/StorageProfileS3'
+        - $ref: '#/components/schemas/StorageProfileStackit'
         - $ref: '#/components/schemas/StorageProfileGcs'
       description: Storage profile for a warehouse.
       discriminator:
@@ -14452,6 +14738,7 @@ components:
           gcs: '#/components/schemas/StorageProfileGcs'
           onelake: '#/components/schemas/StorageProfileOneLake'
           s3: '#/components/schemas/StorageProfileS3'
+          stackit: '#/components/schemas/StorageProfileStackit'
     StorageProfileAdls:
       allOf:
         - $ref: '#/components/schemas/AdlsProfile'
@@ -14512,6 +14799,23 @@ components:
               enum:
                 - s3
       description: S3 storage profile
+    StorageProfileStackit:
+      allOf:
+        - $ref: '#/components/schemas/StackitProfile'
+          description: |-
+            STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
+            set and STACKIT's own endpoint derivation and credentials-group STS.
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - stackit
+      description: |-
+        STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
+        set and STACKIT's own endpoint derivation and credentials-group STS.
     TableAction:
       type: string
       enum:
@@ -15853,6 +16157,7 @@ components:
       type: string
       enum:
         - create_namespace
+        - accept_moved_namespace
         - delete
         - modify_storage
         - modify_storage_credential

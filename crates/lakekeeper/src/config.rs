@@ -584,7 +584,11 @@ pub struct DynAppConfig {
     pub role: RoleConfig,
 
     // ------------- Request Limits -------------
-    /// Maximum request body size in bytes. Defaults to 2 MB.
+    /// Maximum request body size in bytes. Defaults to 32 MB.
+    ///
+    /// Table commits that remove many snapshots at once (e.g. the first
+    /// `expire_snapshots` run on a table with a large snapshot backlog) send a single
+    /// `updateTable` request listing every removed snapshot id, which can grow to several MB.
     pub max_request_body_size: usize,
     /// Maximum request time. Defaults to 30 seconds.
     #[serde(
@@ -1179,7 +1183,7 @@ impl Default for DynAppConfig {
             debug: DebugConfig::default(),
             role: RoleConfig::default(),
             cache: Cache::default(),
-            max_request_body_size: 2 * 1024 * 1024, // 2 MB
+            max_request_body_size: 32 * 1024 * 1024, // 32 MB
             max_request_time: Duration::from_secs(30),
             audit: AuditConfig {
                 tracing: AuditTracingConfig { enabled: true },

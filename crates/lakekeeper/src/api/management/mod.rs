@@ -51,7 +51,7 @@ pub mod v1 {
         get_allowed_table_actions, get_allowed_tag_actions, get_allowed_user_actions,
         get_allowed_view_actions, get_allowed_warehouse_actions,
     };
-    use namespace::NamespaceManagementService as _;
+    use namespace::{MoveNamespaceRequest, MoveNamespaceResponse, NamespaceManagementService as _};
     #[cfg(feature = "open-api")]
     pub use openapi::api_doc;
     use project::{
@@ -3757,6 +3757,63 @@ pub mod v1 {
         .await
     }
 
+    /// Move a Namespace
+    ///
+    /// Moves a namespace to a new location in the warehouse's namespace hierarchy,
+    /// re-parenting it and/or renaming it. The request body carries the full destination path:
+    /// its last element is the new name, the preceding elements identify the new parent, so a
+    /// single-element path moves the namespace to the warehouse root. The path must not be
+    /// empty.
+    ///
+    /// Requires grant authority at **both** ends, because re-parenting makes the namespace's
+    /// contents inherit the destination subtree's permissions without any assignment being
+    /// recorded:
+    ///
+    /// - `move` on the namespace being moved,
+    /// - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
+    ///   the warehouse, when moving to the root).
+    ///
+    /// Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
+    /// write privilege (`modify` at the source, `create` at the destination). `create_namespace`
+    /// alone is not sufficient at the destination: it authorizes adding an *empty* child,
+    /// whereas a move arrives carrying existing contents and their grants.
+    ///
+    /// Constraints:
+    /// - Namespaces that contain child namespaces cannot be moved.
+    /// - Moves stay within one warehouse.
+    /// - Protected namespaces require `force`.
+    /// - Rejected for warehouses whose storage layout derives physical locations from
+    ///   namespace names or from the namespace hierarchy.
+    ///
+    /// A destination equal to the namespace's current path is a no-op and returns 200, so a
+    /// retried request cannot fail with a spurious conflict.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::MoveNamespace.path(),
+        params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
+        request_body = MoveNamespaceRequest,
+        responses(
+            (status = 200, body = MoveNamespaceResponse, description = "Namespace moved successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn move_namespace<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<MoveNamespaceRequest>,
+    ) -> Result<MoveNamespaceResponse> {
+        ApiServer::<C, A, S>::move_namespace(
+            NamespaceId::from(namespace_id),
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Get allowed actions for a namespace
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
@@ -4593,6 +4650,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetNamespaceActions.path_in_management_v1(),
                     get(get_namespace_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::MoveNamespace.path_in_management_v1(),
+                    post(move_namespace),
                 )
                 .route(
                     ManagementV1Endpoint::SetWarehouseProtection.path_in_management_v1(),

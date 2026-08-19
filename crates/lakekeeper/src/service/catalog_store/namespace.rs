@@ -220,6 +220,17 @@ impl NamespaceHierarchy {
         self.namespace.namespace_ident()
     }
 
+    /// Returns the canonical (stored) ident, ignoring any user-requested case overlay.
+    ///
+    /// Prefer this over [`Self::namespace_ident`] whenever the ident is compared against
+    /// something else, rather than echoed back to the caller: `namespace_ident` may carry the
+    /// casing of whichever request produced this hierarchy, so comparisons against it silently
+    /// depend on how the namespace was looked up.
+    #[must_use]
+    pub fn canonical_ident(&self) -> &NamespaceIdent {
+        self.namespace.canonical_ident()
+    }
+
     /// Returns a copy of this hierarchy with the user's requested case applied to
     /// the leaf and every parent level. Each level gets a prefix of `user_ident`
     /// corresponding to its depth.
@@ -563,7 +574,7 @@ define_transparent_error! {
 
 define_simple_namespace_err!(
     NamespaceProtected,
-    "Namespace with {namespace} is protected and force flag not set. Cannot delete protected namespace."
+    "Namespace with {namespace} is protected and force flag not set."
 );
 
 impl From<NamespaceProtected> for ErrorModel {
@@ -662,6 +673,86 @@ define_transparent_error! {
         NamespaceNotFound,
         InvalidNamespaceIdentifier,
     ]
+}
+
+/// Outcome of a [`CatalogStore::move_namespace_impl`] call.
+///
+/// Carries the pre-move identity alongside the new state: the namespace cache has to evict
+/// the *old* ident (it stays resolvable otherwise), and the authorizer has to delete the
+/// hierarchy tuples pointing at the *old* parent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovedNamespace {
+    /// The namespace as it is after the move.
+    pub namespace: NamespaceWithParent,
+    /// Canonical path the namespace had before the move.
+    pub previous_ident: NamespaceIdent,
+    /// Parent before the move. `None` if the namespace was top-level.
+    pub previous_parent: Option<NamespaceId>,
+}
+
+impl MovedNamespace {
+    /// Whether the request did not change anything.
+    ///
+    /// Callers may use this to skip emitting events and rewriting authorization tuples:
+    /// there is nothing to announce and nothing to re-parent.
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.previous_ident == *self.namespace.canonical_ident()
+    }
+
+    /// Whether the namespace changed parent, as opposed to being renamed in place.
+    #[must_use]
+    pub fn changed_parent(&self) -> bool {
+        self.previous_parent != self.namespace.parent_namespaces_id()
+    }
+}
+
+// --------------------------- Move Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogMoveNamespaceError,
+    stack_message: "Error moving Namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        // Either the namespace being moved, or the parent of the destination.
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+        NamespaceProtected,
+        NamespaceHasChildren,
+        NamespaceAlreadyExists,
+        NamespaceCannotMoveIntoSelf,
+    ]
+}
+
+define_simple_namespace_err!(
+    NamespaceHasChildren,
+    "Namespace {namespace} has child namespaces. Moving a namespace with children is not supported."
+);
+
+impl From<NamespaceHasChildren> for ErrorModel {
+    fn from(err: NamespaceHasChildren) -> Self {
+        ErrorModel::builder()
+            .r#type("NamespaceHasChildren")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+define_simple_namespace_err!(
+    NamespaceCannotMoveIntoSelf,
+    "Namespace {namespace} cannot be moved into itself."
+);
+
+impl From<NamespaceCannotMoveIntoSelf> for ErrorModel {
+    fn from(err: NamespaceCannotMoveIntoSelf) -> Self {
+        ErrorModel::builder()
+            .r#type("NamespaceCannotMoveIntoSelf")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 /// Input must contain full parent chain up to root namespace.
@@ -1216,6 +1307,102 @@ where
     ) -> Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
     }
+
+    /// Move a namespace to `destination`. See [`CatalogStore::move_namespace_impl`].
+    ///
+    /// Cache maintenance is *not* done here: it is driven by the `namespace_moved` event,
+    /// which callers emit after committing, the same way `namespace_protection_set` and
+    /// `namespace_created` work. Invalidating before the commit would publish a move that
+    /// may still roll back.
+    async fn move_namespace(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<MovedNamespace, CatalogMoveNamespaceError> {
+        Self::move_namespace_impl(warehouse_id, namespace_id, destination, force, transaction).await
+    }
 }
 
 impl<T> CatalogNamespaceOps for T where T: CatalogStore {}
+
+/// Whether two namespace paths are the same **as far as this comparison can tell**.
+///
+/// Not a statement that they are the same namespace, only that they compare equal ignoring ASCII
+/// case — an approximation of how the catalog compares them.
+///
+/// The catalog matches `namespace_name` under the `case_insensitive` ICU collation
+/// (`und-u-ks-level2`, non-deterministic), so paths differing only in case cannot both exist and
+/// always name the same row. This comparison folds **ASCII** case only, which is deliberately
+/// narrower.
+///
+/// The direction matters. Callers use this to decide whether a move re-parents a namespace, so
+/// saying "same" when the database would say "different" is dangerous: the paths would name
+/// different parents and the storage-layout guard would wave through a genuine re-parent. Saying
+/// "different" when the database says "same" merely refuses a move that could have been allowed.
+///
+/// ASCII folding can only err in the safe direction, because a case-insensitive collation
+/// necessarily agrees about ASCII case. Richer folding does not: `unicase`, for instance, maps
+/// `ß` to `ss` and would call `straße` and `STRASSE` equal, while this collation calls them
+/// different — and since it does, both can exist as separate namespaces.
+///
+/// `test_namespace_path_comparison_is_no_looser_than_the_collation` in
+/// `lakekeeper-storage-postgres` pins that direction against the live collation, so a migration
+/// that changed it fails there rather than silently weakening the guard.
+#[must_use]
+pub fn is_same_namespace_path_ignoring_ascii_case(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(l, r)| l.eq_ignore_ascii_case(r))
+}
+
+#[cfg(test)]
+mod namespace_path_comparison_tests {
+    use super::is_same_namespace_path_ignoring_ascii_case as same_path;
+
+    fn path(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(ToString::to_string).collect()
+    }
+
+    /// The catalog cannot hold two paths differing only in ASCII case, so such paths always name
+    /// the same namespace and this comparison has to agree.
+    #[test]
+    fn ignores_ascii_case() {
+        assert!(same_path(&path(&["parent"]), &path(&["PARENT"])));
+        assert!(same_path(&path(&["a", "b", "c"]), &path(&["A", "b", "C"])));
+        // Non-ASCII characters are compared as-is, so a name whose only non-ASCII character is
+        // identical in both still matches on its ASCII letters.
+        assert!(same_path(&path(&["stra\u{df}e"]), &path(&["STRA\u{df}E"])));
+    }
+
+    #[test]
+    fn separates_different_namespaces() {
+        assert!(!same_path(&path(&["parent"]), &path(&["other"])));
+        // Different depth is a different place in the hierarchy.
+        assert!(!same_path(&path(&["a"]), &path(&["a", "b"])));
+        // Prefix-similar but distinct.
+        assert!(!same_path(&path(&["child_7"]), &path(&["child_7x"])));
+        // Accents are significant under `und-u-ks-level2`, and must be here too.
+        assert!(!same_path(&path(&["resume"]), &path(&["r\u{e9}sum\u{e9}"])));
+    }
+
+    /// Deliberately conservative: the collation folds non-ASCII case, this does not. Reporting a
+    /// difference the catalog does not have only refuses a move that could have been allowed,
+    /// whereas the reverse would let a real re-parent past the storage-layout guard.
+    #[test]
+    fn errs_toward_difference_for_non_ascii_case() {
+        assert!(!same_path(&path(&["\u{e4}rger"]), &path(&["\u{c4}RGER"])));
+        // The sharp-s case that makes richer folding unsafe here: this collation treats
+        // `stra\u{df}e` and `STRASSE` as different namespaces, so they may both exist.
+        assert!(!same_path(&path(&["stra\u{df}e"]), &path(&["STRASSE"])));
+    }
+
+    #[test]
+    fn handles_the_root() {
+        assert!(same_path(&[], &[]));
+        assert!(!same_path(&[], &path(&["a"])));
+    }
+}
