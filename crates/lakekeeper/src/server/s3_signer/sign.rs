@@ -83,6 +83,13 @@ impl SignableTabular {
             Self::GenericTable(info) => &info.location,
         }
     }
+
+    fn tabular_id(&self) -> uuid::Uuid {
+        match self {
+            Self::Table(info) => *info.tabular_id,
+            Self::GenericTable(info) => *info.tabular_id,
+        }
+    }
 }
 
 /// The resolution outcome, split by the authorization path that has to handle it.
@@ -498,6 +505,62 @@ enum Addressing {
     TableName,
 }
 
+impl Addressing {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TabularId => "tabular-id",
+            Self::TableName => "table-name",
+        }
+    }
+}
+
+/// Accept a tabular the request named directly, or fall back to a location based
+/// lookup when its location does not cover the request URI.
+///
+/// Shared by both named routes so neither grows its own cross-check.
+async fn cross_check_or_fall_back<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    warehouse_id: WarehouseId,
+    named: Option<SignableTabular>,
+    addressing: Addressing,
+    parsed_url: &s3_utils::ParsedSignRequest,
+    first_location: &S3Location,
+    state: &ApiContext<State<A, C, S>>,
+) -> std::result::Result<Option<SignableTabular>, RequireTableActionError> {
+    if let Some(signable) = named {
+        if validate_uri(parsed_url, signable.location()).is_ok() {
+            return Ok(Some(signable));
+        }
+
+        // The name resolved, but its location does not cover the request URI. Fall back to a
+        // location based lookup; the request may still be legitimate for another tabular.
+        //
+        // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
+        // Instead the first URI of the first sign call would be used for subsequent calls in the
+        // same runtime too. This is fixed in 0.9.2 onward:
+        // https://github.com/apache/iceberg-python/pull/2005
+        // The fallback exists for that bug and will be removed in a future version of Lakekeeper,
+        // so only the route that bug hits names it — the per-table route reaches this line for
+        // other reasons and must not accuse the client of it.
+        let hint = match addressing {
+            Addressing::TabularId => {
+                " This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1"
+            }
+            Addressing::TableName => "",
+        };
+        tracing::warn!(
+            addressing = addressing.as_str(),
+            "Received a tabular specific sign request for tabular {} with a location {} that does not match the request URI {}. Falling back to location based lookup.{hint}",
+            signable.tabular_id(),
+            signable.location(),
+            parsed_url.uri.received()
+        );
+    }
+
+    resolve_signable_by_location(warehouse_id, first_location, state)
+        .await
+        .map_err(RequireTableActionError::from)
+}
+
 /// Resolve the tabular addressed by the table-scoped signer route
 /// (`/v1/signer/{warehouse-id}/tabular-id/{uuid}/v1/aws/s3/sign`). That route carries a
 /// bare UUID, so the id is resolved across all tabular types.
@@ -519,43 +582,22 @@ async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: Secre
     .await
     .map_err(RequireTableActionError::from)?;
 
-    if let Some(signable) = info_by_id.and_then(SignableTabular::from_view_or_table) {
-        if validate_uri(parsed_url, signable.location()).is_ok() {
-            return Ok(Some(signable));
-        }
-
-        // The id resolved, but its location does not cover the request URI. Fall back to a
-        // location based lookup; the request may still be legitimate for another tabular.
-        //
-        // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
-        // Instead the first URI of the first sign call would be used for subsequent calls in the
-        // same runtime too. This is fixed in 0.9.2 onward:
-        // https://github.com/apache/iceberg-python/pull/2005
-        // The fallback exists for that bug and will be removed in a future version of Lakekeeper,
-        // so only the route that bug hits names it — the per-table route reaches this line for
-        // other reasons and must not accuse the client of it.
-        let hint = match addressing {
-            Addressing::TabularId => {
-                " This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1"
-            }
-            Addressing::TableName => "",
-        };
-        tracing::warn!(
-            "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup.{hint}",
-            signable.location(),
-            parsed_url.uri.received()
-        );
-    }
-
-    resolve_signable_by_location(warehouse_id, first_location, state)
-        .await
-        .map_err(RequireTableActionError::from)
+    cross_check_or_fall_back(
+        warehouse_id,
+        info_by_id.and_then(SignableTabular::from_view_or_table),
+        addressing,
+        parsed_url,
+        first_location,
+        state,
+    )
+    .await
 }
 
 /// Resolve the table the spec's per-table `/sign` route names.
 ///
-/// Funnels into [`resolve_signable_by_id`] so the name path inherits its
-/// location cross-check and its fallback, rather than growing a second set.
+/// The looked-up table is used as resolved rather than re-fetched by id, so the
+/// ident keeps the caller's case like every other by-name route. Only the id and
+/// the location travel onward, and both are case-independent.
 async fn resolve_signable_by_name<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     warehouse_id: WarehouseId,
     table: TableIdent,
@@ -572,21 +614,15 @@ async fn resolve_signable_by_name<C: CatalogStore, A: Authorizer + Clone, S: Sec
     .await
     .map_err(RequireTableActionError::from)?;
 
-    if let Some(table_info) = table_info {
-        return resolve_signable_by_id(
-            warehouse_id,
-            *table_info.table_id(),
-            Addressing::TableName,
-            parsed_url,
-            first_location,
-            state,
-        )
-        .await;
-    }
-
-    resolve_signable_by_location(warehouse_id, first_location, state)
-        .await
-        .map_err(RequireTableActionError::from)
+    cross_check_or_fall_back(
+        warehouse_id,
+        table_info.map(SignableTabular::Table),
+        Addressing::TableName,
+        parsed_url,
+        first_location,
+        state,
+    )
+    .await
 }
 
 async fn resolve_signable_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(

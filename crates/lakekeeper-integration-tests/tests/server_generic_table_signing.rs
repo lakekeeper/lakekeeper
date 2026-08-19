@@ -957,9 +957,9 @@ async fn test_sign_by_table_name(pool: PgPool) {
     assert_signed(&response);
 }
 
-/// A name can be renamed out from under an open session. The name route stays
-/// usable because it falls back to resolving the table from the request
-/// location — the same fallback the id route relies on.
+/// A name that resolves to nothing still signs: the route falls back to
+/// resolving the table from the request location, as the id route does for an
+/// unknown id.
 #[sqlx::test]
 async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
@@ -979,6 +979,34 @@ async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool
     .await
     .expect("a stale name must still sign via the request location");
     assert_signed(&response);
+}
+
+/// Naming a real table in the path does not license signing anything: the
+/// request URI must still fall under that table's location. A URI outside it is
+/// resolved by location instead, and is refused when no tabular owns it — the
+/// same guard the id route applies.
+#[sqlx::test]
+async fn test_sign_by_table_name_cross_checks_the_request_location(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_catalog_table(&ctx, &namespace_name, warehouse_id, "named_table").await;
+
+    // The namespace directory above the table belongs to no tabular.
+    let err = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        SignTarget::Table(Box::new(TableIdent::new(
+            NamespaceIdent::new(namespace_name.clone()),
+            "named_table".to_string(),
+        ))),
+        sign_request(
+            Method::GET,
+            sign_url(&format!("s3://{BUCKET}/{namespace_name}"), "file.bin"),
+        ),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("a URI outside the named table's location must not be signed");
+    assert_eq!(err.error.r#type, "NoSuchTableLocationException", "{err:?}");
 }
 
 /// `provider` is absent-means-s3 per the spec. Anything else must be refused
@@ -1018,8 +1046,11 @@ async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
 }
 
 /// `loadTable` advertises the signer settings that replace `signer.uri` /
-/// `signer.endpoint`. Presence is the signal, so it must carry the table id and
-/// must appear only when remote signing is actually on.
+/// `signer.endpoint`. Presence alone is the signal: the config is deliberately
+/// empty, since the sign route comes from the `endpoints` capability list and the
+/// signer resolves the table from the request path, so there is nothing for the
+/// client to echo back. Whether it appears at all is decided — and tested — where
+/// the storage profile builds the table config.
 #[sqlx::test]
 async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
