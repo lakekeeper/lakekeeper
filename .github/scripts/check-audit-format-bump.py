@@ -72,12 +72,21 @@ def shape(value: object, path: str = "") -> set[str]:
     not format changes — a scenario gets more realistic, an id is made deterministic —
     and demanding a version bump for those would be wrong. Array elements collapse onto
     one pointer, so arity is not a shape change either.
+
+    Containers record their own type as well as their contents, so that an empty object
+    and an empty array are distinguishable from each other and from an absent field.
     """
     out: set[str] = set()
     if isinstance(value, dict):
+        # The container's own type is recorded before its contents. Without this an empty
+        # object, an empty array and an absent field all reduce to nothing, so `{}`
+        # becoming `[]` reads as no change, and `{}` becoming a scalar reads as *additive*
+        # — a breaking type change classified in the permissive direction.
+        out.add(f"{path}\tobject")
         for key, sub in value.items():
             out |= shape(sub, f"{path}/{key}")
     elif isinstance(value, list):
+        out.add(f"{path}\tarray")
         for sub in value:
             out |= shape(sub, f"{path}[]")
     else:
@@ -264,6 +273,28 @@ def self_test() -> int:
                                            {"f": shape({"a": "x"})}), "breaking")
     check("nested added", classify_shape({"f": shape({"a": {"b": 1}})},
                                          {"f": shape({"a": {"b": 1, "c": 2}})}), "additive")
+    # Empty and absent containers. Every one of these was misclassified before container
+    # types were recorded, and the last was the worst: a breaking type change reported as
+    # additive, which a minor bump would then have satisfied.
+    check("empty object -> empty array", classify_shape({"f": shape({"c": {}})},
+                                                       {"f": shape({"c": []})}), "breaking")
+    check("empty array -> empty object", classify_shape({"f": shape({"c": []})},
+                                                        {"f": shape({"c": {}})}), "breaking")
+    check("absent -> empty object", classify_shape({"f": shape({})},
+                                                   {"f": shape({"c": {}})}), "additive")
+    check("absent -> empty array", classify_shape({"f": shape({})},
+                                                  {"f": shape({"c": []})}), "additive")
+    check("empty object -> absent", classify_shape({"f": shape({"c": {}})},
+                                                   {"f": shape({})}), "breaking")
+    check("empty object -> scalar", classify_shape({"f": shape({"c": {}})},
+                                                   {"f": shape({"c": "x"})}), "breaking")
+    check("empty object -> populated", classify_shape({"f": shape({"c": {}})},
+                                                      {"f": shape({"c": {"a": 1}})}), "additive")
+    check("populated -> empty object", classify_shape({"f": shape({"c": {"a": 1}})},
+                                                      {"f": shape({"c": {}})}), "breaking")
+    check("object -> array of same", classify_shape({"f": shape({"c": {"a": 1}})},
+                                                    {"f": shape({"c": [{"a": 1}]})}), "breaking")
+
     check("fixture added", classify_shape({"f": shape(a)}, {"f": shape(a), "g": shape(a)}), "none")
     check("fixture removed", classify_shape({"f": shape(a), "g": shape(a)}, {"f": shape(a)}), "none")
 
@@ -280,4 +311,14 @@ if __name__ == "__main__":
     if len(sys.argv) not in (2, 3):
         print(__doc__)
         sys.exit(2)
-    sys.exit(run(sys.argv[1], *sys.argv[2:]))
+    try:
+        sys.exit(run(sys.argv[1], *sys.argv[2:]))
+    except subprocess.CalledProcessError as error:
+        # A bad revision or a shallow clone is a usage problem, not a format problem, and
+        # a raw traceback in a CI log obscures which of the two happened.
+        command = " ".join(error.cmd)
+        print(f"::error::`{command}` failed. Check the revisions exist and that the "
+              f"checkout has enough history (the workflow uses fetch-depth: 0).",
+              file=sys.stderr)
+        print((error.stderr or "").strip(), file=sys.stderr)
+        sys.exit(2)

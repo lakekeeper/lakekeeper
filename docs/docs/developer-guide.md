@@ -147,7 +147,7 @@ Also rejected: bumping both halves at once (a major bump resets the minor to zer
 
 Two things it deliberately does **not** treat as format changes, because they are not:
 
-- **A fixture's values changing.** Comparison is on key paths and JSON types, not values. Fixtures get edited to be more realistic — a scenario is corrected, an id is made deterministic — and demanding a major bump for `true` becoming `false` in a test input would be wrong.
+- **A fixture's values changing.** Comparison is on key paths and JSON types, not values. Containers record their own type too, so an empty object, an empty array and an absent field stay distinguishable from one another. Fixtures get edited to be more realistic — a scenario is corrected, an id is made deterministic — and demanding a major bump for `true` becoming `false` in a test input would be wrong.
 - **Fixtures being added or removed.** Only fixtures present in both revisions are compared. A new fixture describes a scenario that was previously untested, not a format that was previously different.
 
 The decision table and the classification are self-tested: `python3 .github/scripts/check-audit-format-bump.py --self-test` exercises every shape-versus-bump combination and the edge cases above, and CI runs it alongside the check. Note that the end-to-end path can only be exercised against real history, so the self-test covers the logic while the run against the merge base covers the git plumbing.
