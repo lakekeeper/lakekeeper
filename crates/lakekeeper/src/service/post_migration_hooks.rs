@@ -60,21 +60,21 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // This is a non-critical hook, so we log the error but do not fail the migration.
         tracing::error!("Failed to initialize cron tasks in post-migration hook: {e:?}");
     }
-    if options.repair_namespace_path_casing {
-        if let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await {
-            // Not fatal by default: the catalog serves correct results either way, only cache hit
-            // rate suffers, and a blip should not block an upgrade. But this hook is gated on the
-            // migration that introduced it, so it will not run again by itself once that migration
-            // is recorded — say how to retry it, or the drift is silently permanent.
-            let e = e.context(
-                "Namespace path prefix casing was not repaired. This hook is idempotent and safe \
-                 to retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
-            );
-            if options.fail_on_idempotent_hook_error {
-                return Err(e);
-            }
-            tracing::error!("{e:?}");
+    if options.repair_namespace_path_casing
+        && let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await
+    {
+        // Not fatal by default: the catalog serves correct results either way, only cache hit
+        // rate suffers, and a blip should not block an upgrade. But this hook is gated on the
+        // migration that introduced it, so it will not run again by itself once that migration
+        // is recorded — say how to retry it, or the drift is silently permanent.
+        let e = e.context(
+            "Namespace path prefix casing was not repaired. This hook is idempotent and safe to \
+             retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
+        );
+        if options.fail_on_idempotent_hook_error {
+            return Err(e);
         }
+        tracing::error!("{e:?}");
     }
     backfill_registered_system_roles::<C>(state)
         .await
