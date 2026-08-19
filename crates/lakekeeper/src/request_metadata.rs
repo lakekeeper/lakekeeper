@@ -85,7 +85,7 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
     /// Full bypass including data-plane actions.

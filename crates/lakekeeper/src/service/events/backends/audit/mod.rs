@@ -760,7 +760,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
+        request_metadata::{
+            PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent,
+        },
         service::{
             authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
             events::context::{
@@ -993,10 +995,12 @@ mod tests {
                  recorded in {name} is now missing, renamed, or has a different type \
                  or value.\n\n{difference}\n\n\
                  If this change is intended, bump the MAJOR half of AUDIT_FORMAT \
-                 (currently {AUDIT_FORMAT}), start a new fixture directory for it, and \
-                 keep the old one passing — consumers replaying older logs still need \
-                 it. Then update docs/docs/logging.md and say so in the release notes. \
-                 If it is not intended, this is the bug.\n\n\
+                 (currently {AUDIT_FORMAT}) and regenerate the fixtures in place with \
+                 `just update-audit-fixtures`. Do not start a second fixture directory: \
+                 a fixture records what the code emits now, so a retired format cannot \
+                 be reproduced, and the bump checker requires exactly one directory. \
+                 Then update docs/docs/logging.md and say so in the release notes. If it \
+                 is not intended, this is the bug.\n\n\
                  Note: a changed *value* fails here too, and reads the same as a \
                  changed type. If the value is nondeterministic, the fixture needs to \
                  stop depending on it.\n\n\
@@ -1344,15 +1348,38 @@ mod tests {
         }
     }
 
-    /// Every variant tag a derived audit enum can put on the wire must be documented.
+    /// A `privilege_source` value, for the same reason the other tag functions exist:
+    /// this reaches the wire as a value, so a new variant is a wire change.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    fn privilege_source_tag(source: PrivilegeSource) -> &'static str {
+        source.as_str()
+    }
+
+    /// Every variant a derived audit enum can put on the wire must be documented.
     ///
-    /// The compile-time half of this is the wildcard-free matches above. This half
-    /// exercises them and checks the tag reached the reference, which is the part a
-    /// consumer actually reads.
+    /// The variant sets come from `strum`, not from lists written out here. That is the
+    /// point: a hand-written list is exhaustive only until somebody forgets to extend it,
+    /// and this test's whole job is to notice a variant nobody thought about.
+    ///
+    /// Two conventions are accepted because the reference uses both: enum tags appear as
+    /// `` `Permit` `` while `privilege_source` values appear as `` `"authorizer"` ``.
+    ///
+    /// # The residual gap
+    ///
+    /// `VARIANTS` gives Rust identifiers, while what reaches the wire comes from the tag
+    /// functions. Where the two coincide — as they do today for every enum here — this
+    /// test covers the wire names. Rename a tag while leaving its variant name alone and
+    /// it will not notice. Closing that would mean deriving the tags themselves, which is
+    /// a larger change to the `valuable` plumbing than the risk warrants.
     #[test]
     fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
+        use strum::{VariantArray as _, VariantNames as _};
+
         use crate::service::events::AuthorizationFailureReason as Reason;
 
+        // `DeterminingFactor`'s variants carry fields, so values cannot be enumerated and
+        // these two have to be built by hand. The assertion below is what keeps the pair
+        // honest against the type.
         let factors = [
             DeterminingFactor::Policy {
                 policy_id: String::new(),
@@ -1365,30 +1392,50 @@ mod tests {
                 reason: None,
             },
         ];
-        let effects = [PolicyEffect::Permit, PolicyEffect::Forbid];
-        let reasons = [
-            Reason::ActionForbidden,
-            Reason::ResourceNotFound,
-            Reason::CannotSeeResource,
-            Reason::InternalAuthorizationError,
-            Reason::InternalCatalogError,
-            Reason::InvalidRequestData,
-        ];
+        let factor_tags: Vec<&'static str> = factors.iter().map(determining_factor_tag).collect();
+        assert_eq!(
+            factor_tags.len(),
+            DeterminingFactor::VARIANTS.len(),
+            "`DeterminingFactor` has {} variants but only {} are built here. Its variants \
+             carry fields, so `strum` cannot enumerate values and this list is hand-built: \
+             add the missing one. Variants: {:?}",
+            DeterminingFactor::VARIANTS.len(),
+            factor_tags.len(),
+            DeterminingFactor::VARIANTS,
+        );
+        for name in DeterminingFactor::VARIANTS {
+            assert!(
+                factor_tags.contains(name),
+                "`DeterminingFactor::{name}` is not covered by the hand-built list in this \
+                 test, so its wire tag is never checked against the documentation."
+            );
+        }
 
-        let tags: Vec<&'static str> = factors
-            .iter()
-            .map(determining_factor_tag)
-            .chain(effects.iter().copied().map(policy_effect_tag))
-            .chain(reasons.iter().map(failure_reason_tag))
+        let tags: Vec<&'static str> = factor_tags
+            .into_iter()
+            .chain(
+                PolicyEffect::VARIANTS
+                    .iter()
+                    .copied()
+                    .map(policy_effect_tag),
+            )
+            .chain(Reason::VARIANTS.iter().map(failure_reason_tag))
+            .chain(
+                PrivilegeSource::VARIANTS
+                    .iter()
+                    .copied()
+                    .map(privilege_source_tag),
+            )
             .collect();
 
         for tag in tags {
             assert!(
-                LOGGING_DOC.contains(&format!("`{tag}`")),
-                "the audit log can emit the variant `{tag}`, but docs/docs/logging.md \
-                 does not mention it. A variant of a derived audit enum is part of the \
-                 wire format: document what it means, and treat adding one as a minor \
-                 change to the audit format."
+                LOGGING_DOC.contains(&format!("`{tag}`"))
+                    || LOGGING_DOC.contains(&format!("`\"{tag}\"`")),
+                "the audit log can emit `{tag}`, but docs/docs/logging.md does not mention \
+                 it. A variant of one of these enums reaches the wire as a value, so it is \
+                 part of the format: document what it means, and treat adding one as a \
+                 minor change to the audit format."
             );
         }
     }

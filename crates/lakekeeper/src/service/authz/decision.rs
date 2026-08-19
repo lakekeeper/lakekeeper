@@ -94,7 +94,7 @@ impl From<bool> for AuthorizationDecision {
 /// So a consumer cannot infer from one field how another behaves. Unifying the three
 /// is an `audit_format` 2.0 candidate — see the audit-log section of
 /// `docs/docs/developer-guide.md`.
-#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantNames)]
 pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based
     /// authorizer.
@@ -131,7 +131,7 @@ pub enum DeterminingFactor {
 }
 
 /// Whether a determining policy permits or forbids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantArray)]
 pub enum PolicyEffect {
     Permit,
     Forbid,

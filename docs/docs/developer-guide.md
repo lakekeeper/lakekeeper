@@ -119,6 +119,8 @@ One consequence for the bump checker: it compares fixtures by name, so renaming 
 | `EntityType::as_str` (`events/context.rs`) | an `entity_type` value | Same, and add it to the `entity_type` list in the docs |
 | `ActionContextKey::as_str` (`events/context.rs`) | an action context key | Same, and add a row to the action context table |
 | `impl CatalogAction for Catalog*Action` (`service/authz/mod.rs`) | a catalog action | Decide what audit context the action should carry. If none, add it to the explicit no-context list in that `match` — the list exists so that this is a decision rather than a default |
+
+On that last row, what is and is not guaranteed. Every `action_descriptor` match in the tree is exhaustive today, so adding a variant to any `Catalog*Action` enum does fail the build. But only five of them carry `#[deny(clippy::wildcard_enum_match_arm)]`, and there are 22 `action_descriptor` impls across four files — including nine in `crates/authz-openfga/src/relations.rs` and one each in `service/authn.rs` and `service/authz/instance_admin.rs`. For the unprotected ones the guarantee rests on nobody adding a `_ =>` arm, which is exactly what the deny exists to prevent elsewhere. Extending the deny to the rest is cheap and worth doing when one of those files is next touched.
 | `determining_factor_tag` / `policy_effect_tag` / `failure_reason_tag` (audit test module) | a variant of an enum that reaches the wire through `#[derive(Valuable)]` | Give it a wire tag and document what it means. These types have no hand-written `visit`, so the derive would otherwise emit a new variant with nothing to stop it |
 
 The first four fail a plain `cargo build`, because they are production code. The last lives in the audit test module, so it fails `cargo test` and `just check` but **not** `cargo build` — CI runs both, but a local `cargo build` will not tell you about it.
@@ -144,12 +146,12 @@ The key enums exist for exactly this reason. Before them the key space was only 
 | Nothing | minor or major | **Illegal** — leave `AUDIT_FORMAT` alone. A bump tells every consumer to re-check their parser, so an empty one costs them work for nothing |
 | Fields added | minor | OK |
 | Fields added | none | **Illegal** — bump the minor, so consumers can tell which builds carry the new fields |
-| Fields added | major | **Illegal** — a major bump says existing parsers break, and it forces a fixture directory that has to stay green forever. Bump the minor |
+| Fields added | major | **Illegal** — a major bump tells every consumer their parser is broken and to re-check it, which for an added field is false. Bump the minor |
 | A field removed, renamed, or retyped | major | OK |
 | A field removed, renamed, or retyped | minor | **Illegal** — a minor bump says the opposite, that old parsers keep working. Bump the major |
 | A field removed, renamed, or retyped | none | **Illegal** — bump the major |
 
-Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, removing `AUDIT_FORMAT`,.
+Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, and removing `AUDIT_FORMAT` altogether.
 
 Two things it deliberately does **not** treat as format changes, because they are not:
 

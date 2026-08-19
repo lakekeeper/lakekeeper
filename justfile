@@ -76,19 +76,21 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
-# Regenerate the committed audit-log wire-format fixtures after a deliberate change
-# to the audit log format. Two passes are needed: the fixtures are read at test time,
-# so the run that writes them was still comparing against the previous contents.
-# Review the resulting diff — it is the change consumers will see — then decide
-# whether it needs a MAJOR or MINOR bump of AUDIT_FORMAT. See the audit log section of
-# docs/docs/developer-guide.md.
-# Check that an audit format change carries the right AUDIT_FORMAT bump: additive
-# changes want a minor bump, breaking ones a major, and an unchanged format wants
-# neither. Compares the committed fixtures either side of the merge base, so it needs a
-# base to compare against. CI runs this on every pull request.
+# Additive changes want a minor bump of AUDIT_FORMAT, breaking ones a major, and an
+# unchanged format wants neither. Compares the committed fixtures either side of the
+# merge base, so it needs a base to compare against. CI runs this on every pull request.
+# Check that an audit log format change carries the right AUDIT_FORMAT bump
 check-audit-format-bump base="origin/main":
     python3 .github/scripts/check-audit-format-bump.py {{base}}
 
+# Two passes: the first writes the files, the second compares against them. The writing
+# pass cannot also verify — under the update variable the assertion returns before it
+# compares anything — so a single pass would leave the fixtures unchecked.
+# Review the resulting diff before committing: it is exactly what a consumer will see, so
+# anything in it you did not intend is a bug rather than a diff to accept. Then decide
+# whether it needs a MAJOR or MINOR bump. See the audit log section of
+# docs/docs/developer-guide.md.
+# Regenerate the committed audit log fixtures after a deliberate format change
 update-audit-fixtures:
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_

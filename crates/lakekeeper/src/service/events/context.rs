@@ -41,7 +41,7 @@ use crate::{
 /// A key that can appear on an `entity` object in an audit record.
 ///
 /// A closed set, so the audit log's key space is enumerable: `VARIANTS` drives the tests
-/// that require every key to be documented and covered by a fixture, and the
+/// that require every key to be documented, and the
 /// wildcard-free match in `as_str` means a new variant cannot be added without choosing
 /// its wire name in the one place that decides wire names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
@@ -129,7 +129,7 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's key space is enumerable: `VARIANTS` drives the tests
-/// that require every key to be documented and covered by a fixture, and the
+/// that require every key to be documented, and the
 /// wildcard-free match in `as_str` means a new variant cannot be added without choosing
 /// its wire name in the one place that decides wire names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
