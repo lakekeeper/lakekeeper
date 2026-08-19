@@ -95,10 +95,16 @@ Audit log records — every line with `"event_source": "audit"` — carry a `MAJ
 
 **The tests tell you which kind of change you made.** Run `just test`. If a fixture test fails, the failure message says whether the change is breaking or additive, and which JSON path moved:
 
-- **Failure says "BREAKS CONSUMERS"** — a field was removed, renamed, retyped, or its value changed. Bump the **major**: `1.4` becomes `2.0`. Copy `fixtures/v1/` to `fixtures/v2/`, regenerate, and **leave `v1/` in place and passing** — anyone replaying older logs still needs it to be correct.
+- **Failure says "BREAKS CONSUMERS"** — a field was removed, renamed, retyped, or its value changed. Bump the **major**: `1.4` becomes `2.0`, and regenerate the fixtures.
 - **Failure says "gained a field"** — the change is purely additive and existing consumers keep working. Bump the **minor**: `1.4` becomes `1.5`, and regenerate the fixtures.
 
 Regenerate with `just update-audit-fixtures`, then read the resulting diff: it is exactly what a consumer's pipeline will see. If it contains anything you did not intend, that is the bug.
+
+**What the fixtures are, and what a major bump does to them.** A fixture is a record of what the *current* code emits: the test emits an event and compares. That is the whole mechanism, and it has a consequence worth being clear about — a fixture can only ever describe the format the code emits *now*. After a major bump the code emits the new shape, so an old-version fixture cannot be reproduced and therefore cannot be tested. The path is `fixtures/v1/` today, and it is a literal in the test helper; a second version directory would need that helper changed first.
+
+So on a major bump: regenerate the fixtures in place. Renaming, merging or dropping a fixture is fine — they are test scenarios, not a numbered archive, and a scenario that no longer exists should not have a fixture. If you want the previous format kept as a reference for consumers still reading old logs, that is a **documentation** decision: copy what you need into `docs/docs/logging.md` under the old version, where it will be read. Do not leave stale fixture files behind expecting them to be checked, because nothing can check them.
+
+One consequence for the bump checker: it compares fixtures by name, so renaming or removing them leaves it nothing to compare. It reports that it could not verify the bump rather than claiming the format did not change, and passes. The Rust fixture tests still catch the change itself — only the version bump goes unverified, so check that one by hand.
 
 **Then, in the same change:**
 
@@ -143,7 +149,7 @@ The key enums exist for exactly this reason. Before them the key space was only 
 | A field removed, renamed, or retyped | minor | **Illegal** — a minor bump says the opposite, that old parsers keep working. Bump the major |
 | A field removed, renamed, or retyped | none | **Illegal** — bump the major |
 
-Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, removing `AUDIT_FORMAT`, and bumping the major without leaving the previous version's fixture directory in place.
+Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, removing `AUDIT_FORMAT`,.
 
 Two things it deliberately does **not** treat as format changes, because they are not:
 
