@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use http::StatusCode;
 use lakekeeper::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
@@ -147,23 +146,27 @@ impl PostgresBackend {
             .into());
         }
 
+        // Records are written only for committed successes, so any row means the
+        // mutation already happened. A non-2xx status is therefore unreachable
+        // today; it is refused rather than swallowed, because both ways of
+        // swallowing it are worse than a loud failure — re-running the mutation
+        // would break at-most-once, and replaying it as a success would report an
+        // outcome that never occurred.
         match record.http_status {
-            204 => Ok(IdempotencyCheck::ReplayNoContent),
-            status @ 200..300 => Ok(IdempotencyCheck::ReplaySuccess {
-                http_status: u16::try_from(status)
-                    .ok()
-                    .and_then(|s| StatusCode::from_u16(s).ok())
-                    .unwrap_or(StatusCode::OK),
-            }),
+            200..300 => Ok(IdempotencyCheck::Replay),
             status => {
-                // Unexpected status in DB — log and treat as new request
-                tracing::warn!(
+                tracing::error!(
                     warehouse_id = %warehouse_id,
                     idempotency_key = %key.as_uuid(),
                     status,
-                    "Unexpected http_status in idempotency record, treating as new request"
+                    "Idempotency record holds a non-success status, which the write path cannot produce"
                 );
-                Ok(IdempotencyCheck::NewRequest)
+                Err(lakekeeper::api::ErrorModel::internal(
+                    "Idempotency record holds an unexpected status and cannot be replayed.",
+                    "CorruptIdempotencyRecord",
+                    None,
+                )
+                .into())
             }
         }
     }
