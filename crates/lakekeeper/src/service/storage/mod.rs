@@ -2176,12 +2176,12 @@ mod tests {
         }
     }
 
-    mod minio_integration_tests {
+    mod s3_compat_integration_tests {
         use super::*;
 
         #[test]
         fn test_vended_s3_compat() {
-            use super::super::s3::test::minio_integration_tests::storage_profile;
+            use super::super::s3::test::s3_compat_integration_tests::storage_profile;
 
             test_block_on(
                 async {

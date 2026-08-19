@@ -18,7 +18,7 @@ default-filter = """
     and not test(::gcs_hns_integration_tests::)
     and not test(::gcp_system_credentials_integration_tests::)
     and not test(::kv2_integration_tests::)
-    and not test(::minio_integration_tests::)
+    and not test(::s3_compat_integration_tests::)
     and not test(::openfga_integration_tests::)
     and not test(::r2_integration_tests::)
     and not test(::oss_integration_tests::)
@@ -74,7 +74,7 @@ path = "junit.xml"
 # LAKEKEEPER_TEST__S3_*.
 [profile.s3_compat]
 default-filter = """
-    test(::minio_integration_tests::)
+    test(::s3_compat_integration_tests::)
     or (package(lakekeeper-io) and binary(integration_tests) and test(/_s3$/))
 """
 failure-output = "immediate-final"
