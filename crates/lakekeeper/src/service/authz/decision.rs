@@ -92,7 +92,7 @@ impl From<bool> for AuthorizationDecision {
 ///   `None`. This is the path that disagrees.
 ///
 /// So a consumer cannot infer from one field how another behaves. Unifying the three
-/// is an `audit_format` 2.0 candidate — see the audit-log section of
+/// is an open issue for the next major version bump — see the audit-log section of
 /// `docs/docs/developer-guide.md`.
 #[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantNames)]
 pub enum DeterminingFactor {
