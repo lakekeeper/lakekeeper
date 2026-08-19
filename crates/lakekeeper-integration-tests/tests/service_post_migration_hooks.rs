@@ -8,7 +8,7 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::upsert_system_roles_in_all_projects;
 use lakekeeper_storage_postgres::{
-    CatalogState, PostgresBackend, PostgresTransaction, migrations::migrate_core_only,
+    CatalogState, PostgresBackend, PostgresTransaction, migrations, migrations::migrate_core_only,
     role::list_roles,
 };
 use sqlx::PgPool;
@@ -189,7 +189,7 @@ async fn test_run_post_migration_hooks_oss_no_registry_is_ok(pool: PgPool) {
     .unwrap();
     t.commit().await.unwrap();
 
-    run_post_migration_hooks::<PostgresBackend>(state, Vec::new())
+    run_post_migration_hooks::<PostgresBackend>(state, Vec::new(), Default::default())
         .await
         .unwrap();
 
@@ -214,5 +214,31 @@ async fn test_upsert_system_roles_in_all_projects_propagates_errors(pool: PgPool
     assert!(
         result.is_err(),
         "closed pool must propagate as Err, got: {result:?}"
+    );
+}
+
+/// The casing repair is pinned to the move-namespace migration, which ships in 0.14.0 and is in no
+/// earlier release. So `applied_versions` taken before a migration run must not contain it for any
+/// database that predates 0.14.0 — that "not there before" is the whole gate, and a pin to an
+/// already-released version would silently never fire.
+#[sqlx::test(migrations = false)]
+async fn test_casing_repair_pin_is_absent_before_migrating(pool: PgPool) {
+    // A database that has never been migrated has no tracker table at all.
+    let before = migrations::applied_versions(&pool).await.unwrap();
+    assert!(
+        before.is_empty(),
+        "an unmigrated database reports no applied versions, so the gate opens"
+    );
+    assert!(
+        !before.contains(&migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+        "the pin must be absent before migrating, or the repair would never run on upgrade"
+    );
+
+    migrations::migrate_core_only(&pool).await.unwrap();
+
+    let after = migrations::applied_versions(&pool).await.unwrap();
+    assert!(
+        after.contains(&migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+        "migrating applies the pinned version, so a second run of the gate stays closed"
     );
 }

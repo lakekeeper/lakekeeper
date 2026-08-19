@@ -750,6 +750,72 @@ pub(crate) async fn create_namespace(
         .map_err(Into::into)
 }
 
+/// Rewrite namespace path prefixes that disagree with their parent row's spelling, returning the
+/// number of rows changed.
+///
+/// Maintenance, run from the post-migration hooks rather than as a migration. `create_namespace`
+/// used to insert the caller's whole path verbatim while resolving the parent under the
+/// `case_insensitive` collation, so creating `a/b/c` under a parent stored `a/B` stored the child as
+/// {a,b,c}. Nothing in the database is broken by that — the parent id is right, every SQL comparison
+/// is collated — but `is_parent_ident` in the namespace cache compares the prefix byte-wise, so such
+/// a row and every descendant can never be served from cache: each lookup invalidates, reloads the
+/// same bytes and fails identically. `lock_parent_namespace` stops new drift; this repairs what is
+/// already stored.
+///
+/// One statement per depth, ascending, is a performance requirement rather than a style choice. The
+/// natural recursive form joins on `child.namespace_name[1:parent.depth] = parent.stored`, whose
+/// left operand references both relations, so Postgres can never use it as a join key — it demotes
+/// to a per-row `Join Filter` over the cross product of each depth level with the next, which is
+/// quadratic. Measured with nothing to repair: 4.4 s at 28k namespaces, 18.6 s at 66k. Pinning the
+/// depth per statement makes the slice bound depend only on the child, yielding
+/// `Hash Cond: ((c.warehouse_id = p.warehouse_id) AND (c.namespace_name[1:2] = p.namespace_name))`
+/// — 154 ms at 128k for the whole loop. Same trap `move_namespace`'s `has_children` guard documents.
+///
+/// Ascending order is what makes it correct: each statement reads parents one level up that the
+/// previous statement already canonicalised, so a repair at depth 2 propagates downwards. Bounded by
+/// the deepest row present rather than `MAX_NAMESPACE_DEPTH`, so rows written while that limit was
+/// higher are still repaired. Rows whose ancestor is missing are left alone.
+///
+/// Collision-free by construction: every rewritten value is collation-equal to the value it
+/// replaces, and `unique_namespace_per_warehouse` is over that collation. `ON UPDATE CASCADE`
+/// carries the new spelling to `tabular.tabular_namespace_name`. `version` and `updated_at` are
+/// untouched, because the trigger's `WHEN` compares the collated column and a case-only rewrite is
+/// NOT DISTINCT there — replicas do not need the bump, since an affected row could never have been
+/// cached anyway.
+pub(crate) async fn repair_namespace_path_casing(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<u64, CatalogBackendError> {
+    let max_depth: Option<i32> = sqlx::query_scalar!(r#"SELECT max(depth) FROM namespace"#)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let mut repaired = 0;
+    for depth in 2..=max_depth.unwrap_or(1) {
+        repaired += sqlx::query!(
+            r#"
+            UPDATE namespace c
+            SET namespace_name = p.namespace_name || c.namespace_name[$1:]
+            FROM namespace p
+            WHERE p.warehouse_id = c.warehouse_id
+                AND c.depth = $1
+                AND p.depth = $1 - 1
+                -- Collated: finds the parent case-insensitively.
+                AND p.namespace_name = c.namespace_name[1:$1 - 1]
+                -- Byte-wise: rewrites only rows that actually differ, which makes this idempotent.
+                AND (c.namespace_name[1:$1 - 1]::text) COLLATE "C"
+                    <> (p.namespace_name::text) COLLATE "C"
+            "#,
+            depth,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
+        .rows_affected();
+    }
+    Ok(repaired)
+}
+
 pub(crate) async fn move_namespace(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -3355,9 +3421,7 @@ pub mod tests {
     /// `#[sqlx::test]` applies migrations before the body, so the drift has to be created after —
     /// which also means this exercises the re-run path, and the statement is idempotent.
     #[sqlx::test]
-    async fn test_namespace_path_prefix_repair_migration_canonicalises_existing_rows(
-        pool: sqlx::PgPool,
-    ) {
+    async fn test_repair_namespace_path_casing_canonicalises_existing_rows(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
@@ -3389,9 +3453,18 @@ pub mod tests {
             .unwrap();
         }
 
-        let migration =
-            include_str!("../migrations/20260818000000_canonicalise_namespace_path_prefixes.sql");
-        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+        let repaired = {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let n = repair_namespace_path_casing(t.transaction()).await.unwrap();
+            t.commit().await.unwrap();
+            n
+        };
+        assert_eq!(
+            repaired, 3,
+            "the three drifted rows below depth 1 are rewritten"
+        );
 
         assert_eq!(stored_path(&pool, ids[0]).await, vec!["a".to_string()]);
         assert_eq!(
@@ -3442,8 +3515,16 @@ pub mod tests {
         assert_eq!(version, 0, "a case-only repair must not bump the version");
         assert!(updated_at.is_none(), "nor stamp updated_at");
 
-        // Idempotent: running it again changes nothing.
-        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+        // Idempotent: the hook runs on every startup, so a second pass must change nothing.
+        let repaired_again = {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let n = repair_namespace_path_casing(t.transaction()).await.unwrap();
+            t.commit().await.unwrap();
+            n
+        };
+        assert_eq!(repaired_again, 0, "a second pass must rewrite nothing");
         assert_eq!(
             stored_path(&pool, ids[4]).await,
             vec![
@@ -3453,7 +3534,7 @@ pub mod tests {
                 "D".to_string(),
                 "E".to_string()
             ],
-            "re-running the migration must be a no-op"
+            "re-running the hook must be a no-op"
         );
     }
 

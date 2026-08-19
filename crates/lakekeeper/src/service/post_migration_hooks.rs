@@ -6,14 +6,28 @@ use crate::{
     CONFIG,
     api::management::v1::tasks::{ListTasksRequest, TaskStatus},
     service::{
-        CatalogRoleOps, CatalogStore, CatalogTaskOps, SystemRoleSeederCap, SystemRoleSpec,
-        Transaction, install_system_role_registry, registered_system_roles,
+        CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTaskOps, SystemRoleSeederCap,
+        SystemRoleSpec, Transaction, install_system_role_registry, registered_system_roles,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskFilter,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
     },
 };
+
+/// Which conditional post-migration hooks to run.
+///
+/// Hooks that must happen once per upgrade rather than on every startup cannot decide that for
+/// themselves — only the caller that ran the migrations knows what this run applied. It passes the
+/// answer here. Backend-specific knowledge (which migration version gates what) stays in the
+/// binary, so this stays generic over the catalog store.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PostMigrationHookOptions {
+    /// Repair namespace path prefixes stored with the caller's casing instead of the parent's.
+    /// Set when the migration the repair is pinned to was applied by this run — see
+    /// `lakekeeper-storage-postgres`'s `NAMESPACE_PATH_CASING_REPAIR_AFTER`.
+    pub repair_namespace_path_casing: bool,
+}
 
 /// Runs post-migration housekeeping. `system_roles` is the spec set the
 /// binary wants installed in the registry for this process — pass an
@@ -24,6 +38,7 @@ use crate::{
 pub async fn run_post_migration_hooks<C: CatalogStore>(
     state: C::State,
     system_roles: Vec<SystemRoleSpec>,
+    options: PostMigrationHookOptions,
 ) -> anyhow::Result<()> {
     if let Err(rejected) = install_system_role_registry(system_roles) {
         // Already installed in this process. Surfaced by the installer's
@@ -34,11 +49,49 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // This is a non-critical hook, so we log the error but do not fail the migration.
         tracing::error!("Failed to initialize cron tasks in post-migration hook: {e:?}");
     }
+    if options.repair_namespace_path_casing
+        && let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await
+    {
+        // Non-critical: the catalog serves correct results either way, only cache hit rate suffers.
+        tracing::error!(
+            "Failed to repair namespace path prefix casing in post-migration hook: {e:?}"
+        );
+    }
     backfill_registered_system_roles::<C>(state)
         .await
         .with_context(
             || "Failed to backfill registered catalog-managed system roles in post-migration hook",
         )?;
+    Ok(())
+}
+
+/// Bring namespace path prefixes in line with their parent rows' spelling.
+///
+/// A namespace's path prefix references its parent, so it must carry the parent's stored spelling.
+/// `create_namespace` used to store the caller's spelling instead, which left the row — and its whole
+/// subtree — permanently unservable from the namespace cache. The write paths no longer allow it;
+/// this repairs rows that predate the fix.
+///
+/// Gated by the caller on the migration it is pinned to having just been applied, so it runs once per
+/// upgrade rather than on every startup. Still written to be idempotent and to derive what needs
+/// repairing from the data, because that is what makes re-pinning it to a later migration enough to
+/// re-run it if another write path is ever found to store a caller-cased prefix.
+async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyhow::Result<()> {
+    let mut t = C::Transaction::begin_write(state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to begin write transaction"))?;
+    let repaired = C::repair_namespace_path_casing(t.transaction())
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to repair namespace path prefix casing"))?;
+    t.commit()
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to commit namespace path casing repair"))?;
+    if repaired > 0 {
+        tracing::info!(
+            "Post-migration hook: repaired the stored path of {repaired} namespace(s) whose prefix \
+             casing disagreed with their parent"
+        );
+    }
     Ok(())
 }
 

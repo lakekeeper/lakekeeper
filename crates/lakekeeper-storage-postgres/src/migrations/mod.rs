@@ -157,6 +157,51 @@ impl ExtensionMigrations {
 /// Apply core migrations only.
 ///
 /// Back-compat entry-point for callers that don't register extensions.
+/// The migration that the namespace path-prefix casing repair is pinned to.
+///
+/// The repair (see `repair_namespace_path_casing`) runs once, when this version is applied for the
+/// first time — not on every startup. This version ships in 0.14.0 and is in no earlier release, so
+/// every deployment upgrading from 0.13.x applies it then and gets repaired then; a fresh install
+/// applies it against an empty database and the repair is a no-op.
+///
+/// **Moving it:** if another write path is found to store a caller-cased prefix, re-pin this to a
+/// migration that is *unreleased at that time* and the repair runs again on the next upgrade.
+/// Pinning to an already-released version would never fire, because the deployments that need
+/// repairing already have it recorded.
+///
+/// Deliberately a real migration rather than an empty sentinel: 0.14.0's move-namespace migration is
+/// part of the same change that closed the write paths, so the pin and the fix ship together.
+pub const NAMESPACE_PATH_CASING_REPAIR_AFTER: i64 = 20_260_812_090_000;
+
+/// Versions recorded as applied in the core migration tracker.
+///
+/// Snapshot this before migrating to learn what a migration run applied: post-migration work that
+/// must happen once per upgrade can key off the difference, without a marker table of its own.
+/// Returns an empty set when the tracker table does not exist yet (a database that has never been
+/// migrated).
+///
+/// # Errors
+/// Returns an error if the tracker table cannot be read.
+pub async fn applied_versions(pool: &sqlx::PgPool) -> anyhow::Result<HashSet<i64>> {
+    // `AssertSqlSafe` as elsewhere in this module: the only interpolation is a crate constant.
+    let exists: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT to_regclass('{CORE_MIGRATIONS_TABLE}') IS NOT NULL"
+    )))
+    .fetch_one(pool)
+    .await
+    .context("failed to probe for the core migration tracker")?;
+    if !exists {
+        return Ok(HashSet::new());
+    }
+    let versions: Vec<i64> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT version FROM {CORE_MIGRATIONS_TABLE} WHERE success"
+    )))
+    .fetch_all(pool)
+    .await
+    .context("failed to list applied migrations")?;
+    Ok(versions.into_iter().collect())
+}
+
 /// Equivalent to `migrate(pool, vec![])`.
 ///
 /// # Errors

@@ -416,6 +416,11 @@ async fn migrate() -> anyhow::Result<()> {
     )
     .await?;
 
+    // Snapshotted before migrating so the post-migration hooks can tell what this run applied.
+    // Hooks that repair data must fire once per upgrade, not on every startup.
+    let applied_before =
+        lakekeeper_storage_postgres::migrations::applied_versions(&write_pool).await?;
+
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
     let server_id = lakekeeper_storage_postgres::migrations::migrate_core_only(&write_pool).await?;
@@ -426,8 +431,16 @@ async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Authorizer migration complete.");
     tracing::info!("Running post-migration hooks...");
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
-    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state, Vec::new())
-        .await?;
+    let hook_options = lakekeeper::service::PostMigrationHookOptions {
+        repair_namespace_path_casing: !applied_before
+            .contains(&lakekeeper_storage_postgres::migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+    };
+    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(
+        catalog_state,
+        Vec::new(),
+        hook_options,
+    )
+    .await?;
     tracing::info!("Post-migration hooks complete.");
 
     Ok(())

@@ -86,7 +86,7 @@ use super::{
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
-        update_namespace_properties,
+        repair_namespace_path_casing, update_namespace_properties,
     },
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
@@ -1119,6 +1119,12 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
         move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
+    }
+
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_namespace_path_casing(transaction).await
     }
 
     async fn set_warehouse_protected_impl(

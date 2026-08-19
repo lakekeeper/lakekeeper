@@ -2243,7 +2243,7 @@ async fn test_create_namespace_under_case_variant_parent_reports_stored_path(poo
     // A read addressed by an explicit path still echoes that path — a different contract.
     let loaded = CatalogServer::load_namespace_metadata(
         NamespaceParameters {
-            prefix: Some(prefix),
+            prefix: Some(prefix.clone()),
             namespace: ns_ident(&["a", "b", "c"]),
         },
         lakekeeper::api::iceberg::v1::namespace::GetNamespacePropertiesQuery { return_uuid: false },
@@ -2256,5 +2256,43 @@ async fn test_create_namespace_under_case_variant_parent_reports_stored_path(poo
         loaded.namespace,
         ns_ident(&["a", "b", "c"]),
         "a by-name read echoes the path the caller addressed, unchanged by this fix"
+    );
+
+    // An idempotent replay must answer exactly what the first call answered. The replay branch
+    // resolves by the caller's path, so without taking the canonical ident it would echo `a/b/c`
+    // and the same key would produce two different answers.
+    let key =
+        lakekeeper::service::idempotency::IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string())
+            .unwrap();
+    let mut metadata = RequestMetadata::new_unauthenticated();
+    metadata.with_idempotency_key(key);
+
+    let first = CatalogServer::create_namespace(
+        Some(prefix.clone()),
+        CreateNamespaceRequest {
+            namespace: ns_ident(&["a", "b", "replayed"]),
+            properties: None,
+        },
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+    let replay = CatalogServer::create_namespace(
+        Some(prefix),
+        CreateNamespaceRequest {
+            namespace: ns_ident(&["a", "b", "replayed"]),
+            properties: None,
+        },
+        ctx.clone(),
+        metadata,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first.namespace, ns_ident(&["a", "B", "replayed"]));
+    assert_eq!(
+        replay.namespace, first.namespace,
+        "the replay must report the same path as the first call"
     );
 }
