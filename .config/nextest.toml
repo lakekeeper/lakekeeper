@@ -69,3 +69,17 @@ retries = 0
 
 [profile.ci_no_secrets.junit] # this can be some other profile, too
 path = "junit.xml"
+
+# Only the tests that talk to the S3-compatible object store configured via
+# LAKEKEEPER_TEST__S3_*.
+[profile.s3_compat]
+default-filter = """
+    test(::minio_integration_tests::)
+    or (package(lakekeeper-io) and binary(integration_tests) and test(/_s3$/))
+"""
+failure-output = "immediate-final"
+fail-fast = false
+retries = 0
+
+[profile.s3_compat.junit]
+path = "junit.xml"
