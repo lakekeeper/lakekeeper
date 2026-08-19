@@ -130,6 +130,28 @@ There is deliberately no unit test for this. A test cannot observe a compile fai
 
 The key enums exist for exactly this reason. Before them the key space was only checked against the fixtures, so a key emitted on a path no fixture exercised was invisible — see the coverage note below.
 
+**The bump itself is checked.** The fixture tests classify a change, but only until you regenerate: after `just update-audit-fixtures` they pass whether you bumped the version correctly, bumped it the wrong way, or left it alone. So a separate check compares the committed fixtures either side of the merge base and requires the bump to match what actually changed. Run it locally with `just check-audit-format-bump`; CI runs it on every pull request.
+
+| What changed in the fixtures | Version bump | Verdict |
+|---|---|---|
+| Nothing | none | OK |
+| Nothing | minor or major | **Illegal** — leave `AUDIT_FORMAT` alone. A bump tells every consumer to re-check their parser, so an empty one costs them work for nothing |
+| Fields added | minor | OK |
+| Fields added | none | **Illegal** — bump the minor, so consumers can tell which builds carry the new fields |
+| Fields added | major | **Illegal** — a major bump says existing parsers break, and it forces a fixture directory that has to stay green forever. Bump the minor |
+| A field removed, renamed, or retyped | major | OK |
+| A field removed, renamed, or retyped | minor | **Illegal** — a minor bump says the opposite, that old parsers keep working. Bump the major |
+| A field removed, renamed, or retyped | none | **Illegal** — bump the major |
+
+Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, removing `AUDIT_FORMAT`, and bumping the major without leaving the previous version's fixture directory in place.
+
+Two things it deliberately does **not** treat as format changes, because they are not:
+
+- **A fixture's values changing.** Comparison is on key paths and JSON types, not values. Fixtures get edited to be more realistic — a scenario is corrected, an id is made deterministic — and demanding a major bump for `true` becoming `false` in a test input would be wrong.
+- **Fixtures being added or removed.** Only fixtures present in both revisions are compared. A new fixture describes a scenario that was previously untested, not a format that was previously different.
+
+The decision table and the classification are self-tested: `python3 .github/scripts/check-audit-format-bump.py --self-test` exercises every shape-versus-bump combination and the edge cases above, and CI runs it alongside the check. Note that the end-to-end path can only be exercised against real history, so the self-test covers the logic while the run against the merge base covers the git plumbing.
+
 **What `audit_format` does not cover.** The keys the log subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber`, not to Lakekeeper, and can move on a dependency upgrade with no version bump. They are stripped before fixture comparison for that reason, and `docs/docs/logging.md` states it as a contract.
 
 **What the tests actually cover, and what they do not.** Worth knowing before you trust a green suite:

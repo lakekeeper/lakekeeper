@@ -82,6 +82,13 @@ check-opa:
 # Review the resulting diff — it is the change consumers will see — then decide
 # whether it needs a MAJOR or MINOR bump of AUDIT_FORMAT. See the audit log section of
 # docs/docs/developer-guide.md.
+# Check that an audit format change carries the right AUDIT_FORMAT bump: additive
+# changes want a minor bump, breaking ones a major, and an unchanged format wants
+# neither. Compares the committed fixtures either side of the merge base, so it needs a
+# base to compare against. CI runs this on every pull request.
+check-audit-format-bump base="origin/main":
+    python3 .github/scripts/check-audit-format-bump.py {{base}}
+
 update-audit-fixtures:
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_

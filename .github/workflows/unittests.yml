@@ -458,6 +458,14 @@ jobs:
           # The base commit has to be present to diff against it. The default shallow
           # fetch does not include it.
           fetch-depth: 0
+      - name: Check the audit format version bump matches the change
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 .github/scripts/check-audit-format-bump.py "${BASE_SHA}"
+      - name: Self-test the version bump checker
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/check-audit-format-bump.py --self-test
       - name: Require a release-notes callout when the audit log format changes
         if: github.event_name == 'pull_request'
         env:
