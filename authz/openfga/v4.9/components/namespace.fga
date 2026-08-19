@@ -27,7 +27,9 @@ type namespace
     define can_create_view: create
     define can_create_generic_table: create
     define can_create_namespace: create
+    define can_accept_moved_namespace: manage_grants and create
     define can_delete: modify
+    define can_move: manage_grants and modify
     define can_update_properties: modify
     define can_get_metadata: describe or can_get_metadata from child
     define can_list_tables: can_get_metadata

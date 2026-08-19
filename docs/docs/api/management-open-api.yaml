@@ -5382,6 +5382,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/move:
+    post:
+      tags:
+        - warehouse
+      summary: Move a Namespace
+      description: |-
+        Moves a namespace to a new location in the warehouse's namespace hierarchy,
+        re-parenting it and/or renaming it. The request body carries the full destination path:
+        its last element is the new name, the preceding elements identify the new parent, so a
+        single-element path moves the namespace to the warehouse root. The path must not be
+        empty.
+
+        Requires grant authority at **both** ends, because re-parenting makes the namespace's
+        contents inherit the destination subtree's permissions without any assignment being
+        recorded:
+
+        - `move` on the namespace being moved,
+        - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
+          the warehouse, when moving to the root).
+
+        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
+        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
+        alone is not sufficient at the destination: it authorizes adding an *empty* child,
+        whereas a move arrives carrying existing contents and their grants.
+
+        Constraints:
+        - Namespaces that contain child namespaces cannot be moved.
+        - Moves stay within one warehouse.
+        - Protected namespaces require `force`.
+        - Rejected for warehouses whose storage layout derives physical locations from
+          namespace names or from the namespace hierarchy.
+
+        A destination equal to the namespace's current path is a no-op and returns 200, so a
+        retried request cannot fail with a spurious conflict.
+      operationId: move_namespace
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveNamespaceRequest'
+        required: true
+      responses:
+        '200':
+          description: Namespace moved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoveNamespaceResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
       tags:
@@ -9813,10 +9880,13 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionListGenericTables'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionManageTags'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionCreateTable'
@@ -9830,9 +9900,33 @@ components:
           list_tables: '#/components/schemas/LakekeeperNamespaceActionListTables'
           list_views: '#/components/schemas/LakekeeperNamespaceActionListViews'
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionManageTags'
+          move: '#/components/schemas/LakekeeperNamespaceActionMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionUpdateProperties'
+    LakekeeperNamespaceActionAcceptMovedNamespace:
+      type: object
+      description: |-
+        Accept a namespace being moved in from elsewhere as a child of this entity.
+
+        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        this subtree's grantees exposes nothing. A move arrives carrying existing contents
+        and their direct grants, which is why this is gated on grant authority in addition to
+        `create` — without it, a namespace could be populated and granted somewhere
+        permissive and then moved into a `managed_access` subtree, smuggling grants past the
+        control that subtree exists to enforce.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
+        source:
+          type: array
+          items:
+            type: string
+          description: Path the namespace is being moved from.
     LakekeeperNamespaceActionCreateGenericTable:
       type: object
       required:
@@ -9997,10 +10091,13 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindListGenericTables'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionKindCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateTable'
@@ -10014,9 +10111,19 @@ components:
           list_tables: '#/components/schemas/LakekeeperNamespaceActionKindListTables'
           list_views: '#/components/schemas/LakekeeperNamespaceActionKindListViews'
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
+          move: '#/components/schemas/LakekeeperNamespaceActionKindMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionKindSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionKindUpdateProperties'
+    LakekeeperNamespaceActionKindAcceptMovedNamespace:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
     LakekeeperNamespaceActionKindCreateGenericTable:
       type: object
       required:
@@ -10134,6 +10241,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperNamespaceActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperNamespaceActionKindReadGrants:
       type: object
       required:
@@ -10216,6 +10332,36 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperNamespaceActionMove:
+      type: object
+      description: |-
+        Move this namespace to a new path, re-parenting and/or renaming it.
+
+        Gated on grant-level authority *in addition to* plain write access. Re-parenting a
+        namespace re-issues every privilege the destination subtree confers onto the
+        namespace's contents, with no assignment record anywhere — so the actor must
+        already be able to grant on the namespace being moved. Inside a `managed_access`
+        subtree ownership does not confer that, which is precisely the case where moving
+        out would otherwise defeat the control.
+
+        Only the source half of a move's authorization; the destination is gated by
+        `CreateNamespace` plus `AcceptMovedNamespace`.
+      required:
+        - destination
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Full destination path, including the new leaf name.
+        force:
+          type: boolean
+          description: Whether protection is overridden, as for `Delete`.
     LakekeeperNamespaceActionReadGrants:
       type: object
       description: Can list the grants held on this namespace.
@@ -11677,10 +11823,12 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
           activate: '#/components/schemas/LakekeeperWarehouseActionActivate'
           control_all_tasks: '#/components/schemas/LakekeeperWarehouseActionControlAllTasks'
           create_namespace: '#/components/schemas/LakekeeperWarehouseActionCreateNamespace'
@@ -11704,6 +11852,29 @@ components:
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
+    LakekeeperWarehouseActionAcceptMovedNamespace:
+      type: object
+      description: |-
+        Accept a namespace being moved in from elsewhere as a child of this entity.
+
+        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        this subtree's grantees exposes nothing. A move arrives carrying existing contents
+        and their direct grants, which is why this is gated on grant authority in addition to
+        `create` — without it, a namespace could be populated and granted somewhere
+        permissive and then moved into a `managed_access` subtree, smuggling grants past the
+        control that subtree exists to enforce.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
+        source:
+          type: array
+          items:
+            type: string
+          description: Path the namespace is being moved from.
     LakekeeperWarehouseActionActivate:
       type: object
       required:
@@ -11838,10 +12009,12 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
       discriminator:
         propertyName: action
         mapping:
+          accept_moved_namespace: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
           activate: '#/components/schemas/LakekeeperWarehouseActionKindActivate'
           control_all_tasks: '#/components/schemas/LakekeeperWarehouseActionKindControlAllTasks'
           create_namespace: '#/components/schemas/LakekeeperWarehouseActionKindCreateNamespace'
@@ -11865,6 +12038,15 @@ components:
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
+    LakekeeperWarehouseActionKindAcceptMovedNamespace:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_namespace
     LakekeeperWarehouseActionKindActivate:
       type: object
       required:
@@ -12548,6 +12730,52 @@ components:
       enum:
         - self-managed
         - instance-admin
+    MoveNamespaceRequest:
+      type: object
+      description: Request to move a namespace to a new location in the hierarchy.
+      required:
+        - destination
+      properties:
+        destination:
+          type: array
+          items:
+            type: string
+          description: |-
+            Full new path of the namespace, including its new name as the last element.
+
+            The preceding elements identify the new parent; a single-element destination moves the
+            namespace to the warehouse root. Must not be empty. Renaming in place is expressed by
+            keeping the same parent and changing only the last element. Mirrors the `destination`
+            of Iceberg REST rename-table request.
+
+            A destination equal to the namespace's current path succeeds without changing
+            anything, so retrying a request that already went through is safe.
+        force:
+          type: boolean
+          description: Move the namespace even if it is protected.
+      additionalProperties: false
+    MoveNamespaceResponse:
+      type: object
+      description: The namespace after a successful move.
+      required:
+        - namespace
+        - namespace-id
+      properties:
+        namespace:
+          type: array
+          items:
+            type: string
+          description: The namespace's new path.
+        namespace-id:
+          type: string
+          format: uuid
+          description: Unchanged by the move; returned so callers can confirm identity.
+        parent-namespace-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Id of the new parent namespace, or `null` if the namespace is now top-level.
     NamespaceAction:
       type: string
       enum:
@@ -12556,6 +12784,8 @@ components:
         - create_generic_table
         - create_namespace
         - delete
+        - move
+        - accept_moved_namespace
         - update_properties
         - get_metadata
         - read_assignments
@@ -15853,6 +16083,7 @@ components:
       type: string
       enum:
         - create_namespace
+        - accept_moved_namespace
         - delete
         - modify_storage
         - modify_storage_credential

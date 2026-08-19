@@ -687,10 +687,23 @@ pub enum CatalogWarehouseAction {
     GetEndpointStatistics,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
     /// Can list the grants held on this warehouse.
     ReadGrants,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 24]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -717,12 +730,15 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyL
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
         CatalogWarehouseAction::ManageTags,
+        CatalogWarehouseAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
         CatalogWarehouseAction::ReadGrants,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 23] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 24] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -752,6 +768,7 @@ impl CatalogWarehouseAction {
             // begin reconciling task-queue config.
             CatalogWarehouseAction::ModifyTaskQueueConfig
             | CatalogWarehouseAction::CreateNamespace { .. }
+            | CatalogWarehouseAction::AcceptMovedNamespace { .. }
             | CatalogWarehouseAction::GetMetadata
             | CatalogWarehouseAction::GetConfig
             | CatalogWarehouseAction::ListNamespaces
@@ -773,13 +790,19 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::CreateNamespace { name, properties } = self {
-            if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+        match self {
+            Self::CreateNamespace { name, properties } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map("properties", properties.as_ref().clone());
+                }
             }
-            if !properties.is_empty() {
-                b = b.context_map("properties", properties.as_ref().clone());
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list("source", source.as_ref().clone());
             }
+            _ => {}
         }
         b.build()
     }
@@ -880,10 +903,41 @@ pub enum CatalogNamespaceAction {
     ListGenericTables,
     /// Attach/detach governance tags on this namespace.
     ManageTags,
+    /// Move this namespace to a new path, re-parenting and/or renaming it.
+    ///
+    /// Gated on grant-level authority *in addition to* plain write access. Re-parenting a
+    /// namespace re-issues every privilege the destination subtree confers onto the
+    /// namespace's contents, with no assignment record anywhere — so the actor must
+    /// already be able to grant on the namespace being moved. Inside a `managed_access`
+    /// subtree ownership does not confer that, which is precisely the case where moving
+    /// out would otherwise defeat the control.
+    ///
+    /// Only the source half of a move's authorization; the destination is gated by
+    /// `CreateNamespace` plus `AcceptMovedNamespace`.
+    Move {
+        /// Full destination path, including the new leaf name.
+        destination: Arc<Vec<String>>,
+        /// Whether protection is overridden, as for `Delete`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
     /// Can list the grants held on this namespace.
     ReadGrants,
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 16]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 18]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -923,12 +977,19 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 16]> = LazyL
         },
         CatalogNamespaceAction::ListGenericTables,
         CatalogNamespaceAction::ManageTags,
+        CatalogNamespaceAction::Move {
+            destination: Arc::new(Vec::new()),
+            force: false,
+        },
+        CatalogNamespaceAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
         CatalogNamespaceAction::ReadGrants,
     ]
 });
 impl CatalogNamespaceAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 16] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 18] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1006,6 +1067,21 @@ impl CatalogAction for CatalogNamespaceAction {
                 }
                 if *recursive {
                     b = b.context_string("recursive", "true");
+                }
+            }
+            // The source subtree is the decision-relevant context for a policy engine:
+            // it says what is being let in, and from where.
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list("source", source.as_ref().clone());
+            }
+            Self::Move { destination, force } => {
+                // The destination is the whole point of the decision for a policy engine:
+                // it determines which subtree's grants the moved namespace inherits.
+                if !destination.is_empty() {
+                    b = b.context_list("destination", destination.as_ref().clone());
+                }
+                if *force {
+                    b = b.context_string("force", "true");
                 }
             }
             _ => {}
@@ -1500,12 +1576,14 @@ pub enum CatalogWarehouseActionKind {
     SetFormatVersionPolicy,
     GetEndpointStatistics,
     ManageTags,
+    AcceptMovedNamespace,
     ReadGrants,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
         match action {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
+            CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogWarehouseAction::Delete => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
@@ -1552,6 +1630,8 @@ pub enum CatalogNamespaceActionKind {
     CreateGenericTable,
     ListGenericTables,
     ManageTags,
+    Move,
+    AcceptMovedNamespace,
     ReadGrants,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
@@ -1567,6 +1647,8 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListViews => Self::ListViews,
             CatalogNamespaceAction::ListNamespaces => Self::ListNamespaces,
             CatalogNamespaceAction::ListEverything => Self::ListEverything,
+            CatalogNamespaceAction::Move { .. } => Self::Move,
+            CatalogNamespaceAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogNamespaceAction::SetProtection => Self::SetProtection,
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
@@ -2116,6 +2198,60 @@ where
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
     ) -> Result<()>;
+
+    /// Hook that removes a namespace's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
+    ///
+    /// Paired with [`Self::attach_namespace_parent`] to re-point a namespace during a move.
+    /// Not called for a rename in place — the hierarchy is unchanged there — nor for a
+    /// no-op.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the namespace is never reachable from two
+    /// parents at once — see [`Self::attach_namespace_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn detach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a namespace's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a parent the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* parent that
+    /// [`Self::detach_namespace_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the move already happened — so it is
+    /// logged and left to reconciliation. That is the trade this ordering buys: every
+    /// failure mode leaves the authorizer *missing* an edge, never holding an extra one, so
+    /// a namespace can lose inherited access but never silently keep or gain it. Missing
+    /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
+    /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Hook that is called when a new table is created.
     /// This is used to set up the initial permissions for the table.

@@ -152,6 +152,7 @@ use crate::{
         super::list_generic_table_grants,
         super::apply_generic_table_grants,
         super::list_warehouses,
+        super::move_namespace,
         super::rename_project_by_id_deprecated,
         super::rename_project,
         super::rename_warehouse,

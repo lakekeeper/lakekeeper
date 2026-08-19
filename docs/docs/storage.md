@@ -128,6 +128,17 @@ The storage layout controls how namespace and tabular directories are structured
 !!! note "OneLake supports only the default layout"
     The [OneLake](#onelake-microsoft-fabric) storage profile currently rejects `tabular-only` and `full-hierarchy` at warehouse-creation time because OneLake silently percent-decodes `%XX` in blob paths, which would alias `{name}` segments that differ only by URL-encoding. See the [OneLake storage-layout note](#onelake-microsoft-fabric) for details.
 
+!!! warning "Some layouts prevent moving namespaces"
+    A namespace's location is computed once when it is created and then frozen, so moving a namespace never relocates existing data. Under layouts that derive the location from the namespace hierarchy or from namespace *names*, a move would leave later-created child namespaces outside the moved namespace's location, fragmenting the layout. Lakekeeper therefore rejects the move with `StorageLayoutForbidsNamespaceMove` in those cases:
+
+    | Layout | `namespace` template contains `{name}` | Rename | Re-parent |
+    |--------|----------------------------------------|--------|-----------|
+    | `default` / `tabular-only` | n/a — no namespace directories are emitted | allowed | allowed |
+    | `full-hierarchy` | yes | **rejected** | **rejected** |
+    | `full-hierarchy` | `{uuid}` only | allowed | **rejected** — the ancestor chain itself changes |
+
+    The default layout emits no namespace directories, so this restriction only affects warehouses that explicitly configure `full-hierarchy`.
+
 ### Default
 
 The default layout is **flat**: tabulars are placed directly under the warehouse base location with no namespace directories, using a `{uuid}` segment.
