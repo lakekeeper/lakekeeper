@@ -34,6 +34,7 @@ jobs:
       - test
       - msrv-check
       - unused-deps
+      - check-audit-format-callout
     steps:
       - run: exit 0
 
@@ -440,3 +441,164 @@ jobs:
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  check-audit-format-callout:
+    name: audit format change is called out
+    runs-on: ubuntu-24.04
+    # Only a pull request has a title and body to inspect; this workflow also runs on
+    # pushes and manual dispatches, where there is nothing to gate. The condition sits
+    # on the steps rather than on the job: a skipped job skips everything that `needs`
+    # it, which would stop `tests-pass` reporting on pushes to main. With no job-level
+    # condition the job runs, does nothing, and succeeds.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          # The base commit has to be present to diff against it. The default shallow
+          # fetch does not include it.
+          fetch-depth: 0
+      - name: Check the audit format version bump matches the change
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 .github/scripts/check-audit-format-bump.py "${BASE_SHA}"
+      - name: Self-test the version bump checker
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/check-audit-format-bump.py --self-test
+      - name: Require a release-notes callout when the audit log format changes
+        if: github.event_name == 'pull_request'
+        env:
+          # Passed as environment variables rather than interpolated into the script
+          # below: a pull request title or body is attacker-controlled text, and
+          # `${{ }}` substitution would splice it into the shell.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          AUDIT_DIR=crates/lakekeeper/src/service/events/backends/audit
+
+          # Three-dot so the comparison starts at the merge base: unrelated movement on
+          # the base branch must not trip this gate.
+          # Read the declared version at each end and compare the values, rather than
+          # grepping a diff for the constant. A diff limited to a path cannot pair the
+          # old and new file when the module moves, so the whole file reads as added and
+          # the version reads as changed when it did not. Searching the tree at each
+          # revision does not care where the constant lives.
+          #
+          # The version lookup lives in the checker script, which errors when more than
+          # one file declares the constant. A second implementation here was a second
+          # thing to get wrong: it took the first match and could not see a duplicate.
+          declared_version() {
+            python3 .github/scripts/check-audit-format-bump.py --print-version "$1"
+          }
+          # Compare against the MERGE BASE, not against the base branch tip. The tip
+          # moves while a pull request is open, so reading the version there can report a
+          # change that came from the base branch rather than from this branch. The
+          # fixture comparison below already uses the merge base via three-dot syntax;
+          # this makes both look at the same point.
+          MERGE_BASE="$(git merge-base "${BASE_SHA}" HEAD)"
+          echo "Comparing against merge base ${MERGE_BASE} (base branch tip is ${BASE_SHA})."
+          BASE_VERSION="$(declared_version "${MERGE_BASE}")"
+          HEAD_VERSION="$(declared_version HEAD)"
+
+          if [ "${BASE_VERSION}" != "${HEAD_VERSION}" ]; then
+            VERSION_CHANGED=true
+          else
+            VERSION_CHANGED=false
+          fi
+
+          # A change to the MAJOR half breaks existing consumers, so it has a stricter
+          # requirement below. An empty BASE_VERSION means the field is being introduced,
+          # which declares a format rather than breaking one.
+          BASE_MAJOR="${BASE_VERSION%%.*}"
+          HEAD_MAJOR="${HEAD_VERSION%%.*}"
+          if [ -n "${BASE_VERSION}" ] && [ "${BASE_MAJOR}" != "${HEAD_MAJOR}" ]; then
+            MAJOR_CHANGED=true
+          else
+            MAJOR_CHANGED=false
+          fi
+
+          if [ -n "$(git diff --name-only "${MERGE_BASE}" HEAD -- "${AUDIT_DIR}/fixtures/")" ]; then
+            FIXTURES_CHANGED=true
+          else
+            FIXTURES_CHANGED=false
+          fi
+
+          if [ "${VERSION_CHANGED}" = false ] && [ "${FIXTURES_CHANGED}" = false ]; then
+            echo "Audit log format untouched — nothing to call out."
+            exit 0
+          fi
+
+          echo "Audit log format change detected. Declared version: '${BASE_VERSION}' -> '${HEAD_VERSION}' (changed: ${VERSION_CHANGED}); fixtures changed: ${FIXTURES_CHANGED}."
+
+          # A "## Release notes" section with something under it. The heading on its own
+          # is not a release note, so an empty section must not satisfy the requirement.
+          # `tolower` rather than a case-insensitive match, which is not portable across
+          # awk implementations.
+          RELEASE_NOTES=$(printf '%s\n' "${PR_BODY:-}" | awk '
+            tolower($0) ~ /^##[[:space:]]*release notes/ { inside = 1; next }
+            /^##[[:space:]]*[^[:space:]]/ { inside = 0 }
+            inside && $0 ~ /[^[:space:]]/ { found = 1 }
+            END { print (found ? "yes" : "no") }
+          ')
+
+          if [ "${MAJOR_CHANGED}" = true ]; then
+            if [ "${RELEASE_NOTES}" = yes ]; then
+              echo "Major version change, and the body has release notes. OK."
+              exit 0
+            fi
+            echo "::error::The audit log format changed incompatibly (major version ${BASE_MAJOR} -> ${HEAD_MAJOR}) and the pull request body has no release notes."
+            cat >&2 <<'MAJOR_MESSAGE'
+
+          The MAJOR half of AUDIT_FORMAT changed, which means existing consumers of the
+          audit log will break. A mention in the pull request title is not enough here:
+          add a "## Release notes" section to the body saying, in consumer terms, which
+          field moved and what a parser has to do about it.
+
+          A consumer that discovers a breaking format change from a parse failure in
+          production has been let down.
+
+          See the audit log section of docs/docs/developer-guide.md.
+          MAJOR_MESSAGE
+            exit 1
+          fi
+
+          # Additive or otherwise non-breaking: either signal is enough. A title naming
+          # the audit log is what the release notes are summarised from; an explicit
+          # section says it outright.
+          if printf '%s' "${PR_TITLE:-}" | grep -i 'audit' >/dev/null; then
+            echo "Pull request title mentions the audit log. OK."
+            exit 0
+          fi
+          if [ "${RELEASE_NOTES}" = yes ]; then
+            echo "Pull request body has release notes. OK."
+            exit 0
+          fi
+
+          echo "::error::This pull request changes the audit log format but does not say so where a consumer would see it."
+          cat >&2 <<'MESSAGE'
+
+          This pull request changes the audit log wire format: it edits AUDIT_FORMAT,
+          the committed fixtures, or both. Operators parse these records, so a format
+          change has to be visible in the release notes rather than only in the diff.
+
+          Do one of the following:
+
+            * mention the audit log in the pull request title, e.g.
+              "feat(audit): record the request id on authorization events" — release
+              notes are summarised from pull request titles; or
+
+            * add a "## Release notes" section to the pull request body describing the
+              change in consumer terms: which field moved, and what a parser must do
+              about it.
+
+          If you bumped the major half of AUDIT_FORMAT, the release notes are not
+          optional: a consumer that discovers a breaking format change from a parse
+          failure in production has been let down.
+
+          See the audit log section of docs/docs/developer-guide.md.
+          MESSAGE
+          exit 1

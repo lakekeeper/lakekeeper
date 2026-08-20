@@ -1,0 +1,33 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "action": {
+    "action_name": "read_data"
+  },
+  "entity": {
+    "entity_type": "table",
+    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+    "table-id": "019684ff-0000-7000-8000-000000000002",
+    "table": "sales.orders"
+  },
+  "actor": {
+    "actor_type": "anonymous"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": null,
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true
+    }
+  ],
+  "decision": "allowed"
+}

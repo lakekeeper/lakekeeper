@@ -76,6 +76,26 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
+# Additive changes want a minor bump of AUDIT_FORMAT, breaking ones a major, and an
+# unchanged format wants neither. Compares the committed fixtures either side of the
+# merge base, so it needs a base to compare against. CI runs this on every pull request.
+# Check that an audit log format change carries the right AUDIT_FORMAT bump
+check-audit-format-bump base="origin/main":
+    python3 .github/scripts/check-audit-format-bump.py {{base}}
+
+# Two passes: the first writes the files, the second compares against them. The writing
+# pass cannot also verify — under the update variable the assertion returns before it
+# compares anything — so a single pass would leave the fixtures unchecked.
+# Review the resulting diff before committing: it is exactly what a consumer will see, so
+# anything in it you did not intend is a bug rather than a diff to accept. Then decide
+# whether it needs a MAJOR or MINOR bump. See the audit log section of
+# docs/docs/developer-guide.md.
+# Regenerate the committed audit log fixtures after a deliberate format change
+update-audit-fixtures:
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
+      service::events::backends::audit::tests::fixture_
+    cargo test -p lakekeeper --lib service::events::backends::audit::tests::fixture_
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml

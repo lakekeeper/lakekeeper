@@ -1,0 +1,43 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "actions": [
+    {
+      "action_name": "read_data"
+    },
+    {
+      "action_name": "update_table_properties",
+      "name": "orders",
+      "removed-properties": [
+        "stale.key"
+      ]
+    }
+  ],
+  "entity": {
+    "entity_type": "table",
+    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+    "table-id": "019684ff-0000-7000-8000-000000000002",
+    "table": "sales.orders"
+  },
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true
+    }
+  ],
+  "decision": "allowed"
+}

@@ -1,0 +1,49 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "action": {
+    "action_name": "read_data"
+  },
+  "entity": {
+    "entity_type": "namespace",
+    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+    "namespace-id": "019684ff-0000-7000-8000-000000000003",
+    "namespace": "sales"
+  },
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "failure_reason": {
+    "CannotSeeResource": []
+  },
+  "error": {
+    "type": "NotAuthorized",
+    "code": 403,
+    "message": "Principal is not allowed to read this table",
+    "stack": [
+      "authorizer: no matching grant"
+    ],
+    "error_id": "019684ff-0000-7000-8000-0000000000ff"
+  },
+  "context": {
+    "self-read": "false"
+  },
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": false
+    }
+  ],
+  "decision": "denied"
+}

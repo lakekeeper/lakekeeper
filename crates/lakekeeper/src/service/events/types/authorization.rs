@@ -167,7 +167,7 @@ pub struct AuthorizationSucceededEvent {
 ///
 /// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both `ResourceNotFound`
 /// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
-#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantArray)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user
     ActionForbidden,
