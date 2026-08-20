@@ -341,6 +341,14 @@ cargo nextest run --all-features --ignore-default-filter -E "test(::aws_integrat
 # see .config/nextest.toml for all filters
 ```
 
+To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects exactly the tests that use those variables and nothing else:
+
+```sh
+cargo nextest run --profile s3_compat --all-features --all-targets --workspace
+```
+
+This is what the SeaweedFS workflow runs.
+
 ## Running integration test
 
 Our integration tests are written in Python and use pytest. They are located in the `tests` folder. The integration tests spin up Lakekeeper and all the dependencies via `docker compose`. Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests) for more information.
