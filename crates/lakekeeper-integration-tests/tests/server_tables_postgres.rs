@@ -2943,10 +2943,11 @@ async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool)
 
 /// `data-access` on register is only observable against a storage profile that
 /// actually vends. The memory profile the rest of this file uses ignores it and
-/// returns an empty config, so these live against MinIO.
+/// returns an empty config, so these live against a real S3-compatible store.
 mod register_data_access {
-    /// Named so nextest's default profile filters it out; CI runs it with MinIO up.
-    pub mod minio_integration_tests {
+    /// Named so nextest's default profile filters it out; CI runs it against the
+    /// store configured via `LAKEKEEPER_TEST__S3_*`.
+    pub mod s3_compat_integration_tests {
         use lakekeeper::api::iceberg::v1::DataAccessMode;
         use lakekeeper_integration_tests::s3_compatible_profile;
 
