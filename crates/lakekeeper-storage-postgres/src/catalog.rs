@@ -24,7 +24,7 @@ use lakekeeper::{
     service::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
         AddUserRoleAssignmentsResult, ApplyGrantsStoreError, ApplyTagError, ArcProjectId,
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        AssignedRole, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
         CatalogCreateTagDefinitionRequest, CatalogCreateWarehouseError,
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
@@ -641,6 +641,13 @@ impl CatalogStore for super::PostgresBackend {
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError> {
         super::role_assignment::list_role_assignments_for_role(role_id, &catalog_state.read_pool())
             .await
+    }
+
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+        super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
     }
 
     async fn list_role_assignments_for_role_by_ident_impl(

@@ -1009,6 +1009,18 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
+    /// Every role each of `role_ids` is nested inside, transitively.
+    ///
+    /// Must return an entry for **every** id it was given: a role nested in
+    /// nothing maps to an empty vec rather than being absent. A short result is
+    /// treated as a backend error, because an omitted role cannot be told apart
+    /// from one with no ancestors, and reading it as none silently unscopes
+    /// every policy written against a parent role.
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
+
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
         role_ident: &RoleIdent,

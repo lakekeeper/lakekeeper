@@ -153,6 +153,17 @@ fn get_config() -> DynAppConfig {
         );
     }
 
+    // Same reasoning for role ancestors: entries name roles, so outliving the role cache
+    // would keep a deleted role visible through them.
+    if config.cache.role_ancestors.enabled && config.cache.role.enabled {
+        assert!(
+            config.cache.role_ancestors.time_to_live_secs <= config.cache.role.time_to_live_secs,
+            "Invalid cache configuration: role_ancestors.time_to_live_secs ({}) must not exceed role.time_to_live_secs ({})",
+            config.cache.role_ancestors.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+    }
+
     config
 }
 
@@ -934,6 +945,34 @@ impl Default for RoleMembersCache {
     }
 }
 
+/// Cache for `RoleId → the roles it is transitively a member of`.
+///
+/// Read on authorization requests that name a role rather than a user — the roles a
+/// nesting-aware policy has to see. Keyed per role. Entries are bounded by
+/// [`RoleConfig::max_nesting_depth`], which the write path enforces per edge, and most roles
+/// are nested in nothing at all, so the common entry is empty.
+///
+/// `time_to_live_secs` must not exceed `role.time_to_live_secs`, for the same reason it must
+/// not for user assignments: entries name roles, and outliving the role cache would keep a
+/// deleted one visible through them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleAncestorsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for RoleAncestorsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -950,6 +989,8 @@ pub(crate) struct Cache {
     pub(crate) user_assignments: UserAssignmentsCache,
     /// Role-members cache: `RoleId → members`.
     pub(crate) role_members: RoleMembersCache,
+    /// Role-ancestors cache: `RoleId → the roles it is a member of`.
+    pub(crate) role_ancestors: RoleAncestorsCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
