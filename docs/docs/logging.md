@@ -36,7 +36,7 @@ To disable audit logs entirely:
 LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 ```
 
-**Note:** Audit logs contain PII. When disabling them, ensure you have alternative mechanisms for compliance and security monitoring.
+**Note:** Audit logs contain PII — user identities, and a caller-supplied `user_agent` string that some clients populate with hostnames or OS usernames. When disabling them, ensure you have alternative mechanisms for compliance and security monitoring.
 
 ## Log Types
 
@@ -63,6 +63,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
+| `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
@@ -70,6 +71,10 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
+
+**`user_agent` is client-supplied and unverified.** It is the `User-Agent` request header, recorded as sent. Any caller can set it to any value, including one that names a different client, and Lakekeeper neither validates it nor cross-checks it against the token. Treat it as a hint — fleet inventory, spotting an unexpected client library, triaging why one client started failing — never as identity, and never as an authorization or attribution input. The authoritative statements of *who* and *as what* are `actor` and `privilege_source` on the same event. A detection rule keyed on `user_agent` can be evaded by changing one header; one keyed on `actor` cannot.
+
+Lakekeeper records the header rather than a parsed client name, so a consumer can classify it however it needs and no information is lost to normalisation. Two consequences worth planning for: values are free-form and some clients embed hostnames or usernames in them, so treat the field as potentially disclosing infrastructure detail; and browsers cannot set `User-Agent`, so requests from the web UI are recorded with the browser's own value.
 
 **Ordering:** An authorization event records the *attempt*, and is dispatched to the audit log before the authorized operation issues its write. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. Audit consumers should treat authorization events as attempts rather than as confirmation that state changed.
 
@@ -178,6 +183,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
   "privilege_source": "authorizer",
+  "user_agent": "PyIceberg/0.9.1",
   "decision": "allowed",
   "authorizations": [
     {
@@ -221,6 +227,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "principal": "oidc~user@example.com"
   },
   "privilege_source": "authorizer",
+  "user_agent": "Trino/476",
   "decision": "denied",
   "authorizations": [
     {
@@ -282,6 +289,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
   "privilege_source": "authorizer",
+  "user_agent": "curl/8.7.1",
   "decision": "allowed",
   "authorizations": [
     {
@@ -705,6 +713,9 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.aut
 
 # Every grant change, allowed or refused
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants")'
+
+# Which client libraries are calling, and how often (remember: caller-supplied, unverified)
+cat logs.json | jq -R -r 'fromjson? | select(.event_source == "audit") | .user_agent // "(none sent)"' | sort | uniq -c | sort -rn
 
 # Refused attempts to grant privileges TO a specific principal (not by them)
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants" and any((.action.principals // [])[]; . == "user:oidc~alice") and any((.authorizations // [])[]; .allowed == false))'

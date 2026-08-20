@@ -687,10 +687,23 @@ pub enum CatalogWarehouseAction {
     GetEndpointStatistics,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
     /// Can list the grants held on this warehouse.
     ReadGrants,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 24]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -717,12 +730,15 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyL
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
         CatalogWarehouseAction::ManageTags,
+        CatalogWarehouseAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
         CatalogWarehouseAction::ReadGrants,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 23] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 24] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -752,6 +768,7 @@ impl CatalogWarehouseAction {
             // begin reconciling task-queue config.
             CatalogWarehouseAction::ModifyTaskQueueConfig
             | CatalogWarehouseAction::CreateNamespace { .. }
+            | CatalogWarehouseAction::AcceptMovedNamespace { .. }
             | CatalogWarehouseAction::GetMetadata
             | CatalogWarehouseAction::GetConfig
             | CatalogWarehouseAction::ListNamespaces
@@ -773,13 +790,19 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::CreateNamespace { name, properties } = self {
-            if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+        match self {
+            Self::CreateNamespace { name, properties } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map("properties", properties.as_ref().clone());
+                }
             }
-            if !properties.is_empty() {
-                b = b.context_map("properties", properties.as_ref().clone());
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list("source", source.as_ref().clone());
             }
+            _ => {}
         }
         b.build()
     }
@@ -880,10 +903,41 @@ pub enum CatalogNamespaceAction {
     ListGenericTables,
     /// Attach/detach governance tags on this namespace.
     ManageTags,
+    /// Move this namespace to a new path, re-parenting and/or renaming it.
+    ///
+    /// Gated on grant-level authority *in addition to* plain write access. Re-parenting a
+    /// namespace re-issues every privilege the destination subtree confers onto the
+    /// namespace's contents, with no assignment record anywhere — so the actor must
+    /// already be able to grant on the namespace being moved. Inside a `managed_access`
+    /// subtree ownership does not confer that, which is precisely the case where moving
+    /// out would otherwise defeat the control.
+    ///
+    /// Only the source half of a move's authorization; the destination is gated by
+    /// `CreateNamespace` plus `AcceptMovedNamespace`.
+    Move {
+        /// Full destination path, including the new leaf name.
+        destination: Arc<Vec<String>>,
+        /// Whether protection is overridden, as for `Delete`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
     /// Can list the grants held on this namespace.
     ReadGrants,
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 16]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 18]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -923,12 +977,19 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 16]> = LazyL
         },
         CatalogNamespaceAction::ListGenericTables,
         CatalogNamespaceAction::ManageTags,
+        CatalogNamespaceAction::Move {
+            destination: Arc::new(Vec::new()),
+            force: false,
+        },
+        CatalogNamespaceAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
         CatalogNamespaceAction::ReadGrants,
     ]
 });
 impl CatalogNamespaceAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 16] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 18] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1006,6 +1067,21 @@ impl CatalogAction for CatalogNamespaceAction {
                 }
                 if *recursive {
                     b = b.context_string("recursive", "true");
+                }
+            }
+            // The source subtree is the decision-relevant context for a policy engine:
+            // it says what is being let in, and from where.
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list("source", source.as_ref().clone());
+            }
+            Self::Move { destination, force } => {
+                // The destination is the whole point of the decision for a policy engine:
+                // it determines which subtree's grants the moved namespace inherits.
+                if !destination.is_empty() {
+                    b = b.context_list("destination", destination.as_ref().clone());
+                }
+                if *force {
+                    b = b.context_string("force", "true");
                 }
             }
             _ => {}
@@ -1500,12 +1576,14 @@ pub enum CatalogWarehouseActionKind {
     SetFormatVersionPolicy,
     GetEndpointStatistics,
     ManageTags,
+    AcceptMovedNamespace,
     ReadGrants,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
         match action {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
+            CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogWarehouseAction::Delete => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
@@ -1552,6 +1630,8 @@ pub enum CatalogNamespaceActionKind {
     CreateGenericTable,
     ListGenericTables,
     ManageTags,
+    Move,
+    AcceptMovedNamespace,
     ReadGrants,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
@@ -1567,6 +1647,8 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListViews => Self::ListViews,
             CatalogNamespaceAction::ListNamespaces => Self::ListNamespaces,
             CatalogNamespaceAction::ListEverything => Self::ListEverything,
+            CatalogNamespaceAction::Move { .. } => Self::Move,
+            CatalogNamespaceAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogNamespaceAction::SetProtection => Self::SetProtection,
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
@@ -1973,6 +2055,35 @@ where
         &[]
     }
 
+    /// Privileges the creating identity receives on a resource it just created, written
+    /// as ordinary grant rows in the same transaction as the resource itself.
+    ///
+    /// Only consulted when grants live in the catalog ([`Self::grants`] returns `None`).
+    /// An authorizer that owns its grant store records what creation confers in its
+    /// `create_*` hooks instead, where it can also write whatever else its model needs.
+    ///
+    /// The owner is the **acting** identity, so a request made under an assumed role
+    /// makes the role the owner — the same identity [`AuthZGrantOps::are_allowed_grants`]
+    /// folds to `None`. An anonymous create leaves no rows.
+    ///
+    /// Names should come from [`Self::grantable_privileges`]. One outside it is stored
+    /// and returned verbatim like any other name, but listings mark it unrecognized, and
+    /// revoking it needs [`AuthZGrantOps::are_allowed_grants`] to answer for a name the
+    /// authorizer does not know — which an enforcing one refuses, leaving the row
+    /// unrevocable through the API.
+    ///
+    /// A name here is also a commitment that the creator can be *given* it: the write,
+    /// and with it the create, fails if the acting user has no user record yet. That is
+    /// deliberate — a resource nobody owns is worse than a rejected create.
+    ///
+    /// [`ResourceType::Server`] is consulted when the server is bootstrapped; every
+    /// other type when a resource of it is created.
+    ///
+    /// The default is empty: creation confers nothing unless an authorizer opts in.
+    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &[&str] {
+        &[]
+    }
+
     /// Whether `privilege` is grantable on `resource_type`.
     ///
     /// Derived from [`Self::grantable_privileges`] so the two cannot disagree — an
@@ -2019,16 +2130,20 @@ where
     /// warehouse's grants without being able to read it — so there is no visibility
     /// check to fold in here. Callers document what that discloses.
     ///
-    /// Each check names a privilege and, where the caller knows it, the grantee it is
-    /// destined for. Whether the grantee changes the answer is the authorizer's business;
-    /// either way, return one decision per check, in order.
+    /// Each check names a privilege and, where the caller knows them, the grantee it is
+    /// destined for and which way it would move. Whether either changes the answer is the
+    /// authorizer's business; either way, return one decision per check, in order.
+    ///
+    /// `target` carries the resource's resolved ancestry, not just its id, so an authorizer
+    /// that resolves inheritance itself can place the resource in its hierarchy — see
+    /// [`GrantTarget`].
     ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _resource: &GrantResource,
+        _target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         Ok(vec![AuthorizationDecision::deny(); checks.len()])
@@ -2083,6 +2198,60 @@ where
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
     ) -> Result<()>;
+
+    /// Hook that removes a namespace's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
+    ///
+    /// Paired with [`Self::attach_namespace_parent`] to re-point a namespace during a move.
+    /// Not called for a rename in place — the hierarchy is unchanged there — nor for a
+    /// no-op.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the namespace is never reachable from two
+    /// parents at once — see [`Self::attach_namespace_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn detach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a namespace's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a parent the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* parent that
+    /// [`Self::detach_namespace_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the move already happened — so it is
+    /// logged and left to reconciliation. That is the trade this ordering buys: every
+    /// failure mode leaves the authorizer *missing* an edge, never holding an extra one, so
+    /// a namespace can lose inherited access but never silently keep or gain it. Missing
+    /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
+    /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Hook that is called when a new table is created.
     /// This is used to set up the initial permissions for the table.
@@ -2201,15 +2370,15 @@ pub mod tests {
                 privilege: "select".to_string(),
             })
         );
-        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
         let decisions = authz
             .are_allowed_grants(
                 &md,
                 None,
-                &GrantResource::Server,
+                &GrantTarget::Server,
                 &[
-                    GrantAuthorityCheck::new("admin", None),
-                    GrantAuthorityCheck::new("select", Some(&alice)),
+                    GrantAuthorityCheck::grantable("admin"),
+                    GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
                 ],
             )
             .await
@@ -2944,6 +3113,12 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
+        /// What creation confers per resource type, for tests that exercise the catalog
+        /// grant arm. Empty by default, so no test gains grant rows it did not ask for.
+        bootstrap: &'static [(ResourceType, &'static [&'static str])],
+        /// Which grant directions this authorizer has authority over. Empty by default,
+        /// which answers every grant-authority question with the trait's deny.
+        grant_ops: &'static [GrantOp],
     }
 
     impl Default for HidingAuthorizer {
@@ -2960,7 +3135,28 @@ pub mod tests {
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
+                bootstrap: &[],
+                grant_ops: &[],
             }
+        }
+
+        /// Give this authorizer authority over `ops` and nothing else, so a test can tell
+        /// a grant-authority question apart from a revoke one.
+        #[must_use]
+        pub fn with_grant_authority(mut self, ops: &'static [GrantOp]) -> Self {
+            self.grant_ops = ops;
+            self
+        }
+
+        /// Make creation confer privileges as catalog grant rows, per resource type.
+        /// A type absent from `privileges` confers nothing.
+        #[must_use]
+        pub fn with_bootstrap_grants(
+            mut self,
+            privileges: &'static [(ResourceType, &'static [&'static str])],
+        ) -> Self {
+            self.bootstrap = privileges;
+            self
         }
 
         fn check_available(&self, object: &str) -> bool {
@@ -3066,6 +3262,34 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
+            self.bootstrap
+                .iter()
+                .find(|(declared_for, _)| *declared_for == resource_type)
+                .map_or(&[], |(_, privileges)| *privileges)
+        }
+
+        async fn are_allowed_grants_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            _target: &GrantTarget<'_>,
+            checks: &[GrantAuthorityCheck<'_>],
+        ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            // Authority per direction, so a test can hold revoke authority alone and
+            // watch the grant side of a diff be refused.
+            Ok(checks
+                .iter()
+                .map(|check| {
+                    if self.grant_ops.contains(&check.op) {
+                        AuthorizationDecision::allow()
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
+                })
+                .collect())
         }
 
         #[cfg(feature = "open-api")]

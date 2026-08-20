@@ -18,24 +18,27 @@ publish = false
 # lakekeeper's, this one included: enabling `lakekeeper/open-api` on a
 # dependency edge instead would turn it on even in builds where this feature is
 # off, and the gates here would then compile against the wrong shape.
-open-api = [
-    "dep:utoipa",
-    "lakekeeper/open-api",
-    "lakekeeper-authz-openfga/open-api",
-]
+open-api = ["dep:utoipa", "lakekeeper/open-api", "lakekeeper-authz-openfga/open-api"]
 
 [dependencies]
 anyhow = { workspace = true }
 async-channel = { workspace = true }
+async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 http = { workspace = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 itertools = { workspace = true }
-lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router", "sqlx-postgres"] }
+lakekeeper = { path = "../lakekeeper", features = [
+    "test-utils",
+    "router",
+    "sqlx-postgres",
+] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
-lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres", features = ["test-utils"] }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres", features = [
+    "test-utils",
+] }
 maplit = { workspace = true }
 pastey = { workspace = true }
 serde = { workspace = true }

@@ -46,15 +46,43 @@ use crate::{
     },
 };
 
+// TBD - the `OpenAPI` schema for this type is *not* what the derive produces.
+// `api_doc()` rewrites it into a single object with `user` and `role` both
+// optional (see `flatten_user_or_role`), because the derived `oneOf` cannot be
+// composed by code generators: the nine `*Assignment` unions embed it as
+// `allOf: [{$ref: UserOrRole}, {type: <const>}]`, and generators flatten that
+// into one struct requiring *every* branch's fields, so a valid
+// `{"type": "ownership", "user": "..."}` is rejected for a missing `role`.
+//
+// The alternative was to keep a `oneOf` but give the two branches named
+// component schemas (`UserOrRoleUser` / `UserOrRoleRole`) and `$ref` them —
+// literally the first option offered in the upstream issue. It was tried and
+// measured: it does not help. The member is still `allOf` over a `oneOf`, so
+// the same flattening happens and generated clients still reject valid
+// payloads. Naming the branches only changes what the broken types are called.
+// The `schema(title = ...)` attributes on the two variants below are left over
+// from that experiment and are inert: `flatten_user_or_role` discards the
+// branches they name, so neither component is ever emitted.
+//
+// The cost of the shape we did pick is that the schema no longer expresses the
+// exclusivity — `{"user": ..., "role": ...}` and `{}` are schema-valid. Serde
+// still rejects both here, so the constraint moved from the schema to runtime
+// rather than disappearing. Revisit if `OpenAPI` gains a way to compose a
+// union into an object, or if the wire format is ever allowed to change.
 #[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role
 ///
-/// Exactly one of `user` and `role` is present. Naming both is rejected by the schema as
-/// well as by the server: it matches both `oneOf` branches, and `oneOf` admits exactly
-/// one. Leave the branches open — this type is flattened into the assignment schemas, so
-/// an `additionalProperties: false` on a branch would reject their own properties.
+/// Exactly one of `user` and `role` must be set. The server rejects a payload that names
+/// both, and one that names neither.
+///
+/// The schema does not express that: both properties are optional on a single object, so
+/// `{}` and `{"user": ..., "role": ...}` are schema-valid and are refused at runtime
+/// instead. Clients must enforce the choice themselves. The shape is deliberate — a
+/// `oneOf` here cannot be composed by code generators, because the `*Assignment` schemas
+/// embed this type and generators flatten the union into a struct that requires both
+/// properties.
 pub enum UserOrRole {
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
@@ -141,6 +169,7 @@ impl From<&crate::service::authz::UserOrRoleId> for UserOrRole {
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
 pub enum NamespaceIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "NamespaceIdentOrUuidById"))]
     Id {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         namespace_id: NamespaceId,
@@ -148,6 +177,7 @@ pub enum NamespaceIdentOrUuid {
         warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "NamespaceIdentOrUuidByName"))]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
@@ -176,6 +206,7 @@ impl NamespaceIdentOrUuid {
 /// accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidById"))]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
@@ -183,6 +214,7 @@ pub enum TabularIdentOrUuid {
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidByName"))]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
@@ -2010,9 +2042,9 @@ mod tests {
     use super::UserOrRole;
 
     /// `UserOrRole` is externally tagged, so exactly one key is a user *or* a role.
-    /// Pinned against the published `oneOf`, which rejects a payload naming both because
-    /// it matches both branches. Were serde ever to start accepting both, the schema
-    /// would be stricter than the server and reject requests that work.
+    /// Serde is the only thing enforcing that: the published schema makes both properties
+    /// optional (see the note on the type), so this test pins the sole remaining guard.
+    /// Were serde ever to start accepting both, or neither, nothing would reject it.
     #[test]
     fn a_principal_names_exactly_one_of_user_and_role() {
         assert!(serde_json::from_str::<UserOrRole>(r#"{"user":"oidc~alice"}"#).is_ok());

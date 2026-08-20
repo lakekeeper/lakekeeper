@@ -921,6 +921,7 @@ pub enum WarehouseRelation {
     CanRename,
     CanListDeletedTabulars,
     CanManageTags,
+    CanAcceptMovedNamespace,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -1078,6 +1079,8 @@ impl Assignment for WarehouseAssignment {
 #[cfg_attr(feature = "open-api", schema(as=WarehouseAction))]
 pub(super) enum APIWarehouseAction {
     CreateNamespace,
+    /// May accept a namespace being moved in at the warehouse root.
+    AcceptMovedNamespace,
     Delete,
     ModifyStorage,
     ModifyStorageCredential,
@@ -1143,6 +1146,7 @@ impl ReducedRelation for APIWarehouseAction {
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
             APIWarehouseAction::CreateNamespace => WarehouseRelation::CanCreateNamespace,
+            APIWarehouseAction::AcceptMovedNamespace => WarehouseRelation::CanAcceptMovedNamespace,
             APIWarehouseAction::Delete => WarehouseRelation::CanDelete,
             APIWarehouseAction::ModifyStorage => WarehouseRelation::CanUpdateStorage,
             APIWarehouseAction::ModifyStorageCredential => {
@@ -1184,6 +1188,9 @@ impl ReducedRelation for CatalogWarehouseAction {
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
             CatalogWarehouseAction::CreateNamespace { .. } => WarehouseRelation::CanCreateNamespace,
+            CatalogWarehouseAction::AcceptMovedNamespace { .. } => {
+                WarehouseRelation::CanAcceptMovedNamespace
+            }
             CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
@@ -1282,6 +1289,8 @@ pub enum NamespaceRelation {
     CanChangeOwnership,
     CanSetManagedAccess,
     CanSetProtection,
+    CanMove,
+    CanAcceptMovedNamespace,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1432,6 +1441,10 @@ pub(super) enum APINamespaceAction {
     CreateGenericTable,
     CreateNamespace,
     Delete,
+    /// May move this namespace elsewhere in the hierarchy.
+    Move,
+    /// May accept a namespace being moved in as a child of this namespace.
+    AcceptMovedNamespace,
     UpdateProperties,
     GetMetadata,
     ReadAssignments,
@@ -1486,6 +1499,8 @@ impl ReducedRelation for APINamespaceAction {
             APINamespaceAction::CreateGenericTable => NamespaceRelation::CanCreateGenericTable,
             APINamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
             APINamespaceAction::Delete => NamespaceRelation::CanDelete,
+            APINamespaceAction::Move => NamespaceRelation::CanMove,
+            APINamespaceAction::AcceptMovedNamespace => NamespaceRelation::CanAcceptMovedNamespace,
             APINamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
             APINamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
             APINamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,
@@ -1510,6 +1525,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CreateView { .. } => NamespaceRelation::CanCreateView,
             CatalogNamespaceAction::CreateNamespace { .. } => NamespaceRelation::CanCreateNamespace,
             CatalogNamespaceAction::Delete { .. } => NamespaceRelation::CanDelete,
+            CatalogNamespaceAction::Move { .. } => NamespaceRelation::CanMove,
+            CatalogNamespaceAction::AcceptMovedNamespace { .. } => {
+                NamespaceRelation::CanAcceptMovedNamespace
+            }
             CatalogNamespaceAction::UpdateProperties { .. } => {
                 NamespaceRelation::CanUpdateProperties
             }

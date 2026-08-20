@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT namespace_name FROM namespace WHERE namespace_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_name",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "74b01bffb368fc45e1b26784ee2ee8253e948e6eb7a989dfae5547e8be9fb2e9"
+}

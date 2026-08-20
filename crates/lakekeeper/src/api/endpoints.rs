@@ -321,6 +321,7 @@ generate_endpoints! {
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),
+        MoveNamespace(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/move"),
         SetWarehouseProtection(POST, "/management/v1/warehouse/{warehouse_id}/protection"),
         SetWarehouseManagedBy(POST, "/management/v1/warehouse/{warehouse_id}/managed-by"),
         SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),

@@ -59,21 +59,26 @@
   --------------------------------------------------------------*/
   function counterInit() {
     if ($.exists('.odometer')) {
-      $(window).on('scroll', function () {
-        function winScrollPosition() {
-          var scrollPos = $(window).scrollTop(),
-            winHeight = $(window).height();
-          var scrollPosition = Math.round(scrollPos + winHeight / 1.2);
-          return scrollPosition;
-        }
+      function winScrollPosition() {
+        var scrollPos = $(window).scrollTop(),
+          winHeight = $(window).height();
+        var scrollPosition = Math.round(scrollPos + winHeight / 1.2);
+        return scrollPosition;
+      }
 
+      function updateOdometers() {
         $('.odometer').each(function () {
           var elemOffset = $(this).offset().top;
           if (elemOffset < winScrollPosition()) {
             $(this).html($(this).data('count-to'));
           }
         });
-      });
+      }
+
+      $(window).on('scroll', updateOdometers);
+      // Run once on load so counters already in view (e.g. on large screens,
+      // where no scroll is needed) animate instead of staying stuck at 0.
+      updateOdometers();
     }
   }
 

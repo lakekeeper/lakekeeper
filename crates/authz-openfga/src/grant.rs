@@ -313,9 +313,10 @@ fn assumed_role_restriction(
 /// The tuples to check for `checks`, and the item each check takes its answer from.
 ///
 /// Keeps the request dense. A privilege this level cannot grant gets no tuple at all
-/// (`None`, answered as a deny), and equal privileges share one: the relation is a
-/// function of the privilege, so two checks differing only in their grantee ask the same
-/// question of the model.
+/// (`None`, answered as a deny), and equal privileges share one: the relation is a function
+/// of the privilege alone, so two checks differing only in their grantee or in which way
+/// the privilege would move ask the same question of the model. A relation that ever became
+/// sensitive to either would have to key this map on it too.
 fn plan_authority_checks(
     resource_type: ResourceType,
     user: &str,
@@ -351,11 +352,12 @@ impl OpenFGAAuthorizer {
     /// may come from another authorizer's vocabulary, and answering "not allowed" is
     /// both true and safe.
     ///
-    /// The grantee is ignored. Every `can_grant_*` relation is a property of the actor,
-    /// the resource and the privilege — nothing in the model reads who receives the
-    /// privilege — so checks that differ only in their grantee collapse into one check
-    /// whose answer is repeated for each. A diff handing one privilege to a hundred
-    /// principals is a single check.
+    /// The grantee and the direction are both ignored. Every `can_grant_*` relation is a
+    /// property of the actor, the resource and the privilege — nothing in the model reads
+    /// who receives the privilege, and holding the relation covers taking the privilege
+    /// back as much as handing it out — so checks that differ only in either collapse into
+    /// one check whose answer is repeated for each. A diff handing one privilege to a
+    /// hundred principals is a single check.
     pub(crate) async fn grant_authority(
         &self,
         metadata: &RequestMetadata,
@@ -624,7 +626,7 @@ fn tuple_timestamp(seconds_and_nanos: Option<(i64, i32)>) -> Option<chrono::Date
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::UserId;
+    use lakekeeper::service::{UserId, authz::GrantOp};
 
     use super::*;
     use crate::FgaType;
@@ -677,27 +679,34 @@ mod tests {
             .copied()
     }
 
-    /// Equal privileges are one tuple however many grantees name them, and a privilege
-    /// this level cannot grant is no tuple at all. The decisions alone cannot show either:
-    /// a plan with one tuple per check answers identically, just more expensively.
+    /// Equal privileges are one tuple however many grantees name them and whichever way
+    /// they move, and a privilege this level cannot grant is no tuple at all. The decisions
+    /// alone cannot show either: a plan with one tuple per check answers identically, just
+    /// more expensively.
     #[test]
-    fn equal_privileges_share_one_tuple_whatever_the_grantee() {
-        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
-        let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+    fn equal_privileges_share_one_tuple_whatever_the_grantee_or_direction() {
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
+        let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
         let (items, item_of_check) = plan_authority_checks(
             ResourceType::Warehouse,
             "user:oidc~caller",
             "warehouse:11111111-1111-1111-1111-111111111111",
             &[
-                GrantAuthorityCheck::new("select", Some(&alice)),
-                GrantAuthorityCheck::new("select", Some(&bob)),
-                GrantAuthorityCheck::new("modify", Some(&alice)),
+                GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
+                GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
+                GrantAuthorityCheck::entry("modify", Some(&alice), GrantOp::Grant),
+                // Taking `select` back asks the same relation as handing it out: this
+                // model has one relation per privilege and nothing to say about direction.
+                GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
                 // A warehouse action, but not an assignable relation, so not grantable.
-                GrantAuthorityCheck::new("get_metadata", Some(&alice)),
+                GrantAuthorityCheck::entry("get_metadata", Some(&alice), GrantOp::Grant),
             ],
         );
 
-        assert_eq!(item_of_check, vec![Some(0), Some(0), Some(1), None]);
+        assert_eq!(
+            item_of_check,
+            vec![Some(0), Some(0), Some(1), Some(0), None]
+        );
         assert_eq!(
             items,
             vec![

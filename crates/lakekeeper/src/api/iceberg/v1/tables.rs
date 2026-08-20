@@ -68,7 +68,7 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotsQuery {
     /// Load all snapshots
@@ -266,6 +266,7 @@ where
     async fn register_table(
         parameters: NamespaceParameters,
         request: RegisterTableRequest,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -377,6 +378,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             post(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
                  State(api_context): State<ApiContext<S>>,
+                 headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<RegisterTableRequest>| {
                     I::register_table(
@@ -385,6 +387,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             namespace: namespace.into(),
                         },
                         request,
+                        parse_data_access(&headers),
                         api_context,
                         metadata,
                     )
@@ -936,6 +939,7 @@ mod test {
             async fn register_table(
                 _parameters: super::super::namespace::NamespaceParameters,
                 _request: crate::api::RegisterTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> crate::api::Result<LoadTableResult> {
@@ -1124,6 +1128,7 @@ mod test {
             async fn register_table(
                 _parameters: super::super::namespace::NamespaceParameters,
                 _request: crate::api::RegisterTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> crate::api::Result<LoadTableResult> {
@@ -1278,7 +1283,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
@@ -1570,5 +1575,179 @@ mod test {
         let headers = response.headers();
 
         assert!(headers.is_empty());
+    }
+
+    /// The register route extracted no `HeaderMap`, so the delegation the client
+    /// asked for could not reach the handler at all. Driven through axum because
+    /// the extractor is the thing under test.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn register_table_forwards_the_requested_data_access() {
+        use async_trait::async_trait;
+        use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+        use tower::ServiceExt;
+
+        use crate::{
+            api::{ApiContext, LoadTableResult},
+            request_metadata::RequestMetadata,
+        };
+
+        #[derive(Debug, Clone)]
+        struct TestService;
+
+        #[derive(Debug, Clone)]
+        struct ThisState;
+
+        impl crate::api::ThreadSafe for ThisState {}
+
+        #[async_trait]
+        impl super::TablesService<ThisState> for TestService {
+            async fn list_tables(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _query: super::ListTablesQuery,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::ListTablesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn create_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::CreateTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn register_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::RegisterTableRequest,
+                data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                // The delegation is what is under test, so report it back as an error.
+                Err(ErrorModel::builder()
+                    .message(format!("{:?}", data_access.into()))
+                    .r#type("UnsupportedOperationException".to_string())
+                    .code(406)
+                    .build()
+                    .into())
+            }
+
+            async fn load_table(
+                _parameters: super::TableParameters,
+                _request: super::LoadTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
+                panic!("Should not be called");
+            }
+
+            async fn load_table_credentials(
+                _parameters: super::TableParameters,
+                _request: super::LoadTableCredentialsRequest,
+                _data_access: super::DataAccess,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<iceberg_ext::catalog::rest::LoadCredentialsResponse>
+            {
+                panic!("Should not be called");
+            }
+
+            async fn commit_table(
+                _parameters: super::TableParameters,
+                _request: crate::api::CommitTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::CommitTableResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn drop_table(
+                _parameters: super::TableParameters,
+                _drop_params: crate::api::iceberg::types::DropParams,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn table_exists(
+                _parameters: super::TableParameters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn rename_table(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::RenameTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn commit_transaction(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::CommitTransactionRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+        }
+
+        let router = axum::Router::new()
+            .merge(super::router::<TestService, ThisState>())
+            .with_state(ApiContext {
+                v1_state: ThisState,
+            });
+
+        let body = serde_json::json!({
+            "name": "test-table",
+            "metadata-location": "s3://bucket/table/metadata/v1.metadata.json",
+        })
+        .to_string();
+
+        for (header, expected) in [
+            (
+                Some("vended-credentials"),
+                DataAccessMode::ServerDelegated(DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                }),
+            ),
+            (Some("client-managed"), DataAccessMode::ClientManaged),
+            // No header at all leaves the choice to the server, as before.
+            (
+                None,
+                DataAccessMode::ServerDelegated(DataAccess::not_specified()),
+            ),
+        ] {
+            let mut req = http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/test/namespaces/test-namespace/register")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(header) = header {
+                req = req.header(super::DATA_ACCESS_HEADER, header);
+            }
+            let mut req = req.body(axum::body::Body::from(body.clone())).unwrap();
+            req.extensions_mut()
+                .insert(RequestMetadata::new_unauthenticated());
+
+            let response = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(response.status().as_u16(), 406, "{header:?}");
+            let bytes = http_body_util::BodyExt::collect(response)
+                .await
+                .unwrap()
+                .to_bytes();
+            let error: IcebergErrorResponse = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(error.error.message, format!("{expected:?}"), "{header:?}");
+        }
     }
 }

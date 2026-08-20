@@ -23,6 +23,7 @@ use serde::Serialize;
 use uuid::Uuid;
 pub mod authorize_load;
 pub mod create_table;
+pub(crate) mod etag;
 pub mod load_table;
 mod rename_table;
 
@@ -51,7 +52,8 @@ use crate::{
                 ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
                 TableParameters,
                 tables::{
-                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
+                    LoadTableRequest, SnapshotsQuery,
                 },
             },
         },
@@ -73,8 +75,9 @@ use crate::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            RequireNamespaceActionError, RequireTableActionError,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
+            RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
@@ -85,7 +88,7 @@ use crate::{
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::StoragePermissions,
+        storage::{StoragePermissions, credential_revalidate_after_ms},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -104,32 +107,43 @@ pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 ///
 /// Used when an idempotency check detects a replay for operations that
 /// return a `LoadTableResult` (e.g. `createTable`, `registerTable`).
+///
+/// `list_flags` must include staged tables for any operation that can produce
+/// one — only `createTable` with `stage_create` can. Everything else passes
+/// `active()`, so a replay that unexpectedly lands on a staged table still
+/// fails loudly rather than returning a half-built response.
 async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
     data_access: DataAccessMode,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     operation_name: &str,
+    list_flags: TabularListFlags,
 ) -> Result<LoadTableResult> {
-    let load_result = load_table::load_table::<C, A, S>(
+    let load_result = load_table::load_table_with_flags::<C, A, S>(
         parameters,
         LoadTableRequest::builder().data_access(data_access).build(),
         state,
         request_metadata,
+        list_flags,
     )
     .await
-    .map_err(|e| {
-        ErrorModel::internal(
-            format!("Failed to replay idempotent {operation_name}: {e}"),
-            "IdempotencyReplayFailed",
-            None,
-        )
+    // Keep the load's own status. Wrapping everything as internal turned the two
+    // outcomes a client can legitimately hit on a retry — the table was dropped
+    // or renamed since (404), the caller's read access was revoked (403) — into
+    // 500s, which reads as a server fault rather than "this key can no longer be
+    // replayed". The namespace and view replay paths already propagate.
+    .map_err(|mut e| {
+        e.error
+            .stack
+            .push(format!("Failed to replay idempotent {operation_name}"));
+        e
     })?;
     match load_result {
         LoadTableResultOrNotModified::LoadTableResult(r) => Ok(r),
         LoadTableResultOrNotModified::NotModifiedResponse(_) => {
-            // Should not happen: replay uses LoadTableRequest::default() with no
-            // If-None-Match header. If it does, treat as an internal error.
+            // Should not happen: a replay carries no `If-None-Match`, so the load
+            // has no etag to match. If it does, treat as an internal error.
             Err(ErrorModel::internal(
                 "Unexpected NotModified during idempotency replay",
                 "IdempotencyReplayFailed",
@@ -148,6 +162,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<CommitTableResponse> {
+    let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
     // CommitTableResponse doesn't include storage credentials, so default access mode is fine.
     let r = replay_load_table::<C, A, S>(
         parameters,
@@ -155,6 +170,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
         state,
         request_metadata,
         "updateTable",
+        TabularListFlags::active(),
     )
     .await?;
     let metadata_location = r.metadata_location.ok_or_else(|| {
@@ -165,6 +181,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
         )
     })?;
     Ok(CommitTableResponse {
+        etag: Some(etag::commit_etag(warehouse_id, &metadata_location)),
         metadata_location,
         metadata: r.metadata,
         config: None,
@@ -270,10 +287,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     async fn register_table(
         parameters: NamespaceParameters,
         request: RegisterTableRequest,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
         // ------------------- VALIDATIONS -------------------
+        let data_access: DataAccessMode = data_access.into();
         let NamespaceParameters {
             namespace: provided_ns,
             prefix,
@@ -287,8 +306,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1RegisterTable,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let load_params = TableParameters {
                     prefix: parameters.prefix.clone(),
@@ -296,10 +320,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 };
                 return replay_load_table::<C, A, S>(
                     load_params,
-                    DataAccessMode::default(),
+                    data_access,
                     state,
                     request_metadata,
                     "registerTable",
+                    TabularListFlags::active(),
                 )
                 .await;
             }
@@ -468,16 +493,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
+        // Bound once and reused for the ETag shape below, so the tag follows the
+        // config the delegation actually produced.
+        let storage_permissions = StoragePermissions::ReadWriteDelete;
         let config = storage_profile
             .generate_table_config(
-                DataAccess::not_specified().into(),
+                data_access,
                 storage_secret_ref,
                 &table_location,
-                StoragePermissions::ReadWriteDelete,
+                storage_permissions,
                 request_metadata,
                 &table_info,
             )
             .await?;
+        let storage_credentials = config.storage_credentials(&table_location);
+        let credentials_revalidate_after_ms = config
+            .credentials_expiration_ms
+            .map(credential_revalidate_after_ms);
 
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
@@ -518,8 +550,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
         }
 
+        // Outside the branches above on purpose. Re-registering over a table that keeps
+        // its id runs no create hook, and the drop above already took that table's grants
+        // with it, so the registered table would end up with no owner at all.
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            request_metadata,
+            &GrantResource::Table {
+                warehouse_id,
+                table_id: tabular_id,
+            },
+            t_write.transaction(),
+        )
+        .await?;
+
         // Commit the transaction
         t_write.commit().await?;
+
+        // Held across the register event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
@@ -547,15 +597,38 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(request),
             table_metadata.clone(),
             Arc::new(metadata_location),
+            data_access,
         );
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+
+        // Full snapshot list from the metadata file, tagged with the delegation
+        // and permission scope the config above was built for. A read-only
+        // caller's later load is scoped narrower, so it gets a distinct tag
+        // rather than matching this one. Now that register vends, the tag has to
+        // carry the credential's revalidation point too: without it a vending
+        // response yields a tag that can never produce a 304.
+        let etag = etag::TableETag::new(
+            warehouse_id,
+            &metadata_location_str,
+            etag::TableResponseShape::new(
+                SnapshotsQuery::All,
+                etag::StorageAccess::Config {
+                    delegation: data_access,
+                    permissions: storage_permissions,
+                    warehouse_version: warehouse.version,
+                },
+            ),
+            credentials_revalidate_after_ms,
+        )
+        .into_etag();
 
         Ok(LoadTableResult {
             metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
             config: Some(config.config.into()),
-            storage_credentials: None,
-            // No credentials are vended in the register response.
-            credentials_revalidate_after_ms: None,
+            storage_credentials,
+            etag: Some(etag),
         })
     }
 
@@ -659,6 +732,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
         // ------------------- VALIDATIONS -------------------
+        let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
@@ -701,8 +775,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     "commit_table must return exactly one CommitContext"
                 );
 
+                let metadata_location = item.new_metadata_location.to_string();
                 Ok(CommitTableResponse {
-                    metadata_location: item.new_metadata_location.to_string(),
+                    etag: Some(etag::commit_etag(warehouse_id, &metadata_location)),
+                    metadata_location,
                     metadata: item.new_metadata.clone(),
                     config: None,
                 })
@@ -741,8 +817,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropTable,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 return Ok(());
             }
@@ -1375,8 +1456,13 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
         ),
         async {
             if let Some(info) = idempotency {
-                C::check_idempotency_key(warehouse_id, &info.key, state.v1_state.catalog.clone())
-                    .await
+                C::check_idempotency_key(
+                    warehouse_id,
+                    &info.key,
+                    info.endpoint,
+                    state.v1_state.catalog.clone(),
+                )
+                .await
             } else {
                 Ok(IdempotencyCheck::NewRequest)
             }

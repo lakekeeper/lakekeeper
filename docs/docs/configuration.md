@@ -515,7 +515,7 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 
 | Variable                                         | Example   | Description   |
 |--------------------------------------------------|-----------|---------------|
-| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
+| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `33554432` | Maximum request body size in bytes. Default: `33554432` (32 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
 ### Roles
@@ -546,6 +546,10 @@ Captured at startup; not dynamic. While `read-only`:
 ### Idempotency
 
 Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
+
+Generate a fresh key per logical operation and never reuse one. Reusing a key on a different endpoint returns `400 IdempotencyKeyReused`. Reusing it on the *same* endpoint against a different table or namespace is not detected — the server replays the earlier outcome and the second operation does not run.
+
+Any UUID version is accepted, though the specification asks for UUIDv7.
 
 | Variable | Example | Description |
 |---|---|---|

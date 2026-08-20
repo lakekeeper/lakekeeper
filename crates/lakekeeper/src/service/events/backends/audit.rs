@@ -4,6 +4,7 @@ use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 use crate::{
     audit_operation,
+    request_metadata::{RequestMetadata, UserAgent},
     service::{
         authn::{Actor, InternalActor},
         authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
@@ -224,6 +225,16 @@ macro_rules! audit_log {
     }};
 }
 
+/// The `User-Agent` header for the `user_agent` audit field, or `None` when the
+/// caller sent none — which `valuable` renders as JSON `null`.
+///
+/// Recorded verbatim and **unverified**: any caller can set the header to any
+/// value, including one naming another client. `actor` and `privilege_source`
+/// are the authenticated facts on the same event.
+fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
+    request_metadata.user_agent().map(UserAgent::as_str)
+}
+
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -237,6 +248,7 @@ impl Display for AuditEventListener {
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
+        let user_agent = user_agent_value(&event.request_metadata);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -244,6 +256,7 @@ impl EventListener for AuditEventListener {
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
+                    user_agent = tracing::field::valuable(&user_agent),
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
@@ -258,6 +271,7 @@ impl EventListener for AuditEventListener {
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
+                    user_agent = tracing::field::valuable(&user_agent),
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
@@ -315,6 +329,7 @@ impl EventListener for AuditEventListener {
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
+        let user_agent = user_agent_value(&event.request_metadata);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -322,6 +337,7 @@ impl EventListener for AuditEventListener {
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
+                    user_agent = tracing::field::valuable(&user_agent),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
                 },
@@ -334,6 +350,7 @@ impl EventListener for AuditEventListener {
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
+                    user_agent = tracing::field::valuable(&user_agent),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
@@ -622,10 +639,108 @@ macro_rules! audit_operation {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use valuable::{Valuable, Value, Visit};
 
     use super::*;
-    use crate::service::authz::{ActionDescriptor, DeterminingFactor, PolicyEffect};
+    use crate::{
+        request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
+        service::{
+            authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
+            events::context::EventEntities,
+        },
+    };
+
+    /// Collects rendered log lines so a test can assert on the JSON a consumer
+    /// actually receives, rather than on the `Valuable` shape alone.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer poisoned").extend(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Render one audit event through the same JSON formatter the binary
+    /// configures (`lakekeeper-bin`'s `main`), and return it parsed.
+    fn emit_and_capture(event: AuthorizationSucceededEvent) -> serde_json::Value {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_writer(logs.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            futures::executor::block_on(AuditEventListener.authorization_succeeded(event))
+                .expect("emitting an audit event must not fail");
+        });
+
+        let bytes = logs.0.lock().expect("log buffer poisoned").clone();
+        let line = String::from_utf8(bytes).expect("log output must be utf-8");
+        serde_json::from_str(line.trim()).expect("log line must be valid json")
+    }
+
+    fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
+        let entities = Arc::new(EventEntities::one(EntityDescriptor::new("table")));
+        let actions = Arc::new(vec![
+            ActionDescriptor::builder().action_name("read_data").build(),
+        ]);
+        AuthorizationSucceededEvent {
+            request_metadata: Arc::new(request_metadata),
+            entities,
+            actions,
+            extra_context: Arc::new(std::collections::HashMap::new()),
+            authorizations: Arc::new(vec![sample(Vec::new())]),
+        }
+    }
+
+    /// The audit log has to say which client made the call, verbatim — a SIEM
+    /// classifies the string, so Lakekeeper must not normalise it away.
+    #[test]
+    fn an_audit_event_records_the_user_agent_verbatim() {
+        let metadata = RequestMetadataTestBuilder::builder()
+            .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
+            .build();
+
+        let event = emit_and_capture(succeeded_event(metadata));
+
+        assert_eq!(
+            event.get("user_agent").and_then(serde_json::Value::as_str),
+            Some("Apache-Spark/3.5.1 (Scala/2.12)"),
+        );
+    }
+
+    /// A request that sent no `User-Agent` must be distinguishable from one
+    /// that sent a client named "unknown", so the field is null rather than a
+    /// sentinel.
+    #[test]
+    fn an_audit_event_without_a_user_agent_records_null() {
+        let metadata = RequestMetadataTestBuilder::builder().build();
+
+        let event = emit_and_capture(succeeded_event(metadata));
+
+        assert_eq!(
+            event.get("user_agent"),
+            Some(&serde_json::Value::Null),
+            "the key must be present so consumers can tell 'not sent' from 'not recorded'"
+        );
+    }
 
     /// Records key/value pairs, flattening a nested map into `key=value` pairs joined
     /// by `,` so a whole context can be asserted with one exact comparison.
