@@ -366,6 +366,7 @@ impl GcsProfile {
                 creds: table_properties.clone(),
                 config: table_properties,
                 credentials_expiration_ms: None,
+                remote_signing: None,
             });
         }
 
@@ -445,6 +446,7 @@ impl GcsProfile {
             config: table_properties.clone(),
             creds: table_properties,
             credentials_expiration_ms,
+            remote_signing: None,
         })
     }
 

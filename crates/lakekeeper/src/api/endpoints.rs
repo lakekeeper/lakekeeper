@@ -194,6 +194,7 @@ generate_endpoints! {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
         S3RequestTabular(POST, "/catalog/v1/signer/{prefix}/tabular-id/{tabular_id}/v1/aws/s3/sign"),
+        S3RequestByTableName(POST, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/sign"),
     }
 
     enum ManagementV1 {

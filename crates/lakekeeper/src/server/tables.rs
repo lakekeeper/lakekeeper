@@ -626,6 +626,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         Ok(LoadTableResult {
             metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
+            remote_signing_config: config.remote_signing.clone(),
             config: Some(config.config.into()),
             storage_credentials,
             etag: Some(etag),
