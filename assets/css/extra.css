@@ -1,0 +1,231 @@
+:root {
+  --lakekeeper-primary-dark-color: #091F34;
+  --lakekeeper-primary-light-color: #32485C;
+  --lakekeeper-secondary-dark-color: #091F34;
+  --lakekeeper-secondary-blue-color: #32485C;
+  --lakekeeper-secondary-gray-color: #5D7389;
+  --lakekeeper-secondary-light-gray-color: #8DA5BA;
+  --lakekeeper-secondary-light-blue-color: #BCD4EB;
+
+  --lakekeeper-alert-color: #D81644;
+  --lakekeeper-warning-color: #FDB022;
+  --lakekeeper-success-color: #4DBB72;
+  --lakekeeper-font-dark-color: #101828;
+  --lakekeeper-font-light-color: #FFFFFF;
+
+}
+
+[data-md-color-primary=indigo] {
+  --md-primary-fg-color--light: var(--lakekeeper-primary-light-color);
+  --md-primary-fg-color--dark: var(--lakekeeper-primary-dark-color);
+}
+
+/* Click to select entire code token (metric names, env-var names) */
+.selectable {
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+/* Material's default h4/h5 are very thin and easily missed inside dense pages
+   like configuration.md. Bump weight and size so nested subsections are
+   visually distinct from body text without competing with h2/h3. */
+.md-typeset h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin-top: 1.6em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset h5 {
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  margin-top: 1.4em;
+  color: var(--md-default-fg-color);
+}
+
+/* Release-notes email subscribe callout (Buttondown embed).
+   Theme-aware: uses Material's own fg/bg/primary variables so it renders
+   cleanly in both light and dark schemes. */
+.lk-subscribe {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  margin: 1.2rem 0 2rem;
+  background: var(--md-code-bg-color);
+}
+.lk-subscribe > p:first-child {
+  margin-top: 0;
+  font-weight: 600;
+}
+.lk-subscribe form {
+  margin: 0;
+}
+.lk-subscribe .lk-subscribe-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.lk-subscribe input[type="email"] {
+  flex: 1 1 16rem;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--light);
+  border-radius: 6px;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  font-size: 0.8rem;
+}
+.lk-subscribe input[type="email"]:focus {
+  outline: none;
+  border-color: var(--md-accent-fg-color);
+}
+.lk-subscribe input[type="submit"] {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.lk-subscribe input[type="submit"]:hover {
+  background: var(--md-accent-fg-color);
+}
+.lk-subscribe .lk-subscribe-fine {
+  margin: 0.6rem 0 0;
+  font-size: 0.65rem;
+  color: var(--md-default-fg-color--light);
+}
+.lk-subscribe .lk-subscribe-fine a {
+  color: inherit;
+}
+.lk-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0); /* fallback for older browsers */
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Short Lakekeeper+ Badge with auto-generated content */
+.lkp-preview::after {
+  content: "preview";
+  color: var(--md-default-fg-color--light) !important;
+  background: var(--md-code-bg-color);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 700;
+  border: 0.5px solid var(--md-default-fg-color--lighter);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.lkp::after {
+  content: "★ lakekeeper+";
+  color: var(--lakekeeper-warning-color) !important;
+  background: rgba(253, 176, 34, 0.1);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 700;
+  border: 0.5px solid var(--lakekeeper-warning-color);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
+/* Highlight the top-level "Production" nav entry in the Lakekeeper+ gold
+   accent so it stands out from the OSS tabs and visually ties to the commercial
+   offering. The `.lk-nav-production` class is added by a small script in
+   overrides/main.html to the matching tab-bar and mobile-drawer links, so the
+   highlight also applies when Production is the active page (whose tab links to
+   `./`, not `production/`) — a plain href selector can't cover that case. */
+.md-tabs__link.lk-nav-production,
+.md-nav__link.lk-nav-production {
+  color: var(--lakekeeper-warning-color) !important;
+  font-weight: 700;
+  opacity: 1;
+}
+.md-tabs__link.lk-nav-production::before {
+  content: "★";
+  margin-right: 4px;
+  font-size: 0.85em;
+  vertical-align: baseline;
+}
+/* Keep it legible on hover/active. */
+.md-tabs__link.lk-nav-production:hover,
+.md-tabs__link.lk-nav-production:focus {
+  color: var(--lakekeeper-warning-color) !important;
+  opacity: 0.85;
+}
+/* Config-reference tables list env-var keys as inline code in the first
+   column. Keep those on one line so a key stays selectable and scannable as a
+   single token; keys too long for the column get an explicit `<br>` at a `__`
+   boundary from the `env_key_wrap.py` hook, which emits raw <code> and so is
+   unaffected by this rule.
+
+   Scoped to the first column on purpose. Applying it to every cell also froze
+   the ~200 code spans inside Description cells — one of them 66 characters —
+   which forced the description column past the page width and put the whole
+   table on a horizontal scrollbar. */
+.md-typeset table td:first-child code {
+  white-space: nowrap;
+}
+
+/* The other columns carry long unbreakable tokens — a 119-character example
+   URL, `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration`
+   and the like. Nothing in them is a wrap opportunity, so without this the
+   column claims that width and the table gets a horizontal scrollbar. */
+.md-typeset table td:not(:first-child) code {
+  overflow-wrap: anywhere;
+}
+
+/* Query-engine section headings. The brand mark used to live inside the
+   heading as an <img>, which put markup into the heading text that every
+   consumer of the page structure — table of contents, search index, and
+   anything reading the Markdown — had to strip. It is a decoration, so it
+   is drawn from CSS and the heading is left as plain text. */
+.md-typeset h2.engine::before {
+  content: "";
+  display: inline-block;
+  width: 1.4em;
+  height: 1.4em;
+  margin-right: 0.4em;
+  vertical-align: -0.3em;
+  background-image: var(--lk-engine-icon);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* LoQE is a Lakekeeper feature rather than a third-party engine, so it
+   carries the Lakekeeper bear rather than a vendor mark. (The other rules
+   map data-icon straight onto a matching filename; this one does not.) */
+.md-typeset h2.engine[data-icon="lakekeeper"] { --lk-engine-icon: url("/assets/bear.svg"); }
+.md-typeset h2.engine[data-icon="athena"] { --lk-engine-icon: url("/assets/athena.svg"); }
+.md-typeset h2.engine[data-icon="duckdb"] { --lk-engine-icon: url("/assets/duckdb.svg"); }
+.md-typeset h2.engine[data-icon="firebolt"] { --lk-engine-icon: url("/assets/firebolt.svg"); }
+.md-typeset h2.engine[data-icon="fluss"] { --lk-engine-icon: url("/assets/fluss.svg"); }
+.md-typeset h2.engine[data-icon="olake"] { --lk-engine-icon: url("/assets/olake.svg"); }
+.md-typeset h2.engine[data-icon="python"] { --lk-engine-icon: url("/assets/python.svg"); }
+.md-typeset h2.engine[data-icon="risingwave"] { --lk-engine-icon: url("/assets/risingwave.svg"); }
+.md-typeset h2.engine[data-icon="spark"] { --lk-engine-icon: url("/assets/spark.svg"); }
+.md-typeset h2.engine[data-icon="starburst"] { --lk-engine-icon: url("/assets/starburst.svg"); }
+.md-typeset h2.engine[data-icon="starrocks"] { --lk-engine-icon: url("/assets/starrocks.svg"); }
+.md-typeset h2.engine[data-icon="trino"] { --lk-engine-icon: url("/assets/trino.svg"); }
