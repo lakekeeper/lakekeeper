@@ -56,7 +56,14 @@ pub(crate) async fn list_statistics(
                array_agg(es.created_at) as "created_at!",
                array_agg(es.updated_at) as "updated_at!: Vec<Option<chrono::DateTime<Utc>>>"
         FROM endpoint_statistics es
-        LEFT JOIN warehouse w ON es.warehouse_id = w.warehouse_id
+        -- Constrained to the row's own project as well as its warehouse id.
+        -- `endpoint_statistics` has no foreign key to `warehouse` (dropped in
+        -- 20251003103404 so a project keeps its history when a warehouse goes),
+        -- and `warehouse_name` below comes from this join, so matching on the id
+        -- alone would resolve a name out of whatever project holds that id today.
+        LEFT JOIN warehouse w
+            ON es.warehouse_id = w.warehouse_id
+           AND es.project_id = w.project_id
         WHERE es.project_id = $1
             AND (es.warehouse_id = $2 OR $3)
             AND (status_code = ANY($4) OR $4 IS NULL)
