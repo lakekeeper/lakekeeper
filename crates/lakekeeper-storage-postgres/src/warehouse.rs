@@ -20,9 +20,9 @@ use lakekeeper::{
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
         SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
-        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
-        WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
-        WarehouseVersion, registered_system_roles, storage::StorageProfile,
+        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked,
+        WarehouseStatus, WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 use sqlx::{PgPool, types::Json};
@@ -93,6 +93,7 @@ pub(crate) async fn create_warehouse(
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let CatalogCreateWarehouseRequest {
         warehouse_name,
+        warehouse_id,
         storage_profile,
         storage_secret_id,
         delete_profile: tabular_delete_profile,
@@ -117,6 +118,7 @@ pub(crate) async fn create_warehouse(
         WarehouseRecord,
         r#"WITH
             whi AS (INSERT INTO warehouse (
+                                   warehouse_id,
                                    warehouse_name,
                                    project_id,
                                    storage_profile,
@@ -127,7 +129,9 @@ pub(crate) async fn create_warehouse(
                                    allowed_format_versions,
                                    default_format_version,
                                    managed_by)
-                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)
+                                -- COALESCE keeps the column's own default as the
+                                -- fallback for callers that do not pick an id.
+                                VALUES (COALESCE($10, uuid_generate_v1mc()), $1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)
                                 RETURNING
                                     project_id,
                                     warehouse_id,
@@ -158,7 +162,8 @@ pub(crate) async fn create_warehouse(
         prof as _,
         &allowed_format_versions_db,
         default_format_version_db,
-        managed_by as ManagedBy
+        managed_by as ManagedBy,
+        warehouse_id.map(|id| *id)
     )
     .fetch_one(&mut **transaction)
     .await
@@ -168,6 +173,13 @@ pub(crate) async fn create_warehouse(
             Some("unique_warehouse_name_in_project") => CatalogCreateWarehouseError::from(
                 WarehouseAlreadyExists::new(warehouse_name, project_id.clone()),
             ),
+            // Reachable only for a caller-supplied id: the column default cannot
+            // collide in practice.
+            Some("warehouse_pkey") => warehouse_id
+                .map_or_else(
+                    || e.into_catalog_backend_error().into(),
+                    |id| CatalogCreateWarehouseError::from(WarehouseIdAlreadyExists::new(id)),
+                ),
             Some("warehouse_project_id_fk") => {
                 ProjectIdNotFoundError::new(project_id.clone()).into()
             }

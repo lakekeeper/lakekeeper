@@ -112,6 +112,8 @@ Each Project can contain multiple Warehouses. Query engines connect to Lakekeepe
 
 Each Warehouse is associated with a unique location on object stores. Never share locations between Warehouses to ensure no data is leaked via vended credentials. Each Warehouse stores information on how to connect to its location via a `storage-profile` and an optional `storage-credential`.
 
+Each Warehouse also has a UUID, unique across the whole instance, which appears as the `prefix` in `/catalog` URLs. Lakekeeper assigns it, which is what we recommend; provisioning tools that need the ID up front can pass `warehouse-id` to `POST /management/v1/warehouse` instead — prefer a UUIDv7, and expect a `409` if the ID is taken. Do not re-use the ID of a deleted Warehouse: caches and permission records key on the Warehouse ID alone, so an ID that changes hands can briefly resolve to the previous Warehouse.
+
 Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please note that Warehouses and Namespaces cannot be deleted via the `/catalog` API if child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
 
 ### Namespaces

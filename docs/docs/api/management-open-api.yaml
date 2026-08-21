@@ -8413,6 +8413,17 @@ components:
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile to use for the warehouse.
+        warehouse-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Request a specific warehouse ID - optional.
+            If not provided, a new warehouse ID will be generated (recommended).
+            Warehouse IDs are unique across the whole Lakekeeper instance, not just
+            within a project. If you do provide one, prefer a UUIDv7, so that IDs
+            sort by creation time.
         warehouse-name:
           type: string
           description: |-
@@ -16005,6 +16016,7 @@ components:
         - profile-well-formed
         - profile-compatible
         - warehouse-name-valid
+        - warehouse-id-available
         - location-exclusive
         - spec-mutable
         - format-version-policy-consistent
