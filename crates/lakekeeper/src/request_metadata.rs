@@ -391,6 +391,20 @@ impl RequestMetadata {
         self
     }
 
+    /// The project the request itself names, before any default is applied.
+    ///
+    /// [`Self::preferred_project_id`] answers "which project should this request read", folding
+    /// in the configured default. This answers the narrower question "did the caller say which
+    /// project" — which is what an authorizer needs to tell a caller who named the wrong
+    /// project apart from one who named none and got the default.
+    ///
+    /// The two cannot be told apart from `preferred_project_id` alone: a request naming the
+    /// default project and a request naming nothing return the same value.
+    #[must_use]
+    pub fn requested_project_id(&self) -> Option<&ArcProjectId> {
+        self.project_id.as_ref()
+    }
+
     #[must_use]
     pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
@@ -821,6 +835,35 @@ mod test {
         ] {
             assert_eq!(UserAgent::parse(raw).as_str(), raw);
         }
+    }
+
+    /// The two project accessors answer different questions, and the difference is the
+    /// whole reason the narrower one exists: a request that names no project still has a
+    /// preferred one when a default is configured, and a consumer that cannot tell those
+    /// apart cannot report "you named the wrong project" without also rejecting callers who
+    /// named nothing at all.
+    #[test]
+    fn a_requested_project_is_distinct_from_a_preferred_one() {
+        let named = ProjectId::from(uuid::Uuid::from_u128(1));
+        let mut with_header = RequestMetadata::new_unauthenticated();
+        with_header.with_project_id(named.clone());
+        assert_eq!(
+            with_header.requested_project_id().map(AsRef::as_ref),
+            Some(&named)
+        );
+        assert_eq!(with_header.preferred_project_id().as_deref(), Some(&named));
+
+        let without_header = RequestMetadata::new_unauthenticated();
+        assert_eq!(
+            without_header.requested_project_id(),
+            None,
+            "a request that names no project must say so, whatever the default is"
+        );
+        assert_eq!(
+            without_header.preferred_project_id(),
+            DEFAULT_PROJECT_ID.clone(),
+            "while the preferred project still falls back to the configured default"
+        );
     }
 
     /// The header is caller-controlled and lands on every audit record, so its

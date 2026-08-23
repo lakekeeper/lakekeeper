@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 use crate::{
-    catalog::{TableIdent, TableRequirement, TableUpdate},
+    catalog::{TableIdent, TableRequirement, TableUpdate, rest::RemoteSigningConfig},
     spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
@@ -37,6 +37,12 @@ pub struct LoadTableResult {
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
+    /// Signer settings for clients that support them, superseding the deprecated
+    /// `signer.uri` / `signer.endpoint` config keys. Omitted rather than sent as
+    /// `null` when remote signing is off, since a client that finds it absent
+    /// falls back to those keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_signing_config: Option<RemoteSigningConfig>,
     /// Validator for this exact body, emitted as the `ETag` header.
     ///
     /// Not serialized, and deliberately not derivable from this struct: the tag
@@ -240,6 +246,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
@@ -259,6 +266,7 @@ mod tests {
             metadata: create_table_metadata_mock(),
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.abc.199e1e0f9c3\"")),
         };
 
@@ -279,6 +287,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             // Staged tables have no metadata location, so the caller mints no tag.
             etag: None,
         };
@@ -299,6 +308,7 @@ mod tests {
             metadata: table_metadata.clone(),
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 

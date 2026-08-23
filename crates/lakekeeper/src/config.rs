@@ -137,13 +137,19 @@ fn get_config() -> DynAppConfig {
         uri.join("management").expect("Valid URL");
     }
 
-    // `UserAssignmentsCache` entries may reference roles that are still live
-    // in the role cache.  If `user_assignments.time_to_live_secs` exceeds
-    // `role.time_to_live_secs` a deleted role can remain visible through
-    // user-assignment cache entries after it has been evicted from the role
-    // cache, violating the documented invariant.
-    // The constraint is only meaningful when both caches are active; if either
-    // is disabled the TTL relationship has no effect at runtime.
+    validate_cache_ttls(&mut config);
+
+    config
+}
+
+/// Caches whose entries name roles must not outlive the role cache: a deleted role would
+/// stay visible through them after the role cache evicted it.
+///
+/// Only meaningful while both caches are active; with either disabled the TTL relationship
+/// has no effect at runtime.
+fn validate_cache_ttls(config: &mut DynAppConfig) {
+    // Rejected rather than lowered: both settings predate this check, so a deployment
+    // reaching it wrote them itself.
     if config.cache.user_assignments.enabled && config.cache.role.enabled {
         assert!(
             config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
@@ -153,7 +159,26 @@ fn get_config() -> DynAppConfig {
         );
     }
 
-    config
+    // Same reasoning for role ancestors: entries name roles, so outliving the role cache
+    // would keep a deleted role visible through them.
+    //
+    // Lowered to the role TTL rather than rejected. This cache is newer than the role cache,
+    // so a deployment that lowered `role` (and `user_assignments` with it, which the check
+    // above already required) has no ancestors setting of its own, and refusing to start
+    // would fail on a value the operator never wrote.
+    if config.cache.role_ancestors.enabled
+        && config.cache.role.enabled
+        && config.cache.role_ancestors.time_to_live_secs > config.cache.role.time_to_live_secs
+    {
+        tracing::warn!(
+            "cache.role_ancestors.time_to_live_secs ({}) exceeds cache.role.time_to_live_secs \
+             ({}); using the role TTL for both, so an evicted role cannot stay visible \
+             through its ancestors",
+            config.cache.role_ancestors.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+        config.cache.role_ancestors.time_to_live_secs = config.cache.role.time_to_live_secs;
+    }
 }
 
 fn validate_openid_provider_ids(config: &DynAppConfig) {
@@ -957,6 +982,34 @@ impl Default for RoleMembersCache {
     }
 }
 
+/// Cache for `RoleId → the roles it is transitively a member of`.
+///
+/// Read on authorization requests that name a role rather than a user — the roles a
+/// nesting-aware policy has to see. Keyed per role. Entries are bounded by
+/// [`RoleConfig::max_nesting_depth`], which the write path enforces per edge, and most roles
+/// are nested in nothing at all, so the common entry is empty.
+///
+/// `time_to_live_secs` must not exceed `role.time_to_live_secs`, for the same reason it must
+/// not for user assignments: entries name roles, and outliving the role cache would keep a
+/// deleted one visible through them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleAncestorsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for RoleAncestorsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -973,6 +1026,8 @@ pub(crate) struct Cache {
     pub(crate) user_assignments: UserAssignmentsCache,
     /// Role-members cache: `RoleId → members`.
     pub(crate) role_members: RoleMembersCache,
+    /// Role-ancestors cache: `RoleId → the roles it is a member of`.
+    pub(crate) role_ancestors: RoleAncestorsCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2112,6 +2167,26 @@ mod test {
             assert!(config.cache.role_members.enabled);
             assert_eq!(config.cache.role_members.capacity, 5000);
             assert_eq!(config.cache.role_members.time_to_live_secs, 30);
+            Ok(())
+        });
+    }
+
+    /// A deployment predating the role-ancestors cache still starts.
+    ///
+    /// Lowering the role TTL has always required lowering `user_assignments` with it, so
+    /// that pair is the configuration this cache arrived into. It carries no ancestors
+    /// setting, and the one it inherits must not outlive the roles its entries name.
+    #[test]
+    fn role_ancestors_ttl_follows_a_lower_role_ttl() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__TIME_TO_LIVE_SECS", "60");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let config = get_config();
+            assert_eq!(config.cache.role.time_to_live_secs, 60);
+            assert_eq!(config.cache.role_ancestors.time_to_live_secs, 60);
             Ok(())
         });
     }

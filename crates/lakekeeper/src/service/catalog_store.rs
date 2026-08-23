@@ -271,6 +271,11 @@ pub struct CatalogCreateRoleRequest<'a> {
 #[derive(Debug, typed_builder::TypedBuilder)]
 pub struct CatalogCreateWarehouseRequest {
     pub warehouse_name: String,
+    /// ID to create the warehouse under. `None` leaves the choice to the
+    /// backend's own default. The management API always supplies one so the ID
+    /// is known before the insert; direct callers may omit it.
+    #[builder(default)]
+    pub warehouse_id: Option<WarehouseId>,
     pub storage_profile: StorageProfile,
     #[builder(default)]
     pub storage_secret_id: Option<SecretId>,
@@ -1013,6 +1018,18 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
+
+    /// Every role each of `role_ids` is nested inside, transitively.
+    ///
+    /// Must return an entry for **every** id it was given: a role nested in
+    /// nothing maps to an empty vec rather than being absent. A short result is
+    /// treated as a backend error, because an omitted role cannot be told apart
+    /// from one with no ancestors, and reading it as none silently unscopes
+    /// every policy written against a parent role.
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,

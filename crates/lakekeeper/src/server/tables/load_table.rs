@@ -257,11 +257,15 @@ pub(crate) async fn load_table_with_flags<
 
     event_ctx.emit_table_loaded_async(metadata_ref.clone(), metadata_location_ref.clone());
 
+    let remote_signing_config = storage_config
+        .as_ref()
+        .and_then(|c| c.remote_signing.clone());
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location_ref.as_ref().map(ToString::to_string),
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
+        remote_signing_config,
         etag: metadata_location_ref.as_ref().map(|loc| {
             TableETag::new(
                 warehouse_id,

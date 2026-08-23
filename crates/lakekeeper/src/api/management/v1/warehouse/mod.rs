@@ -102,6 +102,31 @@ pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
     /// within a project and may not contain "/"
     pub warehouse_name: String,
+    /// Request a specific warehouse ID - optional.
+    /// If not provided, a new warehouse ID will be generated (recommended).
+    /// Warehouse IDs are unique across the whole Lakekeeper instance, not just
+    /// within a project. If you do provide one, prefer a UUIDv7, so that IDs
+    /// sort by creation time.
+    // Why v7: the standard random-vs-time-ordered B-tree argument. A random id
+    // scatters inserts across the whole index, so pages split down the middle and
+    // the index ends up fragmented, larger, and read from disk at random;
+    // published Postgres benchmarks put v4 inserts several times slower than v7
+    // at scale, with a measurably bigger index. A time-ordered id keeps inserts
+    // at the growing edge, so pages fill densely.
+    //
+    // It reaches `warehouse_id` transitively: this column leads the primary key
+    // of most catalog tables, so it decides where a warehouse's whole subtree of
+    // rows lands. Loading tables into a freshly created warehouse is the case
+    // that benefits — with a time-ordered warehouse id those inserts extend the
+    // end of each index instead of splitting pages in its middle.
+    //
+    // Kept out of the doc comment above deliberately: that text ships into the
+    // committed OpenAPI spec, and the primary-key layout is not something the
+    // public API should promise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<uuid::Uuid>))]
+    pub warehouse_id: Option<WarehouseId>,
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
@@ -444,6 +469,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<CreateWarehouseResponse> {
         let CreateWarehouseRequest {
             warehouse_name,
+            warehouse_id,
             project_id,
             mut storage_profile,
             storage_credential,
@@ -455,6 +481,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(project_id)?;
         let format_version_policy =
             validate_format_version_policy(allowed_format_versions, default_format_version)?;
+        // Generated here rather than left to the database default so that the ID
+        // is known before the insert, and so that an omitted `warehouse-id`
+        // yields the same UUIDv7 we recommend to callers who supply one.
+        let warehouse_id = warehouse_id.unwrap_or_else(WarehouseId::new_random);
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -533,6 +563,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             project_id,
             CatalogCreateWarehouseRequest::builder()
                 .warehouse_name(warehouse_name)
+                .warehouse_id(Some(warehouse_id))
                 .storage_profile(storage_profile)
                 .storage_secret_id(secret_id)
                 .delete_profile(delete_profile)
@@ -560,6 +591,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
+        // Drop any entry this replica still holds for the id before the create
+        // event repopulates it. Every other warehouse write invalidates; create
+        // could skip it while ids were always fresh, because there was nothing to
+        // displace. A caller-supplied id can name a warehouse this replica cached
+        // before it was deleted, and `warehouse_cache_insert` refuses to overwrite
+        // a higher `version` — a recreated warehouse starts back at 0, so without
+        // this the replica would keep serving the previous warehouse's project and
+        // storage profile under an id that now belongs to a different one.
+        warehouse_cache_invalidate(resolved_warehouse.warehouse_id).await;
+
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
@@ -584,6 +625,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // thing it predicts if it is literally the same type.
         let CreateWarehouseRequest {
             warehouse_name,
+            warehouse_id,
             project_id,
             mut storage_profile,
             storage_credential,
@@ -643,8 +685,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // warehouse into existence already owned by a control plane.
         report.push(managed_by_check(managed_by, request_metadata));
 
-        // The project listing serves both the name-availability and the
-        // location-overlap check; fetch it once, alongside the storage probes.
+        // The project listing serves the name-availability, id-availability and
+        // location-overlap checks; fetch it once, alongside the storage probes.
         let listing = C::list_warehouses(
             project_id,
             Some(WarehouseStatus::active_and_inactive().to_vec()),
@@ -677,12 +719,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     ValidationCheckName::LocationExclusive,
                     "Could not list the warehouses in this project.",
                 );
+                report.skip(
+                    ValidationCheckName::WarehouseIdAvailable,
+                    "Could not list the warehouses in this project.",
+                );
                 report.extend(probe_checks);
                 return Ok(report.build().into());
             }
         };
 
         report.push(warehouse_name_check(&warehouse_name, &warehouses));
+        report.push(warehouse_id_check(warehouse_id, &warehouses));
         report.push(if normalized {
             location_overlap_check(&storage_profile, &warehouses)
         } else {
@@ -731,6 +778,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         report.push(ValidationCheck::skipped(
             ValidationCheckName::WarehouseNameValid,
             "Updating storage does not change the warehouse name.",
+        ));
+        report.push(ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "Updating storage does not change the warehouse id.",
         ));
         report.push(ValidationCheck::skipped(
             ValidationCheckName::LocationExclusive,
@@ -2303,6 +2354,44 @@ fn warehouse_name_check(
     ValidationCheck::passed(ValidationCheckName::WarehouseNameValid, elapsed_ms(started))
 }
 
+/// Check that a requested warehouse id is not already used in this project.
+///
+/// Only the caller's own project is examined, so this cannot confirm the id is
+/// free instance-wide — deliberately: the dry run must not become a cheap oracle
+/// for which ids exist in projects the caller cannot see. A collision outside
+/// the project surfaces as a conflict on the real create.
+fn warehouse_id_check(
+    warehouse_id: Option<WarehouseId>,
+    warehouses: &[Arc<ResolvedWarehouse>],
+) -> ValidationCheck {
+    let started = Instant::now();
+    let Some(warehouse_id) = warehouse_id else {
+        return ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "No warehouse id was requested; the server will assign one.",
+        );
+    };
+    if warehouses.iter().any(|w| w.warehouse_id == warehouse_id) {
+        return ValidationCheck::failed(
+            ValidationCheckName::WarehouseIdAvailable,
+            elapsed_ms(started),
+            warehouse_id_taken_error(warehouse_id),
+        );
+    }
+    ValidationCheck::passed(
+        ValidationCheckName::WarehouseIdAvailable,
+        elapsed_ms(started),
+    )
+}
+
+fn warehouse_id_taken_error(warehouse_id: WarehouseId) -> ErrorModel {
+    ErrorModel::bad_request(
+        format!("A warehouse with id `{warehouse_id}` already exists."),
+        "WarehouseIdAlreadyTaken",
+        None,
+    )
+}
+
 /// Check that no other warehouse in the project already occupies this location.
 fn location_overlap_check(
     storage_profile: &StorageProfile,
@@ -2395,6 +2484,10 @@ async fn stored_profile_report(
     report.skip(ValidationCheckName::ProfileCompatible, compatibility_reason);
     report.skip(
         ValidationCheckName::WarehouseNameValid,
+        "The warehouse already exists.",
+    );
+    report.skip(
+        ValidationCheckName::WarehouseIdAvailable,
         "The warehouse already exists.",
     );
     report.skip(

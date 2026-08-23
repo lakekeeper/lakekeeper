@@ -787,6 +787,9 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     // cache-hardening notes).
     role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
     role_assignments_cache::role_members_cache_invalidate(role_id).await;
+    // The cascade also erased this role's `role_membership` edges, so it is no longer an
+    // ancestor of anything nested beneath it — a set cached per role, not per user.
+    role_assignments_cache::role_ancestors_cache_invalidate_all();
     Ok(role)
 }
 
@@ -892,6 +895,10 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
 
     role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
     role_assignments_cache::role_members_cache_invalidate(role_id).await;
+    // A rebind changes this role's ident, which is what an external authorizer names it by.
+    // Cached ancestor sets carry that ident per row, so they would keep publishing the old
+    // one — and a policy naming the new ident would match nothing.
+    role_assignments_cache::role_ancestors_cache_invalidate_all();
     Ok(role)
 }
 
