@@ -1,4 +1,8 @@
-# Admission Gates <span class="lkp"></span> {#admission-gates}
+---
+description: "Configure admission gates in Lakekeeper Plus to allow or deny authenticated requests before they reach a handler, using an external entitlement service."
+---
+
+# Admission Gates { #admission-gates .lkp }
 
 An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, suspend a tenant or principal, or reject revoked tokens.
 

@@ -1,3 +1,7 @@
+---
+description: "Bootstrap a new Lakekeeper deployment through the UI or the /management/v1/bootstrap endpoint. What initial access this grants depends on the configured authorizer."
+---
+
 # Bootstrap / Initialize
 
 After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the `/management/v1/bootstrap` endpoint. A typical POST request to bootstrap Lakekeeper looks like this:

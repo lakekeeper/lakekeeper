@@ -1,3 +1,7 @@
+---
+description: "Choose and configure a Lakekeeper Authorizer — OpenFGA or Cedar — and learn how grants, privileges and roles control access to catalog objects."
+---
+
 # Authorization
 
 Authentication verifies *who* you are, while authorization determines *what* you can do. Authorization can only be enabled if Authentication is enabled — see the [Authentication docs](./authentication.md).

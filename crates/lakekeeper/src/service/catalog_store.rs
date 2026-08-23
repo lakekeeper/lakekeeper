@@ -271,6 +271,11 @@ pub struct CatalogCreateRoleRequest<'a> {
 #[derive(Debug, typed_builder::TypedBuilder)]
 pub struct CatalogCreateWarehouseRequest {
     pub warehouse_name: String,
+    /// ID to create the warehouse under. `None` leaves the choice to the
+    /// backend's own default. The management API always supplies one so the ID
+    /// is known before the insert; direct callers may omit it.
+    #[builder(default)]
+    pub warehouse_id: Option<WarehouseId>,
     pub storage_profile: StorageProfile,
     #[builder(default)]
     pub storage_secret_id: Option<SecretId>,

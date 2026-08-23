@@ -4,7 +4,7 @@
 //! considered, never stops at the first failure, and never mutates anything.
 
 use lakekeeper::{
-    ProjectId,
+    ProjectId, WarehouseId,
     api::management::v1::{
         ApiServer,
         warehouse::{
@@ -576,4 +576,98 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
     )
     .await;
     assert!(stored_denied.is_err());
+}
+
+/// The id-availability check reports what the dry run can actually determine:
+/// skipped when no id was requested, failed when the id is held by a warehouse in
+/// this project, passed otherwise.
+#[sqlx::test]
+async fn test_validate_warehouse_id_availability(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let existing = PostgresBackend::list_warehouses(
+        &project_id,
+        Some(WarehouseStatus::active_and_inactive().to_vec()),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    let taken = existing.first().unwrap().warehouse_id;
+
+    // No id requested: nothing to check, and the report says so rather than
+    // silently omitting the check.
+    let response = ApiServer::validate_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("no-id-{}", Uuid::now_v7()))
+            .storage_profile(memory_io_profile())
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_report_is_exhaustive(&response);
+    assert_eq!(
+        status_of(&response, ValidationCheckName::WarehouseIdAvailable),
+        ValidationCheckStatus::Skipped
+    );
+    assert!(response.valid, "{:?}", response.checks);
+
+    // A free id passes.
+    let response = ApiServer::validate_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("free-id-{}", Uuid::now_v7()))
+            .warehouse_id(WarehouseId::new_random())
+            .storage_profile(memory_io_profile())
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_report_is_exhaustive(&response);
+    assert_eq!(
+        status_of(&response, ValidationCheckName::WarehouseIdAvailable),
+        ValidationCheckStatus::Passed
+    );
+    assert!(response.valid, "{:?}", response.checks);
+
+    // An id held by a warehouse in this project fails, and the whole report is
+    // invalid because of it.
+    let response = ApiServer::validate_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("taken-id-{}", Uuid::now_v7()))
+            .warehouse_id(taken)
+            .storage_profile(memory_io_profile())
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_report_is_exhaustive(&response);
+    assert_eq!(
+        status_of(&response, ValidationCheckName::WarehouseIdAvailable),
+        ValidationCheckStatus::Failed
+    );
+    assert!(!response.valid, "{:?}", response.checks);
+
+    // Nothing was created by any of the three dry runs.
+    let after = PostgresBackend::list_warehouses(
+        &project_id,
+        Some(WarehouseStatus::active_and_inactive().to_vec()),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(after.len(), existing.len());
 }

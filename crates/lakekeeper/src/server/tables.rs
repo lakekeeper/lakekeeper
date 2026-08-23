@@ -40,7 +40,7 @@ use super::{
     require_warehouse_id,
 };
 use crate::{
-    WarehouseId, XXHashSet,
+    CONFIG, WarehouseId, XXHashSet,
     api::{
         endpoints::EndpointFlat,
         iceberg::{
@@ -626,6 +626,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         Ok(LoadTableResult {
             metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
+            remote_signing_config: config.remote_signing.clone(),
             config: Some(config.config.into()),
             storage_credentials,
             etag: Some(etag),
@@ -655,6 +656,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+        validate_referenced_by(
+            referenced_by.as_deref(),
+            CONFIG.referenced_by.max_nesting_depth,
+        )?;
 
         let event_ctx = APIEventContext::for_table(
             Arc::new(request_metadata),

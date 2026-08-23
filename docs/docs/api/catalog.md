@@ -1,6 +1,7 @@
 ---
 hide:
   - toc
+description: "Interactive OpenAPI reference for Lakekeeper's Apache Iceberg REST Catalog API."
 ---
 <style>
 /*

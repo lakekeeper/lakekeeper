@@ -174,3 +174,58 @@
   color: var(--lakekeeper-warning-color) !important;
   opacity: 0.85;
 }
+/* Config-reference tables list env-var keys as inline code in the first
+   column. Keep those on one line so a key stays selectable and scannable as a
+   single token; keys too long for the column get an explicit `<br>` at a `__`
+   boundary from the `env_key_wrap.py` hook, which emits raw <code> and so is
+   unaffected by this rule.
+
+   Scoped to the first column on purpose. Applying it to every cell also froze
+   the ~200 code spans inside Description cells — one of them 66 characters —
+   which forced the description column past the page width and put the whole
+   table on a horizontal scrollbar. */
+.md-typeset table td:first-child code {
+  white-space: nowrap;
+}
+
+/* The other columns carry long unbreakable tokens — a 119-character example
+   URL, `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration`
+   and the like. Nothing in them is a wrap opportunity, so without this the
+   column claims that width and the table gets a horizontal scrollbar. */
+.md-typeset table td:not(:first-child) code {
+  overflow-wrap: anywhere;
+}
+
+/* Query-engine section headings. The brand mark used to live inside the
+   heading as an <img>, which put markup into the heading text that every
+   consumer of the page structure — table of contents, search index, and
+   anything reading the Markdown — had to strip. It is a decoration, so it
+   is drawn from CSS and the heading is left as plain text. */
+.md-typeset h2.engine::before {
+  content: "";
+  display: inline-block;
+  width: 1.4em;
+  height: 1.4em;
+  margin-right: 0.4em;
+  vertical-align: -0.3em;
+  background-image: var(--lk-engine-icon);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* LoQE is a Lakekeeper feature rather than a third-party engine, so it
+   carries the Lakekeeper bear rather than a vendor mark. (The other rules
+   map data-icon straight onto a matching filename; this one does not.) */
+.md-typeset h2.engine[data-icon="lakekeeper"] { --lk-engine-icon: url("/assets/bear.svg"); }
+.md-typeset h2.engine[data-icon="athena"] { --lk-engine-icon: url("/assets/athena.svg"); }
+.md-typeset h2.engine[data-icon="duckdb"] { --lk-engine-icon: url("/assets/duckdb.svg"); }
+.md-typeset h2.engine[data-icon="firebolt"] { --lk-engine-icon: url("/assets/firebolt.svg"); }
+.md-typeset h2.engine[data-icon="fluss"] { --lk-engine-icon: url("/assets/fluss.svg"); }
+.md-typeset h2.engine[data-icon="olake"] { --lk-engine-icon: url("/assets/olake.svg"); }
+.md-typeset h2.engine[data-icon="python"] { --lk-engine-icon: url("/assets/python.svg"); }
+.md-typeset h2.engine[data-icon="risingwave"] { --lk-engine-icon: url("/assets/risingwave.svg"); }
+.md-typeset h2.engine[data-icon="spark"] { --lk-engine-icon: url("/assets/spark.svg"); }
+.md-typeset h2.engine[data-icon="starburst"] { --lk-engine-icon: url("/assets/starburst.svg"); }
+.md-typeset h2.engine[data-icon="starrocks"] { --lk-engine-icon: url("/assets/starrocks.svg"); }
+.md-typeset h2.engine[data-icon="trino"] { --lk-engine-icon: url("/assets/trino.svg"); }

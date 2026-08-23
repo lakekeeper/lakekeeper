@@ -1,4 +1,4 @@
-name: Docs Link Check
+name: Docs Link & SEO Check
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   linkcheck:
-    name: Link Check
+    name: Link & SEO Check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -29,6 +29,9 @@ jobs:
       - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: lychee
-      - name: Link check (nightly anchors + assembled-site files)
+      # `just linkcheck` builds the site, checks anchors and links, and then
+      # runs `just seo-check` over the same build (sitemap, canonicals,
+      # noindex on duplicate version trees, Open Graph, llms.txt/robots.txt).
+      - name: Link check (nightly anchors + assembled-site files) and SEO check
         run: just linkcheck
         working-directory: ./site

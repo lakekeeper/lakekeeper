@@ -4,7 +4,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::ETag;
 
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::iceberg::v1::{
         ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
         TableParameters,
@@ -16,7 +16,7 @@ use crate::{
         tables::{
             authorize_load_table,
             etag::{StorageAccess, TableETag, TableResponseShape},
-            parse_location, validate_table_or_view_ident,
+            parse_location, validate_referenced_by, validate_table_or_view_ident,
         },
     },
     service::{
@@ -93,6 +93,10 @@ pub(crate) async fn load_table_with_flags<
         }
         return Err(e);
     }
+    validate_referenced_by(
+        referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
@@ -253,11 +257,15 @@ pub(crate) async fn load_table_with_flags<
 
     event_ctx.emit_table_loaded_async(metadata_ref.clone(), metadata_location_ref.clone());
 
+    let remote_signing_config = storage_config
+        .as_ref()
+        .and_then(|c| c.remote_signing.clone());
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location_ref.as_ref().map(ToString::to_string),
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
+        remote_signing_config,
         etag: metadata_location_ref.as_ref().map(|loc| {
             TableETag::new(
                 warehouse_id,

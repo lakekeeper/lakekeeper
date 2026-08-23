@@ -1,3 +1,7 @@
+---
+description: "Deploy Lakekeeper with the self-contained examples, Docker Compose, Kubernetes, a prebuilt binary or from source, and connect your first query engine."
+---
+
 # Getting Started
 
 There are multiple ways to deploy Lakekeeper. Our [self-contained examples](#option-1-examples) are the easiest way to get started and deploy everything you need (including S3, Query Engines, Jupyter, ...). By default, compute outside of the docker network cannot access the example Warehouses due to docker networking.

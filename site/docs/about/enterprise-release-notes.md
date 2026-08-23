@@ -1,3 +1,7 @@
+---
+description: "Release notes for Lakekeeper+, the commercial distribution, covering Cedar authorization, UI branding, admission gates and other enterprise features."
+---
+
 # Lakekeeper+ Release Notes
 
 ## v0.13.4 (2026-08-14)

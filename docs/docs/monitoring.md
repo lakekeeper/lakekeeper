@@ -1,3 +1,7 @@
+---
+description: "Monitor Lakekeeper with Prometheus metrics and per-project endpoint statistics, and wire them into a Kubernetes, Prometheus and Grafana stack."
+---
+
 # Monitoring Lakekeeper
 
 Lakekeeper exposes Prometheus metrics and per-project endpoint statistics. We recommend integrating these into your Kubernetes/Grafana/Prometheus stack.
@@ -43,7 +47,7 @@ The user-assignments cache stores a fully-expanded transitive closure, so one ro
 
 The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance, so it falls after a clear rather than at the moment of one — do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all, since OpenFGA resolves role nesting from its own tuples and never reads this cache: alert on absence there, not on a zero value.
 
-### Role Provider Metrics <span class="lkp"></span>
+### Role Provider Metrics { .lkp }
 
 When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
 
@@ -60,7 +64,7 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 |-------------------------------|----------------------------------------------|
 | `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
 | `success`                     | Fresh roles were fetched from the external provider and synced to Postgres. |
-| <nobr>`stale_fallback`</nobr> | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
+| `stale_fallback` | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
 | `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
 
 **Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle (to drive reconnection attempts and keep `lakekeeper_role_provider_up` current), but an unreachable provider does **not** cause the pod to fail its liveness or readiness probe. Lakekeeper continues serving the roles it last synced to Postgres (`stale_fallback`), so authorization keeps working during a provider outage — at the cost of potentially stale group memberships.

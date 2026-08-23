@@ -597,6 +597,10 @@ pub struct DynAppConfig {
     #[serde(default)]
     pub role: RoleConfig,
 
+    // ------------- Referenced-By Chains -------------
+    #[serde(default)]
+    pub referenced_by: ReferencedByConfig,
+
     // ------------- Request Limits -------------
     /// Maximum request body size in bytes. Defaults to 32 MB.
     ///
@@ -887,6 +891,25 @@ pub struct RoleConfig {
 }
 
 impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            max_nesting_depth: 10,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct ReferencedByConfig {
+    /// Maximum number of views a client may declare in the `referenced-by`
+    /// chain of a single load request. Every entry widens the authorization
+    /// work for that request, so the raw client-supplied list is bounded
+    /// before it is used. A longer chain is rejected with
+    /// `ReferencedByDepthExceeded` (HTTP 400), regardless of whether a trusted
+    /// engine matched. Default: 10.
+    pub max_nesting_depth: usize,
+}
+
+impl Default for ReferencedByConfig {
     fn default() -> Self {
         Self {
             max_nesting_depth: 10,
@@ -1196,6 +1219,7 @@ impl Default for DynAppConfig {
             idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
             role: RoleConfig::default(),
+            referenced_by: ReferencedByConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 32 * 1024 * 1024, // 32 MB
             max_request_time: Duration::from_secs(30),
@@ -2318,6 +2342,25 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__ROLE__MAX_NESTING_DEPTH", "3");
             let config = get_config();
             assert_eq!(config.role.max_nesting_depth, 3);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_referenced_by_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.referenced_by.max_nesting_depth, 10);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_referenced_by_max_nesting_depth_env_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__REFERENCED_BY__MAX_NESTING_DEPTH", "3");
+            let config = get_config();
+            assert_eq!(config.referenced_by.max_nesting_depth, 3);
             Ok(())
         });
     }

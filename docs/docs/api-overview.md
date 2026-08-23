@@ -1,3 +1,7 @@
+---
+description: "Overview of Lakekeeper's three HTTP APIs: the Apache Iceberg REST Catalog API, the Generic Table API and the Management API, plus the built-in Swagger UI."
+---
+
 # Lakekeeper APIs
 
 Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. It exposes three distinct HTTP APIs. An interactive Swagger-UI for the exact Lakekeeper version and configuration you are running is available at `/swagger-ui/#/` (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).

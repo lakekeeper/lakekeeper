@@ -504,6 +504,15 @@
 
 {% endblock %}
 
+{#
+  The landing page is built entirely in the `tabs` block above, so drop the
+  normal page body instead of only hiding it with CSS. mkdocs-material
+  synthesises an `<h1>` from the nav title for a page whose content has none,
+  which gave the home page a second, hidden `<h1>Home</h1>` competing with the
+  hero heading — a page should assert exactly one topic.
+#}
+{% block content %}{% endblock %}
+
 <!-- Home-page-only scripts. Loaded in order: jQuery, then the libraries
      main.js depends on (WOW, odometer), then main.js itself. -->
 {% block scripts %}

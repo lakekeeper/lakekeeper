@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::{
         ApiContext,
         data::v1::generic_tables::{
@@ -24,7 +24,7 @@ use crate::{
             get_relevant_namespaces_to_authorize_load_tabular,
             get_relevant_tabulars_to_authorize_load_tabular,
             load_objects_to_authorize_load_tabular, resolve_users_for_authorize_load_tabular,
-            sort_tabulars_for_authorize_load_tabular,
+            sort_tabulars_for_authorize_load_tabular, validate_referenced_by,
         },
     },
     service::{
@@ -60,6 +60,10 @@ pub(super) async fn load_generic_table_credentials<
         table_name,
     } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+    validate_referenced_by(
+        referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
 

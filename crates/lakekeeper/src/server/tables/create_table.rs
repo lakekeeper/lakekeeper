@@ -377,6 +377,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location.as_ref().map(ToString::to_string),
         metadata: table_metadata.clone(),
+        remote_signing_config: config.remote_signing.clone(),
         config: Some(config.config.into()),
         storage_credentials,
         etag: metadata_location.as_ref().map(|loc| {
