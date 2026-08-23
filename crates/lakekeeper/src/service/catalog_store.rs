@@ -394,11 +394,16 @@ where
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
     /// Delete a warehouse.
+    ///
+    /// Returns the storage secret the deleted warehouse referenced, if any, so the
+    /// caller can clean it up. It must come from the row this call actually
+    /// deleted: read outside the transaction it could name a credential a
+    /// concurrent rotation has already replaced.
     async fn delete_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError>;
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError>;
 
     /// Rename a warehouse.
     async fn rename_warehouse_impl<'a>(

@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH delete_info as (\n               SELECT protected FROM warehouse w WHERE w.warehouse_id = $1\n           ),\n           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2)\n                       RETURNING storage_secret_id)\n           SELECT protected as \"protected!\",\n                  (SELECT storage_secret_id FROM deleted) as \"storage_secret_id\"\n           FROM delete_info",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "protected"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_secret_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "f765b8fe1ea7d2a5a89ec6d24d898ba4ca2106df0c100a503d96f31423bda76a"
+}

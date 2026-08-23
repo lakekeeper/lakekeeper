@@ -1089,9 +1089,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
         let (event_ctx, warehouse) = event_ctx.emit_authz(warehouse)?;
-        // Read before the warehouse is consumed by `resolve`: once the row is
-        // gone, nothing else records which secret belonged to it.
-        let storage_secret_id = warehouse.storage_secret_id;
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
@@ -1106,7 +1103,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        // The secret comes from the row the delete removed, inside this
+        // transaction, so it cannot name a credential a concurrent rotation
+        // replaced between an earlier read and the delete.
+        let storage_secret_id =
+            C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         transaction.commit().await?;
         warehouse_cache_invalidate(warehouse_id).await;
 

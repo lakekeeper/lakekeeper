@@ -789,14 +789,13 @@ where
         Self::ensure_warehouse_spec_mutable_impl(warehouse_id, bypass, transaction).await
     }
 
-    /// Delete a warehouse.
+    /// Delete a warehouse, returning the storage secret it referenced, if any.
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<(), CatalogDeleteWarehouseError> {
-        Self::delete_warehouse_impl(warehouse_id, query, transaction).await?;
-        Ok(())
+    ) -> Result<Option<SecretId>, CatalogDeleteWarehouseError> {
+        Self::delete_warehouse_impl(warehouse_id, query, transaction).await
     }
 
     /// Rename a warehouse.

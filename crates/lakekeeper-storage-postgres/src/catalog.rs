@@ -967,7 +967,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
