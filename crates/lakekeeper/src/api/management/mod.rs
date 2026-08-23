@@ -2779,13 +2779,19 @@ pub mod v1 {
 
     /// Validate Warehouse Configuration
     ///
-    /// Runs the checks `Create Warehouse` runs — profile syntax, name
+    /// Runs the checks `Create Warehouse` runs — profile syntax, name and ID
     /// availability, location overlap, format-version policy, `managed-by`, and
     /// physical storage access including credential vending — without creating
     /// anything. No warehouse is persisted and no credential is stored.
     ///
     /// Returns 200 whether or not the configuration is usable; inspect `valid` and
     /// the per-check results. Requires the same permission as creating a warehouse.
+    ///
+    /// Results are advisory and reserve nothing: a concurrent request can take a
+    /// name or ID between this call and the create. `warehouse-id-available` in
+    /// particular examines only the caller's own project, while warehouse IDs are
+    /// unique across the whole instance — so an ID it reports as available can
+    /// still be refused with `409 WarehouseIdAlreadyExists` on create.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "warehouse",

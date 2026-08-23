@@ -48,10 +48,13 @@ pub enum ValidationCheckName {
     /// Compared case-insensitively, matching the database's uniqueness constraint.
     WarehouseNameValid,
     /// The requested warehouse ID is not already used by a warehouse in this
-    /// project. Skipped when no ID was requested. Warehouse IDs are unique across
-    /// the whole instance, so passing this check does not guarantee the ID is
-    /// free — a collision with a warehouse outside this project is only reported
-    /// when the warehouse is actually created.
+    /// project. Skipped when no ID was requested.
+    ///
+    /// Advisory: it examines this project only and reserves nothing, so passing
+    /// it does not mean the ID is free. IDs are unique instance-wide, so a
+    /// collision — with a warehouse in another project, or one created between
+    /// this check and the create request — surfaces only on the create itself,
+    /// as `WarehouseIdAlreadyExists`.
     WarehouseIdAvailable,
     /// No other warehouse in the project occupies or overlaps this location.
     /// Overlapping locations would let one warehouse's vended credentials reach
