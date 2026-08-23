@@ -559,37 +559,73 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let resolved_warehouse = C::create_warehouse(
-            project_id,
-            CatalogCreateWarehouseRequest::builder()
-                .warehouse_name(warehouse_name)
-                .warehouse_id(Some(warehouse_id))
-                .storage_profile(storage_profile)
-                .storage_secret_id(secret_id)
-                .delete_profile(delete_profile)
-                .format_version_policy(format_version_policy)
-                .managed_by(managed_by)
-                .build(),
-            transaction.transaction(),
-        )
-        .await?;
-        authorizer
-            .create_warehouse(
-                request_metadata,
-                resolved_warehouse.warehouse_id,
+        // The secret is stored outside the transaction, so a rollback does not
+        // remove it. Everything up to the commit runs as one unit so that any
+        // failure — an id or name conflict, the authorizer, the commit itself —
+        // can delete the secret before returning, instead of leaving a credential
+        // behind that nothing references and no API can reach.
+        let created: Result<(_, _)> = async {
+            let resolved_warehouse = C::create_warehouse(
                 project_id,
+                CatalogCreateWarehouseRequest::builder()
+                    .warehouse_name(warehouse_name)
+                    .warehouse_id(Some(warehouse_id))
+                    .storage_profile(storage_profile)
+                    .storage_secret_id(secret_id)
+                    .delete_profile(delete_profile)
+                    .format_version_policy(format_version_policy)
+                    .managed_by(managed_by)
+                    .build(),
+                transaction.transaction(),
+            )
+            .await?;
+            authorizer
+                .create_warehouse(
+                    request_metadata,
+                    resolved_warehouse.warehouse_id,
+                    project_id,
+                )
+                .await?;
+
+            let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                &authorizer,
+                request_metadata,
+                &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
+                transaction.transaction(),
             )
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<C, A>(
-            &authorizer,
-            request_metadata,
-            &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
-            transaction.transaction(),
-        )
-        .await?;
+            transaction.commit().await?;
+            Ok((resolved_warehouse, bootstrap_grants))
+        }
+        .await;
 
-        transaction.commit().await?;
+        let (resolved_warehouse, bootstrap_grants) = match created {
+            Ok(created) => created,
+            Err(create_error) => {
+                // Best-effort, and the creation error is what the caller gets: a
+                // failure to clean up leaves the credential orphaned exactly as
+                // before, which must not mask why the create failed.
+                if let Some(secret_id) = secret_id {
+                    context
+                        .v1_state
+                        .secrets
+                        .delete_secret(&secret_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %secret_id,
+                                "Failed to delete the storage secret of a warehouse that was not \
+                                 created; it is now orphaned in the secret store: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
+                return Err(create_error);
+            }
+        };
 
         // Drop any entry this replica still holds for the id before the create
         // event repopulates it. Every other warehouse write invalidates; create
