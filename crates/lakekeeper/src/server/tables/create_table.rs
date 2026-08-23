@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::{
     super::{io::write_file, require_warehouse_id},
     etag::{StorageAccess, TableETag, TableResponseShape},
-    validate_table_properties,
+    load_response_config, validate_table_properties,
 };
 use crate::{
     WarehouseId,
@@ -378,7 +378,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         metadata_location: metadata_location.as_ref().map(ToString::to_string),
         metadata: table_metadata.clone(),
         remote_signing_config: config.remote_signing.clone(),
-        config: Some(config.config.into()),
+        config: Some(load_response_config(Some(config.config))),
         storage_credentials,
         etag: metadata_location.as_ref().map(|loc| {
             TableETag::new(

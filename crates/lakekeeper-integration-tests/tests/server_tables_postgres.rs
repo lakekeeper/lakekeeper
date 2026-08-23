@@ -47,9 +47,9 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table as create_table_helper, create_table_request as create_request,
-    create_view, drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile,
-    setup_simple, tabular_test_multi_warehouse_setup,
+    assert_advertises_client_planning, create_ns, create_table as create_table_helper,
+    create_table_request as create_request, create_view, drop_table as drop_table_helper,
+    impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
@@ -777,6 +777,27 @@ async fn test_default_format_version_is_v2(pg_pool: PgPool) {
     .unwrap();
 
     assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+}
+
+/// `createTable` returns a `LoadTableResult`, so it carries the same advertisement
+/// `loadTable` does.
+#[sqlx::test]
+async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let table = CatalogServer::create_table(
+        ns_params,
+        create_table_request_with_format("planning_advertised", None),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_advertises_client_planning(table.config.as_ref(), "createTable");
 }
 
 #[sqlx::test]
@@ -2528,6 +2549,39 @@ async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool)
     )
     .await
     .expect("the renamed table must be loadable under the reused name");
+}
+
+#[sqlx::test]
+async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pool).await;
+
+    // Register reuses an existing table's metadata file; overwrite lets it attach
+    // to a live name without a drop first.
+    let source = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("planning_register".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let registered = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("planning_register".to_string())
+            .metadata_location(source.metadata_location.unwrap())
+            .overwrite(true)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("registering over the same name must succeed");
+
+    assert_advertises_client_planning(registered.config.as_ref(), "registerTable");
 }
 
 #[sqlx::test]

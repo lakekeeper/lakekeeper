@@ -15,7 +15,10 @@ use iceberg::{
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse},
-    configs::ParseFromStr,
+    configs::{
+        ParseFromStr,
+        table::{TableProperties as TableConfigProperties, general},
+    },
 };
 use itertools::Itertools;
 use lakekeeper_io::Location;
@@ -627,7 +630,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata_location: Some(metadata_location_str),
             metadata: table_metadata,
             remote_signing_config: config.remote_signing.clone(),
-            config: Some(config.config.into()),
+            config: Some(load_response_config(Some(config.config))),
             storage_credentials,
             etag: Some(etag),
         })
@@ -1065,6 +1068,30 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
         }
     }
+}
+
+/// The only scan-planning mode this server supports: it serves no `planTableScan`
+/// endpoint, and `SUPPORTED_ENDPOINTS` filters the plan routes out of `getConfig`.
+const SCAN_PLANNING_MODE_CLIENT: &str = "client";
+
+/// The `config` map to return on a `loadTable`-shaped response — `loadTable`,
+/// `createTable` and `registerTable` all return one — given whatever the storage
+/// profile produced (`None` when the caller has no storage access).
+///
+/// Never empty: the catalog-wide keys are advertised to every caller, so the map
+/// has content even with no storage config to merge. That is why
+/// [`etag::StorageAccess`] separates a load without storage access from a commit,
+/// whose body carries no `config` at all; the two must not share a validator.
+pub(crate) fn load_response_config(
+    storage_config: Option<TableConfigProperties>,
+) -> HashMap<String, String> {
+    let mut config = storage_config.unwrap_or_default();
+    // Said outright rather than left for the client to discover from a 404 on the
+    // plan routes; this is the signal the spec points clients at.
+    config.insert(&general::ScanPlanningMode(
+        SCAN_PLANNING_MODE_CLIENT.to_string(),
+    ));
+    config.into()
 }
 
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
@@ -2297,6 +2324,36 @@ mod unit_tests {
     use uuid::Uuid;
 
     use super::*;
+
+    /// Advertised to every caller, whether or not they have storage access, and
+    /// without displacing the storage keys it is merged into.
+    #[test]
+    fn load_response_config_advertises_client_side_planning() {
+        use iceberg_ext::configs::ConfigProperty as _;
+
+        let no_storage = load_response_config(None);
+        assert_eq!(
+            no_storage.get("scan-planning-mode").map(String::as_str),
+            Some("client")
+        );
+
+        let mut storage = TableConfigProperties::default();
+        storage.insert(&iceberg_ext::configs::table::s3::Region(
+            "eu-central-1".to_string(),
+        ));
+        let merged = load_response_config(Some(storage));
+        assert_eq!(
+            merged
+                .get(general::ScanPlanningMode::KEY)
+                .map(String::as_str),
+            Some("client")
+        );
+        assert_eq!(
+            merged.get("s3.region").map(String::as_str),
+            Some("eu-central-1"),
+            "the storage config must survive the merge: {merged:?}"
+        );
+    }
     use crate::{
         WarehouseId,
         service::{Actor, NamespaceHierarchy, UserId, ViewInfo, ViewOrTableInfo},

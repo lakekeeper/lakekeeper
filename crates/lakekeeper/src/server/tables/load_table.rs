@@ -8,7 +8,7 @@ use crate::{
     api::iceberg::v1::{
         ApiContext, LoadTableResult, LoadTableResultOrNotModified, Result, TableIdent,
         TableParameters,
-        tables::{LoadTableFilters, LoadTableRequest},
+        tables::{DataAccessMode, LoadTableFilters, LoadTableRequest},
     },
     request_metadata::RequestMetadata,
     server::{
@@ -16,20 +16,21 @@ use crate::{
         tables::{
             authorize_load_table,
             etag::{StorageAccess, TableETag, TableResponseShape},
-            parse_location, validate_referenced_by, validate_table_or_view_ident,
+            load_response_config, parse_location, validate_referenced_by,
+            validate_table_or_view_ident,
         },
     },
     service::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
         LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
-        TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        TabularListFlags, TabularNotFound, Transaction, WarehouseStatus, WarehouseVersion,
         authz::{Authorizer, AuthzWarehouseOps, CatalogTableAction},
         events::{
             APIEventContext,
             context::{ResolvedTable, authz_to_error_no_audit},
         },
         secrets::SecretStore,
-        storage::{credential_revalidate_after_ms, now_epoch_ms},
+        storage::{StoragePermissions, credential_revalidate_after_ms, now_epoch_ms},
     },
 };
 
@@ -149,19 +150,7 @@ pub(crate) async fn load_table_with_flags<
     let shape_at = |warehouse_version| {
         TableResponseShape::for_load(
             &filters,
-            // Both per-request inputs to `generate_table_config`. Without storage
-            // access there is no `config` at all — a load made before access was
-            // granted must not answer one made after; and credentials are
-            // policy-scoped per permission level, so a read-scoped body must not
-            // answer a request from a caller who can now write.
-            match storage_permissions {
-                None => StorageAccess::NoConfig,
-                Some(permissions) => StorageAccess::Config {
-                    delegation: data_access,
-                    permissions,
-                    warehouse_version,
-                },
-            },
+            storage_access_for(storage_permissions, data_access, warehouse_version),
         )
     };
     if let Some(etag) = match_not_modified(
@@ -263,7 +252,7 @@ pub(crate) async fn load_table_with_flags<
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location_ref.as_ref().map(ToString::to_string),
         metadata: metadata_ref,
-        config: storage_config.map(|c| c.config.into()),
+        config: Some(load_response_config(storage_config.map(|c| c.config))),
         storage_credentials,
         remote_signing_config,
         etag: metadata_location_ref.as_ref().map(|loc| {
@@ -280,6 +269,32 @@ pub(crate) async fn load_table_with_flags<
     Ok(LoadTableResultOrNotModified::LoadTableResult(
         load_table_result,
     ))
+}
+
+/// Which [`StorageAccess`] a load response has, from the two per-request inputs
+/// to `generate_table_config`.
+///
+/// Without storage access the `config` holds only the catalog-wide keys — a load
+/// made before access was granted must not answer one made after; and credentials
+/// are policy-scoped per permission level, so a read-scoped body must not answer a
+/// request from a caller who can now write.
+///
+/// Named rather than inlined at its one call site so a test can drive the mapping
+/// directly: inlined, the `None` arm was reachable only through a full request and
+/// nothing pinned which variant it produced.
+fn storage_access_for(
+    storage_permissions: Option<StoragePermissions>,
+    delegation: DataAccessMode,
+    warehouse_version: WarehouseVersion,
+) -> StorageAccess {
+    match storage_permissions {
+        None => StorageAccess::CatalogDefaultsOnly { warehouse_version },
+        Some(permissions) => StorageAccess::Config {
+            delegation,
+            permissions,
+            warehouse_version,
+        },
+    }
 }
 
 /// Load a table from the catalog, by default rejecting a staged one.
@@ -676,17 +691,43 @@ mod etag_tests {
         assert!(matches_repr(&[cached], vended, true));
     }
 
+    /// Pins the mapping against the variant literal rather than through
+    /// [`storage_access_for`]. Routing the expectation through the same function
+    /// makes the test move with the code: reverting the `None` arm to
+    /// [`StorageAccess::NoConfig`] would leave both sides agreeing and the
+    /// regression invisible.
+    #[test]
+    fn no_storage_access_maps_to_the_catalog_defaults_shape() {
+        let mapped = storage_access_for(None, DataAccessMode::ClientManaged, wv());
+        assert_eq!(
+            mapped,
+            StorageAccess::CatalogDefaultsOnly {
+                warehouse_version: wv()
+            }
+        );
+        // The consequence that matters: a commit's tag must not answer this load.
+        assert_ne!(
+            TableResponseShape::new(SnapshotsQuery::All, mapped),
+            TableResponseShape::commit_response(),
+            "a load with no storage access still carries a config; a commit does not"
+        );
+    }
+
     #[test]
     fn no_storage_access_is_its_own_shape() {
-        // A load the caller has no storage access for returns `config: null`.
+        // A load the caller has no storage access for returns a `config` holding
+        // only the catalog-wide keys, and no credentials.
         // That body must not satisfy a later load made after access is granted.
-        let no_config = TableResponseShape::no_storage_config();
-        let cached = client_etag_for(LOC, no_config, None);
+        let catalog_defaults_only = TableResponseShape::new(
+            SnapshotsQuery::All,
+            storage_access_for(None, DataAccessMode::ClientManaged, wv()),
+        );
+        let cached = client_etag_for(LOC, catalog_defaults_only, None);
         assert!(
             !matches_repr(std::slice::from_ref(&cached), all(), false),
-            "304'd a config-bearing load from a config-less ETag"
+            "304'd a credential-bearing load from a tag minted without storage access"
         );
-        assert!(matches_repr(&[cached], no_config, false));
+        assert!(matches_repr(&[cached], catalog_defaults_only, false));
     }
 
     #[test]

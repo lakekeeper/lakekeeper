@@ -17,11 +17,18 @@ use crate::{
 
 /// Version prefix for structured `loadTable` [`ETag`]s. Anything not parsing
 /// under this prefix (pre-upgrade or future-version values) isn't matched, so
-/// the client reloads. Bump the suffix on incompatible encoding changes.
+/// the client reloads.
 ///
-/// `lk2` added the warehouse id to the hash. Every `lk1` tag in a client cache
-/// stops matching and the client reloads once — the cost of any axis change.
-const ETAG_PREFIX: &str = "lk2";
+/// Bump it whenever a cached tag could otherwise survive a change to the body it
+/// validates — which is *not* only when the encoding changes. Adding a key to
+/// every response is the case that catches people out: the hash inputs are
+/// untouched, so the tag is byte-identical across the upgrade and a conditional
+/// load 304s onto the old body indefinitely.
+///
+/// `lk2` added the warehouse id to the hash. `lk3` added `scan-planning-mode` to
+/// every response config, leaving the hash inputs alone. Either way every cached
+/// tag stops matching and each client reloads once — the standing cost.
+const ETAG_PREFIX: &str = "lk3";
 
 /// One axis of a [`TableResponseShape`].
 ///
@@ -80,15 +87,28 @@ impl EtagAxis for StoragePermissions {
 /// delegation or permission level that would mean nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageAccess {
-    /// No `config` in the body at all — a commit response, or a caller with no
-    /// storage access.
+    /// No `config` key in the body at all — a commit response. The spec's
+    /// `CommitTableResponse` carries only the metadata and its location.
     NoConfig,
+    /// A `config` carrying the catalog-wide keys and nothing else — a load by a
+    /// caller with no storage access. Distinct from [`Self::NoConfig`] because
+    /// that body really is empty of config while this one advertises
+    /// `scan-planning-mode`, so one tag must not stand for both.
+    ///
+    /// Carries the warehouse revision even though today's catalog-wide keys are
+    /// compile-time constants that no warehouse edit can vary. A tag for this
+    /// shape never has a revalidation point and never vends credentials, so it
+    /// 304s for as long as the metadata location holds; the first
+    /// warehouse-derived key added here would otherwise pin a stale body with
+    /// nothing left to invalidate it. An extra axis costs a cache miss, which is
+    /// the direction this type is documented to err in.
+    CatalogDefaultsOnly { warehouse_version: WarehouseVersion },
     /// Config present, scoped to this delegation and permission level, and
     /// generated from this revision of the warehouse's storage profile.
     ///
-    /// The revision belongs here rather than alongside `snapshots`: a warehouse
-    /// edit changes region, endpoint, KMS key or the STS toggle, none of which
-    /// can reach a body that carries no config at all.
+    /// The revision belongs on the variants that carry a config rather than
+    /// alongside `snapshots`: a warehouse edit changes region, endpoint, KMS key
+    /// or the STS toggle, none of which can reach [`Self::NoConfig`].
     Config {
         delegation: DataAccessMode,
         permissions: StoragePermissions,
@@ -135,11 +155,12 @@ impl TableResponseShape {
         Self::new(*snapshots, storage)
     }
 
-    /// Shape of a response carrying the full metadata and no storage config.
+    /// Shape of a commit response: full metadata, no `config` key at all.
     ///
-    /// A commit response, and equally a load by a caller with no storage access —
-    /// those bodies are genuinely equivalent, so sharing a tag is correct.
-    pub(crate) fn no_storage_config() -> Self {
+    /// Deliberately *not* shared with a load by a caller who has no storage
+    /// access. That load still carries a `config` holding the catalog-wide keys,
+    /// so the two bodies differ and must not answer each other.
+    pub(crate) fn commit_response() -> Self {
         Self::new(SnapshotsQuery::All, StorageAccess::NoConfig)
     }
 }
@@ -198,6 +219,11 @@ impl TableETag {
         hasher.update(&[0]);
         match storage {
             StorageAccess::NoConfig => hasher.update(b"nc"),
+            StorageAccess::CatalogDefaultsOnly { warehouse_version } => {
+                hasher.update(b"cd");
+                hasher.update(&[0]);
+                hasher.update(&warehouse_version.to_le_bytes());
+            }
             StorageAccess::Config {
                 delegation,
                 permissions,
@@ -266,7 +292,7 @@ pub(crate) fn commit_etag(warehouse_id: WarehouseId, metadata_location: &str) ->
     TableETag::new(
         warehouse_id,
         metadata_location,
-        TableResponseShape::no_storage_config(),
+        TableResponseShape::commit_response(),
         None,
     )
     .into_etag()
@@ -300,6 +326,12 @@ mod tests {
         let mut shapes = Vec::new();
         for snapshots in [SnapshotsQuery::All, SnapshotsQuery::Refs] {
             shapes.push(TableResponseShape::new(snapshots, StorageAccess::NoConfig));
+            shapes.push(TableResponseShape::new(
+                snapshots,
+                StorageAccess::CatalogDefaultsOnly {
+                    warehouse_version: wv(),
+                },
+            ));
             for delegation in [
                 DataAccessMode::ClientManaged,
                 delegated(false, false),
@@ -340,8 +372,9 @@ mod tests {
             );
         }
         assert_eq!(seen.len(), shapes.len());
-        // 2 snapshot modes x (1 no-config + 5 delegations x 3 permission levels)
-        assert_eq!(shapes.len(), 32);
+        // 2 snapshot modes x (no-config + catalog-defaults-only
+        // + 5 delegations x 3 permission levels)
+        assert_eq!(shapes.len(), 34);
     }
 
     /// Pins the wire format against literals rather than against another
@@ -364,7 +397,7 @@ mod tests {
             TableETag::new(wh(), LOC, delegated_shape, None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk2.ca98cf6daac60cd\""
+            "W/\"lk3.ca98cf6daac60cd\""
         );
         // Same shape, next warehouse version: differs only in the trailing
         // little-endian bytes, so a big-endian slip changes this value.
@@ -380,20 +413,15 @@ mod tests {
             TableETag::new(wh(), LOC, next_version, None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk2.e475cfa1e21ecde5\""
+            "W/\"lk3.e475cfa1e21ecde5\""
         );
         // The `nc` branch skips the version entirely, and the revalidation
         // point is appended as lower-case hex.
         assert_eq!(
-            TableETag::new(
-                wh(),
-                LOC,
-                TableResponseShape::no_storage_config(),
-                Some(255)
-            )
-            .into_etag()
-            .as_str(),
-            "W/\"lk2.165c4d5b6eec0d9a.ff\""
+            TableETag::new(wh(), LOC, TableResponseShape::commit_response(), Some(255))
+                .into_etag()
+                .as_str(),
+            "W/\"lk3.165c4d5b6eec0d9a.ff\""
         );
     }
 
@@ -475,10 +503,11 @@ mod tests {
         // trailing junk, non-hex expiry.
         assert!(TableETag::parse("e34615aade2e6333").is_none());
         assert!(TableETag::parse("lk1.abc").is_none());
-        assert!(TableETag::parse("lk3.abc").is_none());
-        assert!(TableETag::parse("lk2.").is_none());
-        assert!(TableETag::parse("lk2.abc.def.ghi").is_none());
-        assert!(TableETag::parse("lk2.abc.zzz").is_none());
+        assert!(TableETag::parse("lk2.abc").is_none());
+        assert!(TableETag::parse("lk4.abc").is_none());
+        assert!(TableETag::parse("lk3.").is_none());
+        assert!(TableETag::parse("lk3.abc.def.ghi").is_none());
+        assert!(TableETag::parse("lk3.abc.zzz").is_none());
     }
 
     #[test]
@@ -498,6 +527,7 @@ mod tests {
                 "storage",
                 vec![
                     "nc",
+                    "cd",
                     DataAccessMode::ClientManaged.as_tag(),
                     delegated(false, false).as_tag(),
                     delegated(true, false).as_tag(),
@@ -527,16 +557,35 @@ mod tests {
         }
     }
 
+    /// A commit response carries no `config` key; a load by a caller with no
+    /// storage access carries one holding `scan-planning-mode`. The bodies differ,
+    /// so the tags must too — otherwise a conditional load could be answered from
+    /// a commit tag and the client would keep a body missing the advertisement.
     #[test]
-    fn commit_etag_matches_a_load_with_no_storage_access() {
-        // A commit body and a no-storage-access load body are both metadata with
-        // no config, so they are the same shape and sharing a tag is correct.
-        // Every config-bearing load differs and must not match.
+    fn commit_etag_does_not_match_any_load() {
         let commit = commit_etag(wh(), LOC);
         assert_eq!(
             commit,
-            TableETag::new(wh(), LOC, TableResponseShape::no_storage_config(), None).into_etag()
+            TableETag::new(wh(), LOC, TableResponseShape::commit_response(), None).into_etag()
         );
+
+        let no_storage_access = TableETag::new(
+            wh(),
+            LOC,
+            TableResponseShape::new(
+                SnapshotsQuery::All,
+                StorageAccess::CatalogDefaultsOnly {
+                    warehouse_version: wv(),
+                },
+            ),
+            None,
+        )
+        .into_etag();
+        assert_ne!(
+            commit, no_storage_access,
+            "a load still advertises catalog config, a commit body carries none"
+        );
+
         let delegated_load = TableETag::new(
             wh(),
             LOC,
