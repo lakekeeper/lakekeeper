@@ -1678,3 +1678,85 @@ async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
         )
     );
 }
+
+/// Deleting a warehouse deletes the storage credential it owned.
+///
+/// The warehouse row is the only thing that records which secret belonged to it,
+/// so a credential left behind here is unreachable through the API and retained
+/// indefinitely. Best-effort by design: the delete happens after the commit, so
+/// a failure leaves the credential orphaned rather than failing a delete that
+/// already succeeded.
+#[sqlx::test]
+async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
+    use lakekeeper::service::{SecretStore as _, storage::StorageCredential};
+
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let credential: StorageCredential = serde_json::from_str(
+        r#"{
+            "type": "s3",
+            "credential-type": "access-key",
+            "access-key-id": "placeholder-access-key",
+            "secret-access-key": "placeholder-secret-key"
+        }"#,
+    )
+    .unwrap();
+    let secret_id = ctx
+        .v1_state
+        .secrets
+        .create_storage_secret(credential)
+        .await
+        .unwrap();
+    // Pin the premise: the assertion after the delete is only meaningful if the
+    // secret was resolvable to begin with.
+    ctx.v1_state
+        .secrets
+        .require_storage_secret_by_id(secret_id)
+        .await
+        .unwrap();
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let warehouse = PostgresBackend::create_warehouse(
+        &project_id,
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(format!("secret-owner-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile)
+            .storage_secret_id(Some(secret_id))
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    ApiServer::delete_warehouse(
+        warehouse.warehouse_id,
+        DeleteWarehouseQuery { force: false },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let err = ctx
+        .v1_state
+        .secrets
+        .require_storage_secret_by_id(secret_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, 404, "{:?}", err.error);
+    assert_eq!(err.error.r#type, "SecretNotFound");
+}

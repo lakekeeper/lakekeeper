@@ -1089,6 +1089,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
         let (event_ctx, warehouse) = event_ctx.emit_authz(warehouse)?;
+        // Read before the warehouse is consumed by `resolve`: once the row is
+        // gone, nothing else records which secret belonged to it.
+        let storage_secret_id = warehouse.storage_secret_id;
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
@@ -1119,6 +1122,33 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 );
             })
             .ok();
+
+        // The warehouse that owned this credential no longer exists, so nothing
+        // can reach it again through the API — left in place it is an
+        // indefinitely retained credential for storage Lakekeeper no longer
+        // serves. Post-commit and best-effort, like the authz cleanup above:
+        // deleting inside the transaction would destroy the credential of a
+        // warehouse that still exists if the commit then failed, and failing the
+        // request afterwards would report a delete that did happen as an error.
+        // A failure here leaves the credential exactly as orphaned as before,
+        // and says so in the log.
+        if let Some(secret_id) = storage_secret_id {
+            context
+                .v1_state
+                .secrets
+                .delete_secret(&secret_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        %secret_id,
+                        "Failed to delete the storage secret of deleted warehouse {warehouse_id}; \
+                         it is now orphaned in the secret store: {}",
+                        e.error
+                    );
+                })
+                .ok();
+        }
 
         event_ctx.emit_warehouse_deleted();
 
