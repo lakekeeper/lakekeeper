@@ -16,7 +16,7 @@ use iceberg_ext::catalog::rest::{CreateTableRequest, ETag, LoadTableResult};
 /// `parse_etags` yields from the wire value — weak marker and quotes stripped.
 /// These tests drive the handler directly, so they have to do it themselves.
 fn as_client_etag(etag: &ETag) -> ETag {
-    ETag::from(etag.as_str().trim_start_matches("W/").trim_matches('"'))
+    ETag::from(etag.validator())
 }
 use lakekeeper::{
     api::{

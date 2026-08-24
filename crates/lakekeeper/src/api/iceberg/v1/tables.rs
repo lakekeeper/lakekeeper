@@ -658,15 +658,11 @@ impl DataAccess {
 }
 
 fn parse_etags(etags: &str) -> Vec<ETag> {
-    let etags = etags.trim().trim_matches('"');
     etags
+        .trim()
+        .trim_matches('"')
         .split(',')
-        .map(|s| {
-            s.trim()
-                .trim_matches('"')
-                .trim_start_matches("W/")
-                .trim_matches('"')
-        })
+        .map(ETag::strip_wire_syntax)
         .filter(|s| !s.is_empty())
         .map(ETag::from)
         .collect()

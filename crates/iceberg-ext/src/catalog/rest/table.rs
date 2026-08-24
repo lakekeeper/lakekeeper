@@ -148,9 +148,38 @@ pub struct CommitTransactionRequest {
 pub struct ETag(String);
 
 impl ETag {
+    /// The value as held, which for a server-minted tag is the wire form —
+    /// weak marker and quotes included.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The bare validator: this tag with HTTP's weak marker and surrounding
+    /// quotes removed.
+    ///
+    /// Comparisons must go through this rather than [`Self::as_str`]. A tag
+    /// arrives already bare when the HTTP layer parsed an `If-None-Match`
+    /// header, but in wire form when a server-minted tag is fed back in process
+    /// — and the two must not compare unequal for being spelled differently.
+    #[must_use]
+    pub fn validator(&self) -> &str {
+        Self::strip_wire_syntax(&self.0)
+    }
+
+    /// Strip HTTP's weak marker and surrounding quotes from one `ETag` value.
+    ///
+    /// The single definition of that transform: header parsing and validator
+    /// comparison both use it, so a tag cannot be normalised one way on the way
+    /// in and another on the way out. Idempotent, so applying it to an
+    /// already-bare value is safe.
+    #[must_use]
+    pub fn strip_wire_syntax(value: &str) -> &str {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_start_matches("W/")
+            .trim_matches('"')
     }
 }
 
@@ -235,6 +264,34 @@ mod tests {
     use iceberg::spec::{FormatVersion, Schema, TableMetadata, TableMetadataBuilder};
 
     use super::*;
+
+    /// Both spellings of the same tag must reduce to one validator: the wire form
+    /// a server mints, and the bare form header parsing yields.
+    #[test]
+    fn etag_validator_strips_wire_syntax_idempotently() {
+        let wire = ETag::from("W/\"lk3.deadbeef\"");
+        assert_eq!(wire.validator(), "lk3.deadbeef");
+        assert_eq!(wire.as_str(), "W/\"lk3.deadbeef\"", "as_str stays verbatim");
+
+        // Already-bare input is unchanged, so normalising twice is safe.
+        let bare = ETag::from("lk3.deadbeef");
+        assert_eq!(bare.validator(), "lk3.deadbeef");
+        assert_eq!(
+            wire.validator(),
+            bare.validator(),
+            "the two spellings must not compare unequal"
+        );
+
+        // Strong validators carry quotes but no weak marker.
+        assert_eq!(ETag::from("\"lk3.deadbeef\"").validator(), "lk3.deadbeef");
+        // Surrounding whitespace comes from splitting a header list.
+        assert_eq!(
+            ETag::from(" W/\"lk3.deadbeef\" ").validator(),
+            "lk3.deadbeef"
+        );
+        // The wildcard survives untouched.
+        assert_eq!(ETag::from("*").validator(), "*");
+    }
 
     #[test]
     #[cfg(feature = "axum")]
