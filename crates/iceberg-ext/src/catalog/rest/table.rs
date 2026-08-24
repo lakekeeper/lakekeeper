@@ -173,6 +173,16 @@ impl ETag {
     /// comparison both use it, so a tag cannot be normalised one way on the way
     /// in and another on the way out. Idempotent, so applying it to an
     /// already-bare value is safe.
+    ///
+    /// Deliberately tolerant about where the `W/` sits, so a client that
+    /// re-serialises a weak tag as `"W/lk3.beef"` still matches. That spelling
+    /// is strictly a *strong* tag whose opaque value happens to begin with
+    /// `W/`, so folding the two together is not injective over the syntax RFC
+    /// 9110 8.8.3 defines — but nothing here mints an opaque value starting
+    /// with `W/`, so the only source of that spelling is a mangled tag of ours,
+    /// and honouring it is what the client meant. Revisit if strong tags ever
+    /// get minted, or if a comparison that must reject weak validators (`If-Match`,
+    /// ranges) is added.
     #[must_use]
     pub fn strip_wire_syntax(value: &str) -> &str {
         value
@@ -291,6 +301,10 @@ mod tests {
         );
         // The wildcard survives untouched.
         assert_eq!(ETag::from("*").validator(), "*");
+        // A weak tag re-serialised with the marker inside the quotes still
+        // normalises to the same validator. See the note on `strip_wire_syntax`
+        // for why this tolerance is chosen over the strict reading.
+        assert_eq!(ETag::from("\"W/lk3.deadbeef\"").validator(), "lk3.deadbeef");
     }
 
     #[test]

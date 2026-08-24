@@ -659,8 +659,6 @@ impl DataAccess {
 
 fn parse_etags(etags: &str) -> Vec<ETag> {
     etags
-        .trim()
-        .trim_matches('"')
         .split(',')
         .map(ETag::strip_wire_syntax)
         .filter(|s| !s.is_empty())
