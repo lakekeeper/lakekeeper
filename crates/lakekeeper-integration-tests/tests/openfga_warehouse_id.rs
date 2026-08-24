@@ -207,6 +207,55 @@ mod warehouse_id {
             );
         }
 
+        /// A create that loses the id race must not strip the holder's relations.
+        ///
+        /// The failure path compensates by deleting the relations it wrote, but
+        /// `create_warehouse` can also fail *because* the id already carries some —
+        /// and compensating there would hand the loser a way to revoke the winner's
+        /// grants. The DB conflict fires before the authorizer is reached, so no
+        /// compensation is owed; this pins that the winner survives intact.
+        #[sqlx::test]
+        async fn a_losing_create_leaves_the_holders_relations_intact(pool: PgPool) {
+            let (ctx, admin, project_id) = setup(pool).await;
+            let md = metadata(&admin, &project_id);
+            let warehouse_id = WarehouseId::new_random();
+
+            ApiServer::create_warehouse(
+                request(
+                    format!("winner-{}", Uuid::now_v7()),
+                    warehouse_id,
+                    &project_id,
+                ),
+                ctx.clone(),
+                md.clone(),
+            )
+            .await
+            .unwrap();
+
+            let err = ApiServer::create_warehouse(
+                request(
+                    format!("loser-{}", Uuid::now_v7()),
+                    warehouse_id,
+                    &project_id,
+                ),
+                ctx.clone(),
+                md.clone(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                err.error.r#type, "WarehouseIdAlreadyExists",
+                "{:?}",
+                err.error
+            );
+
+            // Still owned: a spec mutation resolves through the ownership tuples the
+            // first create wrote. If the loser's cleanup had run, this would fail.
+            ApiServer::set_warehouse_protection(warehouse_id, true, ctx.clone(), md)
+                .await
+                .unwrap();
+        }
+
         /// The action used above is a spec mutation, so the ownership assertion in the first
         /// test is meaningful rather than a no-op for any caller.
         #[test]

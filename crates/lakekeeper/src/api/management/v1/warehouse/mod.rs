@@ -569,6 +569,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // block, so it can be settled explicitly below before the secret store is
         // touched: cleanup talks to an external service (Vault, for one backend),
         // and a write-pool connection must not be held across that call.
+        // Gates the authz compensation below. Strictly "the write succeeded": a
+        // failing `create_warehouse` may have failed *because* the id already
+        // carries relations, and deleting then would strip the rightful holder's
+        // grants. Its tuple write is atomic, so there is no partial case to undo.
+        let mut authz_relations_written = false;
         let staged: Result<(_, _)> = async {
             let resolved_warehouse = C::create_warehouse(
                 project_id,
@@ -591,6 +596,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     project_id,
                 )
                 .await?;
+            authz_relations_written = true;
 
             let bootstrap_grants = write_bootstrap_grants::<C, A>(
                 &authorizer,
@@ -631,6 +637,26 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (resolved_warehouse, bootstrap_grants) = match settled {
             Ok(settled) => settled,
             Err(create_error) => {
+                // Relations written for a warehouse that then failed to commit
+                // would outlive it, and `create_warehouse` refuses an id that
+                // still carries any — so leaving them behind makes this id
+                // permanently unusable, including for the caller's own retry.
+                if authz_relations_written {
+                    authorizer
+                        .delete_warehouse(request_metadata, warehouse_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %warehouse_id,
+                                "Failed to remove the authorization relations of a warehouse that \
+                                 was not created; the id cannot be used again until they are \
+                                 cleared: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
                 // Best-effort, and the creation error is what the caller gets: a
                 // failure to clean up leaves the credential orphaned exactly as
                 // before, which must not mask why the create failed.
