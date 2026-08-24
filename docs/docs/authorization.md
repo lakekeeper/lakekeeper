@@ -41,6 +41,12 @@ Three words are used consistently across the authorizers and the API:
 - A **grant** gives one privilege on one resource to one principal: *Alice may `select` on this warehouse*.
 - A **principal** is a user or a **role**. Granting to a role once and then managing its membership is how you keep the number of grants manageable. Where role membership comes from — an identity provider, or Lakekeeper itself — depends on your setup; see [Configuration](./configuration.md).
 
+### Provider-managed roles { .lkp }
+
+A role's `provider-id` says who owns it. `lakekeeper` roles are yours to manage through the API; roles in a [role provider's](./configuration.md#role-provider) namespace belong to that provider, so create, rename, delete and member (un)assignment are rejected with `400 ManagedRoleImmutable` — change them in the identity provider instead. They are still ordinary grant principals: grant privileges to them like any other role.
+
+Membership is synced per user at login. A provider-managed role therefore appears once its first member authenticates, and lists only the members Lakekeeper has seen so far — not the full group. A group nobody has logged in from does not exist as a role yet and cannot be granted to; under Cedar, match on `principal.project_roles` instead, which needs no catalog role.
+
 ### Direct grants are not effective permissions
 
 A grant recorded on a resource is not the whole answer to "what can Alice do here". Your authorizer's model decides what a grant *reaches*: whether `select` implies `describe`, and whether a warehouse grant covers the tables inside it. Role membership and inheritance are resolved when a request is decided, not stored as extra grants.

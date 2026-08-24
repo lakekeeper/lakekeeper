@@ -650,6 +650,8 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
 
 Authorizers such as `Cedar` support pluggable role providers that resolve a user's group memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured in parallel, each with a unique identifier. `OpenFGA` does not use role providers — roles are stored directly in OpenFGA.
 
+Roles in a provider's namespace are the provider's to manage — see [Provider-managed roles](./authorization.md#provider-managed-roles) for what the management API rejects and how membership becomes visible.
+
 Role providers that resolve groups over HTTPS — the Microsoft Graph (Entra ID) provider — honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables for outbound requests. There is no per-provider proxy setting.
 
 #### Chain settings
