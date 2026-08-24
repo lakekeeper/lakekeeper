@@ -564,7 +564,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // failure — an id or name conflict, the authorizer, the commit itself —
         // can delete the secret before returning, instead of leaving a credential
         // behind that nothing references and no API can reach.
-        let created: Result<(_, _)> = async {
+        //
+        // The transaction stays owned out here rather than being moved into the
+        // block, so it can be settled explicitly below before the secret store is
+        // touched: cleanup talks to an external service (Vault, for one backend),
+        // and a write-pool connection must not be held across that call.
+        let staged: Result<(_, _)> = async {
             let resolved_warehouse = C::create_warehouse(
                 project_id,
                 CatalogCreateWarehouseRequest::builder()
@@ -595,13 +600,36 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-            transaction.commit().await?;
             Ok((resolved_warehouse, bootstrap_grants))
         }
         .await;
 
-        let (resolved_warehouse, bootstrap_grants) = match created {
-            Ok(created) => created,
+        // Settle the transaction before any cleanup: on success commit, otherwise
+        // roll back and release the connection. A rollback that fails is logged
+        // and discarded — the create error is what the caller needs, and the
+        // transaction is abandoned either way. A commit that fails has already
+        // ended the transaction, so there is nothing left to roll back, but its
+        // secret still needs cleaning up, which is why both funnel into one arm.
+        let settled = match staged {
+            Ok(staged) => transaction.commit().await.map(|()| staged),
+            Err(create_error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            ?e,
+                            "Failed to roll back after a failed warehouse creation: {}",
+                            e.error
+                        );
+                    })
+                    .ok();
+                Err(create_error)
+            }
+        };
+
+        let (resolved_warehouse, bootstrap_grants) = match settled {
+            Ok(settled) => settled,
             Err(create_error) => {
                 // Best-effort, and the creation error is what the caller gets: a
                 // failure to clean up leaves the credential orphaned exactly as
