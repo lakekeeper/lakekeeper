@@ -19,7 +19,7 @@ ignored = ["cloudevents-sdk", "k8s-openapi"]
 [features]
 all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
-router = ["dep:tower-http", "dep:tower"]
+router = ["dep:tower-http", "dep:tower", "dep:hyper-util", "dep:socket2"]
 default = ["s3-signer", "router"]
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
@@ -58,6 +58,7 @@ hmac = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
+hyper-util = { workspace = true, optional = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
@@ -83,6 +84,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = { workspace = true, optional = true }
 serde_urlencoded = { workspace = true }
 sha1 = { workspace = true }
+socket2 = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }

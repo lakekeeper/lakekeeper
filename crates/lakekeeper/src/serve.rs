@@ -389,6 +389,7 @@ async fn serve_inner<
     );
 
     // Cloud events publisher setup
+    let has_cloud_event_sinks = !cloud_event_sinks.is_empty();
     let cloud_events_background_task = CloudEventsPublisherBackgroundTask {
         source: cloud_events_rx,
         sinks: cloud_event_sinks,
@@ -416,9 +417,21 @@ async fn serve_inner<
 
     // Event system setup
     let dispatcher = additional_event_dispatcher.unwrap_or(EventDispatcher::new(vec![]));
-    dispatcher
-        .append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())))
-        .await;
+    // Registering the publisher with no sinks configured is pure waste that is
+    // paid per commit: the listener runs `serde_json::to_value` over the whole
+    // commit request (megabytes, once `max_request_body_size` is raised), queues
+    // it, and the background task then builds a full `CloudEvent` from it —
+    // only to drop it because there is nowhere to send it. Skip the listener
+    // entirely instead; nothing observable changes.
+    if has_cloud_event_sinks {
+        dispatcher
+            .append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())))
+            .await;
+    } else {
+        tracing::info!(
+            "No cloud-event sinks configured, not registering the cloud-events publisher"
+        );
+    }
     if CONFIG.cache.warehouse.enabled {
         tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
         dispatcher
