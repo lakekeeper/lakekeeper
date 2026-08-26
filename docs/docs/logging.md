@@ -58,6 +58,8 @@ Audit logs cover two distinct schemas depending on the source of the event:
 
 Emitted for every authz check. Always contain `action`/`actions`, `entity`/`entities`, `actor`, and `decision`.
 
+Discriminate on `operation`, not on the presence of `entity`: a record carrying `operation` belongs to the [operational family](#operational-audit-events) below even when it also carries `action`/`entity`.
+
 **Structure:**
 
 | Field                  | Type            | Description                       |
@@ -70,6 +72,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
+| `idempotency_key`      | String \| null  | The request's `Idempotency-Key`, or `null` when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
 | `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
@@ -336,7 +339,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
 
 #### Operational Audit Events
 
-Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
+Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, and requests answered from an idempotency record. Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
 
 **Structure:**
 
@@ -378,6 +381,30 @@ So a `grant_created` event with no matching `grant_revoked` does **not** imply t
 **Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
 
 That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
+
+**Idempotent replays (`operation = "idempotent_replay"`):**
+
+Emitted when a request carrying an `Idempotency-Key` was answered from the stored record instead of being executed. `outcome` is always `replayed`.
+
+These records also carry the top-level `action`, `entity`, `privilege_source` and `user_agent` fields of an authorization event, so a retry reads with the same queries as the request that did the work — join the two on `idempotency_key`, which every *authorization* record carries too. The operational records above (`grant_created`, `ldap_resolve_roles`) do not carry it.
+
+| Field             | Description                                                                 |
+|-------------------|-----------------------------------------------------------------------------|
+| `idempotency_key` | The key whose record served the request                                     |
+| `action`          | The action the retry asked for, in the same shape as an authorization event  |
+| `entity`          | The target the retry named, in the same shape as an authorization event      |
+
+**`action` and `entity` are what the retry asked for, not what the original request did.** A record is matched on warehouse, key and endpoint — never on the target or the request parameters ([Idempotency](./configuration.md#idempotency)). A key reused on the same endpoint against a different table produces a record naming that table, which was not touched; a retry sent with `purgeRequested=true` after an original without it is recorded as a purging drop. Read these as what was asked and answered from a record, not as evidence of what happened.
+
+**A replay record does not establish that its actor was ever authorized for that entity.** The replay is served before authorization runs, so any authenticated caller holding the key can produce one — including one with no grants in that warehouse. The key cannot cause a mutation: a replay executes nothing.
+
+**Audit records carry live idempotency keys**, on authorization records as well as these, for as long as `idempotency-key-lifetime` plus the grace period. A reader of the audit log can replay those keys to a 204 and mint further records; treat audit-log access accordingly.
+
+**Seven endpoints emit this marker**, and no others: `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and serve the replay before authorizing, so no `decision` is recorded — the mutation already happened, and denying the retry would report a failure for a completed operation.
+
+**Replays of the other idempotent endpoints are not marked, and do not look like the original request.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView` and `createGenericTable` re-derive their response body by loading it, so a retry emits the authorization record of that *load* — `action_name = "get_metadata"` on the entity — and no record for the create or update; `updateTable` emits both `commit` and `get_metadata`; `commitTransaction` authorizes before it detects the replay, so its retry is indistinguishable from a first execution. In all of these, `idempotency_key` is the only field that identifies a retry.
+
+These records are audit-log only. Like the grant records above, they are never published to the configured event stream (Kafka, NATS, CloudEvents), and delivery is best-effort.
 
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 

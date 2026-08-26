@@ -43,7 +43,16 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
     validate_table_or_view_ident(&source)?;
     validate_table_or_view_ident(&destination)?;
 
+    // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
+    let event_ctx = APIEventContext::for_generic_table(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events.clone(),
+        warehouse_id,
+        source.clone(),
+        CatalogGenericTableAction::Rename,
+    );
+
     if let Some(ref key) = idempotency_key {
         let check = C::check_idempotency_key(
             warehouse_id,
@@ -53,19 +62,12 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         )
         .await?;
         if check.is_replay() {
+            event_ctx.emit_idempotent_replay(*key);
             return Ok(());
         }
     }
 
     let authorizer = &state.v1_state.authz;
-
-    let event_ctx = APIEventContext::for_generic_table(
-        Arc::new(request_metadata.clone()),
-        state.v1_state.events.clone(),
-        warehouse_id,
-        source.clone(),
-        CatalogGenericTableAction::Rename,
-    );
 
     let authz_result = authorize_rename_generic_table::<C, A>(
         &request_metadata,

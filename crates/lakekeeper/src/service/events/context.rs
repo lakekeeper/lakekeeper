@@ -30,8 +30,9 @@ use crate::{
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
-            EventDispatcher,
+            EventDispatcher, IdempotentReplayEvent,
         },
+        idempotency::IdempotencyKey,
         storage::StoragePermissions,
         tasks::TaskId,
     },
@@ -1189,6 +1190,31 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
             }
             Err(e) => Err(self.emit_authz_failure_event(e)),
         }
+    }
+
+    /// Record that this request was answered from an idempotency record rather
+    /// than executed.
+    ///
+    /// Emits the entity and action the *caller named*, since a replay resolves
+    /// nothing. Consumes `self` like [`Self::emit_authz`], so one binding cannot
+    /// both answer from a record and authorize. That is a guard against reuse,
+    /// not a linearity guarantee — `APIEventContext` is `Clone`, so a caller who
+    /// clones can still emit both, and only a test catches it.
+    pub fn emit_idempotent_replay(self, idempotency_key: IdempotencyKey) {
+        let event = IdempotentReplayEvent {
+            request_metadata: self.request_metadata,
+            entities: Arc::new(self.user_provided_entity.event_entities()),
+            actions: Arc::new(self.action.event_actions()),
+            idempotency_key,
+        };
+        let dispatcher = self.dispatcher;
+        let span = tracing::Span::current();
+        tokio::spawn(
+            async move {
+                let () = dispatcher.idempotent_replay_served(event).await;
+            }
+            .instrument(span),
+        );
     }
 }
 

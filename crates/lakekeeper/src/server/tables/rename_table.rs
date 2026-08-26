@@ -42,8 +42,18 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     let source = source.clone();
     let destination = destination.clone();
 
-    // ------------------- IDEMPOTENCY CHECK -------------------
+    // ------------------- AUDIT CONTEXT -------------------
+    // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
+    let event_ctx = APIEventContext::for_table(
+        Arc::new(request_metadata),
+        state.v1_state.events,
+        warehouse_id,
+        source.clone(),
+        CatalogTableAction::Rename,
+    );
+
+    // ------------------- IDEMPOTENCY CHECK -------------------
     if let Some(ref key) = idempotency_key {
         let check = C::check_idempotency_key(
             warehouse_id,
@@ -53,20 +63,13 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         )
         .await?;
         if check.is_replay() {
+            event_ctx.emit_idempotent_replay(*key);
             return Ok(());
         }
     }
 
     // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
-
-    let event_ctx = APIEventContext::for_table(
-        Arc::new(request_metadata),
-        state.v1_state.events,
-        warehouse_id,
-        source.clone(),
-        CatalogTableAction::Rename,
-    );
 
     let authz_result = authorize_rename_table::<C, A>(
         event_ctx.request_metadata(),

@@ -10,7 +10,7 @@ use crate::{
         authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
         events::{
             Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
-            GrantsChangedEvent, context::EntityDescriptor,
+            GrantsChangedEvent, IdempotentReplayEvent, context::EntityDescriptor,
         },
     },
 };
@@ -235,6 +235,20 @@ fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
 }
 
+/// The request's `Idempotency-Key`, or `None` when the caller sent none — which
+/// `valuable` renders as JSON `null`.
+///
+/// On every authorization record, not only the replay one: a replay is matched
+/// on the key alone, so without the key on both sides a retry can be tied to the
+/// request that did the work only by content and timing — which fails in exactly
+/// the cases that matter, where the retry named a different target or different
+/// flags.
+fn idempotency_key_value(request_metadata: &RequestMetadata) -> Option<String> {
+    request_metadata
+        .idempotency_key()
+        .map(|key| key.as_uuid().to_string())
+}
+
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -249,6 +263,8 @@ impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        let idempotency_key = idempotency_key_value(&event.request_metadata);
+        let idempotency_key = idempotency_key.as_deref();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -260,6 +276,7 @@ impl EventListener for AuditEventListener {
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -276,6 +293,7 @@ impl EventListener for AuditEventListener {
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -330,6 +348,8 @@ impl EventListener for AuditEventListener {
     ) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        let idempotency_key = idempotency_key_value(&event.request_metadata);
+        let idempotency_key = idempotency_key.as_deref();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -339,6 +359,7 @@ impl EventListener for AuditEventListener {
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
@@ -353,11 +374,42 @@ impl EventListener for AuditEventListener {
                     user_agent = tracing::field::valuable(&user_agent),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
             );
         }
+        Ok(())
+    }
+
+    /// A retry answered from an idempotency record.
+    ///
+    /// Carries `action` and `entity` in the same shape as the two authorization
+    /// records above, so one query over the audit stream sees the original
+    /// request and every replay of it. It deliberately carries no `decision`:
+    /// no authorization ran, because the mutation had already happened and
+    /// there was nothing left to permit. `operation` and `outcome` are the
+    /// positive markers that say so.
+    ///
+    /// No `context`: no handler records extra context before the idempotency
+    /// check, so unlike the arms above there is nothing to render.
+    async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
+        let user_agent = user_agent_value(&event.request_metadata);
+        let idempotency_key = event.idempotency_key.as_uuid().to_string();
+        audit_log!(
+            &*event.actions,
+            &*event.entities,
+            {
+                actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                privilege_source = event.request_metadata.privilege_source().as_str(),
+                user_agent = tracing::field::valuable(&user_agent),
+                operation = "idempotent_replay",
+                idempotency_key = idempotency_key.as_str(),
+                outcome = "replayed",
+            },
+            "Idempotent replay served"
+        );
         Ok(())
     }
 }
@@ -578,6 +630,10 @@ impl Mappable for AuditPrincipal<'_> {
 /// whenever there is no `decision = "allowed"|"denied"` to emit — e.g. for
 /// role resolution, user lookup, or token enrichment.
 ///
+/// The exception is a record that must carry `action`/`entity`, which this
+/// macro cannot express: use `audit_log!` and mark the record with
+/// `operation`/`outcome` instead, as `idempotent_replay_served` does.
+///
 /// # Examples
 /// ```rust,ignore
 /// use lakekeeper::audit_operation;
@@ -641,14 +697,21 @@ macro_rules! audit_operation {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use iceberg::{NamespaceIdent, TableIdent};
     use valuable::{Valuable, Value, Visit};
 
     use super::*;
     use crate::{
+        WarehouseId,
         request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
         service::{
-            authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
-            events::context::EventEntities,
+            UserId,
+            authz::{
+                ActionDescriptor, CatalogAction as _, CatalogTableAction, DeterminingFactor,
+                PolicyEffect,
+            },
+            events::context::{EventEntities, UserProvidedEntity as _, UserProvidedTable},
+            idempotency::IdempotencyKey,
         },
     };
 
@@ -678,7 +741,11 @@ mod tests {
 
     /// Render one audit event through the same JSON formatter the binary
     /// configures (`lakekeeper-bin`'s `main`), and return it parsed.
-    fn emit_and_capture(event: AuthorizationSucceededEvent) -> serde_json::Value {
+    /// Render one audit event through the JSON formatter and return it parsed.
+    fn capture_json<F>(emit: impl FnOnce() -> F) -> serde_json::Value
+    where
+        F: std::future::Future<Output = anyhow::Result<()>>,
+    {
         let logs = CapturedLogs::default();
         let subscriber = tracing_subscriber::fmt()
             .json()
@@ -687,13 +754,16 @@ mod tests {
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            futures::executor::block_on(AuditEventListener.authorization_succeeded(event))
-                .expect("emitting an audit event must not fail");
+            futures::executor::block_on(emit()).expect("emitting an audit event must not fail");
         });
 
         let bytes = logs.0.lock().expect("log buffer poisoned").clone();
         let line = String::from_utf8(bytes).expect("log output must be utf-8");
         serde_json::from_str(line.trim()).expect("log line must be valid json")
+    }
+
+    fn emit_and_capture(event: AuthorizationSucceededEvent) -> serde_json::Value {
+        capture_json(|| AuditEventListener.authorization_succeeded(event))
     }
 
     fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
@@ -739,6 +809,171 @@ mod tests {
             event.get("user_agent"),
             Some(&serde_json::Value::Null),
             "the key must be present so consumers can tell 'not sent' from 'not recorded'"
+        );
+    }
+
+    /// Built from the production types rather than by hand: the record's claim is
+    /// that it matches what a real drop reports, which a hand-rolled descriptor
+    /// cannot demonstrate.
+    fn replay_event(warehouse_id: WarehouseId, actor: Actor) -> IdempotentReplayEvent {
+        let request_metadata = RequestMetadataTestBuilder::builder()
+            .actor(actor)
+            .user_agent(UserAgent::parse("Apache-Spark/3.5.1"))
+            .build();
+        let entities = UserProvidedTable {
+            warehouse_id,
+            table: TableIdent {
+                namespace: NamespaceIdent::new("sales".to_string()),
+                name: "orders".to_string(),
+            }
+            .into(),
+        }
+        .event_entities();
+
+        IdempotentReplayEvent {
+            request_metadata: Arc::new(request_metadata),
+            entities: Arc::new(entities),
+            actions: Arc::new(vec![
+                CatalogTableAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ]),
+            idempotency_key: IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000001")
+                .expect("a valid uuid"),
+        }
+    }
+
+    /// A replay has to be attributable — who, which action with which flags, and
+    /// against which target — and it must not claim an authorization decision,
+    /// because none was made.
+    #[test]
+    fn a_replay_records_the_actor_action_and_target_but_no_decision() {
+        let warehouse_id = WarehouseId::new_random();
+        let event = replay_event(
+            warehouse_id,
+            Actor::Principal(UserId::try_from("oidc~alice").expect("a valid user id")),
+        );
+
+        let event = capture_json(|| AuditEventListener.idempotent_replay_served(event));
+
+        assert_eq!(
+            event.get("operation").and_then(serde_json::Value::as_str),
+            Some("idempotent_replay"),
+        );
+        assert_eq!(
+            event.get("outcome").and_then(serde_json::Value::as_str),
+            Some("replayed"),
+        );
+        assert_eq!(
+            event
+                .get("idempotency_key")
+                .and_then(serde_json::Value::as_str),
+            Some("0198f2c0-0000-7000-8000-000000000001"),
+            "the record that served the request has to be identifiable"
+        );
+
+        // Who. Without this the record says a drop was replayed but not by whom,
+        // which is the question the event exists to answer.
+        assert_eq!(
+            event
+                .pointer("/actor/principal")
+                .and_then(serde_json::Value::as_str),
+            Some("oidc~alice"),
+        );
+        assert_eq!(
+            event
+                .get("privilege_source")
+                .and_then(serde_json::Value::as_str),
+            Some("authorizer"),
+        );
+        assert_eq!(
+            event.get("user_agent").and_then(serde_json::Value::as_str),
+            Some("Apache-Spark/3.5.1"),
+        );
+
+        // What, including the flags: a purging force drop must not be recorded as
+        // a plain one.
+        assert_eq!(
+            event
+                .pointer("/action/action_name")
+                .and_then(serde_json::Value::as_str),
+            Some("drop"),
+        );
+        assert_eq!(
+            event
+                .pointer("/action/force")
+                .and_then(serde_json::Value::as_str),
+            Some("true"),
+        );
+        assert_eq!(
+            event
+                .pointer("/action/purge")
+                .and_then(serde_json::Value::as_str),
+            Some("true"),
+        );
+
+        // Against what, as the caller named it.
+        assert_eq!(
+            event
+                .pointer("/entity/entity_type")
+                .and_then(serde_json::Value::as_str),
+            Some("table"),
+        );
+        assert_eq!(
+            event
+                .pointer("/entity/warehouse-id")
+                .and_then(serde_json::Value::as_str),
+            Some(warehouse_id.to_string().as_str()),
+        );
+        assert_eq!(
+            event
+                .pointer("/entity/namespace")
+                .and_then(serde_json::Value::as_str),
+            Some("sales"),
+        );
+        assert_eq!(
+            event
+                .pointer("/entity/table")
+                .and_then(serde_json::Value::as_str),
+            Some("orders"),
+            "the target is the name the caller sent, since a replay resolves nothing"
+        );
+
+        assert_eq!(
+            event.get("decision"),
+            None,
+            "no authorization ran, so the record must not imply one"
+        );
+    }
+
+    /// The key is on every audit record, not only the replay one — it is the only
+    /// field that ties a retry to the request that did the work, and for the
+    /// endpoints that authorize before detecting a replay it is the only field
+    /// that identifies a retry at all.
+    #[test]
+    fn an_authorization_record_carries_the_idempotency_key() {
+        let key = IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000002").expect("valid");
+        let mut metadata = RequestMetadataTestBuilder::builder().build();
+        metadata.with_idempotency_key(key);
+
+        let event = emit_and_capture(succeeded_event(metadata));
+
+        assert_eq!(
+            event
+                .get("idempotency_key")
+                .and_then(serde_json::Value::as_str),
+            Some("0198f2c0-0000-7000-8000-000000000002"),
+        );
+
+        // Absent must be distinguishable from "not recorded", as for `user_agent`.
+        let without = emit_and_capture(succeeded_event(
+            RequestMetadataTestBuilder::builder().build(),
+        ));
+        assert_eq!(
+            without.get("idempotency_key"),
+            Some(&serde_json::Value::Null)
         );
     }
 

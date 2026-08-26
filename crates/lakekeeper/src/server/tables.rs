@@ -822,24 +822,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         validate_table_or_view_ident(table)?;
 
-        // ------------------- IDEMPOTENCY CHECK -------------------
+        // ------------------- AUDIT CONTEXT -------------------
+        // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
-        if let Some(ref key) = idempotency_key {
-            let check = C::check_idempotency_key(
-                warehouse_id,
-                key,
-                EndpointFlat::CatalogV1DropTable,
-                state.v1_state.catalog.clone(),
-            )
-            .await?;
-            if check.is_replay() {
-                return Ok(());
-            }
-        }
-
-        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
-        let authorizer = state.v1_state.authz;
-
         let event_ctx = APIEventContext::for_table(
             Arc::new(request_metadata),
             state.v1_state.events,
@@ -850,6 +835,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 purge: purge_requested,
             },
         );
+
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        if let Some(ref key) = idempotency_key {
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropTable,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
+            if check.is_replay() {
+                event_ctx.emit_idempotent_replay(*key);
+                return Ok(());
+            }
+        }
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+        let authorizer = state.v1_state.authz;
 
         let authz_result = authorizer
             .load_and_authorize_table_operation::<C>(
