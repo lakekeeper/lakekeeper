@@ -214,6 +214,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
+            // Allocator accounting: tells a genuine leak (`allocated` grows)
+            // from allocator retention (`resident` grows while `allocated` is
+            // flat) from THP-trapped pages (both look fine but RSS climbs).
+            // This call also keeps `lakekeeper-alloc` linked, which is what
+            // preserves its exported `malloc_conf` symbol.
+            lakekeeper_alloc::log_effective_config();
+            tokio::spawn(lakekeeper_alloc::run(std::time::Duration::from_secs(30)));
             serve_and_maybe_migrate(force_start).await?;
         }
         Some(Commands::Healthcheck {

@@ -1,0 +1,17 @@
+[package]
+name = "lakekeeper-alloc"
+description = "Allocator configuration and observability for the Lakekeeper binaries"
+resolver = "2"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "msvc")))'.dependencies]
+axum-prometheus = { workspace = true }
+serde_json = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true, features = ["stats", "use_std"] }
+tokio = { workspace = true }
+tracing = { workspace = true }

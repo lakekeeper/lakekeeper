@@ -1,7 +1,7 @@
 use std::{default::Default, env::VarError, sync::LazyLock};
 
 use lakekeeper::{
-    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+    AuthZBackend, CONFIG,
     api::iceberg::v1::tables::parse_if_none_match,
     axum,
     axum::{
@@ -10,7 +10,7 @@ use lakekeeper::{
         response::{IntoResponse, Response},
         routing::get,
     },
-    determine_base_uri,
+    determine_base_uri, determine_forwarded_prefix,
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     tower,
     tower_http::{
@@ -134,10 +134,16 @@ pub(crate) async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoRes
     )
 }
 
+/// The forwarded prefix, gated on `use_x_forwarded_headers` and normalized the
+/// same way every other route normalizes it.
+///
+/// This value is part of `FILE_CACHE`'s key, and the cache is bounded by entry
+/// count with no TTL over multi-MB templated assets. Reading the header raw let
+/// any caller mint cache keys (`/lk`, `/lk/`, `//lk`, … are all distinct) even
+/// where x-forwarded handling is disabled, so the key space has to be the
+/// normalized one.
 fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(X_FORWARDED_PREFIX_HEADER)
-        .and_then(|hv| hv.to_str().ok())
+    determine_forwarded_prefix(headers)
 }
 
 /// `Cache-Control` value for a static asset, keyed on its (prefix-stripped) path.
@@ -260,7 +266,7 @@ async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redir
 
 #[cfg(test)]
 mod test {
-    use lakekeeper::tokio;
+    use lakekeeper::{X_FORWARDED_PREFIX_HEADER, tokio};
 
     use super::*;
 
@@ -294,7 +300,13 @@ mod test {
                 .to_vec(),
         )
         .unwrap();
-        assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
+        // `forwarded_prefix` is gated on this, so assert the behaviour the
+        // running configuration actually selects.
+        if CONFIG.use_x_forwarded_headers {
+            assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
+        } else {
+            assert!(body_str.contains("\"/ui/assets/"));
+        }
     }
 
     #[test]
