@@ -2402,8 +2402,11 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     // A `system` role's membership is also writable here: `assignee` is the same
     // tuple the role-membership API writes, and `ownership` confers `assignee`. The
     // catalog's rule has to hold on this path too, or it only covers whichever
-    // writer happens to be gated. Read uncached — a gate must not decide from a
-    // possibly-stale replica of the role.
+    // writer happens to be gated. Read with the cache bypassed, from the same
+    // source as the catalog-side gate: a role's `system`-ness cannot change once
+    // set, so the only thing replica lag can hide is a role too new to have
+    // replicated — which resolves as not-found and is then refused by the
+    // authorization check below, having no tuples yet.
     let role = match C::get_role_by_id_across_projects_cache_aware(
         role_id,
         CachePolicy::Skip,
