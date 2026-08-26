@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.3](https://github.com/lakekeeper/lakekeeper/compare/v0.13.3...v0.13.3) (2026-08-26)
+
+
+### Bug Fixes
+
+* limit connection lifetimes ([#1990](https://github.com/lakekeeper/lakekeeper/issues/1990)) ([#1993](https://github.com/lakekeeper/lakekeeper/issues/1993)) ([4bcdc1f](https://github.com/lakekeeper/lakekeeper/commit/4bcdc1fa330b6665b89a3903a240e8eb8ee12e20))
+
 ## [0.13.3](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.13.3) (2026-08-16)
 
 
