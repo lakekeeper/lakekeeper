@@ -2389,6 +2389,16 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         request.clone(),
     );
 
+    // Refuse an unauthenticated caller before any catalog work. The authorization
+    // check below refuses it too, but only after the uncached lookup has spent a
+    // connection — so without this an anonymous request can drive catalog load, and
+    // a catalog fault would answer it with a backend error instead of a 401.
+    if event_ctx.request_metadata().actor() == &Actor::Anonymous {
+        return Err(event_ctx
+            .emit_early_authz_failure(OpenFGAError::AuthenticationRequired)
+            .into());
+    }
+
     // A `system` role's membership is also writable here: `assignee` is the same
     // tuple the role-membership API writes, and `ownership` confers `assignee`. The
     // catalog's rule has to hold on this path too, or it only covers whichever
