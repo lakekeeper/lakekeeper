@@ -249,6 +249,13 @@ impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        // Recorded verbatim and unverified: the field says the caller claimed an
+        // emergency override and why, not that one was granted. Passed as a bare
+        // `Option` rather than through `valuable`, so that `None` records nothing
+        // and the key is absent from ordinary events instead of adding a `null`
+        // to every authorization check. Unlike `user_agent`, absent and null
+        // would mean the same thing here, so the null buys nothing.
+        let break_glass = event.request_metadata.break_glass_reason();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -257,6 +264,7 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
@@ -272,6 +280,7 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
@@ -330,6 +339,13 @@ impl EventListener for AuditEventListener {
     ) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        // Recorded verbatim and unverified: the field says the caller claimed an
+        // emergency override and why, not that one was granted. Passed as a bare
+        // `Option` rather than through `valuable`, so that `None` records nothing
+        // and the key is absent from ordinary events instead of adding a `null`
+        // to every authorization check. Unlike `user_agent`, absent and null
+        // would mean the same thing here, so the null buys nothing.
+        let break_glass = event.request_metadata.break_glass_reason();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -338,6 +354,7 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
                 },
@@ -351,6 +368,7 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
@@ -740,6 +758,34 @@ mod tests {
             Some(&serde_json::Value::Null),
             "the key must be present so consumers can tell 'not sent' from 'not recorded'"
         );
+    }
+
+    /// A caller claiming an emergency override has to be visible in the audit
+    /// log even when no authorizer acts on the claim — the built-in authorizers
+    /// ignore the header, so this event is the only record that it was sent.
+    #[test]
+    fn an_audit_event_records_the_break_glass_reason() {
+        let mut metadata = RequestMetadataTestBuilder::builder().build();
+        metadata.with_break_glass(Some("INC-1234 undoing lockout forbid".to_string()));
+
+        let event = emit_and_capture(succeeded_event(metadata));
+
+        assert_eq!(
+            event.get("break_glass").and_then(serde_json::Value::as_str),
+            Some("INC-1234 undoing lockout forbid"),
+        );
+    }
+
+    /// Nearly every request claims nothing, and an absent key says exactly what
+    /// a null would, so the field is omitted rather than padding every
+    /// authorization event in the catalog with `"break_glass": null`.
+    #[test]
+    fn an_audit_event_without_a_break_glass_claim_omits_the_field() {
+        let metadata = RequestMetadataTestBuilder::builder().build();
+
+        let event = emit_and_capture(succeeded_event(metadata));
+
+        assert_eq!(event.get("break_glass"), None);
     }
 
     /// Records key/value pairs, flattening a nested map into `key=value` pairs joined
