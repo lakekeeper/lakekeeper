@@ -143,7 +143,10 @@ pub struct ServeConfiguration<
     #[builder(default)]
     /// A function to modify the router before serving
     pub modify_router_fn: Option<fn(axum::Router) -> axum::Router>,
-    /// Cloud events sinks / publishers
+    /// Cloud events sinks / publishers.
+    ///
+    /// The cloud-event publisher is registered only when this is non-empty.
+    /// Listeners added through `event_dispatcher` are unaffected.
     #[builder(default)]
     pub cloud_event_sinks: Vec<Arc<dyn CloudEventBackend + Send + Sync + 'static>>,
     /// Enable built-in queue workers

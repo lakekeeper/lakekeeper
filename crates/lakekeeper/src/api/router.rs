@@ -4,7 +4,7 @@ use axum::{
     Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get, serve::Listener,
 };
 use axum_extra::{either::Either, middleware::option_layer};
-use axum_prometheus::PrometheusMetricLayer;
+use axum_prometheus::{PrometheusMetricLayer, metrics};
 use http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
@@ -520,6 +520,15 @@ pub async fn serve(
     let graceful = GracefulShutdown::new();
     let mut listener = listener;
 
+    // Separates "many connections open" from "we are leaking tasks":
+    // `tokio_live_tasks_count` counts every task on the runtime, so on its own it
+    // cannot tell one from the other.
+    metrics::describe_gauge!(
+        METRIC_HTTP_CONNECTIONS,
+        "Currently open HTTP connections, one tokio task each"
+    );
+    metrics::gauge!(METRIC_HTTP_CONNECTIONS).set(0.0);
+
     loop {
         let (stream, peer) = tokio::select! {
             biased;
@@ -538,6 +547,7 @@ pub async fn serve(
             tracing::debug!(%peer, "Failed to set TCP keepalive: {e}");
         }
 
+        metrics::gauge!(METRIC_HTTP_CONNECTIONS).increment(1.0);
         let connection = builder
             .serve_connection_with_upgrades(
                 TokioIo::new(stream),
@@ -549,6 +559,7 @@ pub async fn serve(
             if let Err(e) = connection.await {
                 tracing::debug!(%peer, "Connection closed with error: {e}");
             }
+            metrics::gauge!(METRIC_HTTP_CONNECTIONS).decrement(1.0);
         });
     }
 
@@ -570,6 +581,10 @@ pub async fn serve(
     }
     Ok(())
 }
+
+/// Open HTTP connections. Compare against `tokio_live_tasks_count`: a gap that
+/// grows is a task leak somewhere other than the accept loop.
+const METRIC_HTTP_CONNECTIONS: &str = "lakekeeper_http_connections";
 
 /// How long an HTTP/1 connection may wait for a request head before the server
 /// closes it.

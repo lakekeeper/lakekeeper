@@ -167,7 +167,8 @@ serde_urlencoded = "0.7.1"
 serde_with = "^3.4"
 sha1 = "0.10"
 similar = "3.0.0"
-socket2 = "0.6"
+# `all` gates `TcpKeepalive::with_retries`, used by the HTTP accept loop.
+socket2 = { version = "0.6", features = ["all"] }
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

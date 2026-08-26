@@ -300,7 +300,13 @@ mod test {
                 .to_vec(),
         )
         .unwrap();
-        assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
+        // `forwarded_prefix` is gated on this, so assert the behaviour the
+        // running configuration actually selects.
+        if CONFIG.use_x_forwarded_headers {
+            assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
+        } else {
+            assert!(body_str.contains("\"/ui/assets/"));
+        }
     }
 
     #[test]
