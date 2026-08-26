@@ -23,8 +23,9 @@ use lakekeeper::{
     },
     axum_extra::extract::Query,
     service::{
-        Actor, CachePolicy, CatalogRoleOps, CatalogStore, GenericTableId, NamespaceId, Result,
-        RoleId, SecretStore, State, TableId, TagDefinitionId, ViewId,
+        Actor, CachePolicy, CatalogRoleOps, CatalogStore, GenericTableId,
+        GetRoleAcrossProjectsError, NamespaceId, Result, RoleId, SecretStore, State, TableId,
+        TagDefinitionId, ViewId,
         authz::ActionDescriptor,
         events::{
             APIEventContext,
@@ -2392,15 +2393,24 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     // tuple the role-membership API writes, and `ownership` confers `assignee`. The
     // catalog's rule has to hold on this path too, or it only covers whichever
     // writer happens to be gated. Read uncached — a gate must not decide from a
-    // possibly-stale replica of the role. A role with no catalog row is a dangling
-    // tuple, never a system role, so it falls through.
-    if let Ok(role) = C::get_role_by_id_across_projects_cache_aware(
+    // possibly-stale replica of the role.
+    let role = match C::get_role_by_id_across_projects_cache_aware(
         role_id,
         CachePolicy::Skip,
         api_context.v1_state.catalog.clone(),
     )
     .await
     {
+        Ok(role) => Some(role),
+        // No catalog row anywhere: a dangling authorizer tuple, never a system
+        // role, so there is nothing for the rule to apply to.
+        Err(GetRoleAcrossProjectsError::RoleIdNotFound(_)) => None,
+        // Any other failure is an unanswered question, not a `no`. Treating it as
+        // "not a system role" would let a backend fault — one a caller can provoke
+        // by loading the pool — wave the write past the rule.
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(role) = role {
         let adds_role_member = request.writes.iter().any(|assignment| {
             let (RoleAssignment::Assignee(subject) | RoleAssignment::Ownership(subject)) =
                 assignment;
