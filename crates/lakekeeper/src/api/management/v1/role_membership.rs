@@ -76,13 +76,16 @@ use crate::{
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogListRolesByIdFilter,
         CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore, Result, RoleId,
-        RoleMemberKind, RoleMembershipEntry, SecretStore, State, UserId, UserMembershipEntry,
+        RoleMemberKind, RoleMembershipEntry, SecretStore, State, SystemRoleMemberRolesNotSupported,
+        SystemRoleMembershipRequiresInstanceAdmin, UserId, UserMembershipEntry,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
             RoleAssignmentFilter, RoleAssignmentRow, UserOrRoleId,
         },
-        events::{APIEventContext, AuthorizationFailureSource},
+        events::{
+            APIEventContext, AuthorizationFailureSource, delegate_authorization_failure_source,
+        },
     },
 };
 
@@ -364,6 +367,52 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
         RoleMemberType::User => UserOrRoleId::User(UserId::try_from(id.to_string())?),
         RoleMemberType::Role => UserOrRoleId::Role(RoleId::from_str_or_bad_request(id)?),
     })
+}
+
+/// The rule `reject_system_role_membership` refused a write for. Carries the
+/// typed error so the call site can hand it to `emit_late_authz_failure` and have
+/// the denial recorded as an authz-failure audit event, rather than a bare error
+/// response.
+enum SystemRoleMembershipViolation {
+    RequiresInstanceAdmin(SystemRoleMembershipRequiresInstanceAdmin),
+    MemberRolesNotSupported(SystemRoleMemberRolesNotSupported),
+}
+
+delegate_authorization_failure_source!(SystemRoleMembershipViolation => {
+    RequiresInstanceAdmin,
+    MemberRolesNotSupported,
+});
+
+/// Hard guard on membership writes targeting `system` roles: membership there is
+/// provisioning, not self-service. Writes require an instance admin, and role-type
+/// members are never added (`system` roles hold users directly). Ordering: the
+/// instance-admin check fires first, so non-admin callers always see 403.
+///
+/// This does not close off every path to a system role's effective membership: a
+/// role-type member already nested inside a system role (however it got there)
+/// remains reachable by adding new members to *that* member role — such a write
+/// targets an ordinary role, so this guard never fires for it. That residual path
+/// is why new nesting into the system role itself is refused while removing an
+/// existing role-type member stays permitted, as a cleanup route.
+fn reject_system_role_membership(
+    role: &ArcRole,
+    metadata: &RequestMetadata,
+    adds_role_member: bool,
+) -> Result<(), SystemRoleMembershipViolation> {
+    if !role.ident.is_system() {
+        return Ok(());
+    }
+    if !metadata.is_instance_admin() {
+        return Err(SystemRoleMembershipViolation::RequiresInstanceAdmin(
+            SystemRoleMembershipRequiresInstanceAdmin::new(),
+        ));
+    }
+    if adds_role_member {
+        return Err(SystemRoleMembershipViolation::MemberRolesNotSupported(
+            SystemRoleMemberRolesNotSupported::new(),
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve `role_ids` to their catalog rows, keyed by id, **across all projects**.
@@ -782,6 +831,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }
         }
 
+        let adds_role_member = subjects
+            .iter()
+            .any(|subject| matches!(subject, UserOrRoleId::Role(_)));
+        reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
+            .map_err(|violation| event_ctx.emit_late_authz_failure(violation))?;
+
         match authorizer.role_assignments() {
             None => {
                 let mut user_ids = Vec::new();
@@ -860,6 +915,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // A provider-managed role's member list is maintained by provider sync;
         // reject manual removal via the API so it cannot drift from sync.
         reject_managed_role::<_, ErrorModel>(&authorizer, &role)?;
+        reject_system_role_membership(&role, event_ctx.request_metadata(), false)
+            .map_err(|violation| event_ctx.emit_late_authz_failure(violation))?;
 
         let subject = parse_member(member_type, &member_id)?;
         match authorizer.role_assignments() {

@@ -732,8 +732,11 @@ pub struct RoleMembershipEntry {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 impl RoleMembershipEntry {
-    /// True if this role is catalog-managed (lakekeeper/system) and thus
-    /// manually assignable via the management API.
+    /// True if this role is catalog-managed (lakekeeper/system). The store
+    /// layer permits membership writes for both providers unchanged; the API
+    /// layer additionally restricts `system`-provider role membership writes
+    /// to instance admins (see `reject_system_role_membership` in
+    /// `role_membership.rs`).
     #[must_use]
     pub fn manually_assignable(&self) -> bool {
         self.role_ident.is_lakekeeper() || self.role_ident.is_system()
