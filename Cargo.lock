@@ -3840,6 +3840,7 @@ dependencies = [
  "hostname",
  "http 1.4.1",
  "http-body-util",
+ "hyper-util",
  "iceberg",
  "iceberg-ext",
  "iso8601",
@@ -3863,6 +3864,7 @@ dependencies = [
  "serde_norway",
  "serde_urlencoded",
  "similar",
+ "socket2",
  "sqlx",
  "strum",
  "strum_macros",
@@ -3888,6 +3890,17 @@ dependencies = [
  "valuable",
  "veil",
  "xxhash-rust",
+]
+
+[[package]]
+name = "lakekeeper-alloc"
+version = "0.13.3"
+dependencies = [
+ "axum-prometheus",
+ "serde_json",
+ "tikv-jemalloc-ctl",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3930,6 +3943,7 @@ dependencies = [
  "figment",
  "http 1.4.1",
  "lakekeeper",
+ "lakekeeper-alloc",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
  "lakekeeper-events-kafka",
@@ -7099,6 +7113,17 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float 2.10.1",
+]
+
+[[package]]
+name = "tikv-jemalloc-ctl"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661f1f6a57b3a36dc9174a2c10f19513b4866816e13425d3e418b11cc37bc24c"
+dependencies = [
+ "libc",
+ "paste",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
