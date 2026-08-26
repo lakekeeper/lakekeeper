@@ -3274,7 +3274,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2056f3e4d53129039f2229f3b326aa538289be27#2056f3e4d53129039f2229f3b326aa538289be27"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=aa04094683f84db8fa82daed716efc0f78d1936d#aa04094683f84db8fa82daed716efc0f78d1936d"
 dependencies = [
  "aes-gcm",
  "anyhow",
