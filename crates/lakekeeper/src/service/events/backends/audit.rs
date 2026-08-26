@@ -948,10 +948,10 @@ mod tests {
         );
     }
 
-    /// The key is on every audit record, not only the replay one — it is the only
-    /// field that ties a retry to the request that did the work, and for the
-    /// endpoints that authorize before detecting a replay it is the only field
-    /// that identifies a retry at all.
+    /// The key is on every audit record, not only the replay one: it is what ties
+    /// a retry to the request that did the work. Where an endpoint authorizes
+    /// before detecting the replay, the original carries the key too, so the pair
+    /// is the only sign of a retry — neither record marks itself as one.
     #[test]
     fn an_authorization_record_carries_the_idempotency_key() {
         let key = IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000002").expect("valid");
