@@ -229,9 +229,11 @@ pub(crate) fn is_known_privilege(resource_type: ResourceType, privilege: &str) -
 /// The relation a caller must hold to move `privilege` in direction `op`.
 ///
 /// A name this level does not publish has no grant relation — refusing to hand out a
-/// privilege the model cannot express is deliberate. A revoke of such a name falls back
-/// to the level's grant-administration relation, so a row left by a retired, renamed, or
-/// foreign privilege stays removable instead of being stuck forever.
+/// privilege the model cannot express is deliberate. A revoke of such a name is answered
+/// by the level's grant-administration relation instead, because refusing it would state
+/// something false about an administrator's authority. It is only an answer, not a
+/// cleanup: a grant here is a tuple, tuples exist only for relations in the model, so
+/// there is nothing for the apply step to remove (see `apply_grants`).
 fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp) -> Option<String> {
     for_level!(resource_type, |R| match (R::from_str(privilege).ok(), op) {
         (Some(relation), GrantOp::Grant) => Some(relation.grant_relation().to_string()),
@@ -241,7 +243,7 @@ fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp)
     })
 }
 
-/// The relation gating removal of a privilege name this level does not publish.
+/// The relation answering removal of a privilege name this level does not publish.
 fn revoke_unknown_relation(resource_type: ResourceType) -> String {
     match resource_type {
         ResourceType::Server => ServerRelation::CanRevokeGrants.to_string(),
@@ -378,8 +380,10 @@ impl OpenFGAAuthorizer {
     ///
     /// A privilege outside this level's vocabulary is a deny when granting: the name may
     /// come from another authorizer's vocabulary, and answering "not allowed" is both true
-    /// and safe. Revoking such a name is answered by grant administration instead, so a
-    /// row a retired privilege left behind stays removable.
+    /// and safe. Revoking such a name is answered by grant administration instead — an
+    /// administrator's authority does not depend on whether this model happens to express
+    /// the privilege. Under this authorizer the revoke then removes nothing, because no
+    /// tuple can exist for a relation the model does not declare.
     ///
     /// The two directions are answered separately. Handing out a privilege you already
     /// hold is delegation, which `pass_grants` confers; taking one back is administration,
@@ -951,6 +955,75 @@ mod tests {
     fn the_read_gate_relation_is_can_read_assignments_at_every_level() {
         for resource_type in every_level() {
             assert_eq!(read_grants_relation(resource_type), "can_read_assignments");
+        }
+    }
+
+    mod openfga_integration_tests {
+        use lakekeeper::{
+            service::{
+                WarehouseId,
+                authz::{GrantFilter, GrantResource, GrantSpec, ManagesGrants, UserOrRoleId},
+            },
+            tokio,
+        };
+        use uuid::Uuid;
+
+        use super::{super::*, *};
+        use crate::migration::tests::authorizer_for_empty_store;
+
+        /// A revoke naming a privilege the model does not publish is authorized (an
+        /// administrator's authority does not depend on this model's vocabulary) but
+        /// removes nothing, because no tuple can exist for a relation the model does not
+        /// declare. What it must never do is delete something else: the pre-existing grant
+        /// on the same principal and object has to survive, and the request must not report
+        /// a removal that did not happen.
+        #[tokio::test]
+        async fn an_unpublished_privilege_revoke_removes_nothing_and_touches_nothing_else() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let holder = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let resource = GrantResource::Warehouse(warehouse_id);
+            let metadata = RequestMetadata::test_user(holder.clone());
+            let spec = |privilege: &str| GrantSpec {
+                principal: UserOrRoleId::User(holder.clone()),
+                resource: resource.clone(),
+                privilege: privilege.to_string(),
+            };
+
+            authorizer
+                .apply_grants(&metadata, &[spec("select")], &[])
+                .await
+                .expect("granting a published privilege writes a tuple");
+
+            let applied = authorizer
+                .apply_grants(&metadata, &[], &[spec("privilege_from_another_era")])
+                .await
+                .expect("an unpublished name is not an error on the revoke path");
+            assert!(
+                applied.removed.is_empty(),
+                "nothing exists to remove, so nothing may be reported as removed: {:?}",
+                applied.removed
+            );
+
+            let rows = authorizer
+                .list_grants(
+                    &metadata,
+                    GrantFilter::ByResource {
+                        resource: resource.clone(),
+                        principal: None,
+                    },
+                    PaginationQuery::empty(),
+                )
+                .await
+                .expect("listing grants")
+                .grants;
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.privilege.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["select"],
+                "the unrelated grant must survive a revoke that matched no relation"
+            );
         }
     }
 }

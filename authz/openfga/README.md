@@ -32,7 +32,7 @@ Adds namespace moves, governance tags, and revoke authority. No tuple rewrites. 
 
 All grantable types:
 
-- Add `can_revoke_grants` (from the level's grant-administration relation) — the check for removing a privilege name this version no longer publishes, so a row left by a retired or foreign name stays removable instead of being stuck. Granting such a name is still refused.
+- Add `can_revoke_grants` (from the level's grant-administration relation) — answers a revoke naming a privilege this version does not publish, rather than refusing it and thereby understating an administrator's authority. No tuple can exist for a relation the model does not declare, so such a revoke removes nothing; the action exists so the answer is truthful, not to enable a cleanup. Granting such a name is still refused.
 
 **Behaviour change.** `pass_grants` now delegates in one direction only: a holder may hand out a privilege they hold, but no longer take one back — including one they granted themselves. Revoking requires `manage_grants`. This applies to both the `/grants` diff and the older `/permissions/{type}/{id}/assignments` deletes. Existing tuples are unchanged; a principal holding `pass_grants` without `manage_grants` loses the ability to remove other principals' grants, which they had in `v4.7` and earlier.
 
