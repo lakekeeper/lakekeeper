@@ -1534,7 +1534,6 @@ tests:
           can_revoke_describe: false
           can_grant_modify: false      # not held, so not passable in either direction
           can_revoke_modify: false
-          can_revoke_grants: false     # no authority over a name the model does not publish
       - user: user:namespace_2_1_grant_admin
         object: namespace:namespace_2_1
         assertions:
@@ -1542,9 +1541,7 @@ tests:
           can_revoke_select: true
           can_revoke_describe: true
           can_revoke_modify: true
-          can_revoke_grants: true      # and can clear a retired privilege name
       - user: user:warehouse_1_owner
         object: namespace:namespace_1
         assertions:
           can_revoke_select: true      # manage_grants inherits from the parent warehouse
-          can_revoke_grants: true

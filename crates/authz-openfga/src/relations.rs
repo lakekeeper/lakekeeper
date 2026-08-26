@@ -290,8 +290,6 @@ pub enum TagRelation {
     CanChangeOwnership,
     CanReadAssignments,
     CanReadAttachments,
-    // -- Revoke actions --
-    CanRevokeGrants,
 }
 impl TagAction for TagRelation {}
 
@@ -417,8 +415,6 @@ pub enum ServerRelation {
     CanReadAssignments,
     CanGrantAdmin,
     CanGrantOperator,
-    // -- Revoke actions --
-    CanRevokeGrants,
 }
 impl ServerAction for ServerRelation {}
 impl CatalogAction for ServerRelation {
@@ -623,8 +619,6 @@ pub enum ProjectRelation {
     CanGetTaskQueueConfig,
     CanGetProjectTasks,
     CanControlProjectTasks,
-    // -- Revoke actions --
-    CanRevokeGrants,
 }
 impl CatalogAction for ProjectRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
@@ -958,7 +952,6 @@ pub enum WarehouseRelation {
     CanRevokeDescribe,
     CanRevokeModify,
     CanRevokeSelect,
-    CanRevokeGrants,
 }
 impl WarehouseAction for WarehouseRelation {}
 impl CatalogAction for WarehouseRelation {
@@ -1316,7 +1309,6 @@ pub enum NamespaceRelation {
     CanRevokeDescribe,
     CanRevokeModify,
     CanRevokeSelect,
-    CanRevokeGrants,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1632,7 +1624,6 @@ pub enum TableRelation {
     CanRevokeDescribe,
     CanRevokeModify,
     CanRevokeSelect,
-    CanRevokeGrants,
 }
 
 impl TableAction for TableRelation {
@@ -1923,7 +1914,6 @@ pub enum ViewRelation {
     CanRevokeDescribe,
     CanRevokeModify,
     CanRevokeSelect,
-    CanRevokeGrants,
 }
 
 impl ViewAction for ViewRelation {
@@ -2216,7 +2206,6 @@ pub enum GenericTableRelation {
     CanRevokeDescribe,
     CanRevokeModify,
     CanRevokeSelect,
-    CanRevokeGrants,
 }
 
 impl GenericTableAction for GenericTableRelation {

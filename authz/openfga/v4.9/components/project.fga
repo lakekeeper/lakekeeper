@@ -72,7 +72,3 @@ type project
     define can_grant_project_admin: project_admin or admin from server
     define can_grant_security_admin: security_admin or admin from server
     define can_grant_data_admin: security_admin or admin from server
-
-    # REVOKE Permissions
-    # Fallback for a privilege name this version no longer publishes
-    define can_revoke_grants: security_admin or admin from server

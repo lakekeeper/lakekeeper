@@ -56,7 +56,5 @@ type namespace
     define can_revoke_describe: manage_grants
     define can_revoke_modify: manage_grants
     define can_revoke_select: manage_grants
-    # Fallback for a privilege name this version no longer publishes
-    define can_revoke_grants: manage_grants
     define can_change_ownership: manage_grants
     define can_set_managed_access: manage_grants
