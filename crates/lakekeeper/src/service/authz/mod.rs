@@ -23,6 +23,7 @@ use crate::{
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
+        events::context::ActionContextKey,
     },
 };
 
@@ -296,22 +297,22 @@ impl std::fmt::Display for ContextValue {
 #[derive(Clone, Debug, typed_builder::TypedBuilder)]
 #[builder(mutators(
     #[allow(unreachable_pub)]
-    pub fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
+    pub fn context_map(&mut self, key: ActionContextKey, map: impl Into<BTreeMap<String, String>>) {
         self.context.push((key, ContextValue::Map(map.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
+    pub fn context_list(&mut self, key: ActionContextKey, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_string(&mut self, key: &'static str, value: impl Into<String>) {
+    pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
     }
 ))]
 pub struct ActionDescriptor {
     pub action_name: &'static str,
     #[builder(via_mutators)]
-    pub context: Vec<(&'static str, ContextValue)>,
+    pub context: Vec<(ActionContextKey, ContextValue)>,
 }
 
 impl ActionDescriptor {
@@ -433,10 +434,10 @@ impl CatalogAction for CatalogServerAction {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
             if let Some(pid) = project_id {
-                b = b.context_string("project_id", pid.to_string());
+                b = b.context_string(ActionContextKey::ProjectId, pid.to_string());
             }
         }
         b.build()
@@ -520,15 +521,38 @@ impl CatalogProjectAction {
     }
 }
 impl CatalogAction for CatalogProjectAction {
+    // A wildcard arm here would silently accept a future variant and emit nothing for
+    // it, which is the whole failure this listing exists to prevent. Denied rather than
+    // left to review: see the audit log section of docs/docs/developer-guide.md.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::CreateWarehouse { name: Some(n) }
             | Self::CreateRole { name: Some(n) }
             | Self::CreateTag { name: Some(n) } => {
-                b = b.context_string("name", n.clone());
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
-            _ => {}
+            // Actions that contribute no audit context. Listed explicitly rather than
+            // matched with `_`, so that adding an action forces a decision about what
+            // its audit record should carry instead of silently emitting nothing.
+            Self::CreateTag { .. }
+            | Self::CreateWarehouse { .. }
+            | Self::Delete { .. }
+            | Self::Rename { .. }
+            | Self::GetMetadata { .. }
+            | Self::ListWarehouses { .. }
+            | Self::IncludeInList { .. }
+            | Self::CreateRole { .. }
+            | Self::ListRoles { .. }
+            | Self::SearchRoles { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::GetProjectTasks { .. }
+            | Self::ControlProjectTasks { .. }
+            | Self::ListTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -634,8 +658,14 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string("requested_provider_id", target.provider_id.to_string());
-            b = b.context_string("requested_source_id", target.source_id.to_string());
+            b = b.context_string(
+                ActionContextKey::RequestedProviderId,
+                target.provider_id.to_string(),
+            );
+            b = b.context_string(
+                ActionContextKey::RequestedSourceId,
+                target.source_id.to_string(),
+            );
         }
         b.build()
     }
@@ -788,21 +818,45 @@ impl CatalogWarehouseAction {
     }
 }
 impl CatalogAction for CatalogWarehouseAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
-                b = b.context_list("source", source.as_ref().clone());
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::Delete { .. }
+            | Self::UpdateStorage { .. }
+            | Self::GetMetadata { .. }
+            | Self::GetConfig { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::Use { .. }
+            | Self::IncludeInList { .. }
+            | Self::Deactivate { .. }
+            | Self::Activate { .. }
+            | Self::Rename { .. }
+            | Self::ListDeletedTabulars { .. }
+            | Self::ModifySoftDeletion { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetAllTasks { .. }
+            | Self::ControlAllTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::SetFormatVersionPolicy { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -994,6 +1048,11 @@ impl CatalogNamespaceAction {
     }
 }
 impl CatalogAction for CatalogNamespaceAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
+    // Long because the no-context variants are listed exhaustively rather than
+    // collapsed into a wildcard. That listing is the point, so the length is not a
+    // signal to split the function.
+    #[allow(clippy::too_many_lines)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1003,13 +1062,13 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(tid) = table_id {
-                    b = b.context_string("table_id", tid.to_string());
+                    b = b.context_string(ActionContextKey::TableId, tid.to_string());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateGenericTable {
@@ -1020,27 +1079,27 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(gtid) = generic_table_id {
-                    b = b.context_string("generic_table_id", gtid.to_string());
+                    b = b.context_string(ActionContextKey::GenericTableId, gtid.to_string());
                 }
                 if let Some(f) = format {
-                    b = b.context_string("format", f.clone());
+                    b = b.context_string(ActionContextKey::Format, f.clone());
                 }
                 if let Some(bl) = base_location {
-                    b = b.context_string("base_location", bl.clone());
+                    b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::UpdateProperties {
@@ -1048,10 +1107,16 @@ impl CatalogAction for CatalogNamespaceAction {
                 updated_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Delete {
@@ -1060,31 +1125,42 @@ impl CatalogAction for CatalogNamespaceAction {
                 recursive,
             } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
                 if *recursive {
-                    b = b.context_string("recursive", "true");
+                    b = b.context_string(ActionContextKey::Recursive, "true");
                 }
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
-                b = b.context_list("source", source.as_ref().clone());
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::Move { destination, force } => {
                 // The destination is the whole point of the decision for a policy engine:
                 // it determines which subtree's grants the moved namespace inherits.
                 if !destination.is_empty() {
-                    b = b.context_list("destination", destination.as_ref().clone());
+                    b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
                 }
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::ListTables { .. }
+            | Self::ListViews { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::SetProtection { .. }
+            | Self::IncludeInList { .. }
+            | Self::ListGenericTables { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1180,6 +1256,7 @@ impl CatalogTableAction {
     }
 }
 impl CatalogAction for CatalogTableAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1190,20 +1267,26 @@ impl CatalogAction for CatalogTableAction {
                 update_kinds,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
                 if !target_refs.is_empty() {
                     b = b.context_list(
-                        "target-refs",
+                        ActionContextKey::TargetRefs,
                         target_refs.iter().cloned().collect::<Vec<_>>(),
                     );
                 }
                 if !update_kinds.is_empty() {
                     b = b.context_list(
-                        "update-kinds",
+                        ActionContextKey::UpdateKinds,
                         update_kinds
                             .iter()
                             .map(ToString::to_string)
@@ -1213,13 +1296,24 @@ impl CatalogAction for CatalogTableAction {
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::WriteData { .. }
+            | Self::ReadData { .. }
+            | Self::GetMetadata { .. }
+            | Self::Rename { .. }
+            | Self::IncludeInList { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1300,6 +1394,7 @@ impl CatalogViewAction {
     }
 }
 impl CatalogAction for CatalogViewAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1308,21 +1403,37 @@ impl CatalogAction for CatalogViewAction {
                 removed_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::Select { .. }
+            | Self::IncludeInList { .. }
+            | Self::Rename { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -2915,7 +3026,7 @@ pub mod tests {
             .action_descriptor()
             .context
             .into_iter()
-            .map(|(k, v)| (k, v.to_string()))
+            .map(|(k, v)| (k.as_str(), v.to_string()))
             .collect();
         // Ordering is deterministic: refs sort lexically, kinds sort by variant.
         assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
@@ -2925,8 +3036,9 @@ pub mod tests {
         );
     }
 
-    /// Locks the wire shape of the ref/kind fields — kinds serialize as their
-    /// kebab-case Iceberg action names — since the enterprise Cedar layer parses it.
+    /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
+    /// Iceberg action names. This is a serialized contract that authorizers parse, so a
+    /// change here is a change to their input, not an internal rename.
     #[test]
     fn test_catalog_table_action_commit_with_refs_and_kinds_serde() {
         let action = CatalogTableAction::Commit {

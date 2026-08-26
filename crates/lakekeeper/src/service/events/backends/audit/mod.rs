@@ -15,6 +15,61 @@ use crate::{
     },
 };
 
+/// Wire-format version of every `event_source = "audit"` record, emitted
+/// unconditionally as the `audit_format` field.
+///
+/// **MAJOR** is bumped when an existing field is renamed, retyped, or structurally
+/// moved — including a scalar becoming an object, an object becoming an array, or a
+/// key changing case or separator.
+///
+/// **MINOR** is bumped when a field is added and nothing existing changes.
+/// Consumers must ignore unknown keys.
+///
+/// Consumers must split on `'.'` and compare each half as an **integer**. Do not
+/// compare the string lexically: `"1.10"` sorts *before* `"1.9"`.
+///
+/// One counter covers both audit families, authorization and operational. Separate
+/// counters would be worse for the operational family: its `context` is supplied by
+/// whoever calls the exported [`audit_operation`] macro, including crates outside this
+/// repository, so no version stamped here could describe those shapes accurately.
+///
+/// See the audit-log section of `docs/docs/developer-guide.md` for what to do when
+/// the format changes, and `docs/docs/logging.md` for the consumer-facing contract.
+pub const AUDIT_FORMAT: &str = "1.0";
+
+/// Whether `s` is exactly `MAJOR.MINOR`. Hand-rolled over bytes because `==` on `&str` is
+/// not const-evaluable (rust-lang/rust#143874).
+const fn is_major_minor(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut dots = 0usize;
+    let mut digits_in_part = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            // A dot with no digits before it (".0") or a second dot ("1.0.0") is
+            // not `MAJOR.MINOR`.
+            b'.' => {
+                if digits_in_part == 0 || dots == 1 {
+                    return false;
+                }
+                dots += 1;
+                digits_in_part = 0;
+            }
+            b'0'..=b'9' => digits_in_part += 1,
+            _ => return false,
+        }
+        i += 1;
+    }
+    // Exactly one dot, and the minor part is non-empty ("1." is rejected).
+    dots == 1 && digits_in_part > 0
+}
+
+// Pins the shape of the version string, not its value — correctness is the fixtures' job.
+const _: () = assert!(
+    is_major_minor(AUDIT_FORMAT),
+    "AUDIT_FORMAT must be `MAJOR.MINOR`, e.g. \"1.0\""
+);
+
 /// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
 /// `Listable` for it without an orphan-rule violation. Borrowed because the
 /// audit emit path holds the Vec via `Arc`.
@@ -43,6 +98,12 @@ impl Valuable for Authorization {
         Value::Mappable(self)
     }
 
+    /// Optional fields are omitted when `None`, not emitted as `null`. Other parts of the
+    /// record do the opposite; see "Optional fields" in the audit-log section of
+    /// `docs/docs/developer-guide.md`.
+    ///
+    /// [`Mappable::size_hint`] below hand-counts the same four conditions and must be kept
+    /// in step with this body.
     fn visit(&self, visit: &mut dyn Visit) {
         if let Some(id) = &self.id {
             visit.visit_entry(Value::String("id"), Value::String(id));
@@ -166,7 +227,12 @@ impl Valuable for GrantContextValue<'_> {
 
 impl Mappable for GrantContextValue<'_> {
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (3, Some(5))
+        // Exact, matching `visit` above. A range is tolerated by `serde_json`, which
+        // ignores the hint, but a length-prefixed serializer would emit a corrupt frame.
+        let len = 3
+            + usize::from(grant_resource_id(self.resource).is_some())
+            + usize::from(self.resource.warehouse_id().is_some());
+        (len, Some(len))
     }
 }
 
@@ -186,51 +252,75 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
     }
 }
 
-/// Emits an audit `tracing::info!` event, using singular field names (`action`/`entity`)
-/// when only one item is present, and plural (`actions`/`entities`) otherwise.
+/// The one `tracing::info!` that emits an audit record.
+///
+/// Every audit event routes through here, so `event_source` and `audit_format` are
+/// stamped in exactly one place. Spelling them at each call site instead is what made
+/// the version field a convention that a test had to police by reading this file — a
+/// new emission path could simply omit it.
+///
+/// `#[doc(hidden)] #[macro_export]` rather than a private `macro_rules!`: the exported
+/// [`audit_operation`] expands in the caller's crate and so has to be able to name this
+/// macro there. It is not part of the public API.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __audit_emit {
+    ({ $($fields:tt)* }, $msg:literal) => {
+        $crate::tracing::info!(
+            event_source = "audit",
+            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
+            $($fields)*
+            $msg
+        )
+    };
+}
+
+/// Emits an audit record, using singular field names (`action`/`entity`) when only one
+/// item is present and plural (`actions`/`entities`) otherwise.
 macro_rules! audit_log {
     ($actions:expr, $entities:expr, { $($common:tt)* }, $msg:literal) => {{
         let __actions = $actions;
         let __entities = $entities;
+        // A `tracing` field name has to be a literal ident at the invocation, and the
+        // name is singular when one item was checked and plural otherwise, so the four
+        // combinations cannot be collapsed into one call here. What they no longer do is
+        // repeat `event_source` and `audit_format` — every arm funnels into
+        // `__audit_emit!`, which is the only place an audit record is emitted.
         match (__actions.len() == 1, __entities.entities.len() == 1) {
-            (true, true) => tracing::info!(
-                event_source = "audit",
+            (true, true) => $crate::__audit_emit!({
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
-                $msg
-            ),
-            (true, false) => tracing::info!(
-                event_source = "audit",
+            }, $msg),
+            (true, false) => $crate::__audit_emit!({
                 action = tracing::field::valuable(&__actions[0].as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
-                $msg
-            ),
-            (false, true) => tracing::info!(
-                event_source = "audit",
+            }, $msg),
+            (false, true) => $crate::__audit_emit!({
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entity = tracing::field::valuable(&__entities.entities[0].as_value()),
                 $($common)*
-                $msg
-            ),
-            (false, false) => tracing::info!(
-                event_source = "audit",
+            }, $msg),
+            (false, false) => $crate::__audit_emit!({
                 actions = tracing::field::valuable(&__actions.as_value()),
                 entities = tracing::field::valuable(&__entities.as_value()),
                 $($common)*
-                $msg
-            ),
+            }, $msg),
         }
     }};
 }
 
 /// The `User-Agent` header for the `user_agent` audit field, or `None` when the
-/// caller sent none — which `valuable` renders as JSON `null`.
+/// caller sent none.
 ///
 /// Recorded verbatim and **unverified**: any caller can set the header to any
 /// value, including one naming another client. `actor` and `privilege_source`
 /// are the authenticated facts on the same event.
+///
+/// A top-level `tracing` field, so it is always recorded: `None` becomes `null`, never an
+/// absent key. See "Optional fields" in the audit-log section of
+/// `docs/docs/developer-guide.md`.
 fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
 }
@@ -370,10 +460,13 @@ impl Valuable for EntityDescriptor {
     fn visit(&self, visit: &mut dyn Visit) {
         visit.visit_entry(
             Value::String("entity_type"),
-            Value::String(self.entity_type),
+            Value::String(self.entity_type.as_str()),
         );
         for field in &self.fields {
-            visit.visit_entry(Value::String(field.key), Value::String(&field.value));
+            visit.visit_entry(
+                Value::String(field.key.as_str()),
+                Value::String(&field.value),
+            );
         }
     }
 }
@@ -396,7 +489,7 @@ impl Valuable for ActionDescriptor {
             Value::String(self.action_name),
         );
         for (key, value) in &self.context {
-            visit.visit_entry(Value::String(key), value.as_value());
+            visit.visit_entry(Value::String(key.as_str()), value.as_value());
         }
     }
 }
@@ -609,285 +702,316 @@ macro_rules! audit_operation {
         operation = $op:expr,
         actor     = $actor:expr,
         outcome   = $outcome:expr,
+        $(context = $ctx:expr,)?
         $msg:literal $(,)?
     ) => {
-        $crate::tracing::info!(
-            event_source = "audit",
+        $crate::__audit_emit!({
             operation = $op,
             actor = $crate::tracing::field::valuable(&$actor),
             outcome = $outcome,
-            $msg
-        )
+            // `context` is optional; the `$(...)?` group emits the field only when the
+            // caller passed one, which is what keeps the key absent rather than null.
+            $(context = $crate::tracing::field::valuable(&$ctx),)?
+        }, $msg)
     };
-    (
-        operation = $op:expr,
-        actor     = $actor:expr,
-        outcome   = $outcome:expr,
-        context   = $ctx:expr,
-        $msg:literal $(,)?
-    ) => {
-        $crate::tracing::info!(
-            event_source = "audit",
-            operation = $op,
-            actor = $crate::tracing::field::valuable(&$actor),
-            outcome = $outcome,
-            context = $crate::tracing::field::valuable(&$ctx),
-            $msg
-        )
+}
+
+/// Rules that hold for every audit record, whatever produced it.
+///
+/// Available under `test` and the `test-utils` feature so that the unit tests and the
+/// integration tests share one implementation. Two copies of these rules would be two
+/// things to keep in step, which is the failure this module exists to catch.
+///
+/// These complement the committed fixtures rather than duplicating them. A fixture pins
+/// the exact bytes of one scenario, and is generated by the test that asserts against it —
+/// so a wrongly built event yields a fixture that agrees with it and passes for ever. The
+/// rules here are statements about the format, so they reject a record that should not
+/// exist regardless of which test produced it, including one nobody wrote a fixture for.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod contract {
+    use std::collections::BTreeSet;
+
+    use strum::VariantArray as _;
+
+    use crate::service::events::{
+        AuthorizationFailureReason,
+        context::{ActionContextKey, EntityField, EntityType},
     };
+
+    /// Keys the log subscriber adds, which `AUDIT_FORMAT` deliberately does not cover.
+    pub const ENVELOPE_KEYS: &[&str] = &[
+        "timestamp",
+        "level",
+        "message",
+        "target",
+        "span",
+        "spans",
+        "filename",
+        "line_number",
+    ];
+
+    /// The wire tag of a failure reason. `valuable` tags externally, using the variant name
+    /// verbatim, so these must stay identical to it.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    #[must_use]
+    pub fn failure_reason_tag(reason: &AuthorizationFailureReason) -> &'static str {
+        match reason {
+            AuthorizationFailureReason::ActionForbidden => "ActionForbidden",
+            AuthorizationFailureReason::ResourceNotFound => "ResourceNotFound",
+            AuthorizationFailureReason::CannotSeeResource => "CannotSeeResource",
+            AuthorizationFailureReason::InternalAuthorizationError => "InternalAuthorizationError",
+            AuthorizationFailureReason::InternalCatalogError => "InternalCatalogError",
+            AuthorizationFailureReason::InvalidRequestData => "InvalidRequestData",
+        }
+    }
+
+    /// Whether a reason means the request was evaluated and refused, as opposed to never
+    /// having reached a verdict.
+    ///
+    /// Exhaustive rather than a list of literals: a bare `&["ActionForbidden", ...]` stops
+    /// matching the moment a variant is renamed, which retires the rule below in silence.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    const fn is_definitive(reason: &AuthorizationFailureReason) -> bool {
+        match reason {
+            AuthorizationFailureReason::ActionForbidden
+            | AuthorizationFailureReason::ResourceNotFound
+            | AuthorizationFailureReason::CannotSeeResource => true,
+            AuthorizationFailureReason::InternalAuthorizationError
+            | AuthorizationFailureReason::InternalCatalogError
+            | AuthorizationFailureReason::InvalidRequestData => false,
+        }
+    }
+
+    fn definitive_denials() -> Vec<&'static str> {
+        AuthorizationFailureReason::VARIANTS
+            .iter()
+            .filter(|reason| is_definitive(reason))
+            .map(failure_reason_tag)
+            .collect()
+    }
+
+    /// Strip the subscriber-owned envelope, leaving only the fields `AUDIT_FORMAT`
+    /// makes promises about, in the order they were emitted.
+    ///
+    /// `retain` rather than `remove`: with `serde_json`'s `preserve_order` feature (which
+    /// this workspace enables) a `Map` is index-backed and `remove` is a *swap*-remove,
+    /// which would shuffle the surviving keys. Order is worth keeping — a fixture that
+    /// reads in wire order is a fixture a reviewer can check against a real log line.
+    #[must_use]
+    pub fn contract_fields(mut record: serde_json::Value) -> serde_json::Value {
+        if let Some(object) = record.as_object_mut() {
+            object.retain(|key, _| !ENVELOPE_KEYS.contains(&key.as_str()));
+        }
+        record
+    }
+
+    /// The values of `singular`/`plural` on one object, with an array flattened to its items.
+    fn objects_at<'a>(
+        value: &'a serde_json::Value,
+        singular: &str,
+        plural: &str,
+    ) -> Vec<&'a serde_json::Value> {
+        let mut out = Vec::new();
+        for field in [singular, plural] {
+            match value.get(field) {
+                Some(serde_json::Value::Array(items)) => out.extend(items),
+                Some(value) => out.push(value),
+                None => {}
+            }
+        }
+        out
+    }
+
+    /// Every place a record carries an entity, or an action: at the top level, and once per
+    /// `authorizations` entry.
+    ///
+    /// Enumerated rather than found by walking the record. A walk also descends into
+    /// `properties`, whose keys are client input — so a caller who names a table property
+    /// `entity_type` would trip the rules below, and a record that is entirely valid would
+    /// be reported as breaking the contract.
+    fn described<'a>(
+        record: &'a serde_json::Value,
+        singular: &str,
+        plural: &str,
+    ) -> Vec<&'a serde_json::Value> {
+        let mut out = objects_at(record, singular, plural);
+        if let Some(entries) = record
+            .get("authorizations")
+            .and_then(serde_json::Value::as_array)
+        {
+            for entry in entries {
+                out.extend(objects_at(entry, singular, plural));
+            }
+        }
+        out
+    }
+
+    fn keys_at(record: &serde_json::Value, singular: &str, plural: &str) -> BTreeSet<String> {
+        described(record, singular, plural)
+            .into_iter()
+            .flat_map(object_keys)
+            .collect()
+    }
+
+    fn object_keys(value: &serde_json::Value) -> Vec<String> {
+        value
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Check one record, returning every rule it breaks.
+    ///
+    /// Returns violations rather than panicking so a caller can report all of them at once
+    /// across a whole corpus, and so the rules themselves stay testable.
+    #[must_use]
+    pub fn violations(record: &serde_json::Value) -> Vec<String> {
+        let mut out = Vec::new();
+
+        if record
+            .get("event_source")
+            .and_then(serde_json::Value::as_str)
+            != Some("audit")
+        {
+            out.push("`event_source` is not \"audit\"".to_string());
+        }
+        if record
+            .get("audit_format")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            out.push(
+                "no `audit_format`: every audit record must declare its wire format version"
+                    .to_string(),
+            );
+        }
+
+        let known_entity: BTreeSet<String> = EntityField::VARIANTS
+            .iter()
+            .map(|f| f.as_str().to_string())
+            .chain(["entity_type".to_string()])
+            .collect();
+        let unknown_entity: Vec<String> = keys_at(record, "entity", "entities")
+            .difference(&known_entity)
+            .cloned()
+            .collect();
+        if !unknown_entity.is_empty() {
+            out.push(format!(
+                "entity keys not in `EntityField`: {unknown_entity:?}. Every key an entity can \
+                 carry must be a variant of that enum, so the key space stays enumerable and \
+                 documentable"
+            ));
+        }
+
+        let known_action: BTreeSet<String> = ActionContextKey::VARIANTS
+            .iter()
+            .map(|k| k.as_str().to_string())
+            .chain(["action_name".to_string()])
+            .collect();
+        let unknown_action: Vec<String> = keys_at(record, "action", "actions")
+            .difference(&known_action)
+            .cloned()
+            .collect();
+        if !unknown_action.is_empty() {
+            out.push(format!(
+                "action context keys not in `ActionContextKey`: {unknown_action:?}. Add a \
+                 variant rather than a bare literal, so the key is enumerable and the \
+                 documentation test sees it"
+            ));
+        }
+
+        // Only where an entity actually is. See `described`: a walk would also read
+        // client-supplied property keys.
+        let known_type: BTreeSet<&str> = EntityType::VARIANTS.iter().map(|t| t.as_str()).collect();
+        for entity in described(record, "entity", "entities") {
+            if let Some(serde_json::Value::String(kind)) = entity.get("entity_type")
+                && !known_type.contains(kind.as_str())
+            {
+                out.push(format!("`entity_type` is `{kind}`, not in `EntityType`"));
+            }
+        }
+
+        out.extend(failure_reason_violations(record));
+
+        out
+    }
+
+    /// The rules that relate `failure_reason` to the rest of the record.
+    ///
+    /// Split out of [`violations`] only for length; they belong to the same contract.
+    fn failure_reason_violations(record: &serde_json::Value) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(reason) = record.get("failure_reason") else {
+            return out;
+        };
+
+        // Independent of how `failure_reason` is encoded, so it is checked before the
+        // shape rule below returns.
+        if record.get("decision").and_then(serde_json::Value::as_str) != Some("denied") {
+            out.push("`failure_reason` is present but `decision` is not `denied`".to_string());
+        }
+
+        // `failure_reason` is externally tagged today, so the definitive-denial rule below
+        // reads the variant from the object's key. Re-encoding it — as a plain string, say,
+        // which the audit log section of `docs/docs/developer-guide.md` lists as an open
+        // issue for the next major version — would make `as_object` return `None` and
+        // silently retire that rule. The re-encoding itself is loud (the fixture diff shows
+        // it); losing the rule with it would not be. So trip here, and make the bump
+        // re-teach the rule rather than drop it.
+        let Some(tagged) = reason.as_object() else {
+            out.push(format!(
+                "`failure_reason` is `{reason}`, not an object. The definitive-denial rule \
+                 reads the variant from this object's key, so a re-encoding disables it: \
+                 teach that rule the new encoding, then update this one"
+            ));
+            return out;
+        };
+
+        // A definitive denial means the request was evaluated and refused, so no per-decision
+        // entry may claim it was allowed. This is the rule a fixture cannot state: it relates
+        // two fields, and a fixture only ever records one combination of them.
+        let definitive_denials = definitive_denials();
+        let definitive = tagged
+            .keys()
+            .any(|k| definitive_denials.contains(&k.as_str()));
+        if definitive
+            && record
+                .get("authorizations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry.get("allowed").and_then(serde_json::Value::as_bool) == Some(true)
+                    })
+                })
+        {
+            out.push(
+                "a definitive denial carries an `authorizations` entry with `allowed: true`. The \
+                 emitter cannot produce that, so either the record is wrong or this rule is"
+                    .to_string(),
+            );
+        }
+
+        out
+    }
+
+    /// Assert `record` satisfies the contract, naming every rule it breaks.
+    ///
+    /// `whence` identifies the record in the failure message — a fixture name, or an index
+    /// into a captured corpus.
+    ///
+    /// # Panics
+    ///
+    /// If `record` breaks any rule. That is the point: this is for use in tests.
+    pub fn assert_satisfies(record: &serde_json::Value, whence: &str) {
+        let violations = violations(record);
+        assert!(
+            violations.is_empty(),
+            "{whence} breaks the audit format contract:\n  - {}\n\nrecord:\n{}",
+            violations.join("\n  - "),
+            serde_json::to_string_pretty(record).unwrap_or_else(|_| "<unserialisable>".to_string()),
+        );
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use valuable::{Valuable, Value, Visit};
-
-    use super::*;
-    use crate::{
-        request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
-        service::{
-            authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
-            events::context::EventEntities,
-        },
-    };
-
-    /// Collects rendered log lines so a test can assert on the JSON a consumer
-    /// actually receives, rather than on the `Valuable` shape alone.
-    #[derive(Clone, Default)]
-    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CapturedLogs {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log buffer poisoned").extend(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
-        type Writer = Self;
-
-        fn make_writer(&self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    /// Render one audit event through the same JSON formatter the binary
-    /// configures (`lakekeeper-bin`'s `main`), and return it parsed.
-    fn emit_and_capture(event: AuthorizationSucceededEvent) -> serde_json::Value {
-        let logs = CapturedLogs::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_writer(logs.clone())
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
-            futures::executor::block_on(AuditEventListener.authorization_succeeded(event))
-                .expect("emitting an audit event must not fail");
-        });
-
-        let bytes = logs.0.lock().expect("log buffer poisoned").clone();
-        let line = String::from_utf8(bytes).expect("log output must be utf-8");
-        serde_json::from_str(line.trim()).expect("log line must be valid json")
-    }
-
-    fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
-        let entities = Arc::new(EventEntities::one(EntityDescriptor::new("table")));
-        let actions = Arc::new(vec![
-            ActionDescriptor::builder().action_name("read_data").build(),
-        ]);
-        AuthorizationSucceededEvent {
-            request_metadata: Arc::new(request_metadata),
-            entities,
-            actions,
-            extra_context: Arc::new(std::collections::HashMap::new()),
-            authorizations: Arc::new(vec![sample(Vec::new())]),
-        }
-    }
-
-    /// The audit log has to say which client made the call, verbatim — a SIEM
-    /// classifies the string, so Lakekeeper must not normalise it away.
-    #[test]
-    fn an_audit_event_records_the_user_agent_verbatim() {
-        let metadata = RequestMetadataTestBuilder::builder()
-            .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
-            .build();
-
-        let event = emit_and_capture(succeeded_event(metadata));
-
-        assert_eq!(
-            event.get("user_agent").and_then(serde_json::Value::as_str),
-            Some("Apache-Spark/3.5.1 (Scala/2.12)"),
-        );
-    }
-
-    /// A request that sent no `User-Agent` must be distinguishable from one
-    /// that sent a client named "unknown", so the field is null rather than a
-    /// sentinel.
-    #[test]
-    fn an_audit_event_without_a_user_agent_records_null() {
-        let metadata = RequestMetadataTestBuilder::builder().build();
-
-        let event = emit_and_capture(succeeded_event(metadata));
-
-        assert_eq!(
-            event.get("user_agent"),
-            Some(&serde_json::Value::Null),
-            "the key must be present so consumers can tell 'not sent' from 'not recorded'"
-        );
-    }
-
-    /// Records key/value pairs, flattening a nested map into `key=value` pairs joined
-    /// by `,` so a whole context can be asserted with one exact comparison.
-    #[derive(Default)]
-    struct EntryCollector {
-        entries: Vec<(String, String)>,
-    }
-
-    impl Visit for EntryCollector {
-        fn visit_value(&mut self, _value: Value<'_>) {}
-        fn visit_entry(&mut self, key: Value<'_>, value: Value<'_>) {
-            let Value::String(key) = key else { return };
-            let rendered = match value {
-                Value::String(s) => s.to_string(),
-                Value::Mappable(m) => {
-                    let mut inner = EntryCollector::default();
-                    m.visit(&mut inner);
-                    inner
-                        .entries
-                        .iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                }
-                other => format!("{other:?}"),
-            };
-            self.entries.push((key.to_string(), rendered));
-        }
-    }
-
-    fn grant_context(
-        principal: &UserOrRoleId,
-        privilege: &str,
-        resource: &GrantResource,
-    ) -> Vec<(String, String)> {
-        let mut collector = EntryCollector::default();
-        GrantContextValue {
-            principal,
-            privilege,
-            resource,
-        }
-        .visit(&mut collector);
-        collector.entries
-    }
-
-    /// A revoked grant is hard-deleted, so this context is the only surviving record of
-    /// it — every part of the triple has to be present and correctly labelled.
-    #[test]
-    fn a_grant_context_carries_the_full_triple() {
-        let warehouse_id = crate::service::WarehouseId::new_random();
-        let table_id = crate::service::TableId::new_random();
-        let principal = UserOrRoleId::User(
-            crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
-        );
-
-        let entries = grant_context(
-            &principal,
-            "select",
-            &GrantResource::Table {
-                warehouse_id,
-                table_id,
-            },
-        );
-
-        assert_eq!(
-            entries,
-            vec![
-                ("principal".to_string(), "user=oidc~alice".to_string()),
-                ("privilege".to_string(), "select".to_string()),
-                ("resource_type".to_string(), "table".to_string()),
-                ("resource_id".to_string(), table_id.to_string()),
-                ("warehouse_id".to_string(), warehouse_id.to_string()),
-            ]
-        );
-    }
-
-    /// A server grant has no id and no warehouse: the resource type is its whole
-    /// identity. Those keys are omitted rather than emitted empty, so a consumer can
-    /// tell "server-wide" from "an id we failed to record".
-    #[test]
-    fn a_server_grant_context_omits_the_id_and_warehouse() {
-        let principal = UserOrRoleId::Role(crate::service::RoleId::new_random());
-        let entries = grant_context(&principal, "admin", &GrantResource::Server);
-
-        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["principal", "privilege", "resource_type"]);
-        assert_eq!(entries[2].1, "server");
-        // A role principal is labelled as one, so it cannot be read as a user id.
-        assert!(
-            entries[0].1.starts_with("role="),
-            "expected a role-labelled principal, got {}",
-            entries[0].1
-        );
-    }
-
-    /// Records the top-level map keys an `Authorization` emits when visited.
-    #[derive(Default)]
-    struct KeyCollector {
-        keys: Vec<String>,
-    }
-
-    impl Visit for KeyCollector {
-        fn visit_value(&mut self, _value: Value<'_>) {}
-        fn visit_entry(&mut self, key: Value<'_>, _value: Value<'_>) {
-            if let Value::String(k) = key {
-                self.keys.push(k.to_string());
-            }
-        }
-    }
-
-    fn sample(determined_by: Vec<DeterminingFactor>) -> Authorization {
-        Authorization {
-            id: None,
-            for_principal: None,
-            action: ActionDescriptor {
-                action_name: "read",
-                context: Vec::new(),
-            },
-            entity: EntityDescriptor::new("table"),
-            allowed: Some(true),
-            determined_by,
-        }
-    }
-
-    #[test]
-    fn determined_by_emitted_when_present() {
-        let auth = sample(vec![DeterminingFactor::Policy {
-            policy_id: "policy0".to_string(),
-            name: Some("allow-read".to_string()),
-            effect: PolicyEffect::Permit,
-            source: None,
-        }]);
-        let mut collector = KeyCollector::default();
-        auth.visit(&mut collector);
-        assert_eq!(
-            collector.keys,
-            vec!["action", "entity", "allowed", "determined_by"],
-        );
-        assert_eq!(auth.size_hint().0, collector.keys.len());
-    }
-
-    #[test]
-    fn determined_by_absent_when_empty() {
-        let auth = sample(Vec::new());
-        let mut collector = KeyCollector::default();
-        auth.visit(&mut collector);
-        assert_eq!(collector.keys, vec!["action", "entity", "allowed"]);
-        assert_eq!(auth.size_hint().0, collector.keys.len());
-    }
-}
+mod tests;

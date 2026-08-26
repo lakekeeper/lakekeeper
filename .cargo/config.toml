@@ -1,5 +1,9 @@
 [build]
 rustflags = ["--cfg", "tracing_unstable", "--cfg", "tokio_unstable"]
+# `rustflags` does not reach rustdoc, so doctests would be compiled without these cfgs
+# and `#[cfg(not(tracing_unstable))] compile_error!` in the audit backend would fire
+# during doctest collection. `RUSTDOCFLAGS` is unset in CI, so this applies there too.
+rustdocflags = ["--cfg", "tracing_unstable", "--cfg", "tokio_unstable"]
 
 # Force sqlx macros to read from `.sqlx/` instead of opening a DB connection per
 # query when DATABASE_URL is set (e.g. via the workspace-root `.env`). `cargo sqlx

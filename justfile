@@ -76,6 +76,19 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
+# Compares the committed fixtures either side of the merge base, so it needs a base.
+# Check that an audit log format change carries the right AUDIT_FORMAT bump
+check-audit-format-bump base="origin/main":
+    python3 .github/scripts/check-audit-format-bump.py {{base}}
+
+# Two passes: the first writes, the second verifies (the writing pass returns before it
+# compares). Review the diff — it is exactly what consumers will see.
+# Regenerate the committed audit log fixtures after a deliberate format change
+update-audit-fixtures:
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
+      service::events::backends::audit::tests::fixture_
+    cargo test -p lakekeeper --lib service::events::backends::audit::tests::fixture_
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml

@@ -73,7 +73,11 @@ impl From<bool> for AuthorizationDecision {
 /// Enum-tagged so new producers (restriction-profile matched rules, native
 /// OSS-authorizer diagnostics) add a variant without breaking existing audit
 /// consumers.
-#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
+///
+/// `name`, `source` and `reason` are emitted unconditionally — `valuable-derive` has no
+/// conditional skip — so `None` becomes `null`, never an absent key. See "Optional fields"
+/// in the audit-log section of `docs/docs/developer-guide.md`.
+#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantNames)]
 pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based
     /// authorizer.
@@ -110,7 +114,7 @@ pub enum DeterminingFactor {
 }
 
 /// Whether a determining policy permits or forbids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable, strum_macros::VariantArray)]
 pub enum PolicyEffect {
     Permit,
     Forbid,
