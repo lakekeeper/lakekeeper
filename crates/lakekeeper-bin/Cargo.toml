@@ -32,6 +32,7 @@ clap = { version = "^4.5", features = ["derive"] }
 figment = { workspace = true }
 http = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["s3-signer", "router"] }
+lakekeeper-alloc = { path = "../alloc" }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
 lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.19.0", optional = true }
 lakekeeper-events-kafka = { path = "../lakekeeper-events-kafka" }
@@ -45,7 +46,8 @@ tikv-jemallocator = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemallocator = { workspace = true, features = ["background_threads"] }
+# "stats" backs the jemalloc gauges published by `lakekeeper-alloc`.
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats"] }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }

@@ -29,6 +29,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | Crate | Path | Purpose |
 |-------|------|---------|
 | lakekeeper | crates/lakekeeper | Core catalog logic |
+| lakekeeper-alloc | crates/alloc | Allocator configuration and observability |
 | lakekeeper-bin | crates/lakekeeper-bin | Server binary |
 | lakekeeper-io | crates/io | Storage I/O (S3, GCS, Azure, etc.) |
 | iceberg-ext | crates/iceberg-ext | Iceberg format extensions |
