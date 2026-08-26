@@ -373,7 +373,8 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
 /// typed error so the call site can hand it to `emit_late_authz_failure` and have
 /// the denial recorded as an authz-failure audit event, rather than a bare error
 /// response.
-enum SystemRoleMembershipViolation {
+#[derive(Debug)]
+pub enum SystemRoleMembershipViolation {
     RequiresInstanceAdmin(SystemRoleMembershipRequiresInstanceAdmin),
     MemberRolesNotSupported(SystemRoleMemberRolesNotSupported),
 }
@@ -388,13 +389,24 @@ delegate_authorization_failure_source!(SystemRoleMembershipViolation => {
 /// members are never added (`system` roles hold users directly). Ordering: the
 /// instance-admin check fires first, so non-admin callers always see 403.
 ///
+/// Public because a membership edge has more than one writer: an
+/// assignment-managing authorizer exposes its own endpoint over the same edge and
+/// applies this rule there. Both writers must share one definition, or the guard
+/// holds on whichever path happens to be gated.
+///
 /// This does not close off every path to a system role's effective membership: a
 /// role-type member already nested inside a system role (however it got there)
 /// remains reachable by adding new members to *that* member role — such a write
 /// targets an ordinary role, so this guard never fires for it. That residual path
 /// is why new nesting into the system role itself is refused while removing an
 /// existing role-type member stays permitted, as a cleanup route.
-fn reject_system_role_membership(
+///
+/// `role` is read outside the write transaction, which is safe because a role's
+/// `system`-ness is immutable: rebinding a role *into* the `system` provider is
+/// refused on the request body, rebinding one that already is `system` is refused
+/// after resolution, and seeding upserts on `(project, provider, source_id)` with
+/// the provider fixed — so the value cannot change under the check.
+pub fn reject_system_role_membership(
     role: &ArcRole,
     metadata: &RequestMetadata,
     adds_role_member: bool,

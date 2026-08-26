@@ -227,9 +227,11 @@ pub(crate) fn is_known_privilege(resource_type: ResourceType, privilege: &str) -
 /// The relation a caller must hold to move `privilege` in direction `op`, or `None` if
 /// the name is not in this level's vocabulary.
 ///
-/// Both directions refuse a name the model cannot express: a grant here is a tuple, and
-/// tuples exist only for relations the model declares, so no such grant can be stored
-/// and none can need removing.
+/// Both directions refuse a name the model cannot express, so an unknown privilege is a
+/// `403` either way. A name the model never declared has no tuple to remove. A name a
+/// *previous* model version declared can still have one, and that tuple is not reachable
+/// from here — it is invisible to listings too, and is cleared in OpenFGA directly (see
+/// the authorizer notes in the authorization docs).
 fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp) -> Option<String> {
     for_level!(resource_type, |R| R::from_str(privilege).ok().map(
         |relation| match op {
@@ -362,8 +364,9 @@ impl OpenFGAAuthorizer {
     ///
     /// A privilege outside this level's vocabulary is a deny in either direction: the name
     /// may come from another authorizer's vocabulary, and answering "not allowed" is both
-    /// true and safe. Nothing revocable is withheld — a grant here is a tuple, and no
-    /// tuple can exist for a relation the model does not declare.
+    /// true and safe. A tuple left behind by a privilege an older model version declared
+    /// is not reachable through this API at all — not by listing it, not by revoking it —
+    /// so allowing the revoke would report success without removing anything.
     ///
     /// The two directions are answered separately. Handing out a privilege you already
     /// hold is delegation, which `pass_grants` confers; taking one back is administration,

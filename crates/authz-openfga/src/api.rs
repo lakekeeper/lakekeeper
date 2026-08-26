@@ -13,6 +13,7 @@ use lakekeeper::{
         management::v1::{
             check::UserOrRole,
             lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+            role_membership::reject_system_role_membership,
         },
     },
     axum::{
@@ -22,8 +23,8 @@ use lakekeeper::{
     },
     axum_extra::extract::Query,
     service::{
-        Actor, CatalogStore, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
-        TableId, TagDefinitionId, ViewId,
+        Actor, CachePolicy, CatalogRoleOps, CatalogStore, GenericTableId, NamespaceId, Result,
+        RoleId, SecretStore, State, TableId, TagDefinitionId, ViewId,
         authz::ActionDescriptor,
         events::{
             APIEventContext,
@@ -2386,6 +2387,28 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         role_id,
         request.clone(),
     );
+
+    // A `system` role's membership is also writable here: `assignee` is the same
+    // tuple the role-membership API writes, and `ownership` confers `assignee`. The
+    // catalog's rule has to hold on this path too, or it only covers whichever
+    // writer happens to be gated. Read uncached — a gate must not decide from a
+    // possibly-stale replica of the role. A role with no catalog row is a dangling
+    // tuple, never a system role, so it falls through.
+    if let Ok(role) = C::get_role_by_id_across_projects_cache_aware(
+        role_id,
+        CachePolicy::Skip,
+        api_context.v1_state.catalog.clone(),
+    )
+    .await
+    {
+        let adds_role_member = request.writes.iter().any(|assignment| {
+            let (RoleAssignment::Assignee(subject) | RoleAssignment::Ownership(subject)) =
+                assignment;
+            matches!(subject, UserOrRole::Role(_))
+        });
+        reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
+            .map_err(|violation| event_ctx.emit_early_authz_failure(violation))?;
+    }
 
     let object = role_id.to_openfga();
 

@@ -179,7 +179,7 @@ tuples:
   - user: user:owner_of_role_namespace_2_1_owner
     relation: ownership
     object: role:namespace_2_1_owner
-  # ---- Governance tags (v4.9) ----
+  # ---- Governance tags (v4.10) ----
   # A tag definition parented to project_1
   - user: project:project_1
     relation: project
@@ -1545,3 +1545,66 @@ tests:
         object: namespace:namespace_1
         assertions:
           can_revoke_select: true      # manage_grants inherits from the parent warehouse
+  # Every level that publishes a revoke action, asserted at least once in each
+  # direction. Nothing cross-checks the model against the Rust relation enums, so a
+  # level missing a `can_revoke_*` rule would otherwise surface only as a runtime
+  # "relation not found" from OpenFGA.
+  - name: revoke actions resolve at every level that publishes them
+    check:
+      - user: user:warehouse_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_revoke_create: true      # ownership confers manage_grants here
+          can_revoke_describe: true
+          can_revoke_modify: true
+          can_revoke_select: true
+      - user: user:namespace_2_1_grant_admin
+        object: namespace:namespace_2_1
+        assertions:
+          can_revoke_create: true      # the namespace-level `create` counterpart
+      - user: user:namespace_1_delegator
+        object: namespace:namespace_1
+        assertions:
+          can_grant_create: false      # `create` is not held, so not passable either way
+          can_revoke_create: false
+      - user: user:warehouse_1_owner
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_revoke_describe: true    # manage_grants inherits down to the tabular
+          can_revoke_modify: true
+          can_revoke_select: true
+      # `pass_grants` is directly assignable at every level and never inherits, unlike
+      # `select` (which does) and `manage_grants` (which does). So delegation is scoped
+      # to the exact object it was granted on: this holder's namespace-level
+      # `pass_grants` gives it nothing on the table below, in either direction.
+      - user: user:namespace_1_delegator
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_grant_select: false
+          can_revoke_select: false
+          can_revoke_describe: false
+          can_revoke_modify: false
+      - user: user:warehouse_1_owner
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_revoke_describe: true
+          can_revoke_modify: true
+          can_revoke_select: true
+      - user: user:namespace_1_delegator
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_revoke_describe: false   # holds nothing on this subtree
+          can_revoke_modify: false
+          can_revoke_select: false
+      - user: user:warehouse_1_owner
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_revoke_describe: true
+          can_revoke_modify: true
+          can_revoke_select: true
+      - user: user:namespace_1_delegator
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_revoke_describe: false
+          can_revoke_modify: false
+          can_revoke_select: false

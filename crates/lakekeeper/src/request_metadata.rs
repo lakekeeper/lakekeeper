@@ -36,9 +36,9 @@ pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 /// override attempt. Captured only: it is recorded on [`RequestMetadata`] and
 /// offered to the [`Authorizer`](crate::service::authz::Authorizer), which
 /// decides whether it means anything at all. The built-in authorizers ignore
-/// it, so on its own the header changes no decision. Any non-empty value sets
-/// the flag and is retained, truncated, as the caller's stated reason for the
-/// audit record — send a ticket reference, e.g.
+/// it, so on its own the header changes no decision. Any value that is non-empty
+/// after trimming sets the flag and is retained, truncated, as the caller's stated
+/// reason for the audit record — send a ticket reference, e.g.
 /// `x-break-glass: INC-1234 undoing lockout forbid`.
 pub const X_BREAK_GLASS_HEADER: &str = "x-break-glass";
 
@@ -49,6 +49,7 @@ pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
 pub const X_PROJECT_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_PROJECT_ID_HEADER);
 pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUEST_ID_HEADER);
+pub const X_BREAK_GLASS_HEADER_NAME: HeaderName = HeaderName::from_static(X_BREAK_GLASS_HEADER);
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
@@ -144,9 +145,9 @@ pub struct RequestMetadata {
     idempotency_key: Option<IdempotencyKey>,
     is_instance_admin: bool,
     /// The reason the caller stated in [`X_BREAK_GLASS_HEADER`]: `Some` iff the
-    /// header was sent with a non-empty value, holding that value truncated to a
-    /// bounded length. Captured verbatim; whether an emergency override is
-    /// permitted, and for what, is the authorizer's business.
+    /// header was sent and held something after trimming, truncated to a bounded
+    /// length. Captured as sent, save for undecodable bytes; whether an emergency
+    /// override is permitted, and for what, is the authorizer's business.
     break_glass: Option<String>,
 }
 
@@ -243,7 +244,8 @@ impl RequestMetadata {
         self.is_instance_admin
     }
 
-    /// Whether the caller sent [`X_BREAK_GLASS_HEADER`] with a non-empty value.
+    /// Whether the caller sent [`X_BREAK_GLASS_HEADER`] with a value that was
+    /// non-empty after trimming.
     #[must_use]
     pub fn break_glass_requested(&self) -> bool {
         self.break_glass.is_some()
@@ -799,7 +801,13 @@ pub fn determine_forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
 /// on every audit event.
 #[cfg(any(feature = "router", test))]
 fn break_glass_from_headers(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(X_BREAK_GLASS_HEADER)?.to_str().ok()?;
+    // Read as bytes, not `to_str`: that accepts only visible ASCII, so a reason
+    // carrying an umlaut or a dash the sender's keyboard produced would drop the
+    // whole claim — flag included — and the event would not record that an override
+    // was requested at all. Losing the evidence is worse than mangling one
+    // character, so undecodable bytes are replaced rather than rejected.
+    let value = String::from_utf8_lossy(headers.get(X_BREAK_GLASS_HEADER)?.as_bytes());
+    let value = value.trim();
     if value.is_empty() {
         return None;
     }
@@ -1309,6 +1317,36 @@ mod test {
         let mut headers = HeaderMap::new();
         headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static(""));
         assert!(break_glass_from_headers(&headers).is_none());
+    }
+
+    /// A reason is free-form prose an operator types under pressure, so it routinely
+    /// carries a non-ASCII character. `HeaderValue::to_str` accepts only visible
+    /// ASCII, and rejecting on that basis would discard the claim itself, not just
+    /// the wording — leaving no record that an override was requested.
+    #[test]
+    fn break_glass_reason_survives_non_ascii_and_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes("INC-1234 Störfall behoben".as_bytes()).unwrap(),
+        );
+        assert_eq!(
+            break_glass_from_headers(&headers).as_deref(),
+            Some("INC-1234 Störfall behoben")
+        );
+
+        // Whitespace-only is no reason at all, and must not set the flag.
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static("   "));
+        assert!(break_glass_from_headers(&headers).is_none());
+
+        // Undecodable bytes are replaced, never dropped: the claim still records.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes(&[b'I', b'N', b'C', 0xFF]).unwrap(),
+        );
+        assert!(break_glass_from_headers(&headers).is_some_and(|reason| reason.starts_with("INC")));
     }
 
     #[test]
