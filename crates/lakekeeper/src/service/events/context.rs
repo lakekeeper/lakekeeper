@@ -74,8 +74,6 @@ impl EntityField {
     #[must_use]
     #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
-        // No wildcard arm: that omission is what turns a new variant into a build
-        // failure here rather than an undocumented key in the audit log.
         match self {
             Self::ServerId => "server-id",
             Self::ProjectId => "project-id",
@@ -96,12 +94,6 @@ impl EntityField {
             Self::GenericTableId => "generic-table-id",
             Self::TagDefinitionId => "tag-definition-id",
         }
-    }
-}
-
-impl std::fmt::Display for EntityField {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -156,8 +148,6 @@ impl EntityType {
     #[must_use]
     #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
-        // No wildcard arm: that omission is what turns a new variant into a build
-        // failure here rather than an undocumented key in the audit log.
         match self {
             Self::Server => "server",
             Self::Project => "project",
@@ -175,12 +165,6 @@ impl EntityType {
     }
 }
 
-impl std::fmt::Display for EntityType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
 // keep compiling unchanged while the type system gains a closed key set.
 pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
@@ -194,7 +178,6 @@ pub const ENTITY_TYPE_ROLE: EntityType = EntityType::Role;
 pub const ENTITY_TYPE_USER: EntityType = EntityType::User;
 pub const ENTITY_TYPE_GENERIC_TABLE: EntityType = EntityType::GenericTable;
 pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
-pub const ENTITY_TYPE_UNKNOWN: EntityType = EntityType::Unknown;
 
 /// A key that can appear in an `action` object's context in an audit record.
 ///

@@ -95,7 +95,7 @@ Audit log records — every line with `"event_source": "audit"` — carry a `MAJ
 
 **The tests tell you which kind of change you made.** Run `just test`. If a fixture test fails, the failure message says whether the change is breaking or additive, and which JSON path moved:
 
-- **Failure says "BREAKS CONSUMERS"** — a field was removed, renamed, retyped, or its value changed. Bump the **major**: `1.4` becomes `2.0`, and regenerate the fixtures.
+- **The fixture-comparison failure** — a field was removed, renamed, retyped, *or a value changed*. The message asks you to decide which, because the two want opposite things and the comparison cannot tell them apart. A moved key, or a renamed value consumers switch on (`entity_type`, `decision`, `actor_type` and the other wire enums reach the log as string *values*), breaks consumers: bump the **major**, `1.4` becomes `2.0`, and regenerate. A changed test *input* — a scenario made more realistic, an id made deterministic — breaks nothing: regenerate and leave `AUDIT_FORMAT` alone. Bumping for that is rejected by the checker, which compares shapes and sees no format change to justify it.
 - **Failure says "gained a field"** — the change is purely additive and existing consumers keep working. Bump the **minor**: `1.4` becomes `1.5`, and regenerate the fixtures.
 
 Regenerate with `just update-audit-fixtures`, then read the resulting diff: it is exactly what a consumer's pipeline will see. If it contains anything you did not intend, that is the bug.
@@ -119,9 +119,9 @@ One consequence for the bump checker: it compares fixtures by name, so renaming 
 | `EntityType::as_str` (`events/context.rs`) | an `entity_type` value | Same, and add it to the `entity_type` list in the docs |
 | `ActionContextKey::as_str` (`events/context.rs`) | an action context key | Same, and add a row to the action context table |
 | `impl CatalogAction for Catalog*Action` (`service/authz/mod.rs`) | a catalog action | Decide what audit context the action should carry. If none, add it to the explicit no-context list in that `match` — the list exists so that this is a decision rather than a default |
-
-On that last row, what is and is not guaranteed. Every `action_descriptor` match in the tree is exhaustive today, so adding a variant to any `Catalog*Action` enum does fail the build. But only five of them carry `#[deny(clippy::wildcard_enum_match_arm)]`, and there are 22 `action_descriptor` impls across four files — including nine in `crates/authz-openfga/src/relations.rs` and one each in `service/authn.rs` and `service/authz/instance_admin.rs`. For the unprotected ones the guarantee rests on nobody adding a `_ =>` arm, which is exactly what the deny exists to prevent elsewhere. Extending the deny to the rest is cheap and worth doing when one of those files is next touched.
 | `determining_factor_tag` / `policy_effect_tag` / `failure_reason_tag` (audit test module) | a variant of an enum that reaches the wire through `#[derive(Valuable)]` | Give it a wire tag and document what it means. These types have no hand-written `visit`, so the derive would otherwise emit a new variant with nothing to stop it |
+
+On the `impl CatalogAction` row, what is and is not guaranteed. Every `action_descriptor` match in the tree is exhaustive today, so adding a variant does fail the build — but not every impl carries `#[deny(clippy::wildcard_enum_match_arm)]`, and `CatalogAction` is a public trait, so authorizer crates have impls this repository cannot see at all. For the unprotected ones the guarantee rests on nobody adding a `_ =>` arm. Add the deny when you next touch one.
 
 The first four fail a plain `cargo build`, because they are production code. The last lives in the audit test module, so it fails `cargo test` and `just check` but **not** `cargo build` — CI runs both, but a local `cargo build` will not tell you about it.
 
@@ -168,7 +168,8 @@ The decision table and the classification are self-tested: `python3 .github/scri
 |---|---|
 | Entity field key names, `entity_type` values, action context key names | **Exhaustively, from the type system.** The enums are closed, so a key cannot exist without a `match` arm and a documented row |
 | Which variants the derived audit enums can emit | **Exhaustively**, via the tag functions above |
-| That every record declares `audit_format` | Structurally: one emission site, checked by a test |
+| `action_name` values | **Removals, exhaustively.** The bump checker compares the in-repo `Catalog*Action` variant names either side of the merge base and requires a MAJOR bump for any that disappeared. Additions are not a format change: `action_name` is still a string, and consumers ignore values they do not know. `CatalogAction` is a public trait with a blanket `APIEventActions` impl, so an authorizer crate's own actions — `authz-openfga`'s, and any out-of-tree — are outside this check |
+| That every record declares `audit_format` | Structurally: one emission site, checked by a repo-wide `git grep` in CI. A unit test checks the same property within the audit module, for fast local feedback; only the CI check sees the rest of the tree, and neither sees a downstream repository |
 | Record **shape** — nesting, value types, which optional fields are omitted versus `null`, and the singular/plural arity switch | **By example only.** The fixtures pin the shape of the scenarios they cover, and nothing pins the shape of a scenario they do not |
 
 That last row is the real limit. A shape change on a path no fixture exercises will not fail anything. This is not hypothetical: comparing these fixtures against audit records from a running server found five keys no fixture emitted, two of them undocumented, and enumerating the action context keys afterwards found two more. Sampling missed all of them.
@@ -177,7 +178,7 @@ So: **if you change a code path that no fixture exercises, add a fixture.** Addi
 
 **And extend the corpus test while you are there.** `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` drives requests through the real service layer and checks rules that hold for *any* audit record — that every key is a variant of the closed key enums, that a definitive denial never carries `allowed: true`, and so on. It catches a class of problem a fixture cannot: a fixture is generated by the test that asserts against it, so a wrongly built event produces a fixture that agrees with it and passes forever. That is not hypothetical either — one committed fixture claimed a `CannotSeeResource` denial whose per-decision entry said `allowed: true`, a combination the emitter cannot produce, and it passed every test until a human read the JSON.
 
-The rules there are already general; what is narrow is the set of requests exercised, which at the time of writing produces two records. So changing the audit log is the best moment to widen it, because you know which path you touched and whether anything reaches it. Drive one more call through `CatalogServer` or `ApiServer` in that test and the existing rules apply to whatever it emits — no new assertion needed. The file's own header lists what is not yet reached, in rough order of how cheap each is to add.
+The rules there are already general; what is narrow is the set of requests exercised, which at the time of writing produces seven records. So changing the audit log is the best moment to widen it, because you know which path you touched and whether anything reaches it. Drive one more call through `CatalogServer` or `ApiServer` in that test and the existing rules apply to whatever it emits — no new assertion needed. The file's own header lists what is not yet reached, in rough order of how cheap each is to add.
 
 Two things worth knowing before you rely on it. Its capture is thread-local and works only because `sqlx::test` runs on a current-thread runtime; a test switching to `flavor = "multi_thread"` would capture nothing, which is why it asserts it captured something rather than treating an empty corpus as a pass. And it registers the audit listener on its own `ApiContext`, not in the shared harness, so no other integration test is affected by it.
 
@@ -194,7 +195,12 @@ And a major bump for some other reason **does not oblige you to touch any of the
 - **The `action` / `actions` and `entity` / `entities` arity switch.** A record carries the singular key when one item was checked and the plural key otherwise, so every consumer needs both paths and the schema needs a branch. Always emitting arrays, even of length one, would be simpler for everyone.
 - **Counts encoded as strings.** `writes` and `deletes` in the `apply_grants` action context are numbers sent as JSON strings.
 - **Booleans encoded as strings.** `force`, `purge` and `recursive` are emitted as `"true"`, and only when true, so absence means false. That follows from `ActionContextKey`'s value space being `String` / `Vec<String>` / `BTreeMap<String, String>` — a JSON boolean means widening that value space, so this one is a slightly larger change than it looks.
-- **Optional fields are encoded inconsistently.** Some are omitted when absent, others emitted as `null`. Three code paths produce two different outcomes; each is documented at its definition, marked `Optional fields: path N of 3`. One rule should apply everywhere, and consumers currently cannot infer which applies where.
+- <a id="audit-optional-fields"></a>**Optional fields are encoded inconsistently.** Three paths produce two outcomes, so no field's behaviour can be inferred from another's:
+    - `Authorization::visit` (hand-written) **omits** the key: `id`, `for-principal`, `allowed`, `determined_by`.
+    - `user_agent` (a top-level `tracing` field) is always recorded, so absent reads as `null`.
+    - `DeterminingFactor` (derived `Valuable`) is also always recorded — `valuable-derive` has no conditional skip. Same outcome as `user_agent` by coincidence, not design, so unifying one will not unify the other.
+
+    For consumers, *absent* and *`null`* both mean "not recorded". One rule should apply everywhere.
 - **`user_agent` is absent on operational records and present-or-null on authorization records.** A consumer checking the key exists gets different answers depending on the event family. Either it should always be present, or never be present outside the authorization family.
 - **The operational `context` object is unconstrained.** `audit_operation!` is `#[macro_export]`ed and accepts any `Valuable`, so a crate outside this repository can emit keys nothing here can see, document or test. Closing that means sealing the macro, which breaks those callers — so it is a coordination problem with downstream consumers rather than a change that can be made unilaterally.
 

@@ -445,6 +445,11 @@ jobs:
   check-audit-format-callout:
     name: audit format change is called out
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # For the `gh api` read of the pull request title and body below. The workflow-level
+      # block grants only `contents` and `checks`.
+      pull-requests: read
     # Only a pull request has a title and body to inspect; this workflow also runs on
     # pushes and manual dispatches, where there is nothing to gate. The condition sits
     # on the steps rather than on the job: a skipped job skips everything that `needs`
@@ -466,17 +471,50 @@ jobs:
       - name: Self-test the version bump checker
         if: github.event_name == 'pull_request'
         run: python3 .github/scripts/check-audit-format-bump.py --self-test
+      - name: Audit records are emitted from one site that stamps the version
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          # Every audit record must go through `__audit_emit!`, which stamps
+          # `audit_format`. Counted tree-wide: the macro is `#[macro_export]`ed and
+          # `tracing::info!` is callable anywhere, so a second site can appear in any
+          # crate. Comments are skipped — the AUDIT_FORMAT docs quote both needles.
+          hits() { git grep -nE "$1" -- '*.rs' | grep -vE ':[0-9]+:[[:space:]]*//' || true; }
+
+          EMISSIONS="$(hits 'event_source[[:space:]]*=[[:space:]]*"audit"')"
+          STAMPS="$(hits 'audit_format[[:space:]]*=')"
+          N_EMISSIONS="$(printf '%s' "${EMISSIONS}" | grep -c . || true)"
+          N_STAMPS="$(printf '%s' "${STAMPS}" | grep -c . || true)"
+
+          STATUS=0
+          if [ "${N_EMISSIONS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that emits \`event_source = \"audit\"\`, found ${N_EMISSIONS}. Route every audit record through \`__audit_emit!\`, which is what stamps \`audit_format\`; a second site can silently omit the version."
+            printf '%s\n' "${EMISSIONS}" >&2
+            STATUS=1
+          fi
+          if [ "${N_STAMPS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that sets \`audit_format\`, found ${N_STAMPS}."
+            printf '%s\n' "${STAMPS}" >&2
+            STATUS=1
+          fi
+          exit "${STATUS}"
       - name: Require a release-notes callout when the audit log format changes
         if: github.event_name == 'pull_request'
         env:
-          # Passed as environment variables rather than interpolated into the script
-          # below: a pull request title or body is attacker-controlled text, and
-          # `${{ }}` substitution would splice it into the shell.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Read via `gh api`, not `github.event`: that payload is frozen at the triggering
+          # event, and a description edit fires no event and is not re-read on a re-run.
+          # Kept in shell variables, never interpolated through `${{ }}` — a title or body
+          # is attacker-controlled text and substitution would splice it into the shell.
+          PR="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          PR_TITLE="$(printf '%s' "${PR}" | jq -r '.title // ""')"
+          PR_BODY="$(printf '%s' "${PR}" | jq -r '.body // ""')"
 
           AUDIT_DIR=crates/lakekeeper/src/service/events/backends/audit
 
@@ -538,9 +576,15 @@ jobs:
           # is not a release note, so an empty section must not satisfy the requirement.
           # `tolower` rather than a case-insensitive match, which is not portable across
           # awk implementations.
+          #
+          # The terminator is `^##[^#]`, not `^##[[:space:]]*[^[:space:]]`: the latter also
+          # matches `###`, because the star matches zero spaces and the negated class then
+          # eats the third `#`. A section whose first line is a `### Breaking changes`
+          # subheading — the shape release-please uses, and the shape a major bump invites —
+          # would read as empty and block the very pull request that must not be blocked.
           RELEASE_NOTES=$(printf '%s\n' "${PR_BODY:-}" | awk '
             tolower($0) ~ /^##[[:space:]]*release notes/ { inside = 1; next }
-            /^##[[:space:]]*[^[:space:]]/ { inside = 0 }
+            /^##[^#]/ { inside = 0 }
             inside && $0 ~ /[^[:space:]]/ { found = 1 }
             END { print (found ? "yes" : "no") }
           ')

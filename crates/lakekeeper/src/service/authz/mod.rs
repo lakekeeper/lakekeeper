@@ -818,9 +818,6 @@ impl CatalogWarehouseAction {
     }
 }
 impl CatalogAction for CatalogWarehouseAction {
-    // A wildcard arm here would silently accept a future variant and emit nothing for
-    // it, which is the whole failure this listing exists to prevent. Denied rather than
-    // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
@@ -836,9 +833,7 @@ impl CatalogAction for CatalogWarehouseAction {
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
-            // Actions that contribute no audit context. Listed explicitly rather than
-            // matched with `_`, so that adding an action forces a decision about what
-            // its audit record should carry instead of silently emitting nothing.
+            // Contribute no audit context. Listed, not `_` — see above.
             Self::Delete { .. }
             | Self::UpdateStorage { .. }
             | Self::GetMetadata { .. }
@@ -1053,9 +1048,6 @@ impl CatalogNamespaceAction {
     }
 }
 impl CatalogAction for CatalogNamespaceAction {
-    // A wildcard arm here would silently accept a future variant and emit nothing for
-    // it, which is the whole failure this listing exists to prevent. Denied rather than
-    // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     // Long because the no-context variants are listed exhaustively rather than
     // collapsed into a wildcard. That listing is the point, so the length is not a
@@ -1157,9 +1149,7 @@ impl CatalogAction for CatalogNamespaceAction {
                     b = b.context_string(ActionContextKey::Force, "true");
                 }
             }
-            // Actions that contribute no audit context. Listed explicitly rather than
-            // matched with `_`, so that adding an action forces a decision about what
-            // its audit record should carry instead of silently emitting nothing.
+            // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
             | Self::ListTables { .. }
             | Self::ListViews { .. }
@@ -1266,9 +1256,6 @@ impl CatalogTableAction {
     }
 }
 impl CatalogAction for CatalogTableAction {
-    // A wildcard arm here would silently accept a future variant and emit nothing for
-    // it, which is the whole failure this listing exists to prevent. Denied rather than
-    // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
@@ -1315,9 +1302,7 @@ impl CatalogAction for CatalogTableAction {
                     b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            // Actions that contribute no audit context. Listed explicitly rather than
-            // matched with `_`, so that adding an action forces a decision about what
-            // its audit record should carry instead of silently emitting nothing.
+            // Contribute no audit context. Listed, not `_` — see above.
             Self::WriteData { .. }
             | Self::ReadData { .. }
             | Self::GetMetadata { .. }
@@ -1409,9 +1394,6 @@ impl CatalogViewAction {
     }
 }
 impl CatalogAction for CatalogViewAction {
-    // A wildcard arm here would silently accept a future variant and emit nothing for
-    // it, which is the whole failure this listing exists to prevent. Denied rather than
-    // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
@@ -1441,9 +1423,7 @@ impl CatalogAction for CatalogViewAction {
                     b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            // Actions that contribute no audit context. Listed explicitly rather than
-            // matched with `_`, so that adding an action forces a decision about what
-            // its audit record should carry instead of silently emitting nothing.
+            // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
             | Self::Select { .. }
             | Self::IncludeInList { .. }
@@ -3056,8 +3036,9 @@ pub mod tests {
         );
     }
 
-    /// Locks the wire shape of the ref/kind fields — kinds serialize as their
-    /// kebab-case Iceberg action names — since the enterprise Cedar layer parses it.
+    /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
+    /// Iceberg action names. This is a serialized contract that authorizers parse, so a
+    /// change here is a change to their input, not an internal rename.
     #[test]
     fn test_catalog_table_action_commit_with_refs_and_kinds_serde() {
         let action = CatalogTableAction::Commit {

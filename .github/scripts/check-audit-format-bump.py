@@ -16,6 +16,7 @@ Read version:  python3 .github/scripts/check-audit-format-bump.py --print-versio
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -40,22 +41,35 @@ def _git(*args: str) -> str:
     ).stdout
 
 
+def _git_grep(*args: str) -> str | None:
+    """The matching lines, or None when nothing matched.
+
+    `git grep` exits 1 for "no match" and greater than 1 for a real failure. Conflating
+    the two is the dangerous direction: a git failure read as "no match" reads as "the
+    version is not declared yet", which passes the whole check unconditionally.
+    """
+    result = subprocess.run(["git", "grep", *args], capture_output=True, text=True)
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
+    return result.stdout
+
+
 class AmbiguousVersion(Exception):
     """More than one file declares the version, so no single one is authoritative."""
 
 
 def declared_versions(rev: str) -> dict[str, tuple[int, int]]:
-    """Every declaration of the version at `rev`, keyed by the file that holds it.
+    """Every declaration of the version at `rev`, keyed by file.
 
-    Searched across the tree rather than read from a fixed path, so that moving the module
-    does not look like the version disappearing. Returned per path rather than as a single
-    value because "the first match" is not a safe answer: any other text in `crates/`
-    matching the pattern — a doc comment quoting it, for instance — would silently become
-    the version this checker scores the change against.
+    Searched tree-wide so moving the module does not read as the version disappearing;
+    keyed by path because a second match must be an error, not a silent pick.
     """
-    try:
-        out = _git("grep", "-E", GIT_PATTERN, rev, "--", "crates/")
-    except subprocess.CalledProcessError:
+    out = _git_grep("-E", GIT_PATTERN, rev, "--", "crates/")
+    if out is None:
         return {}
     found: dict[str, tuple[int, int]] = {}
     for line in out.splitlines():
@@ -71,12 +85,11 @@ def declared_versions(rev: str) -> dict[str, tuple[int, int]]:
 
 
 def single_version(found: dict[str, tuple[int, int]], rev: str = "HEAD") -> tuple[int, int] | None:
-    """The one declared version, or None if there is none. Raises if there is more than one.
+    """The one declared version, or None. Raises if more than one file declares it.
 
-    Agreeing values do not make two declarations acceptable: they are two places a future
-    bump has to be applied, and which one this checker reads is decided by sort order.
-
-    Separate from the git lookup so the rule can be tested without a repository.
+    Agreeing values do not excuse a second declaration: it is a second place to bump, and
+    which one wins is decided by sort order. Split from the git lookup so it is testable
+    without a repository.
     """
     if len(found) > 1:
         listed = ", ".join(f"{path} ({v[0]}.{v[1]})" for path, v in sorted(found.items()))
@@ -96,10 +109,9 @@ def declared_version(rev: str) -> tuple[int, int] | None:
 def fixture_dirs_at(rev: str) -> list[str]:
     """The fixture directories that exist at `rev`, as path prefixes."""
     prefix = f"{AUDIT_DIR}/fixtures/"
-    try:
-        listing = _git("ls-tree", "-r", "--name-only", rev, "--", prefix)
-    except subprocess.CalledProcessError:
-        return []
+    # No `except`: `git ls-tree` exits 0 with empty output when nothing is there, so a
+    # non-zero exit is a real failure and must not be read as "no fixtures".
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", prefix)
     dirs = {
         path[: len(prefix) + path[len(prefix) :].index("/") + 1]
         for path in listing.splitlines()
@@ -110,10 +122,8 @@ def fixture_dirs_at(rev: str) -> list[str]:
 
 def fixtures_at(rev: str, prefix: str) -> dict[str, object]:
     """The committed fixtures under `prefix` at `rev`, as parsed JSON."""
-    try:
-        listing = _git("ls-tree", "-r", "--name-only", rev, "--", prefix)
-    except subprocess.CalledProcessError:
-        return {}
+    # See `fixture_dirs_at`: an `ls-tree` failure is a failure, not an empty result.
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", prefix)
     out = {}
     for path in listing.splitlines():
         if not path.endswith(".json"):
@@ -129,20 +139,15 @@ def fixtures_at(rev: str, prefix: str) -> dict[str, object]:
 def shape(value: object, path: str = "") -> set[str]:
     """Reduce a record to `<pointer>\\t<json type>` entries.
 
-    Values are discarded deliberately. A fixture's values change for reasons that are
-    not format changes — a scenario gets more realistic, an id is made deterministic —
-    and demanding a version bump for those would be wrong. Array elements collapse onto
-    one pointer, so arity is not a shape change either.
-
-    Containers record their own type as well as their contents, so that an empty object
-    and an empty array are distinguishable from each other and from an absent field.
+    Values are discarded: they change for reasons that are not format changes, and
+    `values_changed` handles the ones that are. Array elements collapse onto one pointer,
+    so arity is not a shape change. Containers record their own type as well as their
+    contents, so `{}` is distinguishable from `[]` and from an absent field.
     """
     out: set[str] = set()
     if isinstance(value, dict):
-        # The container's own type is recorded before its contents. Without this an empty
-        # object, an empty array and an absent field all reduce to nothing, so `{}`
-        # becoming `[]` reads as no change, and `{}` becoming a scalar reads as *additive*
-        # — a breaking type change classified in the permissive direction.
+        # Recorded before the contents: without it `{}` -> `[]` reads as no change, and
+        # `{}` -> scalar reads as *additive* — a breaking change classified permissively.
         out.add(f"{path}\tobject")
         for key, sub in value.items():
             out |= shape(sub, f"{path}/{key}")
@@ -159,16 +164,10 @@ def shape(value: object, path: str = "") -> set[str]:
 def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
     """`none`, `additive`, `breaking`, or `unknown`, comparing fixtures by name.
 
-    Only fixtures present under both names are compared. A fixture that was added
-    describes a scenario that was previously untested, not a format that was previously
-    different; one that was renamed, merged away or deleted takes its evidence with it.
-
-    Hence `unknown`, which is the important case: finding no difference is only meaningful
-    if everything was actually compared. If a fixture that existed before has no
-    counterpart now, the absence of a detected change proves nothing, and saying `none`
-    there would report "the format did not change" on the strength of having looked at
-    nothing. Positive findings are still trusted — a breaking difference in a pair that
-    *did* match is real regardless of what happened to the others.
+    A fixture that was added describes a previously untested scenario; one renamed or
+    deleted took its evidence with it. Hence `unknown`: "no difference found" only means
+    something if everything was compared. Positive findings are still trusted — a breaking
+    difference in a pair that did match is real whatever happened to the others.
     """
     compared = sorted(set(base) & set(head))
     verdict = "none"
@@ -177,24 +176,82 @@ def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
             return "breaking"
         if head[name] - base[name]:
             verdict = "additive"
-    # Reporting "no change" requires having compared something, and having accounted for
-    # everything that existed before. Zero comparisons is not a clean bill of health.
-    #
-    # A fixture whose name changed but whose shape did not is still accounted for: match
-    # the leftovers by shape before giving up, so that renaming a fixture — which is a
-    # normal thing to do when a scenario is described better — does not cost the check its
-    # verdict. A fixture that was renamed *and* changed will not match, and correctly
-    # leaves the result unknown.
-    unmatched_before = [base[n] for n in set(base) - set(head)]
-    leftovers_after = [head[n] for n in set(head) - set(base)]
-    for shapes in unmatched_before:
-        if shapes in leftovers_after:
-            leftovers_after.remove(shapes)
-        else:
-            return "unknown"
-    if verdict == "none" and not compared and not unmatched_before:
+    # "No change" is a claim, and it needs everything that existed before to have been
+    # compared. A fixture that lost its name took its evidence with it, and zero
+    # comparisons is not a clean bill of health.
+    if set(base) - set(head) or (verdict == "none" and not compared):
         return "unknown"
     return verdict
+
+
+ACTION_FILE = "crates/lakekeeper/src/service/authz/mod.rs"
+ACTION_ENUM_RE = re.compile(r"pub enum (Catalog[A-Za-z]+Action)\s*\{", re.M)
+
+
+def action_names(rev: str) -> set[str]:
+    """Every `action_name` the in-repo catalog actions can emit at `rev`.
+
+    `action_name` reaches the log as a VALUE, not a key, so `shape` is blind to it and no
+    fixture pins a real one. Renaming a variant renames what every consumer switches on.
+
+    Parsed from the enum declarations rather than from a type, because most of these enums
+    carry data and so cannot be enumerated by `strum`. The `--self-test` cross-checks the
+    result against the committed `OpenAPI` document, which is generated from these same
+    types and is itself CI-enforced, so a parser that drifts is caught rather than trusted.
+
+    In-repo actions only. `CatalogAction` is a public trait with a blanket
+    `APIEventActions` impl, so an authorizer crate — `authz-openfga` here, others
+    out-of-tree — contributes names this cannot see.
+    """
+    try:
+        source = _git("show", f"{rev}:{ACTION_FILE}")
+    except subprocess.CalledProcessError:
+        return set()
+    out: set[str] = set()
+    for match in ACTION_ENUM_RE.finditer(source):
+        body, depth, i = [], 1, match.end()
+        while i < len(source) and depth:
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+                if not depth:
+                    break
+            body.append(source[i])
+            i += 1
+        depth = 0
+        for line in "".join(body).split("\n"):
+            line = re.sub(r"//.*", "", line).strip()
+            if not line:
+                continue
+            variant = re.match(r"^([A-Z][A-Za-z0-9]*)\s*[\{\(,]?", line)
+            if variant and not depth:
+                name = variant.group(1)
+                out.add(re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower())
+            depth += line.count("{") + line.count("(") - line.count("}") - line.count(")")
+    return out
+
+
+def content(record: object) -> object:
+    """A record with the version field removed, for comparing values.
+
+    `audit_format` is itself a fixture value, so without this every correct bump reads as
+    a value change and permanently suppresses the "bumped for nothing" rules. Load-bearing.
+    """
+    if isinstance(record, dict):
+        return {k: v for k, v in record.items() if k != "audit_format"}
+    return record
+
+
+def values_changed(
+    base: dict[str, object], head: dict[str, object], compared: list[str]
+) -> bool:
+    """Whether any compared fixture changed a value without changing its shape.
+
+    Only reached when `classify_shape` returned `none`, which now requires every fixture
+    that existed before to still exist under the same name — so `compared` is all of them.
+    """
+    return any(content(base[name]) != content(head[name]) for name in compared)
 
 
 # ── version bump ────────────────────────────────────────────────────────────────
@@ -283,6 +340,22 @@ DECISIONS: dict[tuple[str, str], tuple[bool, str]] = {
 def decide(shape_kind: str, bump_kind: str) -> tuple[bool, str]:
     if bump_kind == "introduced":
         return True, "AUDIT_FORMAT is being introduced; there is no previous version."
+    if shape_kind == "values":
+        # Deliberately permissive, and the reason is worth stating: a changed value is
+        # either a test input made more realistic (no bump) or a wire value consumers
+        # switch on being renamed — `entity_type`, `decision`, `actor_type` and the other
+        # enums all reach the wire as string VALUES, not keys. `shape` cannot tell those
+        # apart, so it must not assert either way. What it must not do is claim the
+        # format did not change: that is what rejected the correct MAJOR bump and left
+        # un-bumping as the only way to green, silently shipping the rename unversioned.
+        return True, (
+            "Fixture VALUES changed but no field was added, removed or retyped. That is "
+            "either a test input made more realistic (leave AUDIT_FORMAT alone) or a wire "
+            "value being renamed, which breaks every consumer that switches on it (bump "
+            "the MAJOR). This check compares shapes, not values, so it cannot tell those "
+            "apart — decide by hand, and see the audit log section of "
+            "docs/docs/developer-guide.md."
+        )
     if shape_kind == "unknown":
         # Deliberately permissive. Fixtures were renamed, merged or removed, so there is
         # no basis for a verdict; asserting one would fail legitimate changes. The Rust
@@ -327,15 +400,32 @@ def run(base_ref: str, head_ref: str = "HEAD") -> int:
         return 1
     head_prefix = head_dirs[0]
     base_prefix = base_dirs[0] if len(base_dirs) == 1 else head_prefix
-    base_shapes = {n: shape(r) for n, r in fixtures_at(merge_base, base_prefix).items()}
-    head_shapes = {n: shape(r) for n, r in fixtures_at(head_ref, head_prefix).items()}
+    base_records = fixtures_at(merge_base, base_prefix)
+    head_records = fixtures_at(head_ref, head_prefix)
+    base_shapes = {n: shape(r) for n, r in base_records.items()}
+    head_shapes = {n: shape(r) for n, r in head_records.items()}
     shape_kind = classify_shape(base_shapes, head_shapes)
     compared = sorted(set(base_shapes) & set(head_shapes))
+    # Only when the shapes agree: a shape verdict is the stronger statement and keeps
+    # its own decision row. `values` exists to stop `none` being asserted over a change
+    # this comparison is blind to.
+    if shape_kind == "none" and values_changed(base_records, head_records, compared):
+        shape_kind = "values"
     short = lambda d: d.rstrip("/").rsplit("/", 1)[-1]
     print(
         f"Fixtures:   {short(base_prefix)} -> {short(head_prefix)}, {len(compared)} "
         f"compared ({len(base_shapes)} before, {len(head_shapes)} after) => {shape_kind}"
     )
+
+    # `action_name` is a wire VALUE, so the fixture shapes above cannot see it. Only names
+    # that DISAPPEARED matter: a rename or removal breaks every consumer switching on it,
+    # while a new action leaves the format itself unchanged — `action_name` is still a
+    # string, and consumers ignore values they do not know. Bumping for every added action
+    # would make the version move constantly and tell consumers nothing.
+    lost_actions = sorted(action_names(merge_base) - action_names(head_ref))
+    if lost_actions:
+        print(f"Actions:    {len(lost_actions)} name(s) no longer emitted: {lost_actions}")
+        shape_kind = "breaking"
 
     ok, message = decide(shape_kind, bump_kind)
     if ok:
@@ -369,6 +459,64 @@ def self_test() -> int:
                 legal,
             )
 
+    # A value change defers rather than asserting "the format did not change", whatever
+    # the bump was. Asserting it is what rejected a correct MAJOR bump for a renamed wire
+    # value and left un-bumping as the only way to a green build.
+    for bump_kind in ("none", "minor", "major"):
+        check(f"decide(values, {bump_kind})", decide("values", bump_kind)[0], True)
+
+    # `audit_format` is excluded from the value comparison, so a correctly regenerated
+    # bump still reads as `none` and the "bumped for nothing" rules keep working.
+    check(
+        "version bump alone is not a value change",
+        values_changed(
+            {"f": {"audit_format": "1.0", "a": 1}},
+            {"f": {"audit_format": "1.1", "a": 1}},
+            ["f"],
+        ),
+        False,
+    )
+    check(
+        "a renamed wire value is a value change",
+        values_changed(
+            {"f": {"audit_format": "1.0", "entity_type": "namespace"}},
+            {"f": {"audit_format": "1.0", "entity_type": "schema"}},
+            ["f"],
+        ),
+        True,
+    )
+    check(
+        "nested value changes count",
+        values_changed({"f": {"a": {"b": 1}}}, {"f": {"a": {"b": 2}}}, ["f"]),
+        True,
+    )
+    check(
+        "identical records are not a value change",
+        values_changed({"f": {"a": 1}}, {"f": {"a": 1}}, ["f"]),
+        False,
+    )
+    check(
+        "an ADDED fixture alone does not",
+        values_changed({"f": {"a": 1}}, {"f": {"a": 1}, "g": {"a": 1}}, ["f"]),
+        False,
+    )
+
+    # The action-name parser reads Rust source with a regex, which is only defensible while
+    # something independent agrees with it. The committed `OpenAPI` document is generated
+    # from the same types by `utoipa` and is itself CI-enforced, so it is that independent
+    # check. Skipped when run outside a checkout.
+    spec = pathlib.Path("docs/docs/api/management-open-api.yaml")
+    if spec.is_file():
+        names = action_names("HEAD")
+        check("action names were found at all", len(names) > 20, True)
+        document = spec.read_text(encoding="utf-8")
+        absent = [
+            name
+            for name in sorted(names)
+            if not re.search(rf"^\s*- {re.escape(name)}\s*$", document, re.M)
+        ]
+        check("every parsed action name appears in the OpenAPI document", absent, [])
+
     # Bumping both halves at once, and other malformed bumps.
     check("major resets minor", classify_bump((1, 4), (2, 1))[1] is not None, True)
     check("major bump ok", classify_bump((1, 4), (2, 0)), ("major", None))
@@ -399,8 +547,7 @@ def self_test() -> int:
 
     # `unknown`: a fixture that existed before has no counterpart now, so "no difference
     # found" is not evidence of "no difference". These must not be reported as `none`.
-    # A pure rename is recoverable: same shape under a new name is still accounted for.
-    check("pure rename", classify_shape({"old": shape(a)}, {"new": shape(a)}), "none")
+    check("pure rename", classify_shape({"old": shape(a)}, {"new": shape(a)}), "unknown")
     check(
         "rename plus a change",
         classify_shape({"old": shape({"a": 1})}, {"new": shape({"a": 1, "b": 2})}),
@@ -433,12 +580,12 @@ def self_test() -> int:
         "breaking",
     )
     check(
-        "additive despite a rename",
+        "additive alongside a rename defers",
         classify_shape(
             {"f": shape({"a": 1}), "g": shape(a)},
             {"f": shape({"a": 1, "b": 2}), "h": shape(a)},
         ),
-        "additive",
+        "unknown",
     )
     # `unknown` defers rather than guessing, in either direction.
     for bump in ("none", "minor", "major"):

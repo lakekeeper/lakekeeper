@@ -12,30 +12,17 @@
 //!
 //! # This file is meant to grow
 //!
-//! The rules below apply to any record, but they only ever see records something actually
-//! emitted — so coverage is exactly the set of request sequences exercised here, and that
-//! set starts small. At the time of writing it is two records: one `create_namespace` that
-//! succeeds and one lookup of an absent namespace that is denied. Everything else the audit
-//! log can emit is unchecked by this file.
+//! The rules apply to any record, but only ever see records something emitted — so
+//! coverage is exactly the request sequences exercised here, and that set starts small.
+//! Widening it is the point: drive another call through `CatalogServer` and the existing
+//! rules apply to whatever it produces. Not yet reached: views, table commits, the plural
+//! `actions`/`entities` form, per-decision `id`/`for-principal`/`determined_by`, the
+//! operational family, and anything needing a real authorizer or an authenticated actor
+//! (`AllowAllAuthorizer` and `random_request_metadata()` reach neither).
 //!
-//! Reached today: `create_namespace`, `create_table`, `get_metadata`, `list_tables`,
-//! `update_properties` and `drop`, across both an `allowed` and a `denied` decision — seven
-//! records, which between them carry eight keys no committed fixture emits (`name`,
-//! `properties`, `purge`, `table_id`, `removed-properties`, `updated-properties`, and the
-//! `ResourceNotFound` failure reason).
-//!
-//! Not yet reached, in rough order of how cheap each is to add:
-//!
-//! - views, and table commits, which carry `target-refs` and `update-kinds`
-//! - the plural `actions` / `entities` form: every call here checks one action against one
-//!   entity, so that whole branch of the record shape is unexercised
-//! - per-decision entries carrying `id`, `for-principal` or `determined_by`, which need a
-//!   batch-style check rather than a single one
-//! - the operational family (`operation` / `outcome` / `context`), which grant changes emit
-//! - a real authorizer instead of `AllowAllAuthorizer`. `ActionForbidden` and
-//!   `CannotSeeResource` are unreachable here — only `ResourceNotFound` is — and
-//!   `random_request_metadata()` is unauthenticated, so real actors and user agents are too.
-//!   The OpenFGA authorizer is the cheap way in: CI already provisions it.
+//! Do not add a second `#[sqlx::test]` here. Capture is thread-local and works because
+//! `sqlx::test` polls on one current-thread runtime shared across the binary; a second
+//! test contends for it and silently captures a subset.
 //!
 //! Adding a case is cheap: drive another call through `CatalogServer` or `ApiServer` before
 //! the sleep, and the existing rules apply to whatever it emits. A good case is one that
@@ -176,8 +163,9 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // Listing reaches an action whose entity is the namespace but whose result is a set,
-    // and it is one of the few calls that can emit the plural `entities` form.
+    // Listing reaches an action whose entity is the namespace but whose result is a set.
+    // It still emits the singular `entity` form: arity follows the entities checked, not
+    // the rows returned.
     let _ = CatalogServer::list_tables(
         namespace_params.clone(),
         lakekeeper::api::iceberg::v1::ListTablesQuery {

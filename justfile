@@ -76,20 +76,13 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
-# Additive changes want a minor bump of AUDIT_FORMAT, breaking ones a major, and an
-# unchanged format wants neither. Compares the committed fixtures either side of the
-# merge base, so it needs a base to compare against. CI runs this on every pull request.
+# Compares the committed fixtures either side of the merge base, so it needs a base.
 # Check that an audit log format change carries the right AUDIT_FORMAT bump
 check-audit-format-bump base="origin/main":
     python3 .github/scripts/check-audit-format-bump.py {{base}}
 
-# Two passes: the first writes the files, the second compares against them. The writing
-# pass cannot also verify — under the update variable the assertion returns before it
-# compares anything — so a single pass would leave the fixtures unchecked.
-# Review the resulting diff before committing: it is exactly what a consumer will see, so
-# anything in it you did not intend is a bug rather than a diff to accept. Then decide
-# whether it needs a MAJOR or MINOR bump. See the audit log section of
-# docs/docs/developer-guide.md.
+# Two passes: the first writes, the second verifies (the writing pass returns before it
+# compares). Review the diff — it is exactly what consumers will see.
 # Regenerate the committed audit log fixtures after a deliberate format change
 update-audit-fixtures:
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
