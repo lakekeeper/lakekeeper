@@ -547,7 +547,7 @@ pub async fn serve(
             tracing::debug!(%peer, "Failed to set TCP keepalive: {e}");
         }
 
-        metrics::gauge!(METRIC_HTTP_CONNECTIONS).increment(1.0);
+        let open_connection = OpenConnection::new();
         let connection = builder
             .serve_connection_with_upgrades(
                 TokioIo::new(stream),
@@ -556,10 +556,10 @@ pub async fn serve(
             .into_owned();
         let connection = graceful.watch(connection);
         tokio::spawn(async move {
+            let _open_connection = open_connection;
             if let Err(e) = connection.await {
                 tracing::debug!(%peer, "Connection closed with error: {e}");
             }
-            metrics::gauge!(METRIC_HTTP_CONNECTIONS).decrement(1.0);
         });
     }
 
@@ -585,6 +585,26 @@ pub async fn serve(
 /// Open HTTP connections. Compare against `tokio_live_tasks_count`: a gap that
 /// grows is a task leak somewhere other than the accept loop.
 const METRIC_HTTP_CONNECTIONS: &str = "lakekeeper_http_connections";
+
+/// Holds [`METRIC_HTTP_CONNECTIONS`] up for as long as it is alive.
+///
+/// The decrement happens in `Drop` so that it cannot be skipped. This gauge is
+/// the signal for spotting a task leak, so a path that leaks the gauge itself
+/// would fabricate the very thing it is meant to detect.
+struct OpenConnection;
+
+impl OpenConnection {
+    fn new() -> Self {
+        metrics::gauge!(METRIC_HTTP_CONNECTIONS).increment(1.0);
+        Self
+    }
+}
+
+impl Drop for OpenConnection {
+    fn drop(&mut self) {
+        metrics::gauge!(METRIC_HTTP_CONNECTIONS).decrement(1.0);
+    }
+}
 
 /// How long an HTTP/1 connection may wait for a request head before the server
 /// closes it.
