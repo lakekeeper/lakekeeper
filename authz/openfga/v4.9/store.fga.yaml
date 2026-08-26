@@ -208,6 +208,14 @@ tuples:
   - user: user:tag_steward
     relation: tag_creator
     object: project:project_1
+  # Delegator: holds `select` and may pass it on, but holds no grant administration.
+  # Used to pin that delegation is one-directional.
+  - user: user:namespace_1_delegator
+    relation: select
+    object: namespace:namespace_1
+  - user: user:namespace_1_delegator
+    relation: pass_grants
+    object: namespace:namespace_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -1515,3 +1523,28 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
+  - name: pass_grants delegates handing out, never taking back
+    check:
+      - user: user:namespace_1_delegator
+        object: namespace:namespace_1
+        assertions:
+          can_grant_select: true       # holds select and pass_grants, so may pass it on
+          can_revoke_select: false     # taking it back is administration, not delegation
+          can_grant_describe: true     # select implies describe, so describe is passable too
+          can_revoke_describe: false
+          can_grant_modify: false      # not held, so not passable in either direction
+          can_revoke_modify: false
+          can_revoke_grants: false     # no authority over a name the model does not publish
+      - user: user:namespace_2_1_grant_admin
+        object: namespace:namespace_2_1
+        assertions:
+          can_grant_select: true       # manage_grants administers both directions
+          can_revoke_select: true
+          can_revoke_describe: true
+          can_revoke_modify: true
+          can_revoke_grants: true      # and can clear a retired privilege name
+      - user: user:warehouse_1_owner
+        object: namespace:namespace_1
+        assertions:
+          can_revoke_select: true      # manage_grants inherits from the parent warehouse
+          can_revoke_grants: true

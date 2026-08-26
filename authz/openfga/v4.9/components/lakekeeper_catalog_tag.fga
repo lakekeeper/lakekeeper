@@ -27,6 +27,10 @@ type lakekeeper_catalog_tag
     define can_apply: apply
     # GRANT Permissions
     define can_grant_apply: ownership or security_admin from project
+
+    # REVOKE Permissions
+    # Fallback for a privilege name this version no longer publishes
+    define can_revoke_grants: ownership or security_admin from project
     define can_change_ownership: ownership or security_admin from project
     # Read who holds apply/ownership on this tag (grant inspection).
     define can_read_assignments: can_grant_apply or can_change_ownership

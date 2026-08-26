@@ -29,7 +29,7 @@ use crate::{
 };
 
 pub(super) trait Assignment: Sized {
-    type Relation: ReducedRelation + GrantableRelation + IntoEnumIterator;
+    type Relation: ReducedRelation + GrantableRelation + RevocableRelation + IntoEnumIterator;
     fn try_from_user(
         user: &str,
         relation: &Self::Relation,
@@ -55,6 +55,14 @@ pub(super) trait ReducedRelation: Clone + Sized + Eq + PartialEq {
 
 pub(super) trait GrantableRelation: ReducedRelation {
     fn grant_relation(&self) -> Self::OpenFgaRelation;
+}
+
+/// Taking a privilege back, as opposed to handing it out: delegation is gated by
+/// `pass_grants`, administration by `manage_grants`. Only the privileges `pass_grants`
+/// can delegate differ between the two directions; every other relation answers both
+/// alike.
+pub(super) trait RevocableRelation: GrantableRelation {
+    fn revoke_relation(&self) -> Self::OpenFgaRelation;
 }
 
 impl ParseOpenFgaEntity for UserOrRole {
@@ -282,6 +290,8 @@ pub enum TagRelation {
     CanChangeOwnership,
     CanReadAssignments,
     CanReadAttachments,
+    // -- Revoke actions --
+    CanRevokeGrants,
 }
 impl TagAction for TagRelation {}
 
@@ -407,6 +417,8 @@ pub enum ServerRelation {
     CanReadAssignments,
     CanGrantAdmin,
     CanGrantOperator,
+    // -- Revoke actions --
+    CanRevokeGrants,
 }
 impl ServerAction for ServerRelation {}
 impl CatalogAction for ServerRelation {
@@ -611,6 +623,8 @@ pub enum ProjectRelation {
     CanGetTaskQueueConfig,
     CanGetProjectTasks,
     CanControlProjectTasks,
+    // -- Revoke actions --
+    CanRevokeGrants,
 }
 impl CatalogAction for ProjectRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
@@ -939,6 +953,12 @@ pub enum WarehouseRelation {
     CanSetProtection,
     CanSetFormatVersionPolicy,
     CanGetEndpointStatistics,
+    // -- Revoke actions --
+    CanRevokeCreate,
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanRevokeGrants,
 }
 impl WarehouseAction for WarehouseRelation {}
 impl CatalogAction for WarehouseRelation {
@@ -1291,6 +1311,12 @@ pub enum NamespaceRelation {
     CanSetProtection,
     CanMove,
     CanAcceptMovedNamespace,
+    // -- Revoke actions --
+    CanRevokeCreate,
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanRevokeGrants,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1602,6 +1628,11 @@ pub enum TableRelation {
     CanGetTasks,
     CanControlTasks,
     CanSetProtection,
+    // -- Revoke actions --
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanRevokeGrants,
 }
 
 impl TableAction for TableRelation {
@@ -1888,6 +1919,11 @@ pub enum ViewRelation {
     CanGetTasks,
     CanControlTasks,
     CanSetProtection,
+    // -- Revoke actions --
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanRevokeGrants,
 }
 
 impl ViewAction for ViewRelation {
@@ -2176,6 +2212,11 @@ pub enum GenericTableRelation {
     CanGrantModify,
     CanGrantManageTags,
     CanChangeOwnership,
+    // -- Revoke actions --
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanRevokeGrants,
 }
 
 impl GenericTableAction for GenericTableRelation {
@@ -2443,6 +2484,116 @@ impl ReducedRelation for APIGenericTableAction {
             APIGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
             APIGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
         }
+    }
+}
+
+impl RevocableRelation for APIWarehouseRelation {
+    fn revoke_relation(&self) -> WarehouseRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APIWarehouseRelation::Create => WarehouseRelation::CanRevokeCreate,
+            APIWarehouseRelation::Describe => WarehouseRelation::CanRevokeDescribe,
+            APIWarehouseRelation::Modify => WarehouseRelation::CanRevokeModify,
+            APIWarehouseRelation::Select => WarehouseRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APIWarehouseRelation::Ownership
+            | APIWarehouseRelation::PassGrants
+            | APIWarehouseRelation::ManageGrants
+            | APIWarehouseRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APINamespaceRelation {
+    fn revoke_relation(&self) -> NamespaceRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APINamespaceRelation::Create => NamespaceRelation::CanRevokeCreate,
+            APINamespaceRelation::Describe => NamespaceRelation::CanRevokeDescribe,
+            APINamespaceRelation::Modify => NamespaceRelation::CanRevokeModify,
+            APINamespaceRelation::Select => NamespaceRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APINamespaceRelation::Ownership
+            | APINamespaceRelation::PassGrants
+            | APINamespaceRelation::ManageGrants
+            | APINamespaceRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APITableRelation {
+    fn revoke_relation(&self) -> TableRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APITableRelation::Describe => TableRelation::CanRevokeDescribe,
+            APITableRelation::Modify => TableRelation::CanRevokeModify,
+            APITableRelation::Select => TableRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APITableRelation::Ownership
+            | APITableRelation::PassGrants
+            | APITableRelation::ManageGrants
+            | APITableRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APIViewRelation {
+    fn revoke_relation(&self) -> ViewRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APIViewRelation::Describe => ViewRelation::CanRevokeDescribe,
+            APIViewRelation::Modify => ViewRelation::CanRevokeModify,
+            APIViewRelation::Select => ViewRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APIViewRelation::Ownership
+            | APIViewRelation::PassGrants
+            | APIViewRelation::ManageGrants
+            | APIViewRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APIGenericTableRelation {
+    fn revoke_relation(&self) -> GenericTableRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APIGenericTableRelation::Describe => GenericTableRelation::CanRevokeDescribe,
+            APIGenericTableRelation::Modify => GenericTableRelation::CanRevokeModify,
+            APIGenericTableRelation::Select => GenericTableRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APIGenericTableRelation::Ownership
+            | APIGenericTableRelation::PassGrants
+            | APIGenericTableRelation::ManageGrants
+            | APIGenericTableRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APIRoleRelation {
+    /// Revoking shares the grant relation: role membership is not delegable.
+    fn revoke_relation(&self) -> RoleRelation {
+        self.grant_relation()
+    }
+}
+
+impl RevocableRelation for APIServerRelation {
+    /// Revoking shares the grant relation: no privilege at server level is delegable.
+    fn revoke_relation(&self) -> ServerRelation {
+        self.grant_relation()
+    }
+}
+
+impl RevocableRelation for APIProjectRelation {
+    /// Revoking shares the grant relation: project privileges are granted by `security_admin`, never delegated.
+    fn revoke_relation(&self) -> ProjectRelation {
+        self.grant_relation()
+    }
+}
+
+impl RevocableRelation for APITagRelation {
+    /// Revoking shares the grant relation: applying a tag is granted by its owner, never delegated.
+    fn revoke_relation(&self) -> TagRelation {
+        self.grant_relation()
     }
 }
 

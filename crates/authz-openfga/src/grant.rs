@@ -11,8 +11,9 @@
 //!
 //! * **vocabulary** — the enum's variants are exactly the assignable privileges;
 //! * **assignment relation** — `ReducedRelation::to_openfga`, the relation a grant writes;
-//! * **authority relation** — `GrantableRelation::grant_relation`, the relation a
-//!   caller must hold to grant or revoke it.
+//! * **authority relation** — the relation a caller must hold to move it:
+//!   `GrantableRelation::grant_relation` to hand it out,
+//!   `RevocableRelation::revoke_relation` to take it back.
 //!
 //! Adding an assignable relation to the model therefore extends `/grants` with no
 //! change here.
@@ -26,9 +27,9 @@ use lakekeeper::{
         AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
         CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
         CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck,
-        GrantFilter, GrantListingNotImplemented, GrantNotSupported, GrantResource, GrantRow,
-        GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage, MalformedGrant,
-        ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
+        GrantFilter, GrantListingNotImplemented, GrantNotSupported, GrantOp, GrantResource,
+        GrantRow, GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage,
+        MalformedGrant, ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
     },
 };
 use openfga_client::client::{
@@ -42,8 +43,10 @@ use crate::{
     error::OpenFGABackendUnavailable,
     relations::{
         APIGenericTableRelation, APINamespaceRelation, APIProjectRelation, APIServerRelation,
-        APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation, GrantableRelation,
-        ReducedRelation,
+        APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation,
+        GenericTableRelation, GrantableRelation, NamespaceRelation, ProjectRelation,
+        ReducedRelation, RevocableRelation, ServerRelation, TableRelation, TagRelation,
+        ViewRelation, WarehouseRelation,
     },
 };
 
@@ -175,7 +178,8 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "pass_grants" => ("security", {
             "Grant others the privileges you already hold on this object. Delegating a \
-             privilege you do not hold requires `manage_grants` instead."
+             privilege you do not hold requires `manage_grants` instead, as does revoking \
+             any privilege — including one you handed out yourself."
         }),
         "manage_grants" => ("security", {
             "Grant and revoke any privilege on this object and everything beneath it."
@@ -222,11 +226,33 @@ pub(crate) fn is_known_privilege(resource_type: ResourceType, privilege: &str) -
     for_level!(resource_type, |R| R::from_str(privilege).is_ok())
 }
 
-/// The relation a caller must hold to grant or revoke `privilege`.
-fn authority_relation(resource_type: ResourceType, privilege: &str) -> Option<String> {
-    for_level!(resource_type, |R| R::from_str(privilege)
-        .ok()
-        .map(|relation| relation.grant_relation().to_string()))
+/// The relation a caller must hold to move `privilege` in direction `op`.
+///
+/// A name this level does not publish has no grant relation — refusing to hand out a
+/// privilege the model cannot express is deliberate. A revoke of such a name falls back
+/// to the level's grant-administration relation, so a row left by a retired, renamed, or
+/// foreign privilege stays removable instead of being stuck forever.
+fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp) -> Option<String> {
+    for_level!(resource_type, |R| match (R::from_str(privilege).ok(), op) {
+        (Some(relation), GrantOp::Grant) => Some(relation.grant_relation().to_string()),
+        (Some(relation), GrantOp::Revoke) => Some(relation.revoke_relation().to_string()),
+        (None, GrantOp::Grant) => None,
+        (None, GrantOp::Revoke) => Some(revoke_unknown_relation(resource_type)),
+    })
+}
+
+/// The relation gating removal of a privilege name this level does not publish.
+fn revoke_unknown_relation(resource_type: ResourceType) -> String {
+    match resource_type {
+        ResourceType::Server => ServerRelation::CanRevokeGrants.to_string(),
+        ResourceType::Project => ProjectRelation::CanRevokeGrants.to_string(),
+        ResourceType::Warehouse => WarehouseRelation::CanRevokeGrants.to_string(),
+        ResourceType::Namespace => NamespaceRelation::CanRevokeGrants.to_string(),
+        ResourceType::Table => TableRelation::CanRevokeGrants.to_string(),
+        ResourceType::View => ViewRelation::CanRevokeGrants.to_string(),
+        ResourceType::GenericTable => GenericTableRelation::CanRevokeGrants.to_string(),
+        ResourceType::Tag => TagRelation::CanRevokeGrants.to_string(),
+    }
 }
 
 /// The privilege a stored `relation` represents, or `None` if it is not assignable at
@@ -323,22 +349,24 @@ fn plan_authority_checks(
     object: &str,
     checks: &[GrantAuthorityCheck<'_>],
 ) -> (Vec<CheckRequestTupleKey>, Vec<Option<usize>>) {
-    let mut item_of_privilege: HashMap<&str, usize> = HashMap::new();
+    let mut item_of_privilege: HashMap<(&str, GrantOp), usize> = HashMap::new();
     let mut item_of_check = Vec::with_capacity(checks.len());
     let mut items: Vec<CheckRequestTupleKey> = Vec::with_capacity(checks.len());
     for check in checks {
-        let Some(relation) = authority_relation(resource_type, check.privilege) else {
+        let Some(relation) = authority_relation(resource_type, check.privilege, check.op) else {
             item_of_check.push(None);
             continue;
         };
-        let item = *item_of_privilege.entry(check.privilege).or_insert_with(|| {
-            items.push(CheckRequestTupleKey {
-                user: user.to_string(),
-                relation,
-                object: object.to_string(),
+        let item = *item_of_privilege
+            .entry((check.privilege, check.op))
+            .or_insert_with(|| {
+                items.push(CheckRequestTupleKey {
+                    user: user.to_string(),
+                    relation,
+                    object: object.to_string(),
+                });
+                items.len() - 1
             });
-            items.len() - 1
-        });
         item_of_check.push(Some(item));
     }
     (items, item_of_check)
@@ -348,16 +376,20 @@ impl OpenFGAAuthorizer {
     /// Which of `checks` the actor (or `for_user`) may grant and revoke on `resource`,
     /// in order.
     ///
-    /// A privilege outside this level's vocabulary is a deny, not an error: the name
-    /// may come from another authorizer's vocabulary, and answering "not allowed" is
-    /// both true and safe.
+    /// A privilege outside this level's vocabulary is a deny when granting: the name may
+    /// come from another authorizer's vocabulary, and answering "not allowed" is both true
+    /// and safe. Revoking such a name is answered by grant administration instead, so a
+    /// row a retired privilege left behind stays removable.
     ///
-    /// The grantee and the direction are both ignored. Every `can_grant_*` relation is a
-    /// property of the actor, the resource and the privilege — nothing in the model reads
-    /// who receives the privilege, and holding the relation covers taking the privilege
-    /// back as much as handing it out — so checks that differ only in either collapse into
-    /// one check whose answer is repeated for each. A diff handing one privilege to a
-    /// hundred principals is a single check.
+    /// The two directions are answered separately. Handing out a privilege you already
+    /// hold is delegation, which `pass_grants` confers; taking one back is administration,
+    /// which only `manage_grants` confers. Delegation therefore has depth one — every
+    /// grant is one hop from an administrator — which is what makes the absence of a
+    /// grantor on a stored grant safe.
+    ///
+    /// The grantee is ignored: nothing in the model reads who receives the privilege, so
+    /// checks differing only in grantee collapse into one whose answer is repeated for
+    /// each. A diff handing one privilege to a hundred principals is a single check.
     pub(crate) async fn grant_authority(
         &self,
         metadata: &RequestMetadata,
@@ -679,12 +711,12 @@ mod tests {
             .copied()
     }
 
-    /// Equal privileges are one tuple however many grantees name them and whichever way
-    /// they move, and a privilege this level cannot grant is no tuple at all. The decisions
-    /// alone cannot show either: a plan with one tuple per check answers identically, just
-    /// more expensively.
+    /// Equal privileges are one tuple however many grantees name them, but the two
+    /// directions are separate tuples — they ask different relations. A privilege this
+    /// level cannot grant is no tuple at all. The decisions alone cannot show any of it: a
+    /// plan with one tuple per check answers identically, just more expensively.
     #[test]
-    fn equal_privileges_share_one_tuple_whatever_the_grantee_or_direction() {
+    fn equal_privileges_share_one_tuple_per_direction_whatever_the_grantee() {
         let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
         let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
         let (items, item_of_check) = plan_authority_checks(
@@ -695,9 +727,10 @@ mod tests {
                 GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Grant),
                 GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Grant),
                 GrantAuthorityCheck::entry("modify", Some(&alice), GrantOp::Grant),
-                // Taking `select` back asks the same relation as handing it out: this
-                // model has one relation per privilege and nothing to say about direction.
+                // Taking `select` back is administration, not delegation, so it asks a
+                // different relation and cannot share the grant tuple.
                 GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
+                GrantAuthorityCheck::entry("select", Some(&bob), GrantOp::Revoke),
                 // A warehouse action, but not an assignable relation, so not grantable.
                 GrantAuthorityCheck::entry("get_metadata", Some(&alice), GrantOp::Grant),
             ],
@@ -705,7 +738,7 @@ mod tests {
 
         assert_eq!(
             item_of_check,
-            vec![Some(0), Some(0), Some(1), Some(0), None]
+            vec![Some(0), Some(0), Some(1), Some(2), Some(2), None]
         );
         assert_eq!(
             items,
@@ -718,6 +751,11 @@ mod tests {
                 CheckRequestTupleKey {
                     user: "user:oidc~caller".to_string(),
                     relation: "can_grant_modify".to_string(),
+                    object: "warehouse:11111111-1111-1111-1111-111111111111".to_string(),
+                },
+                CheckRequestTupleKey {
+                    user: "user:oidc~caller".to_string(),
+                    relation: "can_revoke_select".to_string(),
                     object: "warehouse:11111111-1111-1111-1111-111111111111".to_string(),
                 },
             ]
@@ -793,9 +831,35 @@ mod tests {
             Some("select".to_string())
         );
         assert_eq!(
-            authority_relation(ResourceType::Warehouse, "select"),
+            authority_relation(ResourceType::Warehouse, "select", GrantOp::Grant),
             Some("can_grant_select".to_string())
         );
+        assert_eq!(
+            authority_relation(ResourceType::Warehouse, "select", GrantOp::Revoke),
+            Some("can_revoke_select".to_string()),
+            "revoking is administration, so it must not reuse the delegable grant relation"
+        );
+    }
+
+    /// Only the privileges `pass_grants` can delegate have an asymmetric rule. For the
+    /// rest, granting is already `manage_grants`-only, so both directions name one
+    /// relation and the model needs no second action.
+    #[test]
+    fn a_privilege_that_cannot_be_delegated_answers_both_directions_alike() {
+        for privilege in ["pass_grants", "manage_grants", "manage_tags", "ownership"] {
+            assert_eq!(
+                authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
+                authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),
+                "{privilege} is not delegable, so its two directions share a relation"
+            );
+        }
+        for privilege in ["describe", "select", "create", "modify"] {
+            assert_ne!(
+                authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
+                authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),
+                "{privilege} is delegable, so revoking it must ask a different relation"
+            );
+        }
     }
 
     #[test]
@@ -807,10 +871,30 @@ mod tests {
             None
         );
         assert_eq!(
-            authority_relation(ResourceType::Warehouse, "get_metadata"),
+            authority_relation(ResourceType::Warehouse, "get_metadata", GrantOp::Grant),
             None
         );
         assert_eq!(assignment_relation(ResourceType::Server, "select"), None);
+    }
+
+    /// A privilege name this version does not publish still has to be removable, or a row
+    /// written by a retired name — or by another authorizer — would be stuck forever. Only
+    /// the revoke direction gets that fallback: refusing to *hand out* an unexpressible
+    /// privilege is the deliberate answer.
+    #[test]
+    fn an_unpublished_name_stays_revocable_but_never_grantable() {
+        for resource_type in every_level() {
+            assert_eq!(
+                authority_relation(resource_type, "privilege_from_another_era", GrantOp::Grant),
+                None,
+                "{resource_type:?} must refuse to grant a name it does not publish"
+            );
+            assert_eq!(
+                authority_relation(resource_type, "privilege_from_another_era", GrantOp::Revoke),
+                Some("can_revoke_grants".to_string()),
+                "{resource_type:?} must let grant administration clear an unpublished name"
+            );
+        }
     }
 
     #[test]

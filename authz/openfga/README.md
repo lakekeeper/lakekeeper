@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds namespace moves and governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+Adds namespace moves, governance tags, and revoke authority. No tuple rewrites. Existing tuples authorize the same actions with one deliberate exception: `pass_grants` no longer confers revoking — see below.
 
 ### Namespace moves
 
@@ -23,6 +23,20 @@ Adds namespace moves and governance tags. Backwards-compatible: existing tuples 
 `warehouse`:
 
 - Add `can_accept_moved_namespace` (from `manage_grants and create`) — same gate for moves targeting the warehouse root.
+
+### Revoke authority
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- Add `can_revoke_describe`, `can_revoke_select`, `can_revoke_modify` (and `can_revoke_create` where the level has it), each from `manage_grants`. These are the privileges `pass_grants` can delegate; the rest are already `manage_grants`-only to grant, so both directions keep sharing one relation.
+
+All grantable types:
+
+- Add `can_revoke_grants` (from the level's grant-administration relation) — the check for removing a privilege name this version no longer publishes, so a row left by a retired or foreign name stays removable instead of being stuck. Granting such a name is still refused.
+
+**Behaviour change.** `pass_grants` now delegates in one direction only: a holder may hand out a privilege they hold, but no longer take one back — including one they granted themselves. Revoking requires `manage_grants`. This applies to both the `/grants` diff and the older `/permissions/{type}/{id}/assignments` deletes. Existing tuples are unchanged; a principal holding `pass_grants` without `manage_grants` loses the ability to remove other principals' grants, which they had in `v4.7` and earlier.
+
+The point is delegation depth: every grant is now one hop from someone holding `manage_grants`, so there is no chain of delegated grants to unwind when access is withdrawn — which is what makes storing no grantor on a grant safe.
 
 ### Governance tags
 

@@ -52,11 +52,12 @@ use super::{
         APIWarehouseAction as WarehouseAction, APIWarehouseRelation as WarehouseRelation,
         Assignment, GenericTableAssignment, GenericTableRelation as AllGenericTableRelations,
         GrantableRelation, NamespaceAssignment, NamespaceRelation as AllNamespaceRelations,
-        ProjectAssignment, ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
-        RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-        TableAssignment, TableRelation as AllTableRelations, TagAssignment,
-        TagRelation as AllTagRelations, ViewAssignment, ViewRelation as AllViewRelations,
-        WarehouseAssignment, WarehouseRelation as AllWarehouseRelation,
+        ProjectAssignment, ProjectRelation as AllProjectRelations, ReducedRelation,
+        RevocableRelation, RoleAssignment, RoleRelation as AllRoleRelations, ServerAssignment,
+        ServerRelation as AllServerAction, TableAssignment, TableRelation as AllTableRelations,
+        TagAssignment, TagRelation as AllTagRelations, ViewAssignment,
+        ViewRelation as AllViewRelations, WarehouseAssignment,
+        WarehouseRelation as AllWarehouseRelation,
     },
 };
 #[cfg(feature = "open-api")]
@@ -2747,13 +2748,20 @@ async fn check_assignment_writes<RA: Assignment>(
     if actor == &Actor::Anonymous {
         return Err(OpenFGAError::AuthenticationRequired);
     }
-    let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
     // ---------------------------- AUTHZ CHECKS ----------------------------
     let openfga_actor = actor.to_openfga();
 
-    let grant_relations = all_modifications
+    // Handing an assignment out is delegation, which `pass_grants` can confer; taking one
+    // back is administration, which only `manage_grants` confers. The two directions
+    // therefore ask different relations for the privileges `pass_grants` can delegate.
+    let grant_relations = writes
         .iter()
         .map(|action| action.relation().grant_relation())
+        .chain(
+            deletes
+                .iter()
+                .map(|action| action.relation().revoke_relation()),
+        )
         .collect::<HashSet<_>>();
 
     if matches!(
@@ -4061,6 +4069,105 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(relations.len(), 2);
+        }
+
+        /// `pass_grants` delegates one direction only: a holder may hand out a privilege
+        /// they hold, but taking one back is administration and needs `manage_grants`.
+        ///
+        /// Covers the assignments endpoints specifically. The `/grants` diff asks the same
+        /// question through `grant_authority`, but this path authorizes writes and deletes
+        /// separately in `check_assignment_writes`, so it needs its own pin — it is also
+        /// the path that shipped, which makes the asymmetry a behaviour change here.
+        #[tokio::test]
+        async fn test_pass_grants_hands_out_but_cannot_take_back() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let delegator = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let grantee = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let object = warehouse_id.to_openfga();
+
+            // The delegator holds `select` and may pass it on, but no grant administration.
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: delegator.to_openfga(),
+                            relation: AllWarehouseRelation::Select.to_string(),
+                            object: object.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: delegator.to_openfga(),
+                            relation: AllWarehouseRelation::PassGrants.to_string(),
+                            object: object.clone(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(delegator.clone()),
+                vec![WarehouseAssignment::Select(grantee.clone().into())],
+                vec![],
+                &object,
+            )
+            .await
+            .expect("passing on a privilege the delegator holds is delegation");
+
+            let error = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(delegator.clone()),
+                vec![],
+                vec![WarehouseAssignment::Select(grantee.clone().into())],
+                &object,
+            )
+            .await
+            .expect_err("taking it back is administration, not delegation");
+            assert!(
+                matches!(
+                    &error,
+                    OpenFGAError::Unauthorized { relation, .. }
+                        if relation == &AllWarehouseRelation::CanRevokeSelect.to_string()
+                ),
+                "the denial must name the revoke relation, not the grant one: {error:?}"
+            );
+
+            let relations: Vec<WarehouseAssignment> =
+                get_relations(authorizer.clone(), None, &object)
+                    .await
+                    .unwrap();
+            assert!(
+                relations.contains(&WarehouseAssignment::Select(grantee.clone().into())),
+                "the refused delete must leave the assignment in place: {relations:?}"
+            );
+
+            // The same delete succeeds for a principal holding grant administration.
+            let admin = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: admin.to_openfga(),
+                        relation: AllWarehouseRelation::ManageGrants.to_string(),
+                        object: object.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(admin),
+                vec![],
+                vec![WarehouseAssignment::Select(grantee.into())],
+                &object,
+            )
+            .await
+            .expect("manage_grants administers both directions");
         }
 
         /// Drives the real endpoint: a write that fails *after* authorization

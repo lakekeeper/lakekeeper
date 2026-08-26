@@ -81,7 +81,9 @@ The `modify` grant allows a user to change the content or properties of an objec
 
 ### Pass Grants
 
-The `pass_grants` grant allows a user to pass their own privileges to other users. This means that if a user has certain permissions on an object, they can grant those same permissions to others. However, the `pass_grants` grant does not include the ability to pass the `pass_grants` privilege itself.
+The `pass_grants` grant allows a user to pass their own privileges to other users. This means that if a user has certain permissions on an object, they can grant those same permissions to others. However, the `pass_grants` grant does not include the ability to pass the `pass_grants` privilege itself, nor `manage_grants`.
+
+`pass_grants` delegates in one direction only: handing a privilege out, never taking it back. Revoking any grant requires `manage_grants` — including revoking a grant the `pass_grants` holder made themselves. This keeps delegation one hop deep, so every grant that exists is traceable to someone holding `manage_grants`, and there is no chain of delegated grants to unwind when access is withdrawn.
 
 ### Manage Grants
 
