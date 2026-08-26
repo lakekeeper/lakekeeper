@@ -253,9 +253,9 @@ impl TableETag {
         self.revalidate_after_ms
     }
 
-    /// Parse a client-supplied [`ETag`] value (quotes and any `W/` already
-    /// stripped by `parse_etags`). Returns `None` for unrecognized values so
-    /// callers reload.
+    /// Parse a client-supplied [`ETag`] value, already reduced to its bare
+    /// validator by [`ETag::validator`]. Returns `None` for unrecognized values
+    /// so callers reload.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         let mut parts = value.split('.');
         if parts.next()? != ETAG_PREFIX {
@@ -481,9 +481,8 @@ mod tests {
         for revalidate in [None, Some(1_750_000_000_123)] {
             let etag = TableETag::new(wh(), LOC, all_shapes()[0], revalidate);
             let wire = etag.clone().into_etag();
-            // `parse_etags` strips the quotes and the weak marker before we see it.
-            let bare = wire.as_str().trim_start_matches("W/").trim_matches('"');
-            assert_eq!(TableETag::parse(bare).as_ref(), Some(&etag));
+            // Comparison reduces the wire form to its bare validator first.
+            assert_eq!(TableETag::parse(wire.validator()).as_ref(), Some(&etag));
             assert_eq!(etag.revalidate_after_ms(), revalidate);
         }
     }

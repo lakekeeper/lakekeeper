@@ -384,19 +384,21 @@ fn match_not_modified(
     let current = TableETag::new(warehouse_id, metadata_location, shape, None);
 
     for client in client_etags {
-        // Not `as_str`: an in-process caller echoes back the tag exactly as it was
-        // minted, weak marker and quotes included, having never passed through the
-        // header parsing that strips them. Comparing the raw value there matches
-        // nothing, so the conditional load silently never succeeds.
-        let value = client.validator();
-
-        // Wildcard matches the metadata, but carries no revalidation point.
-        if value == "*" {
+        // Wildcard matches the metadata, but carries no revalidation point. Asked
+        // before normalising, because it is the quotes that distinguish it from a
+        // tag whose opaque value is `*`.
+        if client.is_wildcard() {
             if vends_credentials {
                 continue;
             }
             return Some(current.clone().into_etag());
         }
+
+        // Not `as_str`: entries arrive as the client spelled them, and an
+        // in-process caller echoes back the tag exactly as it was minted, weak
+        // marker and quotes included. Comparing the raw value matches nothing, so
+        // the conditional load silently never succeeds.
+        let value = client.validator();
 
         // Not parseable as one of our ETags → reload.
         let Some(parsed) = TableETag::parse(value) else {
@@ -536,6 +538,25 @@ mod etag_tests {
         let other = client_etag("s3://bucket/table/metadata-2.json", Some(NOW + 60_000));
         assert!(!matches(std::slice::from_ref(&other), false));
         assert!(!matches(&[other], true));
+    }
+
+    /// A quoted `*` is an entity-tag whose opaque value happens to be `*`, not
+    /// `If-None-Match`'s wildcard. Reading it as one skipped validator
+    /// comparison entirely and answered `304` from a tag nothing ever minted, so
+    /// the client kept serving whatever it had cached.
+    #[test]
+    fn a_quoted_asterisk_is_not_the_wildcard() {
+        for sent in ["\"*\"", "W/\"*\"", "\"W/*\""] {
+            assert!(
+                match_not_modified(&[ETag::from(sent)], wh(), Some(LOC), all(), NOW, false)
+                    .is_none(),
+                "{sent} was honoured as a wildcard"
+            );
+        }
+        // The bare token still is one, so the refusals above are the quotes.
+        assert!(
+            match_not_modified(&[ETag::from("*")], wh(), Some(LOC), all(), NOW, false).is_some()
+        );
     }
 
     #[test]

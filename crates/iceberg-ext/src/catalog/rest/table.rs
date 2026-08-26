@@ -169,10 +169,13 @@ impl ETag {
 
     /// Strip HTTP's weak marker and surrounding quotes from one `ETag` value.
     ///
-    /// The single definition of that transform: header parsing and validator
-    /// comparison both use it, so a tag cannot be normalised one way on the way
-    /// in and another on the way out. Idempotent, so applying it to an
-    /// already-bare value is safe.
+    /// The single definition of that transform, so a tag cannot be normalised
+    /// one way on the way in and another on the way out. Idempotent, so
+    /// applying it to an already-bare value is safe.
+    ///
+    /// Not wildcard-aware: it is quotes that tell `If-None-Match`'s `*` apart
+    /// from a tag whose opaque value is `*`, and this removes them. Ask
+    /// [`Self::is_wildcard`] before normalising.
     ///
     /// Deliberately tolerant about where the `W/` sits, so a client that
     /// re-serialises a weak tag as `"W/lk3.beef"` still matches. That spelling
@@ -190,6 +193,24 @@ impl ETag {
             .trim_matches('"')
             .trim_start_matches("W/")
             .trim_matches('"')
+    }
+
+    /// Whether this is `If-None-Match`'s `*` — "any current representation" —
+    /// rather than a validator to compare.
+    ///
+    /// RFC 9110 13.1.2 admits `*` only as an alternative to the tag list, not as
+    /// a member of it, and the entity-tag grammar in 8.8.3 is quoted-only — so
+    /// `"*"` and `W/"*"` are ordinary tags that merely happen to have `*` as
+    /// their opaque value, and must be compared like any other. The difference
+    /// matters: the wildcard skips validator comparison altogether, so reading
+    /// it too widely answers `304` to a request that was asking whether one
+    /// specific tag is current.
+    ///
+    /// Tested on the value as received, so it only reports the truth for a tag
+    /// that has not already been through [`Self::strip_wire_syntax`].
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.trim() == "*"
     }
 }
 
@@ -305,6 +326,22 @@ mod tests {
         // normalises to the same validator. See the note on `strip_wire_syntax`
         // for why this tolerance is chosen over the strict reading.
         assert_eq!(ETag::from("\"W/lk3.deadbeef\"").validator(), "lk3.deadbeef");
+    }
+
+    /// Only the bare token is the wildcard. A quoted `*` is a tag like any
+    /// other, and treating it as "any representation" would 304 a request that
+    /// asked whether that one tag is current.
+    #[test]
+    fn only_the_unquoted_asterisk_is_the_wildcard() {
+        assert!(ETag::from("*").is_wildcard());
+        // Padding is list syntax, not part of the token.
+        assert!(ETag::from(" * ").is_wildcard());
+
+        assert!(!ETag::from("\"*\"").is_wildcard());
+        assert!(!ETag::from("W/\"*\"").is_wildcard());
+        assert!(!ETag::from("lk3.deadbeef").is_wildcard());
+        // Still a tag once normalised — one that matches nothing we mint.
+        assert_eq!(ETag::from("\"*\"").validator(), "*");
     }
 
     #[test]
