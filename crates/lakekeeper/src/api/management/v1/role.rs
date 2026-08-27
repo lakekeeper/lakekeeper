@@ -64,8 +64,10 @@ fn reject_managed_provider(
 /// request body. The reserved `system` namespace is **not** checked here: the
 /// mutate-existing-role sites (delete, update, source-system rebind) reject it
 /// separately with an `is_system()` check yielding `SystemRoleImmutable`, while
-/// the membership sites deliberately permit it — `system` (and `lakekeeper`)
-/// roles are `manually_assignable`, so their member lists stay editable.
+/// the membership sites guard it separately — writes to a `system`-provider
+/// role's membership require an instance admin and never accept a role-type
+/// member (see `reject_system_role_membership` in `role_membership.rs`).
+/// `lakekeeper`-provider roles remain manually assignable without restriction.
 pub(crate) fn reject_managed_role<A, E>(authorizer: &A, role: &ArcRole) -> Result<(), E>
 where
     A: Authorizer,

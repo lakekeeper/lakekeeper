@@ -3245,7 +3245,7 @@ mod tests {
         );
         // The child is a lakekeeper-managed role, so it is manually assignable.
         assert_eq!(members.len(), 1);
-        assert!(members[0].manually_assignable());
+        assert!(members[0].is_catalog_managed());
         // The edge's creation timestamp is populated from `role_membership.created_at`.
         // Use a wide window (not `<= now()`) to tolerate DB-vs-host clock skew.
         assert!(

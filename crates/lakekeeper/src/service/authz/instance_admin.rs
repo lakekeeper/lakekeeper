@@ -98,7 +98,7 @@ impl InstanceAdminAuthorizer {
     }
 }
 
-/// Resolves whether an [`Actor`] holds instance-admin (break-glass) status.
+/// Resolves whether an [`Actor`] holds instance-admin status.
 ///
 /// The decision is made **once per request** on the authn path and cached on
 /// [`RequestMetadata`] as a binary flag ([`RequestMetadata::is_instance_admin`]);
