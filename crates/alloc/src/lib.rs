@@ -24,6 +24,8 @@ pub fn log_effective_config() {}
 
 /// See [`log_effective_config`].
 #[cfg(not(all(target_os = "linux", not(target_env = "msvc"))))]
+// Stays `async` to match the Linux signature; callers `tokio::spawn` it.
+#[allow(clippy::unused_async)]
 pub async fn run(_interval: std::time::Duration) {}
 
 /// jemalloc run-time options, compiled into the binary.
