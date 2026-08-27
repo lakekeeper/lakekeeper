@@ -3274,7 +3274,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2056f3e4d53129039f2229f3b326aa538289be27#2056f3e4d53129039f2229f3b326aa538289be27"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=aa04094683f84db8fa82daed716efc0f78d1936d#aa04094683f84db8fa82daed716efc0f78d1936d"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3984,8 +3984,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.21.0"
-source = "git+https://github.com/lakekeeper/console?rev=v0.21.0#db3469578f3993a66bc1f2905ffe1e8c9c039582"
+version = "0.22.0"
+source = "git+https://github.com/lakekeeper/console?rev=v0.22.0#77e8ca6961585bde8280a644c77b3e84833cc458"
 dependencies = [
  "flate2",
  "fs_extra",

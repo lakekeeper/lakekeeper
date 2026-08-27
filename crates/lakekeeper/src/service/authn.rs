@@ -605,7 +605,7 @@ pub(crate) async fn auth_middleware_fn<
         // an already-authenticated principal that must not be admitted to this
         // instance at all (e.g. an external control-plane permission service).
         // Runs after instance-admin and assumed-role resolution so a gate can
-        // honor the instance-admin break-glass and see the resolved actor.
+        // honor instance-admin status and see the resolved actor.
         // No-op unless the host binary registered at least one gate.
         if !state.admission_gates.is_empty() {
             // The raw bearer is handed to gates via a transient context, never

@@ -2049,6 +2049,10 @@ pub mod v1 {
     /// exist first and otherwise returns `404` — provision the user (via
     /// `POST /user`) or create the role before assigning. Behavior is consistent
     /// within a deployment.
+    ///
+    /// Roles from the `system` provider are provisioned, not self-service: adding a
+    /// member requires an instance admin (`403`), and a role may not be added as a
+    /// member of one (`400`) — they hold users directly.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "role",
@@ -2076,6 +2080,10 @@ pub mod v1 {
     ///
     /// Removes a single member (a user or a role) from a role. Idempotent — removing
     /// an absent member is a no-op and still returns `204`.
+    ///
+    /// Removing a member of a `system`-provider role requires an instance admin
+    /// (`403`). Unlike adding, removing a role-type member is permitted, so an
+    /// existing nesting can be cleaned up.
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "role",

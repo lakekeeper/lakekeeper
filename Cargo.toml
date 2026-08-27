@@ -117,7 +117,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2056f3e4d53129039f2229f3b326aa538289be27" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "aa04094683f84db8fa82daed716efc0f78d1936d" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
 # `limes` pulls k8s-openapi transitively without picking a Kubernetes version.

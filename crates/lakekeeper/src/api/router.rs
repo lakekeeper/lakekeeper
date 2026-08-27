@@ -37,7 +37,7 @@ use crate::{
         management::v1::ApiServer,
     },
     request_metadata::{
-        X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
+        X_BREAK_GLASS_HEADER_NAME, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
         create_request_metadata_with_trace_and_project_fn,
     },
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -423,6 +423,7 @@ fn get_cors_layer(
                 IF_NONE_MATCH_HEADER_NAME,
                 X_USER_AGENT_HEADER_NAME,
                 DATA_ACCESS_HEADER_NAME,
+                X_BREAK_GLASS_HEADER_NAME,
             ])
             .expose_headers(vec![ETAG_HEADER_NAME])
             .allow_methods(vec![

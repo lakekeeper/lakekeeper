@@ -31,7 +31,7 @@ Only an exact `403` is read as an authoritative deny. Every other non-`2xx` stat
 On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream.
 
 - **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the request-derived placeholders `{{subject}}` (the token `sub`) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
-- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`; tokens from any other identity provider are admitted untouched.
+- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`; tokens from any other identity provider are admitted untouched. That id is checked at startup against the providers the server authenticates: one matching none of them governs nobody while the gate still reports itself healthy, so it fails the deploy instead.
 - **Cached.** Decisions are cached in memory per `(subject, check)` for `cache_ttl_secs`. Both allow *and* deny are cached, so a denied-but-authenticated caller triggers at most one upstream call per TTL and cannot amplify load; transient `5xx`/timeout results are never cached.
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
 - **Token relay is opt-in.** The caller's bearer token is forwarded only when `auth` is `forward_caller_token`; otherwise the endpoint is reached with the static `headers` only. A forwarded token goes over the configured URL (use TLS) and is never logged.
@@ -44,12 +44,14 @@ Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{ga
 
 The gate is **disabled unless an `[admission_enforce]` block is present**. Like [Cedar derivations](./authorization-cedar.md) and [role providers](./configuration.md#role-provider), this is nested config, so it is configured via a TOML file with full environment-variable parity — point `LAKEKEEPER__ADMISSION_ENFORCE_FILE` at a TOML file, and/or set `LAKEKEEPER__ADMISSION_ENFORCE__*` variables on top.
 
+Unknown keys are refused: a typo in the gate block, in `auth`, or in a check fails startup rather than leaving the setting it was meant to be at its default.
+
 ### `[admission_enforce]`
 
 | Key                            | Required | Default | Description                                                       |
 | ------------------------------ | -------- | ------- | ----------------------------------------------------------------- |
 | `endpoint`                     | yes      | —       | Enforce endpoint URL (`POST`). Validated at startup.              |
-| `idp_id`                       | yes      | —       | Only govern tokens from this IdP; others are admitted untouched.  |
+| `idp_id`                       | yes      | —       | Only govern tokens from this IdP; others are admitted untouched. Must name a provider this server authenticates, or startup fails. |
 | `role_provider_id`             | yes      | —       | Provider namespace for the synthesized admission roles.           |
 | `cache_ttl_secs`               | no       | `60`    | TTL for cached allow/deny decisions.                              |
 | `cache_max_entries`            | no       | `10000` | Max cached decisions.                                             |

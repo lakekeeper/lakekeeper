@@ -62,12 +62,12 @@ update-rest-openapi:
 
 update-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
-    LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
+    LAST_VERSION=$(ls $BASE_PATH | sort -rV | head -n 1); \
     fga model transform --file $BASE_PATH/$LAST_VERSION/fga.mod > $BASE_PATH/$LAST_VERSION/schema.json'
 
 test-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
-    LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
+    LAST_VERSION=$(ls $BASE_PATH | sort -rV | head -n 1); \
     fga model test --tests $BASE_PATH/$LAST_VERSION/store.fga.yaml'
 
 check-opa:

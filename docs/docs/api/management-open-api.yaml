@@ -2661,6 +2661,10 @@ paths:
         exist first and otherwise returns `404` — provision the user (via
         `POST /user`) or create the role before assigning. Behavior is consistent
         within a deployment.
+
+        Roles from the `system` provider are provisioned, not self-service: adding a
+        member requires an instance admin (`403`), and a role may not be added as a
+        member of one (`400`) — they hold users directly.
       operationId: add_role_members
       parameters:
         - name: role_id
@@ -2776,6 +2780,10 @@ paths:
       description: |-
         Removes a single member (a user or a role) from a role. Idempotent — removing
         an absent member is a no-op and still returns `204`.
+
+        Removing a member of a `system`-provider role requires an instance admin
+        (`403`). Unlike adding, removing a role-type member is permitted, so an
+        existing nesting can be cleaned up.
       operationId: remove_role_member
       parameters:
         - name: role_id
@@ -9679,7 +9687,7 @@ components:
           $ref: '#/components/schemas/GrantResourceResponse'
     GrantablePrivilege:
       type: object
-      description: One privilege of a resource's vocabulary, and whether the principal may administer it.
+      description: One privilege of a resource's vocabulary, and whether the principal may grant it.
       required:
         - privilege
         - allowed
@@ -9687,8 +9695,14 @@ components:
         allowed:
           type: boolean
           description: |-
-            Whether the principal may administer this privilege here — grant it, revoke it, or
-            both. Advisory: an apply checks each of its entries on its own.
+            Whether the principal may grant this privilege here. Advisory: an apply checks
+            each of its entries on its own.
+
+            Granting only. Revoking is authorized separately and may be refused where this
+            says `true` — under the OpenFGA authorizer, delegated grant authority
+            (`pass_grants`) hands a privilege out without taking it back. There is no
+            discovery question for the revoke direction; a removal is authorized as it is
+            applied.
         privilege:
           $ref: '#/components/schemas/PrivilegeDescriptor'
           description: |-
@@ -13387,7 +13401,7 @@ components:
       type: object
       description: |-
         This resource's whole vocabulary, each entry marked with whether the principal may
-        administer it — grant it, revoke it, or both.
+        grant it.
 
         The deployment-wide vocabulary answers "what does this server understand"; this
         answers "what may I do here", which is the question a grant dialog asks. Grant
