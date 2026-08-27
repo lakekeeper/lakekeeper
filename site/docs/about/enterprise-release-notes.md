@@ -4,6 +4,51 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## Unreleased
+
+### Features
+- **Cedar: grants decide access.** Privileges granted in the catalog now reach Cedar policies. Every resource entity carries `direct_privileges` (granted on it) and `inherited_privileges` (granted above it), so a policy can read `resource.direct_privileges.select`. `GET /management/v1/grants/grantable-privileges` lists the grantable names per resource type. A grant on the server is in no project, so Cedar reads the caller's roles from every project when one decides a request.
+
+### Breaking Changes
+- **Admission gate: `idp_id` must name a provider the server authenticates.** Startup checks it against the configured authenticators and refuses to start when it matches none, naming what is available. An id matching nothing governs nobody: every request counts as being from another IdP and is admitted untouched, while the gate makes no upstream call and so still reports itself healthy. A deployment whose `idp_id` has a typo has not been enforcing anything.
+- **Admission gate: unknown configuration keys are refused.** A misspelled key under `admission_enforce` — `cache_ttl_sec` for `cache_ttl_secs`, `role_source` for `role_source_id` — previously applied its default silently. Startup now names it and stops. Check your configuration against the documented keys before upgrading.
+- **Admission gate: a request with no authenticated principal is rejected.** It reaches the gate only if the authentication middleware changes, and a gate that cannot see who is calling cannot enforce anything.
+- **OpenFGA: revoking a privilege requires `manage_grants`.** `pass_grants` means handing others the privileges you hold; taking one back is administration. Both directions previously asked the same relation, so a holder of `pass_grants` plus a privilege could clear every other principal's copy of it, logged as ordinary grant administration. Applies to both the `/grants` diff and the older `/permissions/{type}/{id}/assignments` deletes.
+- **OpenFGA: membership of a `system`-provider role requires an instance admin.** Membership of a catalog-managed system role is provisioning, not self-service, and role-type members are rejected on them — closing the path where a role conferring `ManageRoleAssignments` could appoint more of its own members. Removing an existing role-type member remains available to instance admins. Ordinary and `lakekeeper`-provider roles are unaffected.
+- **Cedar: seeing another principal's access needs its own grant.** `Introspect<X>Authorization` left `ServerActions`, `RoleActions` and the `<X>ModifyActions` groups, and is now in `ReadGrantsActions` and the level's `<X>GrantActions`. Policies granting those older groups no longer confer it; grant `Read<X>Grants`, or name the action, where you want it.
+- **Cedar: requests must name the project their resources are in.** Addressing a warehouse outside the project in `x-project-id` — or outside the default project, if the header is absent — now returns 400. One request cannot span two projects. Single-project deployments are unaffected.
+- **Cedar: a replaced schema file must declare the privilege records.** With `LAKEKEEPER__CEDAR__SCHEMA_FILE` set, startup fails unless every resource entity declares `direct_privileges` and `inherited_privileges`, naming what is missing.
+- **Cedar: external entity files must declare the privilege records.** Entity JSON is validated against the schema, so a resource entity without both records fails to load and the server does not start.
+- **Cedar: with externally managed identity, the entity file must declare every principal a request names.** Under `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES`, a request naming a user or role your file omits is refused rather than answered — Cedar skips policies about entities it cannot find, which can turn a `forbid` into an allow. Declare everyone you authenticate, every role callers assume or manage, and the roles those sit inside.
+
+### Upgrade Notes
+- **Cedar, multi-project deployments: check that clients send `x-project-id`.** Before this release a request could be answered using a different project's roles, so a policy meant to deny could permit. If your clients omitted the header, treat past cross-project decisions as unreliable.
+- **Cedar with externally managed identity: grant users, not roles.** A grant held by a user applies. One held by a role does not, because your entity file owns role membership — and the role nesting a `forbid` on a parent role reads. Authorization in this mode now reads the catalog for grants, where it previously read nothing.
+
+
+## v0.13.5 (2026-08-26)
+
+_Based on Lakekeeper OSS v0.13.3._
+
+### Highlights
+- **Improved memory behaviour on long-running instances.** Conditions that could, under some circumstances, prevent freed memory from being returned to the OS are addressed.
+
+### Features
+- **New memory metrics.** `lakekeeper_jemalloc_*` separates live heap from memory the allocator is holding back; `lakekeeper_http_connections` reports open connections.
+- **The table maintenance cache reports what it holds:** `lakekeeper_cache_weighted_bytes{cache_type="table_metadata"}` and `lakekeeper_cache_instances`, with hits and misses in the shared `lakekeeper_cache_*` series.
+
+### Bug Fixes
+- **Transparent huge pages could prevent freed memory from being returned to the OS.** On nodes with `THP=always`, the default on common EKS AMIs, resident memory could grow for the life of the process.
+- **The manifest cache under-counted its entries**, so under some circumstances its 128 MiB budget did not bind during table maintenance.
+- **The UI asset cache keyed on an unvalidated header**, so variants of `x-forwarded-prefix` could each add an entry to a cache with no expiry.
+- **Allocator metrics now report on every serving path**, including `LAKEKEEPER__DEBUG__AUTO_SERVE`. Memory behaviour itself was unaffected.
+
+### Upgrade Notes
+- **Idle HTTP connections now close after 75 seconds** and carry TCP keepalive probes. Standard Iceberg and S3 clients retry; previously a connection whose peer had vanished could be held for the life of the process.
+- **Request headers above 64 KiB are rejected with 431.** Request bodies are unaffected.
+- **Shutdown drains for at most 10 seconds** before abandoning connections still open.
+- **Unmatched request paths report `endpoint="unmatched"` in metrics** instead of each creating a permanent series. Dashboards that group by raw path lose those values.
+
 ## v0.13.4 (2026-08-14)
 
 _Based on Lakekeeper OSS v0.13.3._
