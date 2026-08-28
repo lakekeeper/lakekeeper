@@ -242,8 +242,9 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | `None` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
 | `LAKEKEEPER__OPENID_AUDIENCE` | `the-client-id-of-my-app` | `None` | Strongly recommended. If set, the token's `aud` claim must contain at least one of the configured audiences. Multiple audiences can be provided as a comma-separated list; a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` | `https://sts.windows.net/<Tenant>/` | `None` | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
-| `LAKEKEEPER__OPENID_SCOPE` | `lakekeeper` | `None` | Specify a scope that must be present in provided tokens received from the openid provider. |
-| `LAKEKEEPER__OPENID_SUBJECT_CLAIM` | `sub` or `oid,sub` | `None` | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
+| `LAKEKEEPER__OPENID_SCOPE` | `lakekeeper` | `None` | A single scope that must be present in provided tokens — one word, no whitespace (startup fails otherwise). Read from the `scope` claim, or `scp` if `scope` is absent or carries no scopes; both a whitespace-delimited string and an array of strings are accepted; values must be strings. A [required-claim rule](#required-claims) on `scope` can require several scopes, but splits only on the `SEPARATOR` you set (`SEPARATOR=whitespace` gives the same splitting) and reads only the one named claim, with no `scp` fallback. |
+| `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__CLAIM` <br> `…__ANY_OF` / `…__ALL_OF` / `…__NONE_OF` / `…__EXISTS` <br> `…__SEPARATOR` | `…__ORG__CLAIM=organizations` <br> `…__ORG__ANY_OF='[tenant-a, tenant-b]'` | `None` | Rules a verified token must satisfy, keyed by rule name. See [Required Claims](#required-claims). |
+| `LAKEKEEPER__OPENID_SUBJECT_CLAIM` | `sub` or `oid,sub` | `None` | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim path or a comma-separated list of them; the first one that resolves to a non-blank string is used. A path nests on every dot (`resource_access.account.id`) or, when it contains `/` or `:`, names one claim outright — the same grammar as `OPENID_ROLES_CLAIM` and required-claim rules. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
 | `LAKEKEEPER__OPENID_ROLES_CLAIM` | `resource_access.lakekeeper.roles` | `None` | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` | `Service Account {email}` | `None` | Fallback display name for tokens that carry no name claim (typically machine / service-account tokens). Placeholders `{claim.path}` are substituted from the token's claims using dot notation; write a literal brace by doubling it (`{{`/`}}`). A real name claim always takes precedence; if a referenced claim is absent or not a string the template is skipped and the user keeps the `Nameless App with ID <user-id>` placeholder. A structurally malformed template (unbalanced or empty braces) aborts startup. Applies to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` setup. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true | `false` | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
@@ -260,7 +261,7 @@ The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<
 
 **Chain order.** Tokens are tried against authenticators in this order: the primary provider from `LAKEKEEPER__OPENID_PROVIDER_URI` (if set), then providers from `LAKEKEEPER__OPENID_PROVIDERS` in **alphabetical order of `idp_id`**, then Kubernetes (if enabled).
 
-A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap. Make `iss` × `aud` pairs disjoint across providers to avoid surprises.
+A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience + required-claim validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap and the later provider's settings (scope, required claims, roles claim, …) never apply. Disjoint `AUDIENCE` lists do not separate them, since one token may name both audiences. Lakekeeper therefore **refuses to start** when two providers share a **published** issuer (the one in their discovery document, plus any `ADDITIONAL_ISSUERS` — not the configured `URI`) and the **later** one enforces a scope or required claims — its rules would never run. Guarding only the earlier provider is allowed: it enforces its rules on everything it takes.
 
 **Provider Fields:**
 
@@ -269,8 +270,9 @@ A token is routed to the **first** authenticator whose `iss` set contains the to
 | `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
 | `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
-| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
-| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens (`scope` claim, or `scp` if absent; string or array). |
+| `__REQUIRED_CLAIMS__<RULE>__…` | No | `__REQUIRED_CLAIMS__ORG__CLAIM=organizations` <br> `__REQUIRED_CLAIMS__ORG__ANY_OF='[tenant-a]'` | Rules a verified token must satisfy for this provider. See [Required Claims](#required-claims). |
+| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claim paths to use as user ID (comma-separated, in order of preference). Dot notation nests, as for `ROLES_CLAIM`. Defaults to `oid,sub`. |
 | `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
 | `__DISPLAY_NAME_TEMPLATE` | No | `Service Account {email}` | Fallback display name for this provider's tokens that carry no name claim. Same syntax and precedence as `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` in the OpenID table above (dot-notation `{claim.path}` placeholders, `{{`/`}}` for literal braces, a real name claim wins, malformed templates abort startup). |
 | `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
@@ -291,6 +293,76 @@ LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
 
 !!! note
     Providers fail startup by default if their OIDC endpoint cannot be loaded. Set `REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting.
+
+#### Required Claims
+
+Audience validation proves a token was issued *for* Lakekeeper, not that the caller belongs to your tenant — a shared identity provider mints the right `aud` for every user it knows. Required-claim rules add a check Lakekeeper enforces itself: after signature, issuer and audience are verified, every rule must hold, or the request gets a generic `401 AuthenticationFailed` that reveals nothing about the rule.
+
+```bash
+# Only tokens of one organization, carrying the `catalog` scope.
+LAKEKEEPER__OPENID_PROVIDERS__CORP__URI=https://accounts.example.com
+LAKEKEEPER__OPENID_PROVIDERS__CORP__AUDIENCE=lakekeeper
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__CLAIM=organizations
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__ANY_OF='[f6481c2e-0000-0000-0000-000000000000]'
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__CLAIM=scope
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__SEPARATOR=whitespace
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__ALL_OF='[catalog]'
+```
+
+For the primary provider use `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__…`. `<RULE>` is your own name matching `[a-z0-9-]+`; it appears in logs as `<idp_id>/<rule>` and nowhere else.
+
+| Suffix | Description |
+|---|---|
+| `__CLAIM` | Required. Nests on every dot (`realm_access.roles`), or names one claim whole when it contains `/` or `:` (`https://myapp.example.com/org`). No array indexing. |
+| `__ANY_OF=[a, b]` | At least one claim value is listed. |
+| `__ALL_OF=[a, b]` | Every listed value is a claim value. |
+| `__NONE_OF=[a, b]` | No claim value is listed. |
+| `__EXISTS=true` / `false` | The claim carries something / is absent or `null`. |
+| `__SEPARATOR` | Optional. Read the claim as a delimited list: a literal (`,`, `::`), or `whitespace` for any whitespace. |
+
+Exactly one operator per rule, and `EXISTS` takes no `SEPARATOR`. All rules of a provider must hold. Matching is byte-exact and case-sensitive; rules run in alphabetical order and the first failure is the one logged.
+
+**How values are read.** A string, number or boolean is one value; an array of them is a set of values. A missing, `null`, object or mixed-array claim fails every rule except `EXISTS=false`. The two `EXISTS` polarities are not opposites — `[]`, `""`, `"   "` and `{}` satisfy neither. With a `SEPARATOR`, `ANY_OF`/`ALL_OF` split a lone string but leave array elements whole, so `["x,admin"]` never grants `admin`; `NONE_OF` instead looks for a banned value at every delimited position in every element, so no way of joining values hides one from it.
+
+**Lists** use brackets even for one value and separate on unquoted commas. Quote the whole assignment — `ANY_OF='[a, b]'` — since a space ends the shell word and `[a]` is a glob. Quote any value containing a comma, or looking like a number or boolean: `["a,b", "42", "0644"]`. An unquoted `[0644]` becomes the number `644` and aborts startup rather than matching something you did not write.
+
+!!! warning "Two ways a rule can fail open"
+    `EXISTS=false` asks for a claim to be **absent**, so a misspelled path is satisfied by every token, and no startup check can tell a typo from a claim your provider genuinely never sends. Prefer `ANY_OF` where you can.
+
+    A `NONE_OF` whose `SEPARATOR` does not match the claim's real format finds nothing — a deny split on `" "` never sees a value delimited by a tab. Use `SEPARATOR=whitespace` for scope-shaped claims. A missing comma does the same: `[a b]` is the single value `a b`, which nothing matches.
+
+    Always confirm a new deny actually rejects a token that should fail it.
+
+**Startup refuses** a malformed rule (no or several operators, an empty list, a blank value, an empty separator, a grant value containing the separator, an unknown field), and any configuration that cannot enforce what it appears to:
+
+- rules or a scope naming no provider;
+- a provider that enforces something while `REQUIRE_CONNECTED_ON_STARTUP=false` — one skipped at boot enforces nothing;
+- two providers publishing the same issuer where the later one enforces something, since a token naming both audiences reaches only the first (checked against published issuers, so one provider reached through two URLs is caught);
+- Kubernetes authentication without `KUBERNETES_AUTHENTICATION_AUDIENCE` beside a provider that enforces something, since it accepts every token the OIDC providers decline.
+
+Rules apply to every token the provider accepts, trusted engines and instance admins included, but not to Kubernetes service-account tokens. Changing a rule requires a restart.
+
+!!! tip "Binding tokens to one client"
+    Audience validation accepts a token whose `aud` merely intersects the configured list. To require one client, add a rule on the authorized party: `__REQUIRED_CLAIMS__AZP__CLAIM=azp`, `__REQUIRED_CLAIMS__AZP__ANY_OF='[<client-id>]'`.
+
+**In Helm**, a YAML value is not shell-quoted:
+
+```yaml
+extraEnv:
+  - name: LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__ANY_OF
+    value: "[f6481c2e-0000-0000-0000-000000000000]"   # a string, not a YAML list
+  - name: LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__SEPARATOR
+    value: '" "'                                       # the quotes are part of the value
+```
+
+**Debugging a rejection.** The 401 body says nothing beyond an `Error ID`. The server log carries the reason at `INFO`, tagged `event_source="error_response"`, with the failing rule in the error source chain and the same error id the client received (abbreviated here — the emitted line is JSON):
+
+```
+error.type="AuthenticationFailed"  error.error_id=<uuid>
+error.source=["Token rejected: required-claim rule `corp/org` failed", ...]
+```
+
+Rule evaluation logs rule names only, never the claim values it compared. Each provider also logs its rule count at startup — `Requiring 2 claim rule(s) for OIDC provider corp: ["corp/org", "corp/scopes"]` — so check that line first if rules appear not to apply. A count of zero is how a misspelled primary-provider container shows up: `LAKEKEEPER__OPENID_REQUIRED_CLAMIS__…` reaches no field and is dropped silently, while the same typo under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__` aborts startup. `RUST_LOG=limes=debug` adds the configured audiences and issuers.
 
 ### Authorization
 

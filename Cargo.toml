@@ -83,6 +83,7 @@ azure_storage_datalake = { git = "https://github.com/lakekeeper/azure-sdk-for-ru
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
+aws-lc-rs = "1"
 base64 = "0.22.1"
 bytes = "1.10"
 chrono = "^0.4"
@@ -123,10 +124,12 @@ itertools = "0.14.0"
 # `limes` pulls k8s-openapi transitively without picking a Kubernetes version.
 # The version feature (`v1_XX`) is selected by the `lakekeeper` crate, not in
 # this workspace table.
+jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 k8s-openapi = { version = "0.28" }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", tag = "v0.5.0", features = [
+# TEMPORARY: pinned to main. Move to `tag = "v0.7.0"` once that release is published.
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "641c81961b423c5e72239655e8a0cff7a8bd5790", features = [
     "kubernetes",
     "axum",
     "rustls-tls",

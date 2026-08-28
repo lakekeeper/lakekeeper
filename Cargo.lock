@@ -3839,6 +3839,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sdk-s3",
  "aws-sdk-sts",
  "aws-sigv4",
@@ -3868,6 +3869,7 @@ dependencies = [
  "iceberg-ext",
  "iso8601",
  "itertools 0.14.0",
+ "jsonwebtoken 11.0.0",
  "k8s-openapi",
  "lakekeeper",
  "lakekeeper-io",
@@ -4332,8 +4334,8 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.5.0"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?tag=v0.5.0#657d4653c078af010749afd8dca916c77303bba3"
+version = "0.6.0"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=641c81961b423c5e72239655e8a0cff7a8bd5790#641c81961b423c5e72239655e8a0cff7a8bd5790"
 dependencies = [
  "axum",
  "axum-extra",

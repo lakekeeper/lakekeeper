@@ -14,7 +14,7 @@ Lakekeeper does not issue API-Keys or Client-Credentials itself. Instead, it rel
 
 Lakekeeper can be configured to integrate with all common identity providers. For best performance, tokens are validated locally against the server keys (`jwks_uri`). This requires all incoming tokens to be JWT tokens. If you require support for opaque tokens, please upvote the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/620).
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token. Multiple audiences can be provided as a comma-separated list, and a token is accepted if its `aud` claim contains any one of them (OR). We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
+If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token. Multiple audiences can be provided as a comma-separated list, and a token is accepted if its `aud` claim contains any one of them (OR). We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper. Where the IdP is shared by several organizations, the audience alone does not identify your tenant; add [required-claim rules](./configuration.md#required-claims) (e.g. on an `organizations` claim) to restrict which of the IdP's tokens Lakekeeper admits.
 
 Users are automatically added to Lakekeeper after successful Authentication (user provides a valid token with the correct issuer and audience). If a User does not yet exist in Lakekeeper's Database, the provided JWT token is parsed. The following fields are parsed:
 
@@ -475,6 +475,8 @@ For scenarios where you need to authenticate tokens from multiple identity provi
 When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
 
 ### Configuration
+
+Each provider can additionally restrict which of its tokens are accepted with [required-claim rules](./configuration.md#required-claims) — for example to admit only members of one organization from an identity provider that serves many.
 
 Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI`, which remains the primary provider (`idp_id = "oidc"`).
 
