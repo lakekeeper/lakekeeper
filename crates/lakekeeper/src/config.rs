@@ -295,6 +295,20 @@ fn validate_required_claims(config: &DynAppConfig) {
                 "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': rule name \
                  must match `[a-z0-9-]+`; write `tenant-filter`, not `tenant_filter`"
             );
+            // For a deny, splitting on any whitespace finds everything a whitespace literal
+            // finds and the values it misses, so the literal form is dominated — and its one
+            // distinguishing behaviour is to admit a token it was written to reject.
+            assert!(
+                !(rule.none_of.is_some()
+                    && rule
+                        .separator
+                        .as_deref()
+                        .is_some_and(|s| { !s.is_empty() && s.chars().all(char::is_whitespace) })),
+                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': a \
+                 whitespace `separator` on `none_of` reads only that exact character, so a \
+                 value delimited by any other whitespace is admitted. Write \
+                 `SEPARATOR=whitespace`."
+            );
             assert!(
                 !(rule.exists.is_some() && rule.separator.is_some()),
                 "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': `separator` \
@@ -2265,6 +2279,25 @@ mod test {
     /// A literal separator stays literal, so the same rule written with a space is byte-exact.
     #[test]
     fn test_literal_separator_is_byte_exact() {
+        // A grant may still be byte-exact: narrowing it rejects, which is the safe direction.
+        let rule = rule_from_env(&[
+            ("CLAIM", "scope"),
+            ("ALL_OF", "[admin]"),
+            ("SEPARATOR", "\" \""),
+        ]);
+        assert!(rule.matches(&serde_json::json!({ "scope": "openid admin" })));
+        assert!(!rule.matches(&serde_json::json!({ "scope": "openid\tadmin" })));
+        // A non-whitespace literal is exact in both directions.
+        let deny = rule_from_env(&[("CLAIM", "g"), ("NONE_OF", "[admin]"), ("SEPARATOR", ",")]);
+        assert!(!deny.matches(&serde_json::json!({ "g": "finance,admin" })));
+        assert!(deny.matches(&serde_json::json!({ "g": "finance;admin" })));
+    }
+
+    /// A deny split on one whitespace character admits a value delimited by any other, so the
+    /// dominated spelling is refused in favour of `SEPARATOR=whitespace`.
+    #[test]
+    #[should_panic(expected = "Write `SEPARATOR=whitespace`")]
+    fn test_whitespace_literal_separator_is_rejected_on_a_deny() {
         figment::Jail::expect_with(|jail| {
             jail.set_env(format!("{X}__URI"), "https://idp.example.com");
             set_required_claims_env(
@@ -2277,12 +2310,7 @@ mod test {
                     ("SEPARATOR", "\" \""),
                 ],
             );
-            let config = get_config();
-            let rule = config.openid_providers["x"].required_claims["org"]
-                .to_rule()
-                .unwrap();
-            assert!(!rule.matches(&serde_json::json!({ "scope": "openid admin" })));
-            assert!(rule.matches(&serde_json::json!({ "scope": "openid\tadmin" })));
+            let _config = get_config();
             Ok(())
         });
     }

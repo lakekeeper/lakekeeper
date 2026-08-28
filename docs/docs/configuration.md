@@ -318,7 +318,7 @@ For the primary provider use `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__…`. 
 | `__ALL_OF=[a, b]` | Every listed value is a claim value. |
 | `__NONE_OF=[a, b]` | No claim value is listed. |
 | `__EXISTS=true` / `false` | The claim carries something / is absent or `null`. |
-| `__SEPARATOR` | Optional. Read the claim as a delimited list: a literal (`,`, `::`), or `whitespace` for any whitespace. |
+| `__SEPARATOR` | Optional. Read the claim as a delimited list: a literal (`,`, `::`), or `whitespace` for any whitespace. Environment values are trimmed, so a literal space is written `SEPARATOR='" "'`; quoted values also decode escapes, so `SEPARATOR='"\t"'` is a real tab. A literal matches byte for byte, so `NONE_OF` with a whitespace literal is refused — write `whitespace`. |
 
 Exactly one operator per rule, and `EXISTS` takes no `SEPARATOR`. All rules of a provider must hold. Matching is byte-exact and case-sensitive; rules run in alphabetical order and the first failure is the one logged.
 
@@ -329,7 +329,7 @@ Exactly one operator per rule, and `EXISTS` takes no `SEPARATOR`. All rules of a
 !!! warning "Two ways a rule can fail open"
     `EXISTS=false` asks for a claim to be **absent**, so a misspelled path is satisfied by every token, and no startup check can tell a typo from a claim your provider genuinely never sends. Prefer `ANY_OF` where you can.
 
-    A `NONE_OF` whose `SEPARATOR` does not match the claim's real format finds nothing — a deny split on `" "` never sees a value delimited by a tab. Use `SEPARATOR=whitespace` for scope-shaped claims. A missing comma does the same: `[a b]` is the single value `a b`, which nothing matches.
+    A `NONE_OF` whose `SEPARATOR` does not match the claim's real format finds nothing. Startup refuses the whitespace case, since `whitespace` finds everything a space literal finds and more — but it cannot check the rest: a deny split on `,` does not see `"finance, admin"`, because the value it compares is `" admin"`. A missing comma does the same: `[a b]` is the single value `a b`, which nothing matches.
 
     Always confirm a new deny actually rejects a token that should fail it.
 
@@ -357,7 +357,7 @@ extraEnv:
 
 **Debugging a rejection.** The 401 body says nothing beyond an `Error ID`. The server log carries the reason at `INFO`, tagged `event_source="error_response"`, with the failing rule in the error source chain and the same error id the client received (abbreviated here — the emitted line is JSON):
 
-```
+```text
 error.type="AuthenticationFailed"  error.error_id=<uuid>
 error.source=["Token rejected: required-claim rule `corp/org` failed", ...]
 ```
