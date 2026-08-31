@@ -27,6 +27,7 @@ pub(crate) use load_by_location::*;
 pub(crate) use protection::set_tabular_protected;
 use sqlx::FromRow;
 use uuid::Uuid;
+use xxhash_rust::xxh3::Xxh3Default;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
@@ -519,6 +520,44 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) location: &'a Location,
 }
 
+/// Advisory-lock keys covering `location` and every path above it inside its
+/// bucket, given the partial locations from [`get_partial_fs_locations`].
+///
+/// Two locations collide only when one is a path prefix of the other, and in that
+/// case the shorter one's full path is among the longer one's prefixes -- so
+/// locking a location together with its prefixes makes any two colliding creates
+/// share a key and serialize. Without that they do not: the check is a read, and
+/// two transactions can both pass it and both commit, leaving one tabular's data
+/// inside another's location. Nothing else prevents this; no index on
+/// `fs_location` is unique.
+///
+/// The bare authority is left out. Every location in a bucket has it as a prefix,
+/// so locking it would serialize every create in the warehouse; the cost is that a
+/// tabular created at the bucket root is not covered against a concurrent create
+/// below it. Locations that share only a bucket do not block each other, ones that
+/// share a directory do.
+///
+/// Sorted and deduplicated so two transactions holding overlapping sets acquire
+/// them in the same order and cannot deadlock. `xxh3` because the value has to be
+/// the same in every replica and across versions; a collision only makes two
+/// unrelated creates wait for each other.
+fn location_lock_keys(warehouse_id: Uuid, partial_locations: &[String]) -> Vec<i64> {
+    let mut keys: Vec<i64> = partial_locations
+        .iter()
+        .filter(|location| location.contains('/'))
+        .map(|location| {
+            let mut hasher = Xxh3Default::new();
+            hasher.update(warehouse_id.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(location.as_bytes());
+            i64::from_ne_bytes(hasher.digest().to_ne_bytes())
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
 /// The value the `fs_location` column holds for `location`.
 ///
 /// No writer produces a trailing slash today: the create paths normalize through
@@ -574,6 +613,22 @@ pub(crate) async fn ensure_location_available(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(), CreateTabularError> {
     let partial_locations = get_partial_fs_locations(location)?;
+
+    // Held until this transaction ends, so a concurrent create at a colliding
+    // location waits here and then sees the committed row below instead of passing
+    // the same check against the same absent row.
+    let lock_keys = location_lock_keys(warehouse_id, &partial_locations);
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(key) FROM unnest($1::bigint[]) AS key",
+        &lock_keys
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error locking the location for a conflict check")
+    })?;
+
     // A trailing slash on either side hides a match: it would make the descendant
     // range `["X//", "X/0")`, which no stored location can fall in since empty
     // path segments are rejected, and it would leave a stored ancestor unequal to
@@ -2039,6 +2094,80 @@ mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
         id
+    }
+
+    /// A create holds locks that a colliding create cannot take, so the two cannot
+    /// run their checks against the same absent row.
+    ///
+    /// The check is a read and no index on `fs_location` is unique, so without this
+    /// both transactions pass and both commit -- one tabular's data ends up inside
+    /// the other's location, and purging either then destroys the other's files.
+    ///
+    /// Asserted on the locks rather than on two racing creates, because a create
+    /// that is correctly blocked never returns: the second transaction would have to
+    /// be woken by committing the first, and then it sees the committed row and is
+    /// refused for a reason that has nothing to do with locking. The keys come from
+    /// `location_lock_keys` itself, so narrowing what it covers -- dropping the path
+    /// prefixes, say -- shows up here as an overlap that is no longer there.
+    ///
+    /// `parent` and `parent/child` are different values, so a unique index cannot
+    /// express this pair; only the prefix keys make them collide.
+    #[sqlx::test]
+    async fn a_create_locks_out_a_colliding_one(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        let parent = Location::from_str("s3://bkt/race/parent").unwrap();
+        let child = Location::from_str("s3://bkt/race/parent/child").unwrap();
+
+        // Creates `parent` and stays open, so its locks are still held and the row it
+        // wrote is not visible to anyone else.
+        let mut first = pool.begin().await.unwrap();
+        create_tabular(
+            CreateTabular {
+                id: Uuid::now_v7(),
+                name: "parent",
+                namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: None,
+                location: &parent,
+            },
+            &mut first,
+        )
+        .await
+        .expect("the uncontended create was refused");
+
+        // What a create of `child` would have to take, on another connection.
+        let child_keys =
+            location_lock_keys(*warehouse_id, &get_partial_fs_locations(&child).unwrap());
+        assert!(!child_keys.is_empty(), "a location produced no lock keys");
+
+        let mut contender = pool.begin().await.unwrap();
+        let mut acquired = Vec::new();
+        for key in &child_keys {
+            let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+                .bind(key)
+                .fetch_one(&mut *contender)
+                .await
+                .unwrap();
+            if free {
+                acquired.push(*key);
+            }
+        }
+        contender.rollback().await.unwrap();
+        first.commit().await.unwrap();
+
+        assert_ne!(
+            acquired.len(),
+            child_keys.len(),
+            "a create inside s3://bkt/race/parent could take every lock the create of \
+             s3://bkt/race/parent holds, so both would pass the check and both commit"
+        );
     }
 
     /// A location arriving with a trailing slash is stored without one, so the

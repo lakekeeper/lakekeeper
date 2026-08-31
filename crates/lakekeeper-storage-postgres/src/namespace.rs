@@ -216,14 +216,13 @@ pub(crate) async fn get_namespaces_by_name<
         NamespaceWithParentVersionRow,
         r#"
         with requested_namespaces as (
-            -- `namespace_name` is `case_insensitive`; arrays built here carry the
-            -- default collation. `requested_parent_paths` dedupes them with
-            -- `SELECT DISTINCT`, which under that collation keeps `FOO` and `foo` as
-            -- separate rows, and the `LEFT JOIN` onto `rpp` below then matches the
-            -- one stored row against each survivor -- returning one row per spelling
-            -- per level of depth. Collating here makes the dedup agree with the join.
-            select (array(select jsonb_array_elements_text(r))::text[])
-                       COLLATE "case_insensitive" as namespace_name
+            -- Not collated to `case_insensitive` like the column: `SELECT DISTINCT`
+            -- in `requested_parent_paths` then keeps `FOO` and `foo` apart, and the
+            -- `LEFT JOIN` onto `rpp` below returns a row per requested spelling per
+            -- level of depth. That is what callers need -- `requested_name` is how
+            -- they map an ident they asked about back to an id, and collating here
+            -- would leave one arbitrary spelling with an entry and the rest without.
+            select array(select jsonb_array_elements_text(r))::text[] as namespace_name
             from unnest($2::jsonb[]) as r
         ),
         requested_parent_paths as (
@@ -3028,16 +3027,15 @@ pub mod tests {
 
     /// Batch ident lookup must apply caller's case to every returned namespace,
     /// regardless of whether an individual entry came from cache or DB.
-    /// One namespace requested under several spellings comes back once.
+    /// Every spelling a caller asks about gets its own row, all pointing at the same
+    /// namespace.
     ///
-    /// `namespace_name` is `case_insensitive`, but an array built from the request
-    /// parameter carries the default collation, so `SELECT DISTINCT` in
-    /// `requested_parent_paths` kept every spelling and the `LEFT JOIN` onto it
-    /// matched the one stored row against each -- one row per spelling per level of
-    /// depth, with the spelling count controlled by the caller. Depth two here, so
-    /// the uncollated query returns four rows for these two idents.
+    /// `requested_name` is how a caller maps an ident it asked about back to an id,
+    /// and the keys it builds from it are case-sensitive. Deduplicating the requested
+    /// arrays case-insensitively would leave one arbitrary spelling with a row and
+    /// the others with none, which reads downstream as "namespace not found".
     #[sqlx::test]
-    async fn one_namespace_under_several_spellings_returns_one_row(pool: sqlx::PgPool) {
+    async fn every_requested_spelling_maps_to_the_same_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
 
@@ -3053,16 +3051,28 @@ pub mod tests {
             .await
             .unwrap();
 
-        let ids: std::collections::HashSet<_> = rows.iter().map(|r| r.namespace_id()).collect();
+        let ids_for = |ident: &NamespaceIdent| {
+            rows.iter()
+                .filter(|r| r.namespace_ident() == ident)
+                .map(|r| r.namespace_id())
+                .collect::<Vec<_>>()
+        };
+        let upper_ids = ids_for(&upper);
+        let lower_ids = ids_for(&lower);
+
         assert_eq!(
-            rows.len(),
-            ids.len(),
-            "the same namespace came back more than once: {rows:#?}"
+            upper_ids.len(),
+            1,
+            "no row came back for the spelling {upper:?}: {rows:#?}"
         );
         assert_eq!(
-            ids.len(),
-            2,
-            "expected the requested namespace and its parent, got {ids:?}"
+            lower_ids.len(),
+            1,
+            "no row came back for the spelling {lower:?}: {rows:#?}"
+        );
+        assert_eq!(
+            upper_ids, lower_ids,
+            "two spellings of one namespace resolved to different ids"
         );
     }
 

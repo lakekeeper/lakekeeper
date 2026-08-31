@@ -95,7 +95,7 @@ async fn refuse_collisions_the_trim_would_create(
     tracing::error!("Cannot normalize table locations: {listed}");
     Err(ErrorModel::failed_dependency(
         format!(
-            "Removing the trailing slash from these table or view locations would put more than              one tabular on the same location, which Lakekeeper cannot resolve on its own. Leave              only one tabular on each, then migrate again. Note that both tabulars' files sit              under the same prefix, so purging either one deletes the other's data -- move or              deregister rather than purge. Affected: {listed}."
+            "Removing the trailing slash from these table or view locations would put more than one tabular on the same location, which Lakekeeper cannot resolve on its own. Leave only one tabular on each, then migrate again. Note that both tabulars' files sit under the same prefix, so purging either one deletes the other's data -- move or deregister rather than purge. Affected: {listed}."
         ),
         "TrimWouldShareTabularLocations",
         None,
@@ -132,7 +132,7 @@ async fn report_existing_collisions(
         format!("{location} in warehouse {warehouse_id}, held by {ids:?}")
     });
     tracing::warn!(
-        "More than one tabular occupies the same location. Their files share a prefix, so purging          one deletes the other's data. A view commit against either is refused until only one          remains. {listed}"
+        "More than one tabular occupies the same location. Their files share a prefix, so purging one deletes the other's data. A view commit against either is refused until only one remains. {listed}"
     );
     Ok(())
 }
@@ -184,7 +184,7 @@ async fn report_nested_locations(
         format!("{outer} contains {inner} in warehouse {warehouse_id}")
     });
     tracing::warn!(
-        "A table or view location contains another tabular's location. Commits against either are          refused until one is moved; both remain readable. {listed}"
+        "A table or view location contains another tabular's location. Commits against either are refused until one is moved; both remain readable. {listed}"
     );
     Ok(())
 }
