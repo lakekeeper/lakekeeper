@@ -216,7 +216,14 @@ pub(crate) async fn get_namespaces_by_name<
         NamespaceWithParentVersionRow,
         r#"
         with requested_namespaces as (
-            select array(select jsonb_array_elements_text(r))::text[] as namespace_name
+            -- `namespace_name` is `case_insensitive`; arrays built here carry the
+            -- default collation. `requested_parent_paths` dedupes them with
+            -- `SELECT DISTINCT`, which under that collation keeps `FOO` and `foo` as
+            -- separate rows, and the `LEFT JOIN` onto `rpp` below then matches the
+            -- one stored row against each survivor -- returning one row per spelling
+            -- per level of depth. Collating here makes the dedup agree with the join.
+            select (array(select jsonb_array_elements_text(r))::text[])
+                       COLLATE "case_insensitive" as namespace_name
             from unnest($2::jsonb[]) as r
         ),
         requested_parent_paths as (
@@ -246,6 +253,14 @@ pub(crate) async fn get_namespaces_by_name<
             INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND w.status = 'active'
+            -- Every `parent_paths` entry is a prefix of a stored name that matched a
+            -- requested one, so it is also a `requested_parent_paths` entry and this
+            -- conjunct removes no rows. It is here because the planner can estimate
+            -- it: `requested_parent_paths` comes from the parameter array, while
+            -- `parent_paths` comes from a lookup in this same table, which the
+            -- planner cannot see through -- it assumes far more rows than there are
+            -- and resolves the join by scanning every namespace in the warehouse.
+            AND n.namespace_name IN (SELECT parent_name FROM requested_parent_paths)
             AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
         )
         SELECT
@@ -3013,6 +3028,44 @@ pub mod tests {
 
     /// Batch ident lookup must apply caller's case to every returned namespace,
     /// regardless of whether an individual entry came from cache or DB.
+    /// One namespace requested under several spellings comes back once.
+    ///
+    /// `namespace_name` is `case_insensitive`, but an array built from the request
+    /// parameter carries the default collation, so `SELECT DISTINCT` in
+    /// `requested_parent_paths` kept every spelling and the `LEFT JOIN` onto it
+    /// matched the one stored row against each -- one row per spelling per level of
+    /// depth, with the spelling count controlled by the caller. Depth two here, so
+    /// the uncollated query returns four rows for these two idents.
+    #[sqlx::test]
+    async fn one_namespace_under_several_spellings_returns_one_row(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let parent = NamespaceIdent::from_vec(vec!["Foo".to_string()]).unwrap();
+        let child = NamespaceIdent::from_vec(vec!["Foo".to_string(), "Bar".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &parent, None).await;
+        initialize_namespace(state.clone(), warehouse_id, &child, None).await;
+
+        let upper = NamespaceIdent::from_vec(vec!["FOO".to_string(), "BAR".to_string()]).unwrap();
+        let lower = NamespaceIdent::from_vec(vec!["foo".to_string(), "bar".to_string()]).unwrap();
+
+        let rows = get_namespaces_by_name(warehouse_id, &[&upper, &lower], &state.read_pool())
+            .await
+            .unwrap();
+
+        let ids: std::collections::HashSet<_> = rows.iter().map(|r| r.namespace_id()).collect();
+        assert_eq!(
+            rows.len(),
+            ids.len(),
+            "the same namespace came back more than once: {rows:#?}"
+        );
+        assert_eq!(
+            ids.len(),
+            2,
+            "expected the requested namespace and its parent, got {ids:?}"
+        );
+    }
+
     #[sqlx::test]
     async fn test_batch_ident_lookup_applies_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
