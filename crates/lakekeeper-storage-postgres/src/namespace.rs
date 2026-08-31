@@ -216,7 +216,14 @@ pub(crate) async fn get_namespaces_by_name<
         NamespaceWithParentVersionRow,
         r#"
         with requested_namespaces as (
-            select array(select jsonb_array_elements_text(r))::text[] as namespace_name
+            -- `namespace_name` is `case_insensitive`; arrays built here carry the
+            -- default collation. `requested_parent_paths` dedupes them with
+            -- `SELECT DISTINCT`, which under that collation keeps `FOO` and `foo` as
+            -- separate rows, and the `LEFT JOIN` onto `rpp` below then matches the
+            -- one stored row against each survivor -- returning one row per spelling
+            -- per level of depth. Collating here makes the dedup agree with the join.
+            select (array(select jsonb_array_elements_text(r))::text[])
+                       COLLATE "case_insensitive" as namespace_name
             from unnest($2::jsonb[]) as r
         ),
         requested_parent_paths as (
@@ -246,6 +253,14 @@ pub(crate) async fn get_namespaces_by_name<
             INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND w.status = 'active'
+            -- Every `parent_paths` entry is a prefix of a stored name that matched a
+            -- requested one, so it is also a `requested_parent_paths` entry and this
+            -- conjunct removes no rows. It is here because the planner can estimate
+            -- it: `requested_parent_paths` comes from the parameter array, while
+            -- `parent_paths` comes from a lookup in this same table, which the
+            -- planner cannot see through -- it assumes far more rows than there are
+            -- and resolves the join by scanning every namespace in the warehouse.
+            AND n.namespace_name IN (SELECT parent_name FROM requested_parent_paths)
             AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
         )
         SELECT

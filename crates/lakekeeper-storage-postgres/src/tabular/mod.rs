@@ -543,12 +543,14 @@ impl From<FromTabularRowError> for CreateTabularError {
 }
 
 /// Errors with `LocationAlreadyTaken` if any other tabular in `warehouse_id`
-/// occupies `location` (or a path that this location would shadow).
+/// occupies `location`, sits under it, or contains it.
 ///
-/// Shared between `create_tabular` (where it backstops the table-level unique
-/// constraint on `(warehouse_id, name, namespace_id)` for location uniqueness)
-/// and `view::commit_existing_view` (where there is no analogous constraint
-/// because commits don't go through INSERT).
+/// This check is on its own: no index on `fs_location` is unique, so nothing at
+/// the schema level backstops it. It is also an unlocked read, so two concurrent
+/// creates can both pass it and both commit.
+///
+/// Runs on create and on every view commit -- a view can move to a new location,
+/// where a table's `SetLocation` to a different value is refused.
 pub(crate) async fn ensure_location_available(
     warehouse_id: Uuid,
     self_tabular_id: Uuid,
@@ -556,14 +558,53 @@ pub(crate) async fn ensure_location_available(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(), CreateTabularError> {
     let partial_locations = get_partial_fs_locations(location)?;
-    let fs_location = location.authority_and_path();
+    // The descendant range below is built from this, and a trailing slash would
+    // make it `["X//", "X/0")` -- a range no stored location can fall in, since
+    // empty path segments are rejected. `Location` permits a trailing slash and
+    // both `registerTable` and a view's `set-location` pass one straight through,
+    // so the range is built from the trimmed form rather than relying on the
+    // caller. `$2` is trimmed by `get_partial_fs_locations`, so both halves of the
+    // predicate agree on what a location looks like.
+    //
+    // The stored side is not trimmed and nothing enforces that it is -- there is
+    // no constraint, and the 20250216105917 backfill split the old `location`
+    // column verbatim. A stored location ending in `/` is therefore invisible to
+    // the equality half, which is the half that finds an ancestor, so a tabular
+    // can still be created inside one. The `LIKE` form missed the same rows.
+    let fs_location = location.authority_and_path().trim_end_matches('/');
     let taken = sqlx::query_scalar!(
-        r#"SELECT EXISTS (
-               SELECT 1
-               FROM tabular ta
-               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
-               ) AND tabular_id != $3
+        // Two `EXISTS` rather than one over an `OR`, which is the same predicate:
+        // the planner does not build a `BitmapOr` in a generic plan, and this
+        // statement is prepared and reused, so the `OR` form degraded to a
+        // sequential scan of every tabular in the warehouse once a connection had
+        // executed it enough times to switch. Split, both branches index-scan
+        // under a generic plan as well as a custom one.
+        //
+        // `~>=~` and `~<~` compare bytes, ignoring collation, so the descendant
+        // half is the range `[$4 || '/', $4 || '0')` -- '0' being the byte after
+        // '/'. Every location under `$4` falls in it and nothing else does, and
+        // it is what the `text_pattern_ops` index from 20260830000000 serves.
+        //
+        // Byte comparison also reads `$4` literally, where `LIKE` read it as a
+        // pattern: a location containing `\` escaped the character after it and
+        // hid a real collision, and one containing `%` or `_` matched unrelated
+        // siblings.
+        //
+        // The first branch covers exact duplicates: `$2` carries the location
+        // and its parents, so equality is enough.
+        r#"SELECT (
+               EXISTS (
+                   SELECT 1 FROM tabular ta
+                   WHERE ta.warehouse_id = $1 AND ta.fs_location = ANY($2)
+                     AND ta.tabular_id != $3
+               )
+               OR EXISTS (
+                   SELECT 1 FROM tabular ta
+                   WHERE ta.warehouse_id = $1
+                     AND ta.fs_location ~>=~ ($4 || '/')
+                     AND ta.fs_location ~<~ ($4 || '0')
+                     AND ta.tabular_id != $3
+               )
            ) as "exists!""#,
         warehouse_id,
         &partial_locations,
@@ -1959,6 +2000,261 @@ mod tests {
     use crate::{
         CatalogState, namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
     };
+
+    /// `~>=~` and `~<~` bracket exactly the locations sitting under another one.
+    ///
+    /// This covers the operators alone, over `unnest` -- the range is the part
+    /// Postgres decides rather than Rust, and it is worth pinning against a
+    /// literal oracle across a wider fixture than rows in a table would be
+    /// convenient for. `ensure_location_available` itself is covered by
+    /// `ensure_location_available_finds_collisions_reading_locations_literally`.
+    ///
+    /// Ground truth is `starts_with`, which reads both sides literally. The pairs
+    /// cover where the answer is least obvious -- trailing and doubled slashes,
+    /// siblings differing by the byte on either side of `/` (`a` vs `a0` vs `ab`,
+    /// the range's own boundary), and the `LIKE` metacharacters.
+    ///
+    /// Missing a collision lets one tabular's data live inside another's
+    /// location, so the two directions are asserted separately -- a false
+    /// positive only refuses a create.
+    #[sqlx::test]
+    async fn descendant_location_check_finds_every_nested_location(pool: sqlx::PgPool) {
+        let locations = [
+            "s3://b/a",
+            "s3://b/a/",
+            "s3://b/a//",
+            "s3://b/a/x",
+            "s3://b/a/x/",
+            "s3://b/a/x/y",
+            "s3://b/ab",
+            "s3://b/ab/x",
+            "s3://b/a0",
+            "s3://b/a-x",
+            "s3://b",
+            "s3://b/",
+            "",
+            "a%",
+            "a%/x",
+            "a_",
+            "a_/x",
+            "abc",
+            "axy",
+            "w\\dir",
+            "w\\dir/t",
+            "w\\",
+            "w\\/x",
+            "s3://b/w%25d",
+            "s3://b/w%25d/t",
+        ];
+
+        // Both sides are normalized before comparing, which the predicate itself
+        // relies on `ensure_location_available` having done to `$4`. Trimming only
+        // one side is how the first version of this test agreed with the bug it
+        // was supposed to catch.
+        let (nested, missed, over, same): (i64, i64, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                count(*) FILTER (WHERE nested),
+                count(*) FILTER (WHERE nested AND NOT found),
+                count(*) FILTER (WHERE found AND NOT nested AND NOT same_path),
+                count(*) FILTER (WHERE found AND same_path)
+            FROM (
+                SELECT
+                    TRIM(TRAILING '/' FROM s.v) = TRIM(TRAILING '/' FROM p.v)   AS same_path,
+                    starts_with(TRIM(TRAILING '/' FROM s.v) || '/',
+                                TRIM(TRAILING '/' FROM p.v) || '/')
+                        AND TRIM(TRAILING '/' FROM s.v)
+                            <> TRIM(TRAILING '/' FROM p.v)                      AS nested,
+                    s.v ~>=~ (TRIM(TRAILING '/' FROM p.v) || '/')
+                        AND s.v ~<~ (TRIM(TRAILING '/' FROM p.v) || '0')        AS found
+                FROM unnest($1::text[]) AS s(v)
+                CROSS JOIN unnest($1::text[]) AS p(v)
+            ) pairs
+            "#,
+        )
+        .bind(locations.as_slice())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            nested > 0 && same > 0,
+            "the fixture exercises neither nesting ({nested}) nor same-path pairs \
+             ({same}), so the assertions below are vacuous"
+        );
+        assert_eq!(
+            missed, 0,
+            "missed {missed} of {nested} nested locations -- a tabular could be \
+             created inside another's location"
+        );
+        assert_eq!(
+            over, 0,
+            "reported {over} collisions between locations that neither nest nor \
+             name the same path"
+        );
+    }
+
+    /// Creates a tabular at `location`, returning its id.
+    async fn plant_tabular(
+        pool: &sqlx::PgPool,
+        warehouse_id: Uuid,
+        namespace_id: Uuid,
+        location: &str,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let location = Location::from_str(location).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("s3://metadata-bucket/{id}/v1.json")).unwrap();
+        let name = format!("t_{id}");
+
+        let mut transaction = pool.begin().await.unwrap();
+        create_tabular(
+            CreateTabular {
+                id,
+                name: &name,
+                namespace_id,
+                warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        id
+    }
+
+    /// `ensure_location_available` refuses a location that duplicates another
+    /// tabular's, sits under it, or contains it.
+    ///
+    /// Driven through the function against real rows, so the trim applied to the
+    /// location before the query runs is covered as well -- `s3://bkt/nested/parent/`
+    /// is only found without it if the range is built from the trimmed form.
+    ///
+    /// The `taken` cases are the load-bearing half: missing a collision lets two
+    /// tabulars write into one prefix. The rest guard the other direction, where a
+    /// location is refused that merely resembles an occupied one -- which is what a
+    /// pattern match did, reading `\`, `%` and `_` as metacharacters.
+    #[sqlx::test]
+    async fn ensure_location_available_finds_collisions_reading_locations_literally(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        // A second project, since a warehouse name is unique within one.
+        let other_project = lakekeeper::service::ProjectId::from(Uuid::now_v7());
+        let (_, other_warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        // Only the child of `w\dir` is planted, never `w\dir` itself: probing the
+        // parent is the one direction the `= ANY($2)` half cannot answer, because
+        // `$2` carries a location's parents and not its children.
+        //
+        // `near-miss` and `wildcard` hold the rows a pattern built from `\` or `_`
+        // would wrongly reach, and they sit under prefixes of their own. Under
+        // `backslash` they would mask the case above -- a pattern match finds
+        // `wdir/t` there and reports a collision, which is the right answer for the
+        // wrong reason.
+        for location in [
+            r"s3://bkt/backslash/w\dir/t",
+            r"s3://bkt/near-miss/wdir/t",
+            "s3://bkt/wildcard/undXr/t",
+            "s3://bkt/nested/parent/child",
+            "s3://bkt/exact/tbl",
+        ] {
+            plant_tabular(&pool, *warehouse_id, namespace_id, location).await;
+        }
+        let occupied_id =
+            plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bkt/self/occupied").await;
+
+        let cases = [
+            (
+                r"s3://bkt/backslash/w\dir",
+                true,
+                r"contains a stored location holding a `\`, where a pattern reached the escaped spelling instead",
+            ),
+            (
+                r"s3://bkt/backslash/w\dir/t/deeper",
+                true,
+                "sits under a stored location",
+            ),
+            ("s3://bkt/exact/tbl", true, "exact duplicate"),
+            (
+                "s3://bkt/nested/parent/",
+                true,
+                "contains a stored location, and the trailing slash must not shift the range",
+            ),
+            (
+                r"s3://bkt/near-miss/w\dir",
+                false,
+                r"`\` must not escape the `d` and reach the stored `wdir`",
+            ),
+            (
+                "s3://bkt/wildcard/und_r",
+                false,
+                "`_` must not match the `X` in the stored `undXr`",
+            ),
+            (
+                "s3://bkt/nested/parent-sibling",
+                false,
+                "shares a prefix with an occupied location but no path segment",
+            ),
+            ("s3://bkt/unoccupied/x", false, "nothing near it"),
+        ];
+
+        // Collected rather than asserted in the loop, so a break shows every case it
+        // affects instead of only the first.
+        let mut wrong = Vec::new();
+        for (candidate, expect_taken, why) in cases {
+            let location = Location::from_str(candidate).unwrap();
+            let mut transaction = pool.begin().await.unwrap();
+            let taken = ensure_location_available(
+                *warehouse_id,
+                Uuid::now_v7(),
+                &location,
+                &mut transaction,
+            )
+            .await
+            .is_err();
+            transaction.rollback().await.unwrap();
+
+            if taken != expect_taken {
+                let direction = if expect_taken {
+                    "missed a collision"
+                } else {
+                    "refused a free location"
+                };
+                wrong.push(format!("{candidate}: {direction} -- it {why}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+        // A tabular does not collide with itself -- a view commit re-checks the
+        // location it already occupies.
+        let location = Location::from_str("s3://bkt/self/occupied").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        ensure_location_available(*warehouse_id, occupied_id, &location, &mut transaction)
+            .await
+            .expect("a tabular's own location is available to it");
+
+        // Locations are scoped to a warehouse.
+        ensure_location_available(
+            *other_warehouse_id,
+            Uuid::now_v7(),
+            &location,
+            &mut transaction,
+        )
+        .await
+        .expect("an occupied location in another warehouse does not collide");
+        transaction.rollback().await.unwrap();
+    }
 
     pub(super) async fn setup_test_tabular(pool: &sqlx::PgPool, protected: bool) -> TableInfo {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
