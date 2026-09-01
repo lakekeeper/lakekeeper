@@ -401,7 +401,7 @@ These records also carry the top-level `action`, `entity`, `privilege_source` an
 
 **A replay record does not establish that its actor was ever authorized for that entity.** The replay is served before authorization runs, so any authenticated caller holding the key can produce one — including one with no grants in that warehouse. The key cannot cause a mutation: a replay executes nothing.
 
-**Audit records carry live idempotency keys**, on authorization records as well as these, for as long as `idempotency-key-lifetime` plus the grace period. A reader of the audit log can replay those keys to a 204 and mint further records; treat audit-log access accordingly.
+**Audit records carry live idempotency keys**, on authorization records as well as these. A reader of the audit log can replay those keys to a 204 and mint further records; treat audit-log access accordingly. `idempotency-key-lifetime` sets the earliest a record becomes eligible for deletion; keyed traffic decides when that deletion runs, because cleanup rides on a small fraction of keyed requests. A record stays replayable until then, so a quiet deployment keeps its keys live until traffic resumes.
 
 **Seven endpoints emit this marker**, and no others: `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and serve the replay before authorizing, so no `decision` is recorded — the mutation already happened, and denying the retry would report a failure for a completed operation.
 
