@@ -14237,6 +14237,7 @@ components:
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
         - queues
+        - managed-role-providers
         - license-status
       properties:
         authz-backend:
@@ -14291,6 +14292,34 @@ components:
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
+        managed-role-providers:
+          type: array
+          items:
+            type: string
+          description: |-
+            Role-provider namespaces whose roles are maintained by a configured role
+            provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
+            appears here are the provider's to maintain: creating one, or renaming,
+            re-describing, rebinding, or deleting an existing one, is rejected with
+            `ManagedRoleImmutable` so provider sync cannot be clobbered.
+
+            This is live server configuration, not a property of the namespace
+            string. A provider removed from config drops out of the list, and the
+            roles it left behind become renamable and deletable again so they can be
+            cleaned up.
+
+            Empty when no role provider is configured. Two namespaces never appear,
+            and a client gating on this list must handle both itself: `lakekeeper`,
+            which is always writable, and the reserved `system`, whose roles reject
+            the same mutations with `SystemRoleImmutable`.
+
+            **Membership is gated differently — do not derive it from this list.**
+            Adding or removing a role's members requires the `lakekeeper` namespace
+            (or `system`, for an instance admin); every other namespace is refused
+            with `RoleNotManuallyAssignable` whether or not it appears here. So an
+            orphaned role from a since-removed provider is renamable and deletable
+            but still not assignable — gate member editing on
+            `provider-id == "lakekeeper"`, not on absence from this list.
         queues:
           type: array
           items:

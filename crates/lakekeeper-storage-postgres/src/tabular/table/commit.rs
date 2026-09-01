@@ -233,7 +233,7 @@ fn build_table_and_tabular_update_queries(
     ) in location_metadata_pairs.into_iter().enumerate()
     {
         let fs_protocol = new_location.scheme();
-        let fs_location = new_location.authority_and_path();
+        let fs_location = crate::tabular::fs_location_of(&new_location);
 
         let next_row_id = i64::try_from(new_metadata.next_row_id()).map_err(|e| {
             ConversionError::new_external(

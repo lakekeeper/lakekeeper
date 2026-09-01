@@ -95,7 +95,7 @@ pub(crate) async fn commit_existing_view(
     let location =
         Location::from_str(metadata.location()).map_err(InternalParseLocationError::from)?;
     let view_id = ViewId::from(metadata.uuid());
-    let fs_location = location.authority_and_path();
+    let fs_location = super::fs_location_of(&location);
     let fs_protocol = location.scheme();
 
     // Compile-time guard: the `tabular` UPDATE below does not touch
