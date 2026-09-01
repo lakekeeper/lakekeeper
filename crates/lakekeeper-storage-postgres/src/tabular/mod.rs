@@ -531,11 +531,12 @@ pub(crate) struct CreateTabular<'a> {
 /// inside another's location. Nothing else prevents this; no index on
 /// `fs_location` is unique.
 ///
-/// The bare authority is left out. Every location in a bucket has it as a prefix,
-/// so locking it would serialize every create in the warehouse; the cost is that a
-/// tabular created at the bucket root is not covered against a concurrent create
-/// below it. Locations that share only a bucket do not block each other, ones that
-/// share a directory do.
+/// The bare authority is left out, and no collision needs it: a location is
+/// admitted only as a strict sublocation of the warehouse's base location, and that
+/// base names at least a bucket, so no tabular sits at a bare authority and the
+/// authority is the ancestor of none of them. Including it would instead give every
+/// create in a bucket one key in common and serialize them all. Locations that
+/// share only a bucket do not block each other, ones that share a directory do.
 ///
 /// Sorted and deduplicated so two transactions holding overlapping sets acquire
 /// them in the same order and cannot deadlock. `xxh3` because the value has to be
@@ -2110,8 +2111,10 @@ mod tests {
     /// `location_lock_keys` itself, so narrowing what it covers -- dropping the path
     /// prefixes, say -- shows up here as an overlap that is no longer there.
     ///
-    /// `parent` and `parent/child` are different values, so a unique index cannot
-    /// express this pair; only the prefix keys make them collide.
+    /// A parent and a location under it are different values, so a unique index
+    /// expresses neither pair; only the prefix keys make them collide. The second
+    /// pair sits directly under the bucket, as shallow as a tabular can be, and is
+    /// the pair a key set that dropped one segment too many would miss.
     #[sqlx::test]
     async fn a_create_locks_out_a_colliding_one(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -2121,53 +2124,58 @@ mod tests {
             .await
             .namespace_id();
 
-        let parent = Location::from_str("s3://bkt/race/parent").unwrap();
-        let child = Location::from_str("s3://bkt/race/parent/child").unwrap();
+        for (name, parent, child) in [
+            ("deep", "s3://bkt/race/parent", "s3://bkt/race/parent/child"),
+            ("shallow", "s3://bkt/shallow", "s3://bkt/shallow/child"),
+        ] {
+            let parent = Location::from_str(parent).unwrap();
+            let child = Location::from_str(child).unwrap();
 
-        // Creates `parent` and stays open, so its locks are still held and the row it
-        // wrote is not visible to anyone else.
-        let mut first = pool.begin().await.unwrap();
-        create_tabular(
-            CreateTabular {
-                id: Uuid::now_v7(),
-                name: "parent",
-                namespace_id,
-                warehouse_id: *warehouse_id,
-                typ: TabularType::Table,
-                metadata_location: None,
-                location: &parent,
-            },
-            &mut first,
-        )
-        .await
-        .expect("the uncontended create was refused");
+            // Creates `parent` and stays open, so its locks are still held and the row
+            // it wrote is not visible to anyone else.
+            let mut first = pool.begin().await.unwrap();
+            create_tabular(
+                CreateTabular {
+                    id: Uuid::now_v7(),
+                    name,
+                    namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: None,
+                    location: &parent,
+                },
+                &mut first,
+            )
+            .await
+            .expect("the uncontended create was refused");
 
-        // What a create of `child` would have to take, on another connection.
-        let child_keys =
-            location_lock_keys(*warehouse_id, &get_partial_fs_locations(&child).unwrap());
-        assert!(!child_keys.is_empty(), "a location produced no lock keys");
+            // What a create of `child` would have to take, on another connection.
+            let child_keys =
+                location_lock_keys(*warehouse_id, &get_partial_fs_locations(&child).unwrap());
+            assert!(!child_keys.is_empty(), "{child} produced no lock keys");
 
-        let mut contender = pool.begin().await.unwrap();
-        let mut acquired = Vec::new();
-        for key in &child_keys {
-            let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
-                .bind(key)
-                .fetch_one(&mut *contender)
-                .await
-                .unwrap();
-            if free {
-                acquired.push(*key);
+            let mut acquired = 0;
+            let mut contender = pool.begin().await.unwrap();
+            for key in &child_keys {
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+                    .bind(key)
+                    .fetch_one(&mut *contender)
+                    .await
+                    .unwrap();
+                if free {
+                    acquired += 1;
+                }
             }
-        }
-        contender.rollback().await.unwrap();
-        first.commit().await.unwrap();
+            contender.rollback().await.unwrap();
+            first.commit().await.unwrap();
 
-        assert_ne!(
-            acquired.len(),
-            child_keys.len(),
-            "a create inside s3://bkt/race/parent could take every lock the create of \
-             s3://bkt/race/parent holds, so both would pass the check and both commit"
-        );
+            assert_ne!(
+                acquired,
+                child_keys.len(),
+                "a create at {child} could take every lock the create of {parent} holds, \
+                 so both would pass the check and both commit"
+            );
+        }
     }
 
     /// A location arriving with a trailing slash is stored without one, so the
