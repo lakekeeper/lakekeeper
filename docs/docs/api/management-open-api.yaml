@@ -46,7 +46,7 @@ paths:
         required: true
       responses:
         '200':
-          description: Batch check results
+          description: Batch check results, one per request item and in request order
           content:
             application/json:
               schema:
@@ -7994,10 +7994,24 @@ components:
       properties:
         allowed:
           type: boolean
+          description: Whether the checked identity may perform the operation.
+        determined-by:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeterminingFactor'
+          description: |-
+            What determined this decision: the policies that matched, each with its
+            identifier, optional name and source, or a system-authority override.
+
+            Absent when the configured authorizer produces no per-decision
+            diagnostics.
         id:
           type:
             - string
             - 'null'
+          description: |-
+            Echoes the `id` of the corresponding request item. Absent when the
+            request item carried none — match by position instead.
     CheckOperation:
       oneOf:
         - type: object
@@ -8488,6 +8502,88 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    DeterminingFactor:
+      oneOf:
+        - $ref: '#/components/schemas/DeterminingFactorPolicy'
+        - $ref: '#/components/schemas/DeterminingFactorSystemAuthority'
+      description: |-
+        A single factor that contributed to an authorization decision.
+
+        Discriminated by `type`: `policy` names a policy the authorizer matched,
+        `system-authority` records that a built-in authority tier decided the
+        request. Further kinds may be added, so treat an unrecognised `type` as an
+        opaque factor rather than an error.
+      discriminator:
+        propertyName: type
+        mapping:
+          policy: '#/components/schemas/DeterminingFactorPolicy'
+          system-authority: '#/components/schemas/DeterminingFactorSystemAuthority'
+    DeterminingFactorPolicy:
+      type: object
+      description: |-
+        A policy that determined the decision, surfaced by a policy-based
+        authorizer.
+      required:
+        - policy-id
+        - effect
+        - type
+      properties:
+        effect:
+          $ref: '#/components/schemas/PolicyEffect'
+          description: Whether the policy permits or forbids.
+        name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing name the author gave the policy (e.g. a `@name` or
+            `@id` annotation). Neither required nor guaranteed unique; absent
+            when the author provided none.
+        policy-id:
+          type: string
+          description: |-
+            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
+            `PolicyId`). Always present.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque origin of the policy (e.g. a policy-source identifier).
+            Absent when the authorizer cannot attribute a source.
+        type:
+          type: string
+          enum:
+            - policy
+    DeterminingFactorSystemAuthority:
+      type: object
+      description: |-
+        An allow contributed by a built-in/system authority tier that takes
+        precedence over normal authored policy — e.g. a recovery mechanism that
+        lets a privileged system role act despite a policy that would otherwise
+        forbid it. Its presence means the verdict rested on built-in authority
+        rather than on a configured policy.
+      required:
+        - type
+      properties:
+        reason:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing reason the tier applied (e.g. an administrator
+            lockout-recovery grant). Absent when the authorizer gives none.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque, authorizer-assigned identifier of the built-in authority
+            tier that granted the action. Absent when none can be attributed.
+        type:
+          type: string
+          enum:
+            - system-authority
     EndpointMode:
       oneOf:
         - $ref: '#/components/schemas/EndpointModeDefault'
@@ -13098,6 +13194,12 @@ components:
         - grant_manage_grants
         - grant_manage_tags
         - change_ownership
+    PolicyEffect:
+      type: string
+      description: Whether a determining policy permits or forbids.
+      enum:
+        - permit
+        - forbid
     PrivilegeDescriptor:
       type: object
       description: One grantable privilege, as published by an authorizer for discovery.

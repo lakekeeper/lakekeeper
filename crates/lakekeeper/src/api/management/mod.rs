@@ -4243,7 +4243,7 @@ pub mod v1 {
         path = ManagementV1Endpoint::BatchCheckActions.path(),
         request_body = CatalogActionsBatchCheckRequest,
         responses(
-            (status = 200, description = "Batch check results", body = CatalogActionsBatchCheckResponse),
+            (status = 200, description = "Batch check results, one per request item and in request order", body = CatalogActionsBatchCheckResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
