@@ -7,6 +7,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::RwLock, time::Sleep};
 use uuid::Uuid;
 use vaultrs::{
+    api::{exec_with_no_result, sys::requests::ReadHealthRequest},
     client::{Client, VaultClient},
     error::ClientError,
 };
@@ -230,7 +231,16 @@ impl HealthExt for SecretsState {
 
     async fn update_health(&self) {
         let handle = self.vault_client.read().await;
-        let t = vaultrs::sys::health(&*handle).await;
+        // Vault returns 429 for standby nodes and 473 for performance standbys.
+        // These nodes transparently forward requests to the active leader, so
+        // treat them as healthy by requesting standbyok/perfstandbyok.
+        // https://developer.hashicorp.com/vault/api-docs/system/health
+        let endpoint = ReadHealthRequest::builder()
+            .standbyok(true)
+            .perfstandbyok(true)
+            .build()
+            .expect("ReadHealthRequest has no required fields");
+        let t = exec_with_no_result(&*handle, endpoint).await;
         match t {
             Ok(_) => {
                 tracing::debug!("Vault is healthy");
