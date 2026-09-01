@@ -7,16 +7,17 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogMoveNamespaceError, CatalogNamespaceDropError,
-        CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
-        ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
-        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery,
-        MovedNamespace, Namespace, NamespaceAlreadyExists, NamespaceCannotMoveIntoSelf,
-        NamespaceDropInfo, NamespaceHasChildren, NamespaceHasRunningTabularExpirations,
-        NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
-        NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
-        SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogGetNamespaceError,
+        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogMoveNamespaceError,
+        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
+        CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
+        CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
+        ListNamespacesQuery, MovedNamespace, Namespace, NamespaceAlreadyExists,
+        NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
+        NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
+        NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
+        NamespaceWithParent, Result, SerializationError, TabularId, WarehouseIdNotFound,
+        storage::join_location, tasks::TaskId,
     },
 };
 use sqlx::types::Json;
@@ -554,6 +555,74 @@ pub(crate) async fn list_namespaces(
     Ok(namespace_map)
 }
 
+/// The parent row a namespace is about to be written under, locked `FOR KEY SHARE` for the
+/// remainder of the transaction.
+#[derive(Debug)]
+struct LockedParentNamespace {
+    namespace_id: NamespaceId,
+    /// The parent's **stored** spelling. The ancestor segments of any row written under it must be
+    /// these bytes, never the caller's.
+    namespace_name: Vec<String>,
+}
+
+/// Resolve a namespace path's parent by name, hold a key share lock on it, and return its id
+/// together with its **stored** spelling.
+///
+/// Both writers that place a namespace under a parent need this — `create_namespace` and
+/// `move_namespace` — and neither may write the caller's spelling of the ancestor segments.
+/// `namespace_name` is `text[] collate "case_insensitive"`, so `["PARENT"]` matches a row stored as
+/// `["parent"]`. Writing the caller's array verbatim stores a child whose prefix does not
+/// byte-match the parent row it points at. The catalog stays correct — the parent id is right, and
+/// every SQL comparison is collated — but `is_parent_ident` in the namespace cache compares
+/// `child[..len - 1]` against the parent's ident with plain equality. A mismatch makes
+/// `build_hierarchy_from_cache` invalidate and return `None` on *every* subsequent lookup, by id
+/// and by name alike, and the reload re-inserts the same canonical bytes and fails identically — a
+/// permanent miss plus eviction churn for that row and its whole subtree, not a stale read.
+///
+/// Callers must therefore build the written path as `namespace_name` plus the caller's leaf. Only
+/// the leaf keeps the caller's casing, because a case-only change to the leaf is a genuine rename.
+///
+/// `FOR KEY SHARE` is the weakest lock that works: it conflicts with the `FOR UPDATE` that a DELETE
+/// and a rename of the parent take (`namespace_name` is a key column of
+/// `unique_namespace_per_warehouse`), so neither can commit before us. It deliberately does not
+/// conflict with the `FOR NO KEY UPDATE` that property and protection updates take — nothing here
+/// reads either, so excluding them would only add contention.
+///
+/// Deliberately returns no `version`. The parent's version belongs in the `parent_ns` CTE of each
+/// caller's write statement, which reads it in the same statement as the write. Because
+/// `FOR NO KEY UPDATE` is *not* excluded, a property or protection update on the parent can commit
+/// between this lock and that write and bump `version` via `set_updated_at_and_increment_version`;
+/// a version captured here would then be strictly older than the truth at write time.
+///
+/// Issued as its own statement rather than folded into a CTE of the write, because the caller needs
+/// the stored name in Rust *before* the write is built.
+///
+/// `Ok(None)` means the parent does not exist; callers map it to their own `NamespaceNotFound`,
+/// because their error types differ.
+async fn lock_parent_namespace(
+    warehouse_id: WarehouseId,
+    parent: &NamespaceIdent,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<Option<LockedParentNamespace>, CatalogBackendError> {
+    Ok(sqlx::query!(
+        r#"
+            SELECT namespace_id, namespace_name
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_name = $2
+            FOR KEY SHARE
+            "#,
+        *warehouse_id,
+        &**parent,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .map(|r| LockedParentNamespace {
+        namespace_id: r.namespace_id.into(),
+        namespace_name: r.namespace_name,
+    }))
+}
+
 pub(crate) async fn create_namespace(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -565,42 +634,39 @@ pub(crate) async fn create_namespace(
         properties,
     } = request;
     let parent = namespace.parent();
-    let has_parent = parent.is_some();
 
-    // The parent is resolved with a key share lock so that a concurrent `move_namespace` or
-    // drop cannot re-parent, rename or delete it between this lookup and the commit — which
-    // would otherwise leave the inserted child stranded under a path that no longer resolves.
-    // `FOR KEY SHARE` suffices: both hazards take `FOR UPDATE`, a rename because
-    // `namespace_name` is a key column of `unique_namespace_per_warehouse`. It deliberately
-    // does not conflict with the `FOR NO KEY UPDATE` that property and protection updates
-    // take, since nothing here reads either. Taken in a separate statement because Postgres
-    // does not allow a locking clause in a CTE that is combined with a data-modifying CTE.
-    let locked_parent_id = if let Some(ref parent) = parent {
-        sqlx::query_scalar!(
-            r#"
-            SELECT namespace_id
-            FROM namespace
-            WHERE warehouse_id = $1 AND namespace_name = $2
-            FOR KEY SHARE
-            "#,
-            *warehouse_id,
-            &**parent,
+    // See `lock_parent_namespace`: the parent is locked here, and its *stored* spelling is what the
+    // ancestor segments of the new row are built from.
+    let locked_parent = if let Some(ref parent) = parent {
+        Some(
+            lock_parent_namespace(warehouse_id, parent, transaction)
+                .await?
+                .ok_or_else(|| NamespaceNotFound::new(warehouse_id, parent.clone()))?,
         )
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(DBErrorHandler::into_catalog_backend_error)?
     } else {
         None
     };
 
-    if let Some(parent) = &parent
-        && locked_parent_id.is_none()
-    {
-        return Err(CatalogCreateNamespaceError::from(NamespaceNotFound::new(
-            warehouse_id,
-            parent.clone(),
-        )));
-    }
+    // What actually gets written: the parent's stored spelling of the ancestor segments, plus the
+    // caller's spelling of the leaf. The parent was matched under the case-insensitive collation,
+    // so the caller's spelling of the ancestors carries no information; only the leaf keeps it,
+    // because a case-only leaf difference is the name itself. Identical construction to
+    // `move_namespace`'s `written_name`.
+    let written_name: Vec<String> = match locked_parent.as_ref() {
+        Some(parent_row) => parent_row
+            .namespace_name
+            .iter()
+            .cloned()
+            .chain(namespace.as_ref().last().cloned())
+            .collect(),
+        // Creating at the warehouse root: a single element, nothing to canonicalise.
+        None => namespace.as_ref().clone(),
+    };
+
+    // The parent's stored name, so `parent_ns` below matches byte-exactly rather than relying on
+    // the collation a second time.
+    let canonical_parent = locked_parent.as_ref().map(|r| r.namespace_name.as_slice());
+    let has_parent = canonical_parent.is_some();
 
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
@@ -637,7 +703,8 @@ pub(crate) async fn create_namespace(
         SELECT
             i.namespace_id as "namespace_id!",
             i.namespace_name as "namespace_name!",
-            -- Creation uses the case the caller provided; no distinct "requested" case.
+            -- The ancestor segments were taken from the locked parent row, so what was inserted
+            -- is canonical by construction; there is no separate requested spelling to carry.
             i.namespace_name as "requested_name!",
             i.warehouse_id as "warehouse_id!",
             i.protected as "protected!",
@@ -652,11 +719,11 @@ pub(crate) async fn create_namespace(
         "#,
         *warehouse_id,
         *namespace_id,
-        &*namespace,
+        &written_name[..],
         serde_json::to_value(properties.clone()).map_err(|e| {
             NamespacePropertiesSerializationError::new(warehouse_id, namespace.clone(), e)
         })?,
-        parent.as_deref(),
+        canonical_parent,
         has_parent
     )
     .fetch_one(&mut **transaction)
@@ -695,6 +762,84 @@ pub(crate) async fn create_namespace(
 
     row.into_namespace_with_parent_version(warehouse_id)
         .map_err(Into::into)
+}
+
+/// Rewrite namespace path prefixes that disagree with their parent row's spelling, returning the
+/// number of rows changed.
+///
+/// Maintenance, run from the post-migration hooks rather than as a migration, and gated there on the
+/// migration it is pinned to having just been applied — so it runs once per upgrade, not on every
+/// startup. Deliberately not a migration itself: migrations run inside one transaction under
+/// `SET LOCAL statement_timeout = '60min'` while holding the advisory lock, with `serve` waiting on
+/// them, so a slow data rewrite there can abort an upgrade and keep the server down. As a hook it
+/// runs outside that transaction, and its failure is logged rather than fatal unless an operator
+/// asked for it explicitly.
+///
+/// Written to be idempotent regardless, because both recovery paths depend on it:
+/// `migrate --force-idempotent-post-migration-hooks` re-runs it after a failure, and re-pinning it to
+/// a later migration re-runs it for a newly found hole.
+///
+/// `create_namespace`
+/// used to insert the caller's whole path verbatim while resolving the parent under the
+/// `case_insensitive` collation, so creating `a/b/c` under a parent stored `a/B` stored the child as
+/// {a,b,c}. Nothing in the database is broken by that — the parent id is right, every SQL comparison
+/// is collated — but `is_parent_ident` in the namespace cache compares the prefix byte-wise, so such
+/// a row and every descendant can never be served from cache: each lookup invalidates, reloads the
+/// same bytes and fails identically. `lock_parent_namespace` stops new drift; this repairs what is
+/// already stored.
+///
+/// One statement per depth, ascending, is a performance requirement rather than a style choice. The
+/// natural recursive form joins on `child.namespace_name[1:parent.depth] = parent.stored`, whose
+/// left operand references both relations, so Postgres can never use it as a join key — it demotes
+/// to a per-row `Join Filter` over the cross product of each depth level with the next, which is
+/// quadratic. Measured with nothing to repair: 4.4 s at 28k namespaces, 18.6 s at 66k. Pinning the
+/// depth per statement makes the slice bound depend only on the child, yielding
+/// `Hash Cond: ((c.warehouse_id = p.warehouse_id) AND (c.namespace_name[1:2] = p.namespace_name))`
+/// — 154 ms at 128k for the whole loop. Same trap `move_namespace`'s `has_children` guard documents.
+///
+/// Ascending order is what makes it correct: each statement reads parents one level up that the
+/// previous statement already canonicalised, so a repair at depth 2 propagates downwards. Bounded by
+/// the deepest row present rather than `MAX_NAMESPACE_DEPTH`, so rows written while that limit was
+/// higher are still repaired. Rows whose ancestor is missing are left alone.
+///
+/// Collision-free by construction: every rewritten value is collation-equal to the value it
+/// replaces, and `unique_namespace_per_warehouse` is over that collation. `ON UPDATE CASCADE`
+/// carries the new spelling to `tabular.tabular_namespace_name`. `version` and `updated_at` are
+/// untouched, because the trigger's `WHEN` compares the collated column and a case-only rewrite is
+/// NOT DISTINCT there — replicas do not need the bump, since an affected row could never have been
+/// cached anyway.
+pub(crate) async fn repair_namespace_path_casing(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<u64, CatalogBackendError> {
+    let max_depth: Option<i32> = sqlx::query_scalar!(r#"SELECT max(depth) FROM namespace"#)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let mut repaired = 0;
+    for depth in 2..=max_depth.unwrap_or(1) {
+        repaired += sqlx::query!(
+            r#"
+            UPDATE namespace c
+            SET namespace_name = p.namespace_name || c.namespace_name[$1:]
+            FROM namespace p
+            WHERE p.warehouse_id = c.warehouse_id
+                AND c.depth = $1
+                AND p.depth = $1 - 1
+                -- Collated: finds the parent case-insensitively.
+                AND p.namespace_name = c.namespace_name[1:$1 - 1]
+                -- Byte-wise: rewrites only rows that actually differ, which makes this idempotent.
+                AND (c.namespace_name[1:$1 - 1]::text) COLLATE "C"
+                    <> (p.namespace_name::text) COLLATE "C"
+            "#,
+            depth,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
+        .rows_affected();
+    }
+    Ok(repaired)
 }
 
 pub(crate) async fn move_namespace(
@@ -822,70 +967,36 @@ pub(crate) async fn move_namespace(
         return Err(NamespaceHasChildren::new(warehouse_id, namespace_id).into());
     }
 
-    // Resolve the destination's parent and hold a key share lock on it. That excludes
-    // `FOR UPDATE`, which both a DELETE and a rename take — a rename because `namespace_name`
-    // is a key column of `unique_namespace_per_warehouse` — so no concurrent drop or rename of
-    // the parent can *commit before us*. It deliberately does not exclude `FOR NO KEY UPDATE`,
-    // which property and protection updates take: nothing here reads either.
+    // See `lock_parent_namespace` for the lock strength and why the stored spelling is read.
     //
-    // It does not stop the parent being dropped immediately *after* our commit:
-    // `drop_namespace` evaluates its emptiness guard in an unlocked statement and then deletes
-    // by an id list frozen from that snapshot, so it neither sees our new child nor re-checks
-    // after waiting on this lock. That is a pre-existing gap in `drop_namespace`, not one this
-    // lock can close; closing it needs a `FOR UPDATE` pre-lock there.
-    //
-    // Any such pre-lock must be `FOR UPDATE`, not `FOR NO KEY UPDATE` — the latter does not
-    // conflict with `FOR KEY SHARE` and the mutual exclusion would silently vanish.
-    //
-    // `namespace_name` is matched under the case-insensitive collation, consistent with
-    // `create_namespace`.
+    // What that lock does *not* stop is the parent being dropped immediately after our commit:
+    // `drop_namespace` evaluates its emptiness guard in an unlocked statement and then deletes by
+    // an id list frozen from that snapshot, so it neither sees our new child nor re-checks after
+    // waiting on this lock. That is a pre-existing gap in `drop_namespace`, not one this lock can
+    // close; closing it needs a `FOR UPDATE` pre-lock there — and it must be `FOR UPDATE`, not
+    // `FOR NO KEY UPDATE`, or it would not conflict with `FOR KEY SHARE` and the mutual exclusion
+    // would silently vanish.
     let destination_parent = destination.parent();
-    // Its stored `namespace_name` is read alongside the id, not just the id: see
-    // `written_name` below.
     let destination_parent_row = if let Some(ref parent) = destination_parent {
-        let parent_row = sqlx::query!(
-            r#"
-            SELECT namespace_id, namespace_name
-            FROM namespace
-            WHERE warehouse_id = $1 AND namespace_name = $2
-            FOR KEY SHARE
-            "#,
-            *warehouse_id,
-            &**parent,
-        )
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(DBErrorHandler::into_catalog_backend_error)?
-        .ok_or_else(|| NamespaceNotFound::new(warehouse_id, parent.clone()))?;
+        let parent_row = lock_parent_namespace(warehouse_id, parent, transaction)
+            .await?
+            .ok_or_else(|| NamespaceNotFound::new(warehouse_id, parent.clone()))?;
 
         // The destination's parent cannot be the namespace itself. A *deeper* descendant
         // is impossible to reach here: it would have to exist as the parent, and we
         // already rejected any namespace with descendants above.
-        if NamespaceId::from(parent_row.namespace_id) == namespace_id {
+        if parent_row.namespace_id == namespace_id {
             return Err(NamespaceCannotMoveIntoSelf::new(warehouse_id, namespace_id).into());
         }
         Some(parent_row)
     } else {
         None
     };
-    let destination_parent_id = destination_parent_row.as_ref().map(|r| r.namespace_id);
-    let has_destination_parent = destination_parent_id.is_some();
+    let has_destination_parent = destination_parent_row.is_some();
 
-    // What actually gets written: the parent's *stored* spelling of the ancestor segments,
-    // plus the caller's spelling of the leaf.
-    //
-    // The parent was matched under the case-insensitive collation above, so a destination of
-    // `["PARENT", "child"]` resolves against a parent stored as `["parent"]`. Writing
-    // the caller's array verbatim would then store a child whose prefix does not byte-match
-    // its parent's name. The catalog would still be correct — the parent id is right — but it
-    // breaks an invariant the namespace cache relies on: `is_parent_ident` compares
-    // `child[..len - 1]` against the parent's ident with plain equality, and documents the two
-    // as "byte-identical by construction". A mismatch makes `build_hierarchy_from_cache`
-    // invalidate and miss on *every* subsequent by-id lookup of that namespace — a permanent
-    // cache miss plus eviction churn, not a stale read.
-    //
-    // Taking the prefix from the parent row makes the stored path canonical by construction.
-    // Only the leaf keeps the caller's casing, because a case-only change is a genuine rename.
+    // What actually gets written: the parent's *stored* spelling of the ancestor segments, plus the
+    // caller's spelling of the leaf. See `lock_parent_namespace` for why the prefix must come from
+    // the parent row. Identical construction to `create_namespace`.
     //
     // A destination that differs only in ancestor casing canonicalises to the path this row
     // already has; the check below answers it as the no-op it is.
@@ -3223,6 +3334,283 @@ pub mod tests {
         assert!(
             NAMESPACE_CACHE.get(&namespace_id).await.is_some(),
             "State-path get_namespace must warm the shared NAMESPACE_CACHE"
+        );
+    }
+
+    // ------------------------ create_namespace prefix casing ------------------------
+
+    /// The parent is matched under the case-insensitive collation, so a caller may spell ancestor
+    /// segments differently from how they are stored. What lands in the table must use the parent's
+    /// stored spelling: the namespace cache compares a child's path minus its leaf against its
+    /// parent's ident byte-wise, and a mismatch makes every later lookup of that row — and of its
+    /// whole subtree — miss the cache, reload the same bytes and fail identically.
+    #[sqlx::test]
+    async fn test_create_namespace_canonicalises_parent_casing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // The issue's own repro: parent stored `a/B`, child created as `a/b/c`.
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["a", "B"]), None).await;
+        let child =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["a", "b", "c"]), None).await;
+
+        assert_eq!(
+            stored_path(&pool, child.namespace_id()).await,
+            vec!["a".to_string(), "B".to_string(), "c".to_string()],
+            "the ancestor segments must be stored with the parent's casing, not the caller's"
+        );
+        assert_eq!(
+            child.canonical_ident(),
+            &ident(&["a", "B", "c"]),
+            "the canonical ident is what was stored"
+        );
+        assert_eq!(
+            child.namespace_ident(),
+            &ident(&["a", "B", "c"]),
+            "create reports the stored path, not the requested one — no requested-case overlay, \
+             matching `move_namespace`"
+        );
+        assert_eq!(
+            child.parent_namespaces_id(),
+            Some(
+                get_namespace_ident(&pool, warehouse_id, &ident(&["a", "B"]))
+                    .await
+                    .into()
+            ),
+            "the parent id must still resolve to the stored parent row"
+        );
+
+        // The other direction: the caller upper-cases where the parent is stored lower-case.
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["d"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["d", "e"]), None).await;
+        let reverse =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["d", "E", "f"]), None).await;
+        assert_eq!(
+            stored_path(&pool, reverse.namespace_id()).await,
+            vec!["d".to_string(), "e".to_string(), "f".to_string()],
+            "canonicalisation is not direction-specific"
+        );
+
+        // The leaf is the name the caller owns, so its casing is kept verbatim.
+        let leaf = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["a", "b", "CeE"]),
+            None,
+        )
+        .await;
+        assert_eq!(
+            stored_path(&pool, leaf.namespace_id()).await,
+            vec!["a".to_string(), "B".to_string(), "CeE".to_string()],
+            "only the ancestors are rewritten; the leaf keeps the caller's casing"
+        );
+    }
+
+    /// Discriminates against a fix that only canonicalises the immediate parent segment — which a
+    /// depth-2 test would pass. Every ancestor segment comes from the parent row, and the parent
+    /// row's own prefix is canonical by induction.
+    #[sqlx::test]
+    async fn test_create_namespace_canonicalises_every_ancestor_segment(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["x"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["x", "Y"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["x", "Y", "Z"]), None).await;
+
+        // Every ancestor segment is spelled differently from how it is stored.
+        let deep = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["X", "y", "z", "leaf"]),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            stored_path(&pool, deep.namespace_id()).await,
+            vec![
+                "x".to_string(),
+                "Y".to_string(),
+                "Z".to_string(),
+                "leaf".to_string()
+            ],
+            "all ancestor segments must come from the parent row, not just the last one"
+        );
+    }
+
+    /// The `None` arm: at the warehouse root there is no parent row to take a spelling from, so the
+    /// caller's casing is the stored casing. Guards against over-canonicalisation.
+    #[sqlx::test]
+    async fn test_create_namespace_at_warehouse_root_keeps_callers_casing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let root =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["RootCase"]), None).await;
+
+        assert_eq!(
+            stored_path(&pool, root.namespace_id()).await,
+            vec!["RootCase".to_string()]
+        );
+        assert_eq!(root.canonical_ident(), &ident(&["RootCase"]));
+    }
+
+    /// Canonicalising the prefix must not change collision behaviour: the unique index is over the
+    /// whole array under the case-insensitive collation, so a case-variant path still collides.
+    #[sqlx::test]
+    async fn test_create_namespace_rejects_case_variant_prefix_collision(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["a", "B"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["a", "B", "C"]), None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::create_namespace(
+            warehouse_id,
+            NamespaceId::new_random(),
+            CreateNamespaceRequest {
+                namespace: ident(&["a", "b", "c"]),
+                properties: None,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .expect_err("a case-variant of an existing path must still collide");
+        assert!(
+            matches!(err, CatalogCreateNamespaceError::NamespaceAlreadyExists(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The write-side fix stops new drift; it cannot repair rows already stored. This pins the
+    /// repair migration, which is the only remedy for them: `move_namespace` refuses any namespace
+    /// with descendants, so a drifted row with children cannot be fixed through the API at all.
+    ///
+    /// Runs the migration's own statement via `include_str!` so the SQL stays single-sourced.
+    /// `#[sqlx::test]` applies migrations before the body, so the drift has to be created after —
+    /// which also means this exercises the re-run path, and the statement is idempotent.
+    #[sqlx::test]
+    async fn test_repair_namespace_path_casing_canonicalises_existing_rows(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Insert the drift directly: `create_namespace` can no longer produce it. The depth-5 row
+        // pins the loop bound — it is derived from the deepest row present, not a constant, so a
+        // chain deeper than expected is still repaired.
+        let ids: Vec<NamespaceId> = (0..6).map(|_| NamespaceId::new_random()).collect();
+        for (id, path) in ids.iter().zip([
+            vec!["a"],
+            vec!["a", "B"],
+            vec!["a", "b", "c"],
+            vec!["a", "b", "c", "D"],
+            vec!["a", "b", "c", "d", "E"],
+            // No depth-1 ancestor, so the loop never reaches it and it must be left alone.
+            vec!["orphan", "x"],
+        ]) {
+            let path: Vec<String> = path.iter().map(ToString::to_string).collect();
+            sqlx::query!(
+                r#"
+                INSERT INTO namespace (warehouse_id, namespace_id, namespace_name, namespace_properties)
+                VALUES ($1, $2, $3, '{}'::jsonb)
+                "#,
+                *warehouse_id,
+                **id,
+                &path[..],
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let repaired = {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let n = repair_namespace_path_casing(t.transaction()).await.unwrap();
+            t.commit().await.unwrap();
+            n
+        };
+        assert_eq!(
+            repaired, 3,
+            "the three drifted rows below depth 1 are rewritten"
+        );
+
+        assert_eq!(stored_path(&pool, ids[0]).await, vec!["a".to_string()]);
+        assert_eq!(
+            stored_path(&pool, ids[1]).await,
+            vec!["a".to_string(), "B".to_string()]
+        );
+        assert_eq!(
+            stored_path(&pool, ids[2]).await,
+            vec!["a".to_string(), "B".to_string(), "c".to_string()],
+            "the depth-3 row must adopt its parent's stored casing"
+        );
+        assert_eq!(
+            stored_path(&pool, ids[3]).await,
+            vec![
+                "a".to_string(),
+                "B".to_string(),
+                "c".to_string(),
+                "D".to_string()
+            ],
+            "and the depth-4 row must follow the repaired depth-3 prefix — a single-pass UPDATE \
+             would leave this one broken, which is why the statement recurses"
+        );
+        assert_eq!(
+            stored_path(&pool, ids[4]).await,
+            vec![
+                "a".to_string(),
+                "B".to_string(),
+                "c".to_string(),
+                "D".to_string(),
+                "E".to_string()
+            ],
+            "the depth-5 row proves the loop runs to the deepest row present, not to a constant"
+        );
+        assert_eq!(
+            stored_path(&pool, ids[5]).await,
+            vec!["orphan".to_string(), "x".to_string()],
+            "a row with no depth-1 ancestor is left untouched"
+        );
+
+        // A case-only rewrite does not fire `set_updated_at_and_increment_version`, so replicas are
+        // not forced to re-read rows that could never have been cached anyway.
+        let (version, updated_at): (i64, Option<chrono::DateTime<chrono::Utc>>) =
+            sqlx::query_as("SELECT version, updated_at FROM namespace WHERE namespace_id = $1")
+                .bind(*ids[2])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(version, 0, "a case-only repair must not bump the version");
+        assert!(updated_at.is_none(), "nor stamp updated_at");
+
+        // Idempotent: `--force-idempotent-post-migration-hooks` re-runs this to recover from a
+        // failure, and re-pinning it re-runs it for a new hole, so a second pass must change nothing.
+        let repaired_again = {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let n = repair_namespace_path_casing(t.transaction()).await.unwrap();
+            t.commit().await.unwrap();
+            n
+        };
+        assert_eq!(repaired_again, 0, "a second pass must rewrite nothing");
+        assert_eq!(
+            stored_path(&pool, ids[4]).await,
+            vec![
+                "a".to_string(),
+                "B".to_string(),
+                "c".to_string(),
+                "D".to_string(),
+                "E".to_string()
+            ],
+            "re-running the hook must be a no-op"
         );
     }
 

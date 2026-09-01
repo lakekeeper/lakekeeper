@@ -594,6 +594,26 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError>;
 
+    /// Rewrite any namespace path prefix that disagrees with its parent row's spelling, and
+    /// report how many rows were changed.
+    ///
+    /// Maintenance, not part of any request path: run from the post-migration hooks. A namespace's
+    /// path prefix references its parent, so it must carry the parent's stored spelling. Both write
+    /// paths now guarantee that (see `lock_parent_namespace`), but rows written before that fix can
+    /// disagree — and such a row, plus its whole subtree, can never be served from the namespace
+    /// cache, because `is_parent_ident` compares the prefix byte-wise and the reload re-inserts the
+    /// same bytes and fails identically.
+    ///
+    /// Implementations must be idempotent and safe to retry. The caller gates this on the migration
+    /// the repair is pinned to having just been applied, so it normally runs once per upgrade — but
+    /// `migrate --force-idempotent-post-migration-hooks` re-runs it on demand to recover from an
+    /// earlier failure, and re-pinning it to a later migration re-runs it for a newly found hole.
+    /// Both rely on repeat runs being harmless, and on what needs repairing being derived from the
+    /// data rather than from a stored marker.
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError>;
+
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,

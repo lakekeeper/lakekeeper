@@ -248,12 +248,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         namespace: namespace.clone(),
                     },
                     GetNamespacePropertiesQuery { return_uuid: false },
-                    state,
+                    state.clone(),
                     request_metadata,
                 )
                 .await?;
+                // A replay must answer exactly what the first call answered, which is the stored
+                // path (see the response built at the end of this method). `ns.namespace` is not
+                // that: `load_namespace_metadata` deliberately echoes the path the caller
+                // addressed, and for a nested namespace the stored ancestor segments can be
+                // spelled differently. Read the canonical ident rather than reusing the echo —
+                // changing what `load_namespace_metadata` returns would break every by-name read.
+                let canonical = C::get_namespace(
+                    warehouse_id,
+                    namespace.clone(),
+                    state.v1_state.catalog.clone(),
+                )
+                .await?
+                .map_or_else(|| namespace.clone(), |h| h.canonical_ident().clone());
                 return Ok(CreateNamespaceResponse {
-                    namespace: ns.namespace,
+                    namespace: canonical,
                     properties: ns.properties.map(|arc| (*arc).clone()),
                 });
             }
@@ -382,6 +395,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut properties = r_namespace.properties.clone().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(CreateNamespaceResponse {
+            // The stored path, which for a nested namespace may differ from the request: the
+            // ancestor segments are taken from the parent row, because a prefix references another
+            // entity rather than naming one the caller owns. Reporting where the namespace actually
+            // is keeps create consistent with `list_namespaces` and `move_namespace`, both of which
+            // return canonical paths, so a client can diff a listing against what create told it.
+            // Reads addressed by an explicit path — `load_namespace_metadata` — still echo that
+            // path, since there the caller supplied it.
             namespace: r_namespace.namespace_ident.clone(),
             properties: Some(properties),
         })
