@@ -1338,6 +1338,13 @@ pub(crate) async fn list_direct_role_members_page<
                 })?;
                 (Some(created_at), Some(member_type), Some(member_id))
             }
+            Some(PaginateToken::V2(_)) => {
+                return Err(InvalidPaginationToken::new(
+                    "This token belongs to a subtree listing",
+                    "",
+                )
+                .into());
+            }
             None => (None, None, None),
         };
 
@@ -1481,6 +1488,13 @@ pub(crate) async fn list_transitive_role_members_page<
                     InvalidPaginationToken::new("Invalid role-members page token payload", id)
                 })?;
                 (Some(created_at), Some(member_type), Some(member_id))
+            }
+            Some(PaginateToken::V2(_)) => {
+                return Err(InvalidPaginationToken::new(
+                    "This token belongs to a subtree listing",
+                    "",
+                )
+                .into());
             }
             None => (None, None, None),
         };
@@ -1670,7 +1684,8 @@ pub(crate) async fn list_direct_user_roles_page<
         .transpose()?;
     let (token_ts, token_id): (_, Option<&Uuid>) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(
@@ -1771,7 +1786,8 @@ pub(crate) async fn list_transitive_user_roles_page<
         .transpose()?;
     let (token_ts, token_id): (_, Option<&Uuid>) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(
@@ -1868,7 +1884,8 @@ pub(crate) async fn list_direct_role_member_of_page<
         .transpose()?;
     let (token_ts, token_id): (_, Option<&Uuid>) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(
@@ -1945,7 +1962,8 @@ pub(crate) async fn list_transitive_role_member_of_page<
         .transpose()?;
     let (token_ts, token_id): (_, Option<&Uuid>) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(

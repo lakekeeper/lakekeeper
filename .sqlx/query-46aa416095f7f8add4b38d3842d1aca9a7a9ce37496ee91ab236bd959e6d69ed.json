@@ -1,0 +1,174 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH ns AS (\n            SELECT\n                ga.grant_id, ga.principal_type, ga.user_id, ga.role_id, ga.privilege,\n                ga.resource_type, ga.project_id, ga.warehouse_id, ga.namespace_id,\n                ga.tabular_id, ga.tag_definition_id,\n                NULL::tabular_type AS tabular_typ, ga.created_at\n            FROM grant_assignment ga\n            WHERE $2::bool\n              AND ga.warehouse_id = $1\n              AND ga.resource_type = 'namespace'::grant_resource_type\n              AND ($6::text[] IS NULL OR ga.privilege = ANY($6))\n              AND ($7::text IS NULL\n                   OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $7\n                       AND ga.role_id IS NULL))\n              AND ($8::uuid IS NULL\n                   OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8\n                       AND ga.user_id IS NULL))\n              AND ga.created_at <= $11\n              AND (ga.created_at, ga.grant_id)\n                  > (COALESCE($12, '-infinity'::timestamptz),\n                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))\n            ORDER BY ga.created_at, ga.grant_id\n            LIMIT $14\n        ),\n        tab AS (\n            SELECT\n                ga.grant_id, ga.principal_type, ga.user_id, ga.role_id, ga.privilege,\n                ga.resource_type, ga.project_id, ga.warehouse_id, ga.namespace_id,\n                ga.tabular_id, ga.tag_definition_id,\n                t.typ AS tabular_typ, ga.created_at\n            FROM grant_assignment ga\n            JOIN tabular t\n              ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n            WHERE $3::bool\n              AND ga.warehouse_id = $1\n              AND ga.resource_type = 'tabular'::grant_resource_type\n              AND ($4::tabular_type[] IS NULL OR t.typ = ANY($4))\n              AND ($5::bool OR t.deleted_at IS NULL)\n              AND ($6::text[] IS NULL OR ga.privilege = ANY($6))\n              AND ($7::text IS NULL\n                   OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $7\n                       AND ga.role_id IS NULL))\n              AND ($8::uuid IS NULL\n                   OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8\n                       AND ga.user_id IS NULL))\n              AND ga.created_at <= $11\n              AND (ga.created_at, ga.grant_id)\n                  > (COALESCE($12, '-infinity'::timestamptz),\n                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))\n            ORDER BY ga.created_at, ga.grant_id\n            LIMIT $14\n        ),\n        wh AS (\n            SELECT\n                ga.grant_id, ga.principal_type, ga.user_id, ga.role_id, ga.privilege,\n                ga.resource_type, ga.project_id, ga.warehouse_id, ga.namespace_id,\n                ga.tabular_id, ga.tag_definition_id,\n                NULL::tabular_type AS tabular_typ, ga.created_at\n            FROM grant_assignment ga\n            WHERE $15::bool\n              AND ga.warehouse_id = $1\n              AND ga.resource_type = 'warehouse'::grant_resource_type\n              AND ($6::text[] IS NULL OR ga.privilege = ANY($6))\n              AND ($7::text IS NULL\n                   OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $7\n                       AND ga.role_id IS NULL))\n              AND ($8::uuid IS NULL\n                   OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8\n                       AND ga.user_id IS NULL))\n              -- The warehouse level is this root; nothing below it confers authority here.\n              -- `IS NOT NULL` on the column is load-bearing; see the namespace twin.\n              AND NOT (($9::text[] IS NOT NULL AND ga.user_id IS NOT NULL\n                        AND ga.user_id = ANY($9))\n                       OR ($10::uuid[] IS NOT NULL AND ga.role_id IS NOT NULL\n                           AND ga.role_id = ANY($10)))\n              AND ga.created_at <= $11\n              AND (ga.created_at, ga.grant_id)\n                  > (COALESCE($12, '-infinity'::timestamptz),\n                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))\n            ORDER BY ga.created_at, ga.grant_id\n            LIMIT $14\n        )\n        SELECT\n            x.grant_id AS \"grant_id!\",\n            x.principal_type AS \"principal_type!: PrincipalType\",\n            x.user_id, x.role_id,\n            x.privilege AS \"privilege!\",\n            x.resource_type AS \"resource_type!: StoredResourceType\",\n            x.project_id, x.warehouse_id, x.namespace_id, x.tabular_id, x.tag_definition_id,\n            x.tabular_typ AS \"tabular_typ?: TabularType\",\n            x.created_at AS \"created_at!\"\n        FROM (\n            SELECT * FROM ns\n            UNION ALL SELECT * FROM tab\n            UNION ALL SELECT * FROM wh\n        ) x\n        ORDER BY x.created_at, x.grant_id\n        LIMIT $14\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool",
+        {
+          "Custom": {
+            "name": "tabular_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tabular_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view",
+                      "generic-table"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "TextArray",
+        "Text",
+        "Uuid",
+        "TextArray",
+        "UuidArray",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "46aa416095f7f8add4b38d3842d1aca9a7a9ce37496ee91ab236bd959e6d69ed"
+}

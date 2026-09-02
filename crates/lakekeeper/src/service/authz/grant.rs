@@ -351,6 +351,212 @@ impl GrantFilter {
     }
 }
 
+/// Where a subtree grant operation is rooted.
+///
+/// Both roots cover the direct grants held on the namespaces beneath them and on the
+/// tabulars those namespaces hold. Neither covers server, project or tag-definition
+/// grants: none of those sits under a warehouse. A grant on a tag *definition* survives
+/// a subtree revoke even though the tag is attached to tables inside it — the definition
+/// is project-scoped.
+///
+/// Membership is by id, resolved from the root's current path on every call. A namespace
+/// with descendants cannot be renamed or moved, so the root itself is stable, but a leaf
+/// can move out between two calls of a revoke loop and keep grants it would otherwise
+/// have lost; one moved in is swept by the next call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantSubtreeRoot {
+    /// Every namespace in the warehouse, and every tabular in them. Whether the
+    /// warehouse's own grants are in scope is the filter's
+    /// [`include_root_level`](GrantSubtreeFilter::include_root_level).
+    Warehouse { warehouse_id: WarehouseId },
+    /// This namespace, its descendant namespaces, and the tabulars in all of them.
+    Namespace {
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+    },
+}
+
+impl GrantSubtreeRoot {
+    #[must_use]
+    pub fn warehouse_id(&self) -> WarehouseId {
+        match self {
+            GrantSubtreeRoot::Warehouse { warehouse_id, .. }
+            | GrantSubtreeRoot::Namespace { warehouse_id, .. } => *warehouse_id,
+        }
+    }
+
+    /// The resource the operation was named and authorized against.
+    #[must_use]
+    pub fn resource(&self) -> GrantResource {
+        match *self {
+            GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
+                GrantResource::Warehouse(warehouse_id)
+            }
+            GrantSubtreeRoot::Namespace {
+                warehouse_id,
+                namespace_id,
+            } => GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+        }
+    }
+}
+
+/// Which of a subtree's grants an operation matches. Every field narrows; a default
+/// filter matches every grant the root covers, the root's own included.
+#[derive(Debug, Clone)]
+pub struct GrantSubtreeFilter {
+    /// Whether grants held on the addressed resource itself are in scope. On by
+    /// default: a grant on a container confers access beneath it, so an operation that
+    /// skipped the root would leave standing the access it names. `false` keeps the
+    /// root's own grants — its administration plane — untouched.
+    pub include_root_level: bool,
+    /// Only grants held by this principal.
+    pub principal: Option<UserOrRoleId>,
+    /// Only grants carrying one of these privileges. Empty matches any privilege,
+    /// including one that has left the authorizer's vocabulary — which is the only way
+    /// such a grant can be cleaned up in bulk.
+    pub privileges: Vec<String>,
+    /// Only grants on resources of these kinds. Empty matches every kind the root
+    /// covers. A kind the root does not cover matches nothing rather than widening it.
+    pub resource_types: Vec<ResourceType>,
+    /// Include grants on soft-deleted tabulars. A revoke always includes them: undrop
+    /// restores a table together with its grants, so skipping the recycle bin would
+    /// leave access the operator believed removed.
+    pub include_soft_deleted: bool,
+    /// Skip grants held by any of these principals **on the root itself**.
+    ///
+    /// The revoke excludes the acting principal's grantee set — the identity and the roles
+    /// it is a member of — because authority normally comes from a role, and taking that
+    /// grant in the first call would leave every member of it unable to make the second.
+    ///
+    /// Root-level only, and deliberately: authority at the root can only come from a grant
+    /// on the root or above it, so protecting descendants would silently skip unrelated
+    /// grants the caller asked to remove and still report the subtree cleared.
+    pub exclude_principals: Vec<UserOrRoleId>,
+    /// Only grants created at or before this instant — inclusive, despite the name.
+    ///
+    /// Bounds a multi-call revoke so it terminates: grants made after the operation began
+    /// are left alone, and each pass removes some of what remains below the ceiling.
+    ///
+    /// The set it bounds is what was *visible* to each pass, not what the clock says
+    /// existed. `created_at` defaults to the transaction start, so a grant inserted before
+    /// the ceiling but committed after a pass carries a stamp below that ceiling and is
+    /// not removed by it. Reaching `has_more: false` therefore means no matching grant was
+    /// visible, not that none exists.
+    pub created_before: Option<DateTime<Utc>>,
+}
+
+impl Default for GrantSubtreeFilter {
+    fn default() -> Self {
+        Self {
+            include_root_level: true,
+            principal: None,
+            privileges: Vec::new(),
+            resource_types: Vec::new(),
+            include_soft_deleted: false,
+            exclude_principals: Vec::new(),
+            created_before: None,
+        }
+    }
+}
+
+impl GrantSubtreeFilter {
+    /// Whether grants held on namespaces are in scope.
+    #[must_use]
+    pub fn matches_namespaces(&self) -> bool {
+        self.resource_types.is_empty() || self.resource_types.contains(&ResourceType::Namespace)
+    }
+
+    /// Whether the warehouse *kind* passes the resource-type filter. The warehouse level
+    /// is in scope only when `include_root_level` also holds; the store combines both.
+    #[must_use]
+    pub fn matches_warehouses(&self) -> bool {
+        self.resource_types.is_empty() || self.resource_types.contains(&ResourceType::Warehouse)
+    }
+
+    /// Which tabular kinds are in scope, or `None` when every kind is. An empty vector
+    /// means no tabular grant matches at all.
+    #[must_use]
+    pub fn tabular_types(&self) -> Option<Vec<ResourceType>> {
+        if self.resource_types.is_empty() {
+            return None;
+        }
+        Some(
+            self.resource_types
+                .iter()
+                .copied()
+                .filter(|kind| {
+                    matches!(
+                        kind,
+                        ResourceType::Table | ResourceType::View | ResourceType::GenericTable
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A grant row as one store knows it, so a two-phase revoke can name back exactly the
+/// rows it read.
+///
+/// Never leaves the server and never enters an API: a grant's identity is its
+/// `(principal, privilege, resource)` triple, and an authorizer that owns its store has
+/// no row to mint an id for. This exists only so the authority check and the delete
+/// cover the same rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From)]
+pub struct GrantRowId(uuid::Uuid);
+
+impl std::ops::Deref for GrantRowId {
+    type Target = uuid::Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// One grant a subtree revoke would remove: the full listing row, so a dry run can
+/// render it exactly as the listing would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantCandidate {
+    pub row: GrantRowId,
+    pub grant: GrantRow,
+}
+
+/// What one bounded subtree revoke would remove, read before anything is authorized.
+///
+/// The revoke is two phases so the authority check covers exactly the rows that go: read
+/// the candidates, put their distinct `(privilege, grantee)` pairs to the authorizer, then
+/// remove those rows. A grant created between the two is not removed by this call and is
+/// reported by the next — the same footing as one created after the ceiling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantRevokeCandidates {
+    /// At most the caller's limit, in `(created_at, grant_id)` order.
+    pub candidates: Vec<GrantCandidate>,
+    /// Whether grants matching the same filter remain beyond this batch. The caller
+    /// re-issues the same request to remove them: the filter is the continuation, so
+    /// there is no token to carry — and a cursor on a delete would permanently skip a
+    /// grant inserted below it.
+    pub has_more: bool,
+    /// The ceiling this batch was read under, to be echoed back on the next call. See
+    /// [`GrantSubtreeFilter::created_before`].
+    pub as_of: chrono::DateTime<Utc>,
+}
+
+/// One page of a subtree grant listing.
+///
+/// Separate from [`ListGrantsResultPage`] for `as_of`: passing a listing's ceiling to a
+/// revoke is what makes the revoke a subset of what was previewed, so the preview has to
+/// publish the value it read under.
+#[derive(Debug, Clone)]
+pub struct ListSubtreeGrantsResultPage {
+    pub grants: Vec<GrantRow>,
+    pub next_page_token: Option<String>,
+    /// Either the caller's `created_before` or the instant the store bound for it.
+    pub as_of: DateTime<Utc>,
+}
+
 /// One page of a grant listing, with an opaque continuation token.
 #[derive(Debug, Clone)]
 pub struct ListGrantsResultPage {

@@ -702,8 +702,16 @@ pub enum CatalogWarehouseAction {
     },
     /// Can list the grants held on this warehouse.
     ReadGrants,
+    /// Can list and read every grant in the warehouse: the warehouse's own and those on
+    /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+    /// covers this one resource; granted separately because it enumerates the subtree.
+    ReadSubtreeGrants,
+    /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
+    /// batch. An authorizer must answer it as authority over everything beneath — or
+    /// refuse the subtree routes.
+    RevokeSubtreeGrants,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 24]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -734,11 +742,13 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 24]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogWarehouseAction::ReadGrants,
+        CatalogWarehouseAction::ReadSubtreeGrants,
+        CatalogWarehouseAction::RevokeSubtreeGrants,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 24] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 26] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -782,8 +792,10 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetEndpointStatistics
             // Governance tag attachment is metadata, not part of the reconciled spec.
             | CatalogWarehouseAction::ManageTags
-            // Reading grants is a read.
-            | CatalogWarehouseAction::ReadGrants => false,
+            // Grant administration is not part of the reconciled spec.
+            | CatalogWarehouseAction::ReadGrants
+            | CatalogWarehouseAction::ReadSubtreeGrants
+            | CatalogWarehouseAction::RevokeSubtreeGrants => false,
         }
     }
 }
@@ -936,8 +948,17 @@ pub enum CatalogNamespaceAction {
     },
     /// Can list the grants held on this namespace.
     ReadGrants,
+    /// Can list and read every grant in the subtree rooted here: the namespace's own and
+    /// those on every descendant namespace and tabular. Strictly stronger than
+    /// `ReadGrants`, which covers this one resource; granted separately because it
+    /// enumerates the subtree.
+    ReadSubtreeGrants,
+    /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
+    /// the whole batch. An authorizer must answer it as authority over everything
+    /// beneath — or refuse the subtree routes.
+    RevokeSubtreeGrants,
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 18]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -985,11 +1006,13 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 18]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogNamespaceAction::ReadGrants,
+        CatalogNamespaceAction::ReadSubtreeGrants,
+        CatalogNamespaceAction::RevokeSubtreeGrants,
     ]
 });
 impl CatalogNamespaceAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 18] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 20] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1578,6 +1601,8 @@ pub enum CatalogWarehouseActionKind {
     ManageTags,
     AcceptMovedNamespace,
     ReadGrants,
+    ReadSubtreeGrants,
+    RevokeSubtreeGrants,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
@@ -1606,6 +1631,8 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
+            CatalogWarehouseAction::ReadSubtreeGrants => Self::ReadSubtreeGrants,
+            CatalogWarehouseAction::RevokeSubtreeGrants => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -1633,6 +1660,8 @@ pub enum CatalogNamespaceActionKind {
     Move,
     AcceptMovedNamespace,
     ReadGrants,
+    ReadSubtreeGrants,
+    RevokeSubtreeGrants,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
     fn from(action: &CatalogNamespaceAction) -> Self {
@@ -1655,6 +1684,8 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
             CatalogNamespaceAction::ManageTags => Self::ManageTags,
             CatalogNamespaceAction::ReadGrants => Self::ReadGrants,
+            CatalogNamespaceAction::ReadSubtreeGrants => Self::ReadSubtreeGrants,
+            CatalogNamespaceAction::RevokeSubtreeGrants => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -2137,6 +2168,10 @@ where
     /// `target` carries the resource's resolved ancestry, not just its id, so an authorizer
     /// that resolves inheritance itself can place the resource in its hierarchy — see
     /// [`GrantTarget`].
+    ///
+    /// The subtree endpoints do not ask here: they ask the root's `ReadSubtreeGrants`
+    /// and `RevokeSubtreeGrants` actions, whose answers must hold for everything
+    /// beneath — see those actions.
     ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(

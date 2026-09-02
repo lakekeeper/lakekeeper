@@ -379,18 +379,15 @@ pub(crate) async fn list_namespaces(
     let parent = parent
         .as_ref()
         .and_then(|p| if p.is_empty() { None } else { Some(p.clone()) });
-    let token = page_token
+    let token: Option<PaginateToken<Uuid>> = page_token
         .as_option()
         .map(PaginateToken::try_from)
         .transpose()?;
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let namespaces = if let Some(parent) = parent {

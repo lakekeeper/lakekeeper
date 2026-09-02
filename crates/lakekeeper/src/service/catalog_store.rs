@@ -39,8 +39,9 @@ use crate::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         authz::{
-            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
-            UserOrRoleId,
+            AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
+            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
+            ListSubtreeGrantsResultPage, UserOrRoleId,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -852,6 +853,51 @@ where
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
+
+    /// One page of the direct grants held anywhere under `root`, keyset-paginated on
+    /// `(created_at, grant_id)` across every resource kind the root covers.
+    ///
+    /// Rows the caller may not read are **not** filtered here: grant-read authority is
+    /// resolved per resource by the caller, which is the only layer holding the resolved
+    /// entities to ask about.
+    async fn list_grants_in_subtree_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
+
+    /// At most `limit` of the grants under `root` that match `filter`, plus whether more
+    /// remain — the read half of a revoke.
+    ///
+    /// Split from the delete so the authority check can cover exactly the rows that go:
+    /// nothing here is authorized, and the caller must put these candidates' distinct
+    /// `(privilege, grantee)` pairs to the authorizer before calling
+    /// [`Self::revoke_grant_candidates_impl`] with them.
+    ///
+    /// Bounded rather than paginated: removed rows are gone, so re-issuing the same
+    /// request is the continuation. Termination is the caller's `created_before` ceiling,
+    /// which the store binds to the database's own clock when the caller supplies none
+    /// and reports back so the next call can repeat it.
+    ///
+    /// Grants on soft-deleted tabulars are always candidates, whatever `filter` says
+    /// about listing them: an undrop restores a table together with its grants.
+    async fn select_subtree_grant_candidates_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        limit: usize,
+        catalog_state: Self::State,
+    ) -> Result<GrantRevokeCandidates, ListGrantsStoreError>;
+
+    /// Remove exactly the rows named by `candidates`, returning what actually went.
+    ///
+    /// Idempotent: a candidate already revoked is simply absent from the result, so a
+    /// retry reports the delta rather than repeating it.
+    async fn revoke_grant_candidates_impl<'a>(
+        root: GrantSubtreeRoot,
+        candidates: &[GrantCandidate],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError>;
 
     /// Every grant held by any of `principals` on any of `resources`.
     ///

@@ -6,15 +6,53 @@ use base64::Engine;
 use chrono::Utc;
 use lakekeeper::service::InvalidPaginationToken;
 
+/// Keyset position in a `(created_at, id)` ordering.
+///
+/// That ordering is *insert* order, not commit order: `created_at` defaults to `now()`,
+/// which is the transaction start, so a row committed after a page was read can carry a
+/// stamp below that page's position and be returned on no page at all. Walking a page
+/// sequence to exhaustion therefore does not prove the whole set was observed.
+///
+/// Benign for a listing, where the row appears on the next full walk. Any caller that
+/// concludes *completion* from exhaustion — a drain loop, a sweep that acts on the
+/// complement — needs a cutoff that excludes in-flight transactions instead.
 #[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
     V1(V1PaginateToken<T>),
+    V2(V2PaginateToken<T>),
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct V1PaginateToken<T> {
     pub(crate) created_at: chrono::DateTime<Utc>,
     pub(crate) id: T,
+}
+
+/// A keyset position plus the ceiling the walk was started under.
+///
+/// The ceiling is server-minted snapshot state, so it rides in the token: every page of
+/// one walk reads under the instant page one bound, and the client has nothing to carry
+/// by hand. Client-authored filters stay in the request.
+#[derive(Debug, PartialEq)]
+pub(crate) struct V2PaginateToken<T> {
+    pub(crate) created_at: chrono::DateTime<Utc>,
+    pub(crate) id: T,
+    pub(crate) ceiling: chrono::DateTime<Utc>,
+}
+
+impl<T> PaginateToken<T> {
+    /// The keyset position, for the listings that use plain `V1` tokens. A `V2` token
+    /// belongs to a subtree listing and pins that walk's ceiling; handing it to another
+    /// listing is refused, so it cannot silently walk a different snapshot.
+    pub(crate) fn v1_parts(&self) -> Result<(&chrono::DateTime<Utc>, &T), InvalidPaginationToken> {
+        match self {
+            PaginateToken::V1(V1PaginateToken { created_at, id }) => Ok((created_at, id)),
+            PaginateToken::V2(_) => Err(InvalidPaginationToken::new(
+                "This token belongs to a subtree listing",
+                "",
+            )),
+        }
+    }
 }
 
 impl<T> Display for PaginateToken<T>
@@ -25,6 +63,20 @@ where
         let token_string = match self {
             PaginateToken::V1(V1PaginateToken { created_at, id }) => {
                 format!("1&{}&{}", created_at.timestamp_micros(), id)
+            }
+            // The id comes last in every version: it may itself contain `&`, so it must
+            // be the segment that swallows the rest of the string.
+            PaginateToken::V2(V2PaginateToken {
+                created_at,
+                id,
+                ceiling,
+            }) => {
+                format!(
+                    "2&{}&{}&{}",
+                    created_at.timestamp_micros(),
+                    ceiling.timestamp_micros(),
+                    id,
+                )
             }
         };
         write!(
@@ -76,34 +128,45 @@ where
             InvalidPaginationToken::new("Invalid paginate token encoding", s)
         })?;
 
-        let parts = sd.splitn(3, '&').collect::<Vec<_>>();
+        let parse_micros = |value: &str, what: &'static str| {
+            chrono::DateTime::from_timestamp_micros(value.parse().map_err(|e| {
+                tracing::info!("Could not parse {what} from page token: {e}");
+                InvalidPaginationToken::new("Invalid paginate token timestamp", s)
+            })?)
+            .ok_or(InvalidPaginationToken::new(
+                "Invalid paginate token timestamp",
+                s,
+            ))
+        };
+        let parse_id = |value: &str| {
+            value.parse().map_err(|e| {
+                tracing::info!("Could not parse ID from page token: {e}");
+                InvalidPaginationToken::new("Invalid paginate token identifier", s)
+            })
+        };
+        let structure =
+            || InvalidPaginationToken::new("Invalid paginate token structure", sd.clone());
 
-        match *parts
-            .first()
-            .ok_or_else(|| InvalidPaginationToken::new("Invalid paginate token structure", s))?
-        {
-            "1" => match &parts[1..] {
-                &[ts, id] => {
-                    let created_at =
-                        chrono::DateTime::from_timestamp_micros(ts.parse().map_err(|e| {
-                            tracing::info!("Could not parse timestamp from page token: {e}");
-                            InvalidPaginationToken::new("Invalid paginate token timestamp", s)
-                        })?)
-                        .ok_or(InvalidPaginationToken::new(
-                            "Invalid paginate token timestamp",
-                            s,
-                        ))?;
-                    let id = id.parse().map_err(|e| {
-                        tracing::info!("Could not parse ID from page token: {e}");
-                        InvalidPaginationToken::new("Invalid paginate token identifier", s)
-                    })?;
-                    Ok(PaginateToken::V1(V1PaginateToken { created_at, id }))
-                }
-                _ => Err(InvalidPaginationToken::new(
-                    "Invalid paginate token structure",
-                    sd,
-                )),
-            },
+        // Split per version, id last: an id may itself contain `&`, so it must be the
+        // segment that swallows the rest of the string.
+        let (version, rest) = sd.split_once('&').ok_or_else(structure)?;
+        match version {
+            "1" => {
+                let (ts, id) = rest.split_once('&').ok_or_else(structure)?;
+                Ok(PaginateToken::V1(V1PaginateToken {
+                    created_at: parse_micros(ts, "timestamp")?,
+                    id: parse_id(id)?,
+                }))
+            }
+            "2" => {
+                let (ts, rest) = rest.split_once('&').ok_or_else(structure)?;
+                let (ceiling, id) = rest.split_once('&').ok_or_else(structure)?;
+                Ok(PaginateToken::V2(V2PaginateToken {
+                    created_at: parse_micros(ts, "timestamp")?,
+                    ceiling: parse_micros(ceiling, "ceiling")?,
+                    id: parse_id(id)?,
+                }))
+            }
             _ => Err(InvalidPaginationToken::new(
                 "Unsupported paginate token version",
                 sd,
@@ -158,6 +221,31 @@ mod test {
             PaginateToken::V1(V1PaginateToken {
                 created_at,
                 id: "kubernetes/some-name&with&ampersand".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_paginate_token_v2_roundtrips_with_ampersand_id() {
+        let created_at = Utc::now();
+        let ceiling = Utc::now();
+        let token = PaginateToken::V2(V2PaginateToken {
+            created_at,
+            id: "kubernetes/some-name&with&ampersand".to_string(),
+            ceiling,
+        });
+
+        let token_str = token.to_string();
+        let parsed: PaginateToken<String> = PaginateToken::try_from(token_str.as_str()).unwrap();
+        let micros = |at: chrono::DateTime<Utc>| {
+            chrono::DateTime::from_timestamp_micros(at.timestamp_micros()).unwrap()
+        };
+        assert_eq!(
+            parsed,
+            PaginateToken::V2(V2PaginateToken {
+                created_at: micros(created_at),
+                id: "kubernetes/some-name&with&ampersand".to_string(),
+                ceiling: micros(ceiling),
             })
         );
     }

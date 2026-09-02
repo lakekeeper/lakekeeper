@@ -50,6 +50,9 @@ type warehouse
     define can_control_all_tasks: modify
     # Only if we can GRANT a privilege, we can LIST them for now
     define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_grant_manage_tags or can_change_ownership
+    # Reading every grant in the warehouse is administration-grade; see the namespace twin.
+    define can_read_subtree_assignments: manage_grants
+    define can_revoke_subtree_assignments: manage_grants
     # Task Queue Configurations
     define can_get_task_queue_config: can_get_metadata
     define can_modify_task_queue_config: modify

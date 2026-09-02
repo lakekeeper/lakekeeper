@@ -312,11 +312,9 @@ pub(crate) async fn list_generic_tables(
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
+        .map(PaginateToken::v1_parts)
+        .transpose()
+        .map_err(|e| ListGenericTablesError::from(CatalogBackendError::new_unexpected(e)))?
         .map_or((None, None), |(ts, id)| (Some(*ts), Some(*id)));
 
     let rows = sqlx::query_as!(

@@ -783,7 +783,7 @@ where
 {
     let page_size = CONFIG.page_size_or_pagination_max(pagination_query.page_size);
 
-    let token = pagination_query
+    let token: Option<PaginateToken<Uuid>> = pagination_query
         .page_token
         .as_option()
         .map(PaginateToken::try_from)
@@ -791,11 +791,8 @@ where
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let tables = sqlx::query_as!(

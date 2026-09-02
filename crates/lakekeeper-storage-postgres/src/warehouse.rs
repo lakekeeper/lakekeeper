@@ -977,8 +977,10 @@ pub(crate) async fn get_warehouse_stats(
         .map(PaginateToken::try_from)
         .transpose()?;
 
-    let (token_ts, _): (_, Option<String>) = token
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+    let (token_ts, _): (_, Option<&String>) = token
+        .as_ref()
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let stats = sqlx::query!(

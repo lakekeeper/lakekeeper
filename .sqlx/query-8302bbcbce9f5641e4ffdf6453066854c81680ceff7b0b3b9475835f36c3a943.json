@@ -1,0 +1,209 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH root AS (\n            SELECT namespace_name AS path, array_length(namespace_name, 1) AS depth\n            FROM namespace\n            WHERE warehouse_id = $2 AND namespace_id = $3\n        ),\n        subtree AS (\n            SELECT n.namespace_id\n            FROM namespace n, root r\n            WHERE n.warehouse_id = $2\n              AND n.namespace_name >= r.path\n              AND n.namespace_name[1:r.depth] = r.path\n        ),\n        victims AS MATERIALIZED (\n            SELECT ga.grant_id\n            FROM grant_assignment ga\n            -- The tabular's *current* namespace, which is what a rename moves.\n            LEFT JOIN tabular t\n              ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n            WHERE ga.grant_id = ANY($1)\n              AND ($3::uuid IS NULL\n                   OR (ga.warehouse_id = $2\n                       AND COALESCE(t.namespace_id, ga.namespace_id)\n                           IN (SELECT namespace_id FROM subtree)))\n            ORDER BY ga.grant_id\n            FOR UPDATE OF ga\n        ),\n        deleted AS (\n            DELETE FROM grant_assignment d USING victims v WHERE d.grant_id = v.grant_id\n            RETURNING d.grant_id, d.principal_type, d.user_id, d.role_id, d.privilege,\n                      d.resource_type, d.project_id, d.warehouse_id, d.namespace_id,\n                      d.tabular_id, d.tag_definition_id, d.created_at\n        )\n        SELECT\n            dl.grant_id AS \"grant_id!\",\n            dl.principal_type AS \"principal_type!: PrincipalType\",\n            dl.user_id, dl.role_id,\n            dl.privilege AS \"privilege!\",\n            dl.resource_type AS \"resource_type!: StoredResourceType\",\n            dl.project_id, dl.warehouse_id, dl.namespace_id, dl.tabular_id,\n            dl.tag_definition_id,\n            -- Joined outside the CTE: RETURNING cannot join, and the row does not store\n            -- which of table, view or generic table its tabular is.\n            tab.typ AS \"tabular_typ?: TabularType\",\n            dl.created_at AS \"created_at!\"\n        FROM deleted dl\n        LEFT JOIN tabular tab\n               ON dl.warehouse_id = tab.warehouse_id AND dl.tabular_id = tab.tabular_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "privilege"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "8302bbcbce9f5641e4ffdf6453066854c81680ceff7b0b3b9475835f36c3a943"
+}

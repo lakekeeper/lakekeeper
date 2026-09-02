@@ -144,12 +144,13 @@ fn parse_token(token: &str) -> Result<(chrono::DateTime<Utc>, chrono::Duration),
     // with our TryFrom implementation, which requires an std::error::Error. As a result, we created our own
     // Duration type, RoundTrippableDuration, which wraps iso8601::Duration and implements TryFrom<&str> and Display.
     // This approach ensures compatibility and functionality.
-    let PaginateToken::V1(V1PaginateToken { created_at, id }): PaginateToken<iso8601::Duration> =
-        PaginateToken::try_from(token)?;
+    let parsed: PaginateToken<iso8601::Duration> = PaginateToken::try_from(token)?;
+    let (created_at, id) = parsed.v1_parts()?;
+    let created_at = *created_at;
 
     Ok((
         created_at,
-        iso_8601_duration_to_chrono(&id).inspect_err(|e| {
+        iso_8601_duration_to_chrono(id).inspect_err(|e| {
             tracing::error!("Failed to parse duration from statistics page token: {e}");
         })?,
     ))

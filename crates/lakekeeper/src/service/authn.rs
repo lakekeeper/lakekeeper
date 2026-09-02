@@ -852,8 +852,10 @@ pub(crate) async fn auth_middleware_fn<
                 // `Unavailable` is a 503 with the gate's chosen `Retry-After`.
                 Err(rejection) => {
                     return match rejection {
-                        AdmissionRejection::Forbidden(error) => error.into_response(),
-                        AdmissionRejection::Unavailable { error, retry_after } => {
+                        AdmissionRejection::Forbidden { error, .. } => error.into_response(),
+                        AdmissionRejection::Unavailable {
+                            error, retry_after, ..
+                        } => {
                             // `Retry-After` is whole seconds; round any
                             // sub-second remainder up so a sub-second Duration
                             // still asks for at least 1s of backoff rather than

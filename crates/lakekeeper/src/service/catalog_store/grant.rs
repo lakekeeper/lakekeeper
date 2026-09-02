@@ -12,7 +12,10 @@ use crate::{
     api::iceberg::v1::PaginationQuery,
     service::{
         CatalogBackendError, DatabaseIntegrityError, InvalidPaginationToken,
-        authz::{AppliedGrants, GrantFilter, GrantSpec, ListGrantsResultPage},
+        authz::{
+            AppliedGrants, GrantCandidate, GrantFilter, GrantSpec, GrantSubtreeFilter,
+            GrantSubtreeRoot, ListGrantsResultPage, ListSubtreeGrantsResultPage,
+        },
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
 };
@@ -122,6 +125,42 @@ impl From<GrantLockTimeout> for ErrorModel {
     }
 }
 
+/// A subtree revoke matched more grants than one call may remove.
+///
+/// Nothing was removed. The caller either narrows the filter or re-issues with
+/// partial revocation allowed and loops until the response reports no more matches.
+/// Refusing by default is what keeps a caller from starting a multi-call operation
+/// without knowing each call is its own transaction.
+#[derive(thiserror::Error, PartialEq, Eq, Debug)]
+#[error(
+    "More than {limit} grants match; nothing was revoked. Narrow the filter, or allow \
+     partial revocation and repeat the request until no matches remain."
+)]
+pub struct GrantRevokeBatchTooLarge {
+    limit: usize,
+    stack: Vec<String>,
+}
+impl_error_stack_methods!(GrantRevokeBatchTooLarge);
+impl GrantRevokeBatchTooLarge {
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            stack: Vec::new(),
+        }
+    }
+}
+impl From<GrantRevokeBatchTooLarge> for ErrorModel {
+    fn from(err: GrantRevokeBatchTooLarge) -> Self {
+        ErrorModel::builder()
+            .r#type("GrantRevokeBatchTooLarge")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 define_transparent_error! {
     /// Failure modes of applying a grant diff.
     pub enum ApplyGrantsStoreError,
@@ -142,6 +181,20 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         InvalidPaginationToken,
+        DatabaseIntegrityError
+    ]
+}
+
+define_transparent_error! {
+    /// Failure modes of removing a batch of grants.
+    ///
+    /// No `GrantRevokeBatchTooLarge`: the bound is decided before anything is read, from
+    /// the candidates the caller was handed, not by the delete.
+    pub enum RevokeSubtreeGrantsStoreError,
+    stack_message: "Error revoking a batch of grants",
+    variants: [
+        CatalogBackendError,
+        GrantLockTimeout,
         DatabaseIntegrityError
     ]
 }
@@ -174,6 +227,36 @@ where
         Ok(Self::list_grants_impl(filter, pagination, catalog_state).await?)
     }
 
+    /// One page of the direct grants held anywhere under `root`.
+    async fn list_grants_in_subtree(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> crate::api::Result<ListSubtreeGrantsResultPage> {
+        Ok(Self::list_grants_in_subtree_impl(root, filter, pagination, catalog_state).await?)
+    }
+
+    /// Remove the grants named by `candidates` in their own transaction. See
+    /// [`CatalogStore::revoke_grant_candidates_impl`].
+    async fn revoke_grant_candidates(
+        root: GrantSubtreeRoot,
+        candidates: &[GrantCandidate],
+        catalog_state: Self::State,
+    ) -> crate::api::Result<Vec<GrantSpec>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut t = Self::Transaction::begin_write(catalog_state).await?;
+        let removed = Self::revoke_grant_candidates_impl(root, candidates, t.transaction()).await?;
+        t.commit().await?;
+        Ok(removed)
+    }
+
+    // Deliberately no wrapper for `select_subtree_grant_candidates_impl`: its caller
+    // folds the read into the authorization result, which needs the store's own error
+    // type rather than an already-rendered one.
+
     // Deliberately no wrapper for `list_grants_on_resources_impl`: the
     // evaluation-path fetch gets its ergonomic surface with its first caller,
     // shaped by what that caller needs.
@@ -186,4 +269,11 @@ impl<T> CatalogGrantOps for T where T: CatalogStore {}
 // missing user is the caller's 400, a lock conflict their retriable 409.
 crate::service::events::impl_authorization_failure_source!(
     ApplyGrantsStoreError => InternalCatalogError
+);
+
+// A subtree revoke reads its candidates inside the authorization result, so that a store
+// failure there is recorded and reported like every other failure the gate covers rather
+// than escaping it.
+crate::service::events::impl_authorization_failure_source!(
+    ListGrantsStoreError => InternalCatalogError
 );

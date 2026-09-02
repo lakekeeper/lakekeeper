@@ -15,12 +15,13 @@ This is the authorizer-independent way to manage permissions: the same endpoints
 
 | | [OpenFGA](./authorization-openfga.md) | [Cedar](./authorization-cedar.md)<span class="lkp"></span> | AllowAll |
 |---|---|---|---|
-| Grant and revoke | Yes | Planned for 0.14 | Recorded, never enforced |
-| List a resource's grants | Yes | Planned for 0.14 | Yes |
-| List everything one principal holds | No — `501` | Planned for 0.14 | Yes |
-| Enforced | Yes | By policy, not by grants | **No** |
+| Grant and revoke | Yes | Yes | Recorded, never enforced |
+| List a resource's grants | Yes | Yes | Yes |
+| List everything one principal holds | No — `501` | Yes | Yes |
+| List or revoke a whole subtree | No — `501` | Yes | Yes |
+| Enforced | Yes | Yes, through policies | **No** |
 
-Cedar decides from policies you author and deploy, so it publishes no grantable privileges today and rejects writes. AllowAll records and lists grants faithfully while permitting every request regardless — use it for development, never to express a security posture.
+Cedar keeps grants in the catalog database and enforces them through policies: the built-in policies make each grant confer its privilege, and policies you author can extend that. AllowAll records and lists grants faithfully while permitting every request regardless — use it for development, never to express a security posture.
 
 Under OpenFGA a grant *is* the same relationship tuple the older `/management/v1/permissions/...` API writes, so the two are views of one set of permissions with nothing to migrate between them. Prefer this API for new scripts and integrations.
 
@@ -135,6 +136,62 @@ Asking about another principal requires the project's grant-read permission; ask
     OpenFGA stores permissions per object, so it cannot answer this without reading its whole store and returns `GrantListingNotImplemented` (501). Read one resource's grants from its own endpoint, or query OpenFGA directly. Deployments that keep grants in the catalog database answer it normally.
 
 To answer "who can do what in this project", walk the resources you care about and read each one's grants. There is no whole-project export endpoint.
+
+### Everything held under a namespace or warehouse
+
+```http
+GET /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree
+GET /management/v1/warehouse/{warehouse_id}/grants/subtree
+```
+
+One paginated call lists a whole branch of the catalog: the resource you address, every namespace beneath it, and the tables, views and generic tables inside those. A subtree contains its root, so the addressed resource's own grants are part of the answer; pass `includeRootLevel=false` for strictly-below.
+
+Filter by `principalUser` or `principalRole`, by `createdBefore`, or by `privilege` and `resourceType` — repeat those two for each value you want, and name every kind: `resourceType=table` matches tables only. A privilege your authorizer does not know, or a `resourceType` that cannot occur under the root, is a `400` — so an empty page always means the access truly is absent.
+
+Reading a subtree takes its own permission on the root, stronger than reading one resource's grants: it covers the whole answer, so pages come back full — follow `next-page-token` until it disappears. Under OpenFGA it comes with `manage_grants`; under Cedar your policies decide who holds it.
+
+Each response carries `as-of`, the instant it was read at, and the page token pins it: every page of one walk reads under the instant page one bound, with nothing to carry by hand. A `createdBefore` that disagrees with a token is refused — changing the window means starting a new listing.
+
+!!! warning "Subtree grant-read is an enumeration capability"
+    A subtree listing returns resources, principals and privileges the caller may not otherwise know exist. That reach is exactly what the permission grants — hand it out as deliberately as grant administration itself.
+
+## Clearing a subtree
+
+Revoke the matching grants under a namespace — or a whole warehouse — in one bounded request:
+
+```http
+POST /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree/revoke
+POST /management/v1/warehouse/{warehouse_id}/grants/subtree/revoke
+```
+
+```json
+{
+  "principal": { "user": "oidc~contractor" },
+  "privilege": ["select"],
+  "allow-partial": true
+}
+```
+
+The body takes the same filters as the listing. An empty filter means *every grant under here*.
+
+- **One call is not the whole operation.** There is no continuation token: revoked grants are gone, so repeating the same request takes the next batch. Repeat until `has-more` is `false`.
+- **`has-more: false` means "nothing further was visible", not "the subtree is clear."** A grant whose transaction committed after a call began can carry a timestamp below that call's ceiling and outlive the loop. Where clearing must be demonstrated rather than attempted, re-run the operation with a fresh ceiling and confirm it removes nothing.
+- **Pass `created-before` back on every later call.** The first response reports the ceiling it used; echoing it is what makes the loop terminate. Grants created after the operation began are deliberately left alone — to keep someone out, revoke the parent grant and let inheritance do it.
+- **A request matching more than `limit` grants is refused outright** with `GrantRevokeBatchTooLarge`, and nothing is removed, unless you set `allow-partial`. Each call is its own transaction; the operation as a whole is not atomic, and the flag is how you say you know that.
+- `limit` defaults to and is capped at **1000** grants per call.
+- **Your own grants on the addressed resource are excluded** unless you set `include-self`. This covers your identity *and* the roles you belong to, because authority usually comes from a role and taking that grant in the first batch would strand every member of it. Only the root's own grants are kept — everything beneath it is revoked either way. The role list is read through each server's role cache: a membership granted moments earlier on another replica can take up to the cache lifetime (120 seconds by default) to be protected here.
+- **The root's own grants go too**, because a grant on a container confers access to everything beneath it — a revoke that skipped them would leave standing the access it names. Set `include-root-level: false` to keep them and clear only what lies below.
+- **`dry-run: true` answers with the batch and removes nothing.** The response's `preview` lists every grant the live call would take, read and authorized the same way. A dry run is never refused for size; `has-more: true` is how you learn the live call needs `allow-partial`.
+- Grants on **soft-deleted** tables and views are removed too. An undrop would otherwise restore the table together with the access you believed you had taken away.
+- **Direct grants only.** Revoking `alice`'s grants leaves everything alice holds through a role, through an ancestor resource, or through a tag definition's own grants. A tag definition belongs to the project, not to the subtree, even when the tag is attached to tables in it.
+- Every removed grant produces its own `grant_revoked` audit record.
+
+A revoke needs two permissions on the resource you addressed: the subtree grant-read the listing takes — reading the batch is a read — and a dedicated subtree-revoke permission answering for the whole batch at once. Both reach downward by definition: holding one at a container means holding it over everything beneath, and an authorizer that cannot promise that must refuse these endpoints. A refusal removes nothing. Under OpenFGA both come with `manage_grants`; under Cedar your policies decide who holds them.
+
+To preview a revoke, send the same body with `dry-run: true`, then pass the response's `created-before` on the live call — it removes exactly what the dry run showed, less anything revoked in between.
+
+!!! warning "Not available under OpenFGA"
+    Subtree operations need grants indexed by container, which an authorizer storing permissions per object cannot provide. Those return `GrantListingNotImplemented` (501). Deployments that keep grants in the catalog database answer normally.
 
 ## What grants cannot do
 

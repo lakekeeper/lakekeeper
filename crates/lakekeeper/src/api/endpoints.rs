@@ -273,6 +273,14 @@ generate_endpoints! {
         ApplyViewGrants(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/grants"),
         ListGenericTableGrants(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants"),
         ApplyGenericTableGrants(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants"),
+        // Reading and clearing a whole subtree at once. Separate routes rather than a
+        // recursive flag on the listings above: those are gated on the level's grant-read
+        // action, which is satisfiable directly and does not inherit, so a flag would
+        // widen an existing gate's reach to every descendant.
+        ListNamespaceSubtreeGrants(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree"),
+        RevokeNamespaceSubtreeGrants(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree/revoke"),
+        ListWarehouseSubtreeGrants(GET, "/management/v1/warehouse/{warehouse_id}/grants/subtree"),
+        RevokeWarehouseSubtreeGrants(POST, "/management/v1/warehouse/{warehouse_id}/grants/subtree/revoke"),
         // "Which privileges may I grant here" — one per level, same final segment as the
         // deployment-wide vocabulary above: the prefix carries the scope.
         GetServerGrantablePrivileges(GET, "/management/v1/server/grants/grantable-privileges"),

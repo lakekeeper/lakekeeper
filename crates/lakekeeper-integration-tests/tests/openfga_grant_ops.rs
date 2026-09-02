@@ -992,6 +992,75 @@ mod grant {
             assert_eq!(err.error.code, 403);
         }
 
+        /// Subtree operations need grants indexed by container. `OpenFGA` indexes tuples
+        /// by object, pages per object with independent tokens, and filters non-privilege
+        /// tuples after fetching, so walking a subtree would mean one paged read per
+        /// resource — the same reason the project-scoped listing refuses.
+        ///
+        /// All four routes refuse, and refuse *before* the authorization gate: a `501` is
+        /// about the deployment rather than about this caller, so there is no decision to
+        /// record. The refusal reaches an operator who holds every relevant permission,
+        /// which is what pins that the check runs first.
+        #[sqlx::test]
+        async fn the_subtree_routes_are_not_implemented(pool: PgPool) {
+            use lakekeeper::api::management::v1::grant::{
+                ListSubtreeGrantsQuery, RevokeSubtreeGrantsRequest,
+            };
+
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let md = metadata(&admin, &project_id);
+            let namespace_id = create_namespace(&ctx, &md, warehouse_id, "grant_subtree").await;
+            let revoke = || RevokeSubtreeGrantsRequest {
+                principal: None,
+                privilege: vec![],
+                resource_type: vec![],
+                created_before: None,
+                limit: None,
+                allow_partial: false,
+                include_self: false,
+                include_root_level: true,
+                dry_run: false,
+            };
+
+            let errors = [
+                Server::list_namespace_subtree_grants(
+                    warehouse_id,
+                    namespace_id,
+                    ctx.clone(),
+                    md.clone(),
+                    ListSubtreeGrantsQuery::default(),
+                    no_pagination(),
+                )
+                .await
+                .unwrap_err(),
+                Server::list_warehouse_subtree_grants(
+                    warehouse_id,
+                    ctx.clone(),
+                    md.clone(),
+                    ListSubtreeGrantsQuery::default(),
+                    no_pagination(),
+                )
+                .await
+                .unwrap_err(),
+                Server::revoke_namespace_subtree_grants(
+                    warehouse_id,
+                    namespace_id,
+                    ctx.clone(),
+                    md.clone(),
+                    revoke(),
+                )
+                .await
+                .unwrap_err(),
+                Server::revoke_warehouse_subtree_grants(warehouse_id, ctx, md, revoke())
+                    .await
+                    .unwrap_err(),
+            ];
+            for err in errors {
+                assert_eq!(err.error.code, 501);
+                assert_eq!(err.error.r#type, "GrantListingNotImplemented");
+            }
+        }
+
         fn no_principal() -> lakekeeper::api::management::v1::grant::GetGrantAccessQuery {
             lakekeeper::api::management::v1::grant::GetGrantAccessQuery::default()
         }
