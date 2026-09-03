@@ -1678,3 +1678,468 @@ async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
         )
     );
 }
+
+/// A caller-supplied `warehouse-id` is honoured verbatim, and an omitted one is
+/// assigned by the server as a UUIDv7.
+#[sqlx::test]
+async fn test_create_warehouse_with_requested_id(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    // Deliberately a v4: a caller mirroring ids from an external system must not
+    // be forced onto v7, however much v7 is the recommendation.
+    let requested = WarehouseId::from(Uuid::new_v4());
+    let created = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("requested-{}", Uuid::now_v7()))
+            .warehouse_id(requested)
+            .project_id(project_id.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.warehouse_id(), requested);
+
+    // Readable back under the requested id, so the id in the response is the id
+    // the catalog actually stored.
+    let fetched = PostgresBackend::get_warehouse_by_id(
+        requested,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(fetched.warehouse_id, requested);
+
+    // Omitting the field still yields a server-assigned id, and it is a v7.
+    let generated = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("generated-{}", Uuid::now_v7()))
+            .project_id(project_id)
+            .storage_profile(storage_profile)
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        generated.warehouse_id().get_version_num(),
+        7,
+        "server-assigned warehouse ids must be UUIDv7"
+    );
+}
+
+/// A requested id already in use is a 409, and the error discloses nothing about
+/// the warehouse holding it.
+#[sqlx::test]
+async fn test_create_warehouse_requested_id_conflict(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let taken = WarehouseId::new_random();
+    let first_name = format!("first-{}", Uuid::now_v7());
+    ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(first_name.clone())
+            .warehouse_id(taken)
+            .project_id(project_id.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let err = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("second-{}", Uuid::now_v7()))
+            .warehouse_id(taken)
+            .project_id(project_id)
+            .storage_profile(memory_io_profile())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, 409);
+    assert_eq!(err.error.r#type, "WarehouseIdAlreadyExists");
+    // Warehouse ids are unique instance-wide, so the conflict may be with a
+    // warehouse in a project the caller cannot see. Nothing about the holder may
+    // leak — otherwise a requested id becomes an existence oracle.
+    let rendered = format!("{:?}", err.error);
+    assert!(
+        !rendered.contains(&first_name),
+        "conflict error leaked the holding warehouse's name: {rendered}"
+    );
+}
+
+/// The uniqueness of warehouse ids is instance-wide, not per project: an id held
+/// in another project is still refused.
+#[sqlx::test]
+async fn test_create_warehouse_requested_id_conflict_across_projects(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let taken = WarehouseId::new_random();
+    ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("in-default-project-{}", Uuid::now_v7()))
+            .warehouse_id(taken)
+            .project_id(ProjectId::from(Uuid::nil()))
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let other_project = ProjectId::from(Uuid::now_v7());
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::create_project(
+        &other_project,
+        format!("other-{}", Uuid::now_v7()),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    let err = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("in-other-project-{}", Uuid::now_v7()))
+            .warehouse_id(taken)
+            .project_id(other_project)
+            .storage_profile(memory_io_profile())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, 409);
+    assert_eq!(err.error.r#type, "WarehouseIdAlreadyExists");
+}
+
+/// An id becomes available again once the warehouse holding it is gone, so a
+/// warehouse can be recreated under its original id after a delete.
+///
+/// This pins the behaviour, it does not endorse the practice — the docs advise
+/// against reuse. Caches and permission records key on the warehouse id alone,
+/// and a recreated warehouse restarts at `version` 0, so a replica that still
+/// holds the predecessor can briefly resolve the id to it. `create_warehouse`
+/// invalidates locally, which covers the single-replica case this test exercises;
+/// across replicas the stale entry lives until its TTL.
+#[sqlx::test]
+async fn test_create_warehouse_reuses_id_after_delete(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let warehouse_id = WarehouseId::new_random();
+    let request = |name: String, profile| {
+        CreateWarehouseRequest::builder()
+            .warehouse_name(name)
+            .warehouse_id(warehouse_id)
+            .project_id(project_id.clone())
+            .storage_profile(profile)
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build()
+    };
+
+    ApiServer::create_warehouse(
+        request(format!("recycled-{}", Uuid::now_v7()), storage_profile),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    ApiServer::delete_warehouse(
+        warehouse_id,
+        DeleteWarehouseQuery { force: false },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let recreated = ApiServer::create_warehouse(
+        request(format!("recycled-{}", Uuid::now_v7()), memory_io_profile()),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(recreated.warehouse_id(), warehouse_id);
+}
+
+/// Two concurrent creates racing for the same requested id: exactly one wins and
+/// the loser gets the conflict, rather than both appearing to succeed.
+#[sqlx::test]
+async fn test_create_warehouse_concurrent_requested_id(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let contested = WarehouseId::new_random();
+    let request = |name: String| {
+        CreateWarehouseRequest::builder()
+            .warehouse_name(name)
+            .warehouse_id(contested)
+            .project_id(project_id.clone())
+            .storage_profile(memory_io_profile())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build()
+    };
+
+    let (a, b) = tokio::join!(
+        ApiServer::create_warehouse(
+            request(format!("race-a-{}", Uuid::now_v7())),
+            ctx.clone(),
+            random_request_metadata(),
+        ),
+        ApiServer::create_warehouse(
+            request(format!("race-b-{}", Uuid::now_v7())),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+    );
+
+    let (winner, loser) = match (a, b) {
+        (Ok(ok), Err(err)) | (Err(err), Ok(ok)) => (ok, err),
+        (Ok(_), Ok(_)) => panic!("both creates claimed the same warehouse id"),
+        (Err(a), Err(b)) => panic!("neither create succeeded: {a:?} / {b:?}"),
+    };
+    assert_eq!(winner.warehouse_id(), contested);
+    assert_eq!(loser.error.code, 409);
+}
+
+/// Deleting a warehouse deletes the storage credential it owned.
+///
+/// The warehouse row is the only thing that records which secret belonged to it,
+/// so a credential left behind here is unreachable through the API and retained
+/// indefinitely. Best-effort by design: the delete happens after the commit, so
+/// a failure leaves the credential orphaned rather than failing a delete that
+/// already succeeded.
+#[sqlx::test]
+async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
+    use lakekeeper::service::{SecretStore as _, storage::StorageCredential};
+
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let credential: StorageCredential = serde_json::from_str(
+        r#"{
+            "type": "s3",
+            "credential-type": "access-key",
+            "access-key-id": "placeholder-access-key",
+            "secret-access-key": "placeholder-secret-key"
+        }"#,
+    )
+    .unwrap();
+    let secret_id = ctx
+        .v1_state
+        .secrets
+        .create_storage_secret(credential)
+        .await
+        .unwrap();
+    // Pin the premise: the assertion after the delete is only meaningful if the
+    // secret was resolvable to begin with.
+    ctx.v1_state
+        .secrets
+        .require_storage_secret_by_id(secret_id)
+        .await
+        .unwrap();
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let warehouse = PostgresBackend::create_warehouse(
+        &project_id,
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(format!("secret-owner-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile)
+            .storage_secret_id(Some(secret_id))
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    ApiServer::delete_warehouse(
+        warehouse.warehouse_id,
+        DeleteWarehouseQuery { force: false },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let err = ctx
+        .v1_state
+        .secrets
+        .require_storage_secret_by_id(secret_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, 404, "{:?}", err.error);
+    assert_eq!(err.error.r#type, "SecretNotFound");
+}
+
+/// A create that fails after storing the credential does not leave it behind.
+///
+/// The secret is written outside the warehouse transaction, so the rollback that
+/// follows a conflict cannot remove it — the create path has to. Uses a requested
+/// id that is already taken, the cheapest failure that happens *after* the
+/// credential is stored.
+#[sqlx::test]
+async fn test_create_warehouse_conflict_deletes_the_new_secret(pool: PgPool) {
+    use lakekeeper::service::{SecretStore as _, storage::StorageCredential};
+
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let credential: StorageCredential = serde_json::from_str(
+        r#"{
+            "type": "s3",
+            "credential-type": "access-key",
+            "access-key-id": "placeholder-access-key",
+            "secret-access-key": "placeholder-secret-key"
+        }"#,
+    )
+    .unwrap();
+    let warehouse_id = WarehouseId::new_random();
+
+    // First create takes the id and stores its own credential.
+    let first = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("holder-{}", Uuid::now_v7()))
+            .warehouse_id(warehouse_id)
+            .storage_profile(storage_profile.clone())
+            .storage_credential(credential.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let first_secret = PostgresBackend::get_warehouse_by_id(
+        first.warehouse_id(),
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .storage_secret_id
+    .expect("the first warehouse stored a credential");
+
+    // Second create collides on the id, after storing a credential of its own.
+    let err = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("loser-{}", Uuid::now_v7()))
+            .warehouse_id(warehouse_id)
+            .storage_profile(storage_profile)
+            .storage_credential(credential)
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.error.r#type, "WarehouseIdAlreadyExists",
+        "{:?}",
+        err.error
+    );
+
+    // The surviving warehouse keeps its credential; the failed create left none.
+    ctx.v1_state
+        .secrets
+        .require_storage_secret_by_id(first_secret)
+        .await
+        .expect("the existing warehouse's credential must be untouched");
+    let stored = sqlx::query_scalar!(r#"SELECT count(*) as "n!" FROM secret"#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored, 1,
+        "expected only the surviving warehouse's credential to remain"
+    );
+}

@@ -1,6 +1,7 @@
 ---
 hide:
   - toc
+description: "Interactive OpenAPI reference for Lakekeeper's Generic Table API for non-Iceberg table formats."
 ---
 <style>
 /*

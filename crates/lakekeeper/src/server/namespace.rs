@@ -506,24 +506,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
-        // ------------------- IDEMPOTENCY CHECK -------------------
+        // ------------------- AUDIT CONTEXT -------------------
+        // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
-        if let Some(ref key) = idempotency_key {
-            let check = C::check_idempotency_key(
-                warehouse_id,
-                key,
-                EndpointFlat::CatalogV1DropNamespace,
-                state.v1_state.catalog.clone(),
-            )
-            .await?;
-            if check.is_replay() {
-                return Ok(());
-            }
-        }
-
-        //  ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
-
         let event_ctx = APIEventContext::for_namespace(
             Arc::new(request_metadata.clone()),
             state.v1_state.events,
@@ -535,6 +520,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 recursive: flags.recursive,
             },
         );
+
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        if let Some(ref key) = idempotency_key {
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropNamespace,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
+            if check.is_replay() {
+                event_ctx.emit_idempotent_replay(*key);
+                return Ok(());
+            }
+        }
+
+        //  ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
 
         let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(

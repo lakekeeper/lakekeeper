@@ -134,7 +134,12 @@ pub(super) fn apply_commit(
                 }
             }
             TableUpdate::SetLocation { location } => {
-                if location != &previous_location.to_string() {
+                // Trailing slashes trimmed on both sides: the stored spelling never
+                // carries one, so a client echoing back its own location with a
+                // slash would otherwise be refused a commit it is entitled to.
+                if location.trim_end_matches('/')
+                    != previous_location.to_string().trim_end_matches('/')
+                {
                     return Err(ErrorModel::bad_request(
                         "Cannot change table location",
                         "SetLocationNotAllowed",
@@ -306,6 +311,45 @@ mod tests {
                 max_ref_age_ms: None,
             },
         }
+    }
+
+    /// A `set-location` naming the table's own location, with a trailing slash, is
+    /// not a relocation and must not be refused.
+    ///
+    /// The stored spelling never carries a trailing slash, so comparing raw strings
+    /// rejected a commit the client was entitled to make -- permanently, for any
+    /// client that appends one.
+    #[test]
+    fn set_location_differing_only_by_a_trailing_slash_is_accepted() {
+        let metadata = test_metadata_with_properties(HashMap::new());
+        let result = apply_commit(
+            metadata,
+            None,
+            &[],
+            vec![TableUpdate::SetLocation {
+                location: "s3://bucket/table/".to_string(),
+            }],
+        );
+        assert!(
+            result.is_ok(),
+            "the table's own location was refused: {:?}",
+            result.err()
+        );
+    }
+
+    /// Moving a table to a genuinely different location is still refused.
+    #[test]
+    fn set_location_to_a_different_location_is_refused() {
+        let metadata = test_metadata_with_properties(HashMap::new());
+        let result = apply_commit(
+            metadata,
+            None,
+            &[],
+            vec![TableUpdate::SetLocation {
+                location: "s3://bucket/elsewhere".to_string(),
+            }],
+        );
+        assert!(result.is_err(), "a real relocation was accepted");
     }
 
     #[test]

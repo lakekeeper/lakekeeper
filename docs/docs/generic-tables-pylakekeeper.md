@@ -1,3 +1,7 @@
+---
+description: "pylakekeeper, the official Python client for Lakekeeper's Generic Table API: catalog CRUD, OAuth2 authentication and vended storage credentials."
+---
+
 # Python Client (pylakekeeper)
 
 `pylakekeeper` is the official Python client for Lakekeeper's [Generic Table API](generic-tables.md). It is a small, standalone library — **not** a general Iceberg REST client — that handles two things you otherwise hand-roll: catalog CRUD for generic tables, and OAuth2 authentication (static token or client-credentials with automatic token refresh).

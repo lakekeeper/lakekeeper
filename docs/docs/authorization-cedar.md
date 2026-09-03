@@ -1,4 +1,8 @@
-# Authorization with Cedar <span class="lkp"></span> {#authorization-with-cedar}
+---
+description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: declarative policies with attribute conditions, evaluated without an external service."
+---
+
+# Authorization with Cedar { #authorization-with-cedar .lkp }
 
 !!! important "Using the Correct Cedar Schema Version"
     Always use the Cedar schema version that exactly matches your Lakekeeper deployment when developing policies. Schema mismatches can cause policy validation failures or unexpected authorization behavior. Download the schema from the Lakekeeper UI (Lakekeeper Plus 0.11.2+) or retrieve it via the `/management/v1/permissions/cedar/schema` endpoint.
@@ -53,8 +57,8 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 |--------------------------------|------------------------------------------------|-----|
 | `provider_id`                  | `"oidc"`                                       | Authentication provider of the user |
 | `source_id`                    | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| <nobr>`project_roles`</nobr>   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
-| <nobr>`global_role_ids`</nobr> | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
+| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
+| `global_role_ids` | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
 The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
 
@@ -235,7 +239,7 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 | Environment variable                                      | Default                  | Description |
 |-----------------------------------------------------------|--------------------------|-----|
-| <nobr>`LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`</nobr> | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing. Set to `[]` to disable parsing entirely. |
+| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES` | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing. Set to `[]` to disable parsing entirely. |
 
 ### Error Handling
 
@@ -352,12 +356,12 @@ The following table documents the ID format used for each Cedar entity type. The
 | `Lakekeeper::Server`                             | UUIDv7 (auto-assigned, one per deployment)  | `019c192e-cc20-7a13-a1ac-2e3390f81908` |
 | `Lakekeeper::Project`                            | String (alphanumeric, hyphens, underscores) | `my-project` or `019c192f-0613-7422-90f1-7dd6b09f033c` |
 | `Lakekeeper::Warehouse`                          | UUIDv7 (assigned at warehouse creation)     | `d08dca76-ff69-11f0-9aa6-ab201d553ec5` |
-| <nobr>`Lakekeeper::Namespace`</nobr>             | UUIDv7 (assigned at namespace creation)     | `019c192f-18c2-7f93-848f-542d8f32bc3c` |
+| `Lakekeeper::Namespace`             | UUIDv7 (assigned at namespace creation)     | `019c192f-18c2-7f93-848f-542d8f32bc3c` |
 | `Lakekeeper::Table`                              | `<warehouse-uuid>/<table-uuid>`             | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::View`                               | `<warehouse-uuid>/<view-uuid>`              | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::User`                               | `<provider_id>~<subject_in_idp>`            | `oidc~alice@example.com` |
 | `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins` |
-| <nobr>`Lakekeeper::UserDerivedAttributes`</nobr> | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
+| `Lakekeeper::UserDerivedAttributes` | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
 
 **Notes:**
 
@@ -1007,7 +1011,7 @@ Because the audit `action_name` deliberately omits the resource type (`delete`, 
 | Action                                            | Audit log `action_name`                    | Description              |
 |---------------------------------------------------|--------------------------------------------|--------------------------|
 | `ListServerCedarEntitySources`                    | `list_cedar_entity_sources`                | List Cedar entity sources configured at server level |
-| <nobr>`ListCedarPoliciesFromServerSources`</nobr> | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
+| `ListCedarPoliciesFromServerSources` | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
 | `ListServerCedarPolicySources`                    | `list_cedar_policy_sources`                | List Cedar policy sources configured at server level |
 | `CreateProject`                                   | `create_project`                           | Create new projects      |
 | `UpdateUsers`                                     | `update_users`                             | Modify user information  |
@@ -1029,7 +1033,7 @@ Because the audit `action_name` deliberately omits the resource type (`delete`, 
 | `GetProjectEndpointStatistics`                | `get_endpoint_statistics`  | View API usage statistics for the project |
 | `GetProjectTaskQueueConfig`                   | `get_task_queue_config`    | View task queue configuration for the project |
 | `GetProjectTasks`                             | `get_project_tasks`        | List background tasks in the project |
-| <nobr>`IntrospectProjectAuthorization`</nobr> | `introspect_authorization` | Check access permissions on the project for other users |
+| `IntrospectProjectAuthorization` | `introspect_authorization` | Check access permissions on the project for other users |
 | `CreateWarehouse`                             | `create_warehouse`         | Create new warehouses in the project |
 | `DeleteProject`                               | `delete`                   | Delete the project           |
 | `RenameProject`                               | `rename`                   | Change project name          |
@@ -1048,7 +1052,7 @@ The following Action Groups are available: `ProjectDescribeActions` (read-only),
 | `UpdateRole`                               | `update`                | Modify role properties          |
 | `ReadRole`                                 | `read`                  | View role details               |
 | `ReadRoleMetadata`                         | `read_metadata`         | View role metadata              |
-| <nobr>`IntrospectRoleAuthorization`</nobr> | —                       | Check access permissions on the role for other users |
+| `IntrospectRoleAuthorization` | —                       | Check access permissions on the role for other users |
 
 The following Action Groups are available: `RoleActions` (all role operations)
 
@@ -1066,7 +1070,7 @@ The following Action Groups are available: `RoleActions` (all role operations)
 | `GetAllTasks`                                   | `get_all_tasks`             | List all background tasks in the warehouse |
 | `ListEverythingInWarehouse`                     | `list_everything`           | List all objects (namespaces, tables, views) in warehouse |
 | `GetWarehouseEndpointStatistics`                | `get_endpoint_statistics`   | View API usage statistics for the warehouse |
-| <nobr>`IntrospectWarehouseAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
+| `IntrospectWarehouseAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
 | `DeleteWarehouse`                               | `delete`                    | Delete the warehouse       |
 | `UpdateStorage`                                 | `update_storage`            | Modify storage configuration |
 | `UpdateStorageCredential`                       | `update_storage_credential` | Update storage credentials |
@@ -1091,7 +1095,7 @@ The following Action Groups are available: `WarehouseDescribeActions` (read-only
 | `ListTables`                                    | `list_tables`           | List tables in the namespace |
 | `ListViews`                                     | `list_views`            | List views in the namespace |
 | `ListNamespacesInNamespace`                     | `list_namespaces`       | List child namespaces      |
-| <nobr>`IntrospectNamespaceAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
+| `IntrospectNamespaceAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
 | `DeleteNamespace`                               | `delete`                | Delete the namespace       |
 | `SetNamespaceProtection`                        | `set_protection`        | Enable/disable deletion protection |
 | `CreateTable`                                   | `create_table`          | Create tables in the namespace |
@@ -1109,7 +1113,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `IncludeTableInList`                        | `include_in_list`       | Include table in list operations (visibility) |
 | `GetTableTasks`                             | `get_tasks`             | List background tasks for the table |
 | `ReadTableData`                             | `read_data`             | Read data from the table (SELECT queries) |
-| <nobr>`IntrospectTableAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
+| `IntrospectTableAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
 | `DropTable`                                 | `drop`                  | Delete the table               |
 | `WriteTableData`                            | `write_data`            | Write data to the table (INSERT, UPDATE, DELETE) |
 | `RenameTable`                               | `rename`                | Change table name or move to different namespace |
@@ -1128,7 +1132,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `IncludeViewInList`                        | `include_in_list`       | Include view in list operations (visibility) |
 | `GetViewTasks`                             | `get_tasks`             | List background tasks for the view |
 | `SelectView`                               | `select`                | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
-| <nobr>`IntrospectViewAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
+| `IntrospectViewAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
 | `DropView`                                 | `drop`                  | Delete the view                 |
 | `RenameView`                               | `rename`                | Change view name or move to different namespace |
 | `UndropView`                               | `undrop`                | Restore a soft-deleted view     |
@@ -1150,7 +1154,7 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `CreateWarehouse`                         | `warehouse_name?: String`        |
 | `CreateRole`                              | `role_name?: String`             |
 | `CreateNamespaceInWarehouse`              | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
-| <nobr>`CreateNamespaceInNamespace`</nobr> | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
+| `CreateNamespaceInNamespace` | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateTable`                             | `table_name?: String`, `table_id?: String`, `initial_table_properties: ResourceProperties` |
 | `CreateView`                              | `view_name?: String`, `initial_view_properties: ResourceProperties` |
 | `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |

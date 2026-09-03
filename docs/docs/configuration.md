@@ -1,3 +1,7 @@
+---
+description: "Reference for Lakekeeper's environment variables: database, storage, authentication, authorization, logging, routing and server settings."
+---
+
 # Configuration
 
 Lakekeeper is configured via environment variables. Settings listed in this page are shared between all projects and warehouses. Previous to Lakekeeper Version `0.5.0` please prefix all environment variables with `ICEBERG_REST__` instead of `LAKEKEEPER__`.
@@ -10,19 +14,19 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 ### General
 
-| Variable                                           | Example                                | Description |
-|----------------------------------------------------|----------------------------------------|-----|
-| <nobr>`LAKEKEEPER__BASE_URI`</nobr>                | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url). |
-| <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr>   | `true`                                 | If `true`, a default Project ID is used when the user does not specify a project when connecting (via the `x-project-id` header). The value is `LAKEKEEPER__DEFAULT_PROJECT_ID` if set, otherwise the NIL Project ID ("00000000-0000-0000-0000-000000000000"). This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
-| <nobr>`LAKEKEEPER__DEFAULT_PROJECT_ID`<nobr>       | _unset_ (uses NIL Project ID)          | Project ID used as the default when a request does not specify one and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is `true`. Example: `019fc668-050d-7491-8743-55b537c7c4af`. Set this to serve a single non-NIL project without requiring clients to send the `x-project-id` header (e.g. query engines addressing a warehouse by bare name). **Omit the variable** to keep the NIL Project ID as the default. |
-| `LAKEKEEPER__RESERVED_NAMESPACES`                  | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
-| `LAKEKEEPER__METRICS__PORT`                        | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
-| `LAKEKEEPER__LISTEN_PORT`                          | `8181`                                 | Port Lakekeeper listens on. Default: `8181` |
-| `LAKEKEEPER__BIND_IP`                              | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
-| `LAKEKEEPER__SECRET_BACKEND`                       | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
-| `LAKEKEEPER__SERVE_SWAGGER_UI`                     | `true`                                 | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
-| `LAKEKEEPER__ALLOW_ORIGIN`                         | `*`                                    | A comma separated list of allowed origins for CORS. |
-| <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr> | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port` and `x-forwarded-prefix` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__BASE_URI` | `https://example.com:8181` | `None` | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url). |
+| `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` | `true` | `true` | If `true`, a default Project ID is used when the user does not specify a project when connecting (via the `x-project-id` header). The value is `LAKEKEEPER__DEFAULT_PROJECT_ID` if set, otherwise the NIL Project ID ("00000000-0000-0000-0000-000000000000"). This option is enabled by default, which we recommend for all single-project (single-tenant) setups. |
+| `LAKEKEEPER__DEFAULT_PROJECT_ID` | _unset_ (uses NIL Project ID) | `None` | Project ID used as the default when a request does not specify one and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is `true`. Example: `019fc668-050d-7491-8743-55b537c7c4af`. Set this to serve a single non-NIL project without requiring clients to send the `x-project-id` header (e.g. query engines addressing a warehouse by bare name). **Omit the variable** to keep the NIL Project ID as the default. |
+| `LAKEKEEPER__RESERVED_NAMESPACES` | `system,examples,information_schema` | — | Reserved Namespaces that cannot be created via the REST interface |
+| `LAKEKEEPER__METRICS__PORT` | `9000` | `9000` | Port where the Prometheus metrics endpoint is reachable. |
+| `LAKEKEEPER__LISTEN_PORT` | `8181` | `8181` | Port Lakekeeper listens on. |
+| `LAKEKEEPER__BIND_IP` | `0.0.0.0`, `::1`, `::` | `0.0.0.0` (listen to all incoming IPv4 packages) | IP Address Lakekeeper binds to. |
+| `LAKEKEEPER__SECRET_BACKEND` | `postgres` | `postgres` | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
+| `LAKEKEEPER__SERVE_SWAGGER_UI` | `true` | `true` | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
+| `LAKEKEEPER__ALLOW_ORIGIN` | `*` | `None` | A comma separated list of allowed origins for CORS. |
+| `LAKEKEEPER__USE_X_FORWARDED_HEADERS` | `false` | `true` (Headers are respected.) | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port` and `x-forwarded-prefix` headers in incoming requests. This is mostly relevant for the `/config` endpoint. |
 
 ### Pagination
 
@@ -33,20 +37,20 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 - Retrieving huge numbers of rows is expensive, which might be exploited by malicious requests.
 - Requests may time out or responses may exceed size limits for huge numbers of results.
 
-| Variable                                          | Example            | Description |
-|---------------------------------------------------|--------------------|-----|
-| <nobr>`LAKEKEEPER__PAGINATION_SIZE_DEFAULT`<nobr> | <nobr>`1024`<nobr> | The default page size used for paginated queries. This value is used if the request's `pageToken` is set but empty. Default: `100` |
-| <nobr>`LAKEKEEPER__PAGINATION_SIZE_MAX`<nobr>     | <nobr>`2048`<nobr> | The max page size used for paginated queries. This value is used if the request's `pageToken` is not set. Default: `1000` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__PAGINATION_SIZE_DEFAULT` | `1024` | `100` | The default page size used for paginated queries. This value is used if the request's `pageToken` is set but empty. |
+| `LAKEKEEPER__PAGINATION_SIZE_MAX` | `2048` | `1000` | The max page size used for paginated queries. This value is used if the request's `pageToken` is not set. |
 
 ### Storage
 
-| Variable                                                    | Example            | Description |
-|-------------------------------------------------------------|--------------------|-----|
-| <nobr>`LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`<nobr>     | <nobr>`true`<nobr> | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. Default: `false` (AWS system credentials disabled) |
-| `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS`           | <nobr>`true`<nobr> | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. Default: `false` (direct system credential access disabled) |
-| `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. Default: true (external ID required) |
-| <nobr>`LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`<nobr>   | <nobr>`true`<nobr> | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. Default: `false` (Azure system credentials disabled) |
-| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. Default: `false` (GCP system credentials disabled) |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` | `true` | `false` (AWS system credentials disabled) | Lakekeeper supports using AWS system identities (i.e. through `AWS_*` environment variables or EC2 instance profiles) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable AWS system identities, set `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`. |
+| `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` | `true` | `false` (direct system credential access disabled) | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. |
+| `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | `true` | true (external ID required) | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. |
+| `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` | `true` | `false` (Azure system credentials disabled) | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. |
+| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` | `true` | `false` (GCP system credentials disabled) | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. |
 
 ### Persistence Store
 
@@ -54,26 +58,26 @@ Currently Lakekeeper supports only Postgres as a persistence store. You may eith
 
 Lakekeeper supports configuring separate database URLs for read and write operations, allowing you to utilize read replicas for better scalability. By directing read queries to dedicated replicas via `LAKEKEEPER__PG_DATABASE_URL_READ`, you can significantly reduce load on your database primary (specified by `LAKEKEEPER__PG_DATABASE_URL_WRITE`), improving overall system performance as your deployment scales. This separation is particularly beneficial for read-heavy workloads. When using read replicas, be aware that replication lag may occur between the primary and replica databases depending on your Database setup. This means that immediately after a write operation, the changes might not be instantly visible when querying a read-only Lakekeeper endpoint (which uses the read replica). Consider this potential lag when designing applications that require immediate read-after-write consistency. For deployments where read-after-write consistency is critical, you can simply omit the `LAKEKEEPER__PG_DATABASE_URL_READ` setting, which will cause all operations to use the primary database connection.
 
-| Variable                                               | Example                                               | Description |
-|--------------------------------------------------------|-------------------------------------------------------|-----|
-| `LAKEKEEPER__PG_DATABASE_URL_READ`                     | `postgres://postgres:password@localhost:5432/iceberg` | Postgres Database connection string used for reading. Defaults to `LAKEKEEPER__PG_DATABASE_URL_WRITE`. |
-| `LAKEKEEPER__PG_DATABASE_URL_WRITE`                    | `postgres://postgres:password@localhost:5432/iceberg` | Postgres Database connection string used for writing. If `LAKEKEEPER__PG_DATABASE_URL_READ` is not specified, this connection is also used for reading. |
-| `LAKEKEEPER__PG_ENCRYPTION_KEY`                        | `This is unsafe, please set a proper key`             | If `LAKEKEEPER__SECRET_BACKEND=postgres`, this key is used to encrypt secrets. It is required to change this for production deployments. |
-| `LAKEKEEPER__PG_READ_POOL_CONNECTIONS`                 | `10`                                                  | Number of connections in the read pool |
-| `LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS`                | `5`                                                   | Number of connections in the write pool |
-| `LAKEKEEPER__PG_HOST_R`                                | `localhost`                                           | Hostname for read operations. Defaults to `LAKEKEEPER__PG_HOST_W`. |
-| `LAKEKEEPER__PG_HOST_W`                                | `localhost`                                           | Hostname for write operations |
-| `LAKEKEEPER__PG_PORT`                                  | `5432`                                                | Port number |
-| `LAKEKEEPER__PG_USER`                                  | `postgres`                                            | Username for authentication |
-| `LAKEKEEPER__PG_PASSWORD`                              | `password`                                            | Password for authentication |
-| `LAKEKEEPER__PG_DATABASE`                              | `iceberg`                                             | Database name |
-| `LAKEKEEPER__PG_SCHEMA`                                | `lakekeeper`                                          | Schema holding Lakekeeper's tables. Unset by default, meaning `public`. See [Using a non-`public` Postgres schema](#using-a-non-public-postgres-schema). |
-| `LAKEKEEPER__PG_SSL_MODE`                              | `require`                                             | SSL mode (disable, allow, prefer, require) |
-| `LAKEKEEPER__PG_SSL_ROOT_CERT`                         | `/path/to/root/cert`                                  | Path to SSL root certificate |
-| <nobr>`LAKEKEEPER__PG_ENABLE_STATEMENT_LOGGING`</nobr> | `true`                                                | Enable SQL statement logging |
-| `LAKEKEEPER__PG_TEST_BEFORE_ACQUIRE`                   | `true`                                                | Test connections before acquiring from the pool |
-| `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
-| `LAKEKEEPER__PG_ACQUIRE_TIMEOUT`                       | `10`                                                  | Timeout to acquire a new postgres connection in seconds. Default: `5` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__PG_DATABASE_URL_READ` | `postgres://postgres:password@localhost:5432/iceberg` | — | Postgres Database connection string used for reading. Defaults to `LAKEKEEPER__PG_DATABASE_URL_WRITE`. |
+| `LAKEKEEPER__PG_DATABASE_URL_WRITE` | `postgres://postgres:password@localhost:5432/iceberg` | — | Postgres Database connection string used for writing. If `LAKEKEEPER__PG_DATABASE_URL_READ` is not specified, this connection is also used for reading. |
+| `LAKEKEEPER__PG_ENCRYPTION_KEY` | `This is unsafe, please set a proper key` | — | If `LAKEKEEPER__SECRET_BACKEND=postgres`, this key is used to encrypt secrets. It is required to change this for production deployments. |
+| `LAKEKEEPER__PG_READ_POOL_CONNECTIONS` | `10` | — | Number of connections in the read pool |
+| `LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS` | `5` | — | Number of connections in the write pool |
+| `LAKEKEEPER__PG_HOST_R` | `localhost` | — | Hostname for read operations. Defaults to `LAKEKEEPER__PG_HOST_W`. |
+| `LAKEKEEPER__PG_HOST_W` | `localhost` | — | Hostname for write operations |
+| `LAKEKEEPER__PG_PORT` | `5432` | — | Port number |
+| `LAKEKEEPER__PG_USER` | `postgres` | — | Username for authentication |
+| `LAKEKEEPER__PG_PASSWORD` | `password` | — | Password for authentication |
+| `LAKEKEEPER__PG_DATABASE` | `iceberg` | — | Database name |
+| `LAKEKEEPER__PG_SCHEMA` | `lakekeeper` | — | Schema holding Lakekeeper's tables. Unset by default, meaning `public`. See [Using a non-`public` Postgres schema](#using-a-non-public-postgres-schema). |
+| `LAKEKEEPER__PG_SSL_MODE` | `require` | — | SSL mode (disable, allow, prefer, require) |
+| `LAKEKEEPER__PG_SSL_ROOT_CERT` | `/path/to/root/cert` | — | Path to SSL root certificate |
+| `LAKEKEEPER__PG_ENABLE_STATEMENT_LOGGING` | `true` | — | Enable SQL statement logging |
+| `LAKEKEEPER__PG_TEST_BEFORE_ACQUIRE` | `true` | — | Test connections before acquiring from the pool |
+| `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME` | `1800` | — | Maximum lifetime of connections in seconds |
+| `LAKEKEEPER__PG_ACQUIRE_TIMEOUT` | `10` | `5` | Timeout to acquire a new postgres connection in seconds. |
 
 #### Required Postgres extensions
 
@@ -114,36 +118,36 @@ Do not set `search_path` through the `options` parameter of the connection URL. 
 Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatible storage is used as a backend. Currently, we only support the `userpass` authentication method. Configuration may be passed as single values like `LAKEKEEPER__KV2__URL=http://vault.local` or as a compound value:
 `LAKEKEEPER__KV2='{url="http://localhost:1234", user="test", password="test", secret_mount="secret"}'`
 
-| Variable                                     | Example               | Description |
-|----------------------------------------------|-----------------------|-------|
-| `LAKEKEEPER__KV2__URL`                       | `https://vault.local` | URL of the KV2 backend |
-| `LAKEKEEPER__KV2__USER`                      | `admin`               | Username to authenticate against the KV2 backend |
-| `LAKEKEEPER__KV2__PASSWORD`                  | `password`            | Password to authenticate against the KV2 backend |
-| <nobr>`LAKEKEEPER__KV2__SECRET_MOUNT`</nobr> | `kv/data/iceberg`     | Path to the secret mount in the KV2 backend |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__KV2__URL` | `https://vault.local` | — | URL of the KV2 backend |
+| `LAKEKEEPER__KV2__USER` | `admin` | — | Username to authenticate against the KV2 backend |
+| `LAKEKEEPER__KV2__PASSWORD` | `password` | — | Password to authenticate against the KV2 backend |
+| `LAKEKEEPER__KV2__SECRET_MOUNT` | `kv/data/iceberg` | — | Path to the secret mount in the KV2 backend |
 
 ### Task Queues
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                                                          | Example    | Description |
-|-----------------------------------------------------------------------------------|------------|-----|
-| <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`</nobr>                                     | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`                                          | 2          | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
-| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`                                          | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
-| <nobr>`LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`</nobr><span class="lkp"></span> | 2          | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__TASK_POLL_INTERVAL` | 3600ms/30s | 10s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` | 2 | `2` | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
+| `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
 ### NATS
 
 Lakekeeper can publish change events to NATS. The following configuration options are available:
 
-| Variable                                   | Example                 | Description |
-|--------------------------------------------|-------------------------|-------|
-| `LAKEKEEPER__NATS_ADDRESS`                 | `nats://localhost:4222` | The URL of the NATS server to connect to |
-| `LAKEKEEPER__NATS_TOPIC`                   | `iceberg`               | The subject to publish events to |
-| `LAKEKEEPER__NATS_USER`                    | `test-user`             | User to authenticate against NATS, needs `LAKEKEEPER__NATS_PASSWORD` |
-| `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
-| <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing NATS credentials |
-| `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | NATS token to use for authentication |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__NATS_ADDRESS` | `nats://localhost:4222` | — | The URL of the NATS server to connect to |
+| `LAKEKEEPER__NATS_TOPIC` | `iceberg` | — | The subject to publish events to |
+| `LAKEKEEPER__NATS_USER` | `test-user` | — | User to authenticate against NATS, needs `LAKEKEEPER__NATS_PASSWORD` |
+| `LAKEKEEPER__NATS_PASSWORD` | `test-password` | — | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
+| `LAKEKEEPER__NATS_CREDS_FILE` | `/path/to/file.creds` | — | Path to a file containing NATS credentials |
+| `LAKEKEEPER__NATS_TOKEN` | `xyz` | — | NATS token to use for authentication |
 
 ### Kafka
 
@@ -162,13 +166,13 @@ This means that all features of [librdkafka](https://github.com/confluentinc/lib
 
 To publish events to Kafka, set the following environment variables:
 
-| Variable                                     | Example                                                                   | Description |
-|----------------------------------------------|---------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__KAFKA_TOPIC`                    | `lakekeeper`                                                              | The topic to which events are published |
-| `LAKEKEEPER__KAFKA_CONFIG`                   | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
-| <nobr>`LAKEKEEPER__KAFKA_CONFIG_FILE`</nobr> | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__KAFKA_TOPIC` | `lakekeeper` | — | The topic to which events are published |
+| `LAKEKEEPER__KAFKA_CONFIG` | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | — | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
+| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file` | — | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below |
 
-##### Notes
+#### Notes
 
 `LAKEKEEPER__KAFKA_CONFIG` and `LAKEKEEPER__KAFKA_CONFIG_FILE` are mutually exclusive and the values are not merged, if both variables are set. In case that both are set, `LAKEKEEPER__KAFKA_CONFIG` is used.
 
@@ -233,20 +237,21 @@ Typical values for `LAKEKEEPER__OPENID_PROVIDER_URI` are:
 
 Please check the [Authentication Guide](./authentication.md) for more details.
 
-| Variable                                                                  | Example                                      | Description |
-|---------------------------------------------------------------------------|----------------------------------------------|-----|
-| <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>                            | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | Strongly recommended. If set, the token's `aud` claim must contain at least one of the configured audiences. Multiple audiences can be provided as a comma-separated list; a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
-| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
-| `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
-| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
-| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
-| `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE`                                | `Service Account {email}`                    | Fallback display name for tokens that carry no name claim (typically machine / service-account tokens). Placeholders `{claim.path}` are substituted from the token's claims using dot notation; write a literal brace by doubling it (`{{`/`}}`). A real name claim always takes precedence; if a referenced claim is absent or not a string the template is skipped and the user keeps the `Nameless App with ID <user-id>` placeholder. A structurally malformed template (unbalanced or empty braces) aborts startup. Applies to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` setup. |
-| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
-| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
-| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
-| <nobr>`LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED`</nobr><span class="lkp"></span> | `false`                                      | Lakekeeper Plus only. If `false` (default), the server refuses to start unless an Authenticator is configured, preventing accidental anonymous exposure of the catalog. Set to `true` to permit starting without Authentication (e.g. local development). |
-| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE`                    | `uid`                                        | Which `TokenReview` field becomes the user's subject in the user ID (`kubernetes~<subject>`). `uid` (default) uses the service account's Kubernetes UID, which differs per cluster. `username` uses `system:serviceaccount:<namespace>:<name>`, which is stable across clusters and suitable for pre-provisioning users and roles. Changing this after users exist changes their IDs and orphans existing role assignments — choose it at initial setup. One-of: [`uid`, `username`]. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | `None` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
+| `LAKEKEEPER__OPENID_AUDIENCE` | `the-client-id-of-my-app` | `None` | Strongly recommended. If set, the token's `aud` claim must contain at least one of the configured audiences. Multiple audiences can be provided as a comma-separated list; a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
+| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` | `https://sts.windows.net/<Tenant>/` | `None` | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
+| `LAKEKEEPER__OPENID_SCOPE` | `lakekeeper` | `None` | A single scope that must be present in provided tokens — one word, no whitespace (startup fails otherwise). Read from the `scope` claim, or `scp` if `scope` is absent or carries no scopes; both a whitespace-delimited string and an array of strings are accepted; values must be strings. A [required-claim rule](#required-claims) on `scope` can require several scopes, but splits only on the `SEPARATOR` you set (`SEPARATOR=whitespace` gives the same splitting) and reads only the one named claim, with no `scp` fallback. |
+| `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__CLAIM` <br> `…__ANY_OF` / `…__ALL_OF` / `…__NONE_OF` / `…__EXISTS` <br> `…__SEPARATOR` | `…__ORG__CLAIM=organizations` <br> `…__ORG__ANY_OF='[tenant-a, tenant-b]'` | `None` | Rules a verified token must satisfy, keyed by rule name. See [Required Claims](#required-claims). |
+| `LAKEKEEPER__OPENID_SUBJECT_CLAIM` | `sub` or `oid,sub` | `None` | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim path or a comma-separated list of them; the first one that resolves to a non-blank string is used. A path nests on every dot (`resource_access.account.id`) or, when it contains `/` or `:`, names one claim outright — the same grammar as `OPENID_ROLES_CLAIM` and required-claim rules. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM` | `resource_access.lakekeeper.roles` | `None` | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
+| `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` | `Service Account {email}` | `None` | Fallback display name for tokens that carry no name claim (typically machine / service-account tokens). Placeholders `{claim.path}` are substituted from the token's claims using dot notation; write a literal brace by doubling it (`{{`/`}}`). A real name claim always takes precedence; if a referenced claim is absent or not a string the template is skipped and the user keeps the `Nameless App with ID <user-id>` placeholder. A structurally malformed template (unbalanced or empty braces) aborts startup. Applies to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` setup. |
+| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true | `false` | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` | `https://kubernetes.default.svc` | `None` | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false` | `false` | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED`<span class="lkp"></span> | `false` | — | Lakekeeper Plus only. If `false` (default), the server refuses to start unless an Authenticator is configured, preventing accidental anonymous exposure of the catalog. Set to `true` to permit starting without Authentication (e.g. local development). |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE` | `uid` | — | Which `TokenReview` field becomes the user's subject in the user ID (`kubernetes~<subject>`). `uid` (default) uses the service account's Kubernetes UID, which differs per cluster. `username` uses `system:serviceaccount:<namespace>:<name>`, which is stable across clusters and suitable for pre-provisioning users and roles. Changing this after users exist changes their IDs and orphans existing role assignments — choose it at initial setup. One-of: [`uid`, `username`]. |
 
 #### Multiple OIDC Providers
 
@@ -256,7 +261,7 @@ The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<
 
 **Chain order.** Tokens are tried against authenticators in this order: the primary provider from `LAKEKEEPER__OPENID_PROVIDER_URI` (if set), then providers from `LAKEKEEPER__OPENID_PROVIDERS` in **alphabetical order of `idp_id`**, then Kubernetes (if enabled).
 
-A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap. Make `iss` × `aud` pairs disjoint across providers to avoid surprises.
+A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience + required-claim validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap and the later provider's settings (scope, required claims, roles claim, …) never apply. Disjoint `AUDIENCE` lists do not separate them, since one token may name both audiences. Lakekeeper therefore **refuses to start** when two providers share a **published** issuer (the one in their discovery document, plus any `ADDITIONAL_ISSUERS` — not the configured `URI`) and the **later** one enforces a scope or required claims — its rules would never run. Guarding only the earlier provider is allowed: it enforces its rules on everything it takes.
 
 **Provider Fields:**
 
@@ -265,8 +270,9 @@ A token is routed to the **first** authenticator whose `iss` set contains the to
 | `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
 | `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
-| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
-| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens (`scope` claim, or `scp` if absent; string or array). |
+| `__REQUIRED_CLAIMS__<RULE>__…` | No | `__REQUIRED_CLAIMS__ORG__CLAIM=organizations` <br> `__REQUIRED_CLAIMS__ORG__ANY_OF='[tenant-a]'` | Rules a verified token must satisfy for this provider. See [Required Claims](#required-claims). |
+| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claim paths to use as user ID (comma-separated, in order of preference). Dot notation nests, as for `ROLES_CLAIM`. Defaults to `oid,sub`. |
 | `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
 | `__DISPLAY_NAME_TEMPLATE` | No | `Service Account {email}` | Fallback display name for this provider's tokens that carry no name claim. Same syntax and precedence as `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` in the OpenID table above (dot-notation `{claim.path}` placeholders, `{{`/`}}` for literal braces, a real name claim wins, malformed templates abort startup). |
 | `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
@@ -288,77 +294,147 @@ LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
 !!! note
     Providers fail startup by default if their OIDC endpoint cannot be loaded. Set `REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting.
 
+#### Required Claims
+
+Audience validation proves a token was issued *for* Lakekeeper, not that the caller belongs to your tenant — a shared identity provider mints the right `aud` for every user it knows. Required-claim rules add a check Lakekeeper enforces itself: after signature, issuer and audience are verified, every rule must hold, or the request gets a generic `401 AuthenticationFailed` that reveals nothing about the rule.
+
+```bash
+# Only tokens of one organization, carrying the `catalog` scope.
+LAKEKEEPER__OPENID_PROVIDERS__CORP__URI=https://accounts.example.com
+LAKEKEEPER__OPENID_PROVIDERS__CORP__AUDIENCE=lakekeeper
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__CLAIM=organizations
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__ANY_OF='[f6481c2e-0000-0000-0000-000000000000]'
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__CLAIM=scope
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__SEPARATOR=whitespace
+LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__ALL_OF='[catalog]'
+```
+
+For the primary provider use `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__…`. `<RULE>` is your own name matching `[a-z0-9-]+`; it appears in logs as `<idp_id>/<rule>` and nowhere else.
+
+| Suffix | Description |
+|---|---|
+| `__CLAIM` | Required. Nests on every dot (`realm_access.roles`), or names one claim whole when it contains `/` or `:` (`https://myapp.example.com/org`). No array indexing. |
+| `__ANY_OF=[a, b]` | At least one claim value is listed. |
+| `__ALL_OF=[a, b]` | Every listed value is a claim value. |
+| `__NONE_OF=[a, b]` | No claim value is listed. |
+| `__EXISTS=true` / `false` | The claim carries something / is absent or `null`. |
+| `__SEPARATOR` | Optional. Read the claim as a delimited list: a literal (`,`, `::`), or `whitespace` for any whitespace. Environment values are trimmed, so a literal space is written `SEPARATOR='" "'`; quoted values also decode escapes, so `SEPARATOR='"\t"'` is a real tab. A literal matches byte for byte, so `NONE_OF` with a whitespace literal is refused — write `whitespace`. |
+
+Exactly one operator per rule, and `EXISTS` takes no `SEPARATOR`. All rules of a provider must hold. Matching is byte-exact and case-sensitive; rules run in alphabetical order and the first failure is the one logged.
+
+**How values are read.** A string, number or boolean is one value; an array of them is a set of values. A missing, `null`, object or mixed-array claim fails every rule except `EXISTS=false`. The two `EXISTS` polarities are not opposites — `[]`, `""`, `"   "` and `{}` satisfy neither. With a `SEPARATOR`, `ANY_OF`/`ALL_OF` split a lone string but leave array elements whole, so `["x,admin"]` never grants `admin`; `NONE_OF` instead looks for a banned value at every delimited position in every element, so no way of joining values hides one from it.
+
+**Lists** use brackets even for one value and separate on unquoted commas. Quote the whole assignment — `ANY_OF='[a, b]'` — since a space ends the shell word and `[a]` is a glob. Quote any value containing a comma, or looking like a number or boolean: `["a,b", "42", "0644"]`. An unquoted `[0644]` becomes the number `644` and aborts startup rather than matching something you did not write.
+
+!!! warning "Two ways a rule can fail open"
+    `EXISTS=false` asks for a claim to be **absent**, so a misspelled path is satisfied by every token, and no startup check can tell a typo from a claim your provider genuinely never sends. Prefer `ANY_OF` where you can.
+
+    A `NONE_OF` whose `SEPARATOR` does not match the claim's real format finds nothing. Startup refuses the whitespace case, since `whitespace` finds everything a space literal finds and more — but it cannot check the rest: a deny split on `,` does not see `"finance, admin"`, because the value it compares is `" admin"`. A missing comma does the same: `[a b]` is the single value `a b`, which nothing matches.
+
+    Always confirm a new deny actually rejects a token that should fail it.
+
+**Startup refuses** a malformed rule (no or several operators, an empty list, a blank value, an empty separator, a grant value containing the separator, an unknown field), and any configuration that cannot enforce what it appears to:
+
+- rules or a scope naming no provider;
+- a provider that enforces something while `REQUIRE_CONNECTED_ON_STARTUP=false` — one skipped at boot enforces nothing;
+- two providers publishing the same issuer where the later one enforces something, since a token naming both audiences reaches only the first (checked against published issuers, so one provider reached through two URLs is caught);
+- Kubernetes authentication without `KUBERNETES_AUTHENTICATION_AUDIENCE` beside a provider that enforces something, since it accepts every token the OIDC providers decline.
+
+Rules apply to every token the provider accepts, trusted engines and instance admins included, but not to Kubernetes service-account tokens. Changing a rule requires a restart.
+
+!!! tip "Binding tokens to one client"
+    Audience validation accepts a token whose `aud` merely intersects the configured list. To require one client, add a rule on the authorized party: `__REQUIRED_CLAIMS__AZP__CLAIM=azp`, `__REQUIRED_CLAIMS__AZP__ANY_OF='[<client-id>]'`.
+
+**In Helm**, a YAML value is not shell-quoted:
+
+```yaml
+extraEnv:
+  - name: LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__ORG__ANY_OF
+    value: "[f6481c2e-0000-0000-0000-000000000000]"   # a string, not a YAML list
+  - name: LAKEKEEPER__OPENID_PROVIDERS__CORP__REQUIRED_CLAIMS__SCOPES__SEPARATOR
+    value: '" "'                                       # the quotes are part of the value
+```
+
+**Debugging a rejection.** The 401 body says nothing beyond an `Error ID`. The server log carries the reason at `INFO`, tagged `event_source="error_response"`, with the failing rule in the error source chain and the same error id the client received (abbreviated here — the emitted line is JSON):
+
+```text
+error.type="AuthenticationFailed"  error.error_id=<uuid>
+error.source=["Token rejected: required-claim rule `corp/org` failed", ...]
+```
+
+Rule evaluation logs rule names only, never the claim values it compared. Each provider also logs its rule count at startup — `Requiring 2 claim rule(s) for OIDC provider corp: ["corp/org", "corp/scopes"]` — so check that line first if rules appear not to apply. A count of zero is how a misspelled primary-provider container shows up: `LAKEKEEPER__OPENID_REQUIRED_CLAMIS__…` reaches no field and is dropped silently, while the same typo under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__` aborts startup. `RUST_LOG=limes=debug` adds the configured audiences and issuers.
+
 ### Authorization
 
 Authorization is only effective if [Authentication](#authentication) is enabled.
 
 We strongly recommend bootstrapping new deployments with authorization already enabled. Switching the configured `AUTHZ_BACKEND` after bootstrap is supported when moving to (or replacing the OpenFGA store behind) the OpenFGA backend — see [Switching to OpenFGA](./authorization-openfga.md#switching-to-openfga-or-replacing-the-store) for the procedure and its limitations (structural hierarchy is rebuilt from the catalog; ownership, grants, and role assignments are not). For other backends, create a new Lakekeeper instance and migrate your tables.
 
-| Variable                                 | Example                                                              | Description          |
-|------------------------------------------|----------------------------------------------------------------------|----------------------|
-| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall`                                                           | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
-| <nobr>`LAKEKEEPER__INSTANCE_ADMINS`</nobr> | `["kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284","oidc~alice"]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. For Kubernetes the subject is the service account's `uid`. Even a single admin must be wrapped in brackets. See [Instance Admins](./instance-admins.md) for scope and rationale. Default: `[]`. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__AUTHZ_BACKEND` | `allowall` | `allowall` | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+| `LAKEKEEPER__INSTANCE_ADMINS` | `["kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284","oidc~alice"]` | `[]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. For Kubernetes the subject is the service account's `uid`. Even a single admin must be wrapped in brackets. See [Instance Admins](./instance-admins.md) for scope and rationale. |
 
-##### OpenFGA
+#### OpenFGA
 
-| Variable                                                 | Example                                                                    | Description |
-|----------------------------------------------------------|----------------------------------------------------------------------------|-----|
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>             | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`                        | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`                           | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
-| <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr>            | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`                     | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`                    | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER__OPENFGA__SCOPE`                             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`        | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`       | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
-| <nobr>`LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE`</nobr> | `50`                                                                       | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__OPENFGA__ENDPOINT` | `http://localhost:35081` | — | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME` | `lakekeeper` | `lakekeeper` | The OpenFGA Store to use. |
+| `LAKEKEEPER__OPENFGA__API_KEY` | `my-api-key` | — | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| `LAKEKEEPER__OPENFGA__CLIENT_ID` | `12345` | — | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET` | `abcd` | — | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT` | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | — | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE` | `openfga` | — | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1` | — | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
+| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
-##### Cedar <span class="lkp"></span>
+#### Cedar { .lkp }
 
 Please check the [Authorization User Guide](./authorization-cedar.md#authorization-with-cedar) for more information on Cedar.
 
-| Variable                                               | Example                                                 | Description |
-|--------------------------------------------------------|---------------------------------------------------------|-----|
-| `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`       | `[/path/to/policies1.cedar,/path/to/policies2.cedar]`   | List of local file paths containing Cedar policies in Cedar format (not JSON). |
-| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__LOCAL_FILES`  | `[/path/to/entities1.json,/path/to/entities2.json]`     | List of local JSON file paths containing additional Cedar entities (typically roles). |
-| `LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`            | `[my-cm-1, my-cm-2]`                                    | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
-| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`       | `[my-cm-1, my-cm-2]`                                    | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
-| `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`             | `5`                                                     | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization-cedar.md#authorization-with-cedar) for more information. |
-| <nobr>`LAKEKEEPER__CEDAR__REFRESH_DISABLED`</nobr>     | `false`                                                 | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. Default: `false`. |
-| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` | `false`                                                 | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
-| <nobr>`LAKEKEEPER__CEDAR__SCHEMA_FILE`</nobr>          | `/path/to/custom/schema.cedarschema`                    | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
-| `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE`              | `/path/to/schema-fragment.cedarschema`                  | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
-| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`           | `["access_", "access-"]`                                | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization-cedar.md#property-based-access-control). |
-| `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED`           | `false`                                                 | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
-| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__SOURCE`  | `source_id`                                             | Source field for a user identity derivation rule. Supported values: `source_id` (the user's subject in the IdP) or `provider_id` (e.g. `oidc`, `kubernetes`). `<NAME>` is a human-readable key (e.g. `EMAIL_PARTS`) used in error messages. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
-| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__PATTERN` | <nobr>`^(?<username>[^@]+)`<br>`@(?<domain>.+)$`</nobr> | Regex pattern with named capture groups for a user identity derivation rule. Each named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity, accessible in policies via `principal.derived_attributes.hasTag("…")` / `principal.derived_attributes.getTag("…")`. Invalid patterns cause a startup error. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
-| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__TRANSFORM` | `lowercase` | Optional transformation applied to all captured values before they become Cedar tags. Supported values: `none` (default — keep as-is), `lowercase`, `uppercase`. Because Cedar string comparison is case-sensitive, use `lowercase` to normalize captured values so policies can compare against a known-case literal (e.g. `getTag("domain") == "example.com"`). If different capture groups need different transforms, use separate derivation entries with distinct regexes. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES` | `[/path/to/policies1.cedar,/path/to/policies2.cedar]` | — | List of local file paths containing Cedar policies in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__LOCAL_FILES` | `[/path/to/entities1.json,/path/to/entities2.json]` | — | List of local JSON file paths containing additional Cedar entities (typically roles). |
+| `LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM` | `[my-cm-1, my-cm-2]` | — | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM` | `[my-cm-1, my-cm-2]` | — | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
+| `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` | `5` | `5` | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization-cedar.md#authorization-with-cedar) for more information. |
+| `LAKEKEEPER__CEDAR__REFRESH_DISABLED` | `false` | `false` | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. |
+| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` | `false` | — | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
+| `LAKEKEEPER__CEDAR__SCHEMA_FILE` | `/path/to/custom/schema.cedarschema` | — | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
+| `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` | `/path/to/schema-fragment.cedarschema` | — | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
+| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES` | `["access_", "access-"]` | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization-cedar.md#property-based-access-control). |
+| `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED` | `false` | — | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__SOURCE` | `source_id` | — | Source field for a user identity derivation rule. Supported values: `source_id` (the user's subject in the IdP) or `provider_id` (e.g. `oidc`, `kubernetes`). `<NAME>` is a human-readable key (e.g. `EMAIL_PARTS`) used in error messages. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__PATTERN` | `^(?<username>[^@]+)`<br>`@(?<domain>.+)$` | — | Regex pattern with named capture groups for a user identity derivation rule. Each named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity, accessible in policies via `principal.derived_attributes.hasTag("…")` / `principal.derived_attributes.getTag("…")`. Invalid patterns cause a startup error. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__TRANSFORM` | `lowercase` | — | Optional transformation applied to all captured values before they become Cedar tags. Supported values: `none` (default — keep as-is), `lowercase`, `uppercase`. Because Cedar string comparison is case-sensitive, use `lowercase` to normalize captured values so policies can compare against a known-case literal (e.g. `getTag("domain") == "example.com"`). If different capture groups need different transforms, use separate derivation entries with distinct regexes. See [User Identity Derivations](./authorization-cedar.md#user-identity-derivations). |
 
 **Debug configurations for Cedar**
 
-| Variable                                              | Example | Description |
-|-------------------------------------------------------|---------|------------|
-| <nobr>`LAKEKEEPER__CEDAR__DEBUG__LOG_ENTITIES`</nobr> | `false` | If `true`, logs all internal entities (excluding externally managed entities) for each authorization request at debug level. This is useful for debugging authorization issues but can be verbose and impacts performance. Logging only occurs when both this flag is `true` AND debug logging is enabled (`RUST_LOG=debug`). Default: `false`. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__CEDAR__DEBUG__LOG_ENTITIES` | `false` | `false` | If `true`, logs all internal entities (excluding externally managed entities) for each authorization request at debug level. This is useful for debugging authorization issues but can be verbose and impacts performance. Logging only occurs when both this flag is `true` AND debug logging is enabled (`RUST_LOG=debug`). |
 
 ### UI
 
 When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
 
-| Variable                                           | Example                                      | Description |
-|----------------------------------------------------|----------------------------------------------|-----|
-| <nobr>`LAKEKEEPER__UI__OPENID_PROVIDER_URI`</nobr> | `https://keycloak.local/realms/{your-realm}` | OpenID provider URI used for login in the UI. Defaults to `LAKEKEEPER__OPENID_PROVIDER_URI`. Set this only if the IdP is reachable under a different URI from the users browser and lakekeeper. |
-| `LAKEKEEPER__UI__OPENID_CLIENT_ID`                 | `lakekeeper-ui`                              | Client ID to use for the Authorization Code Flow of the UI. Required if Authentication is enabled. Defaults to `lakekeeper` |
-| `LAKEKEEPER__UI__OPENID_REDIRECT_PATH`             | `/callback`                                  | Path where the UI receives the callback including the tokens from the users browser. Defaults to: `/callback` |
-| <nobr>`LAKEKEEPER__UI__OPENID_SCOPE`</nobr>        | `openid email`                               | Scopes to request from the IdP. Defaults to `openid profile email`. |
-| <nobr>`LAKEKEEPER__UI__OPENID_RESOURCE`</nobr>     | `lakekeeper-api`                             | Resources to request from the IdP. If not specified, the `resource` field is omitted (default). |
-| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
-| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_URL`  | `https://portal.cloud.example/login`         | Absolute URL sent as `post_logout_redirect_uri` on logout, overriding the value derived from `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH`. Use for IdPs that only allow pre-registered post-logout URLs (e.g. a cloud portal's own login page). If unset, the redirect is derived from the logout path. |
-| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_DISABLED` | `false`                                  | If `true`, the UI omits the `post_logout_redirect_uri` parameter entirely on logout (it is optional per the OIDC RFC). Use for IdPs that reject any non-registered post-logout URL. Defaults to `false`. |
-| `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
-| `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
-| `LAKEKEEPER__UI__ENABLE_SURVEYS`              | `true`                                       | The UI occasionally shows in-app user surveys to gather feedback on Lakekeeper. All responses are collected anonymously. Set to `false` to opt out; the UI then never initializes the survey SDK and makes no third-party requests. Defaults to `true`. |
-| `LAKEKEEPER__UI__BRANDING`<span class="lkp"></span> | `eyJ0aGVtZXMiOns...`                | Base64-encoded JSON that white-labels the UI with custom theme colors and partner logos. See [UI Branding](./ui-branding.md). Lakekeeper Plus only. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__UI__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | — | OpenID provider URI used for login in the UI. Defaults to `LAKEKEEPER__OPENID_PROVIDER_URI`. Set this only if the IdP is reachable under a different URI from the users browser and lakekeeper. |
+| `LAKEKEEPER__UI__OPENID_CLIENT_ID` | `lakekeeper-ui` | — | Client ID to use for the Authorization Code Flow of the UI. Required if Authentication is enabled. Defaults to `lakekeeper` |
+| `LAKEKEEPER__UI__OPENID_REDIRECT_PATH` | `/callback` | — | Path where the UI receives the callback including the tokens from the users browser. Defaults to: `/callback` |
+| `LAKEKEEPER__UI__OPENID_SCOPE` | `openid email` | — | Scopes to request from the IdP. Defaults to `openid profile email`. |
+| `LAKEKEEPER__UI__OPENID_RESOURCE` | `lakekeeper-api` | — | Resources to request from the IdP. If not specified, the `resource` field is omitted (default). |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout` | — | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_URL` | `https://portal.cloud.example/login` | — | Absolute URL sent as `post_logout_redirect_uri` on logout, overriding the value derived from `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH`. Use for IdPs that only allow pre-registered post-logout URLs (e.g. a cloud portal's own login page). If unset, the redirect is derived from the logout path. |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_DISABLED` | `false` | — | If `true`, the UI omits the `post_logout_redirect_uri` parameter entirely on logout (it is optional per the OIDC RFC). Use for IdPs that reject any non-registered post-logout URL. Defaults to `false`. |
+| `LAKEKEEPER__UI__LAKEKEEPER_URL` | `https://example.com/lakekeeper` | — | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
+| `LAKEKEEPER__UI__OPENID_TOKEN_TYPE` | `access_token` | — | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
+| `LAKEKEEPER__UI__ENABLE_SURVEYS` | `true` | — | The UI occasionally shows in-app user surveys to gather feedback on Lakekeeper. All responses are collected anonymously. Set to `false` to opt out; the UI then never initializes the survey SDK and makes no third-party requests. Defaults to `true`. |
+| `LAKEKEEPER__UI__BRANDING`<span class="lkp"></span> | `eyJ0aGVtZXMiOns...` | — | Base64-encoded JSON that white-labels the UI with custom theme colors and partner logos. See [UI Branding](./ui-branding.md). Lakekeeper Plus only. |
 
 ### Caching
 
@@ -370,10 +446,10 @@ Most cache entries' time-to-live is jittered downward by a small random fraction
 
 When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
 
-| Variable                                        | Example | Description      |
-|-------------------------------------------------|---------|------------------|
-| <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. Default: `10000` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__CACHE__STC__ENABLED` | `true` | `true` | Enable or disable the short-term credentials cache. |
+| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. |
 
 _Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
@@ -389,9 +465,9 @@ Caches warehouse metadata to reduce database queries for warehouse lookups.
 
 | Configuration Key                                             | Type    | Default | Description |
 |---------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
-| <nobr>`LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
+| `LAKEKEEPER__CACHE__WAREHOUSE__ENABLED`           | boolean | `true`  | Enable/disable warehouse caching. Default: `true` |
+| `LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
+| `LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
 If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
 
@@ -407,9 +483,9 @@ Caches namespace metadata and hierarchies to reduce database queries for namespa
 
 | Configuration Key                                             | Type    | Default | Description |
 |---------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable namespace caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
-| <nobr>`LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS`<nobr> | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
+| `LAKEKEEPER__CACHE__NAMESPACE__ENABLED`           | boolean | `true`  | Enable/disable namespace caching. Default: `true` |
+| `LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
+| `LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
 If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
 
@@ -425,9 +501,9 @@ Caches storage secrets to reduce load on the secret store. Since Lakekeeper neve
 
 | Configuration Key                                           | Type    | Default | Description |
 |-------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>          | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
-| <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr> | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+| `LAKEKEEPER__CACHE__SECRETS__ENABLED`           | boolean | `true`  | Enable/disable secrets caching. Default: `true` |
+| `LAKEKEEPER__CACHE__SECRETS__CAPACITY`          | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
+| `LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS` | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
 
 _Metrics_: The Secrets cache exposes Prometheus metrics for monitoring:
 
@@ -441,9 +517,9 @@ Caches role metadata to reduce database queries for role lookups. The role cache
 
 | Configuration Key                                        | Type    | Default | Description |
 |----------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__ROLE__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles to cache. Default: `10000` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__ROLE__ENABLED`           | boolean | `true`  | Enable/disable role caching. Default: `true` |
+| `LAKEKEEPER__CACHE__ROLE__CAPACITY`          | integer | `10000` | Maximum number of roles to cache. Default: `10000` |
+| `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
 
 If the cache is enabled, changes to role metadata may take up to the configured TTL (default: 120 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the cache is always up to date. The cache is automatically invalidated when roles are updated or deleted.
 
@@ -459,9 +535,9 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). T
 
 | Configuration Key                                                    | Type    | Default | Description |
 |----------------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable user-assignments caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`<nobr>          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
-| <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED`           | boolean | `true`  | Enable/disable user-assignments caching. Default: `true` |
+| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
+| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
 
 _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
@@ -475,9 +551,9 @@ Caches the members of each role (`RoleId → role members`). This is a cold-path
 
 | Configuration Key                                                | Type    | Default | Description |
 |------------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-members caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`           | boolean | `true`  | Enable/disable role-members caching. Default: `true` |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
 
 _Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
 
@@ -485,13 +561,35 @@ _Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_cache_hits_total{cache_type="role_members"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="role_members"}`: Total number of cache misses
 
+**Role Ancestors Cache**
+
+Caches which roles a role is nested inside, transitively (`RoleId → the roles it is a member of`). Read when a request is authorized for a role rather than a user — a caller who set the `x-assume-role` header, or a role named as the recipient of a grant — so a policy written for a parent role also covers the roles nested in it. Most entries are empty, since most roles are nested in nothing. An entry holds every role above the one it is keyed on, which a role with several parents per level can make much larger than `LAKEKEEPER__ROLE__MAX_NESTING_DEPTH` (see [Roles](#roles)) — that setting bounds how deep nesting goes, not how many roles a level holds.
+
+Only authorizers that resolve role nesting from Lakekeeper's own role store use this cache, such as [Cedar](./authorization-cedar.md)<span class="lkp"></span>. The OpenFGA backend keeps role membership in its own tuples and resolves nesting there, so under OpenFGA this cache is never populated and these settings have no effect.
+
+| Configuration Key                                                  | Type    | Default | Description |
+|--------------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-ancestors caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+
+Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
+
+The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL if the window is too wide, or set `ENABLED=false` to read from the database every time.
+
+_Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_cache_size{cache_type="role_ancestors"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="role_ancestors"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="role_ancestors"}`: Total number of cache misses
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
 
 | Variable                                               | Example | Description |
 |--------------------------------------------------------|---------|-----------|
-| <nobr>`LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL`<nobr> | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
+| `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies
 
@@ -526,9 +624,21 @@ Limits applied to the role model.
 
 This bound is enforced on the catalog (Postgres) write path. When using the OpenFGA authorization backend, nesting depth is governed by OpenFGA's own resolution limits rather than this setting — the same asymmetry as role-membership cycle prevention.
 
-| Variable                                            | Example | Description |
-|-----------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH`</nobr>  | `10`    | Maximum number of role→role edges in any nesting chain. Default: `10` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__ROLE__MAX_NESTING_DEPTH` | `10` | `10` | Maximum number of role→role edges in any nesting chain. |
+
+### Referenced-By Chains
+
+Bounds the view chain a client may declare on a load request.
+
+`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH` caps how many views a client may list in the `referenced-by` parameter of `loadTable` / `loadView` / `loadCredentials`, including the generic-table credentials endpoint. Every entry widens the authorization work for that single request — each view is resolved, authorized and ordered alongside the target — so the chain a client supplies is bounded. A deeper chain is rejected with `ReferencedByDepthExceeded` (HTTP 400): the request is malformed, not unauthorized. The error message carries both the supplied depth and the configured maximum. Each entry is also held to the same identifier rules as the target of the request, so the bound covers the size of a chain and not only its depth.
+
+The bound is applied to the raw list the client sent, before Lakekeeper decides whether the chain is honoured at all. It therefore applies regardless of whether a [trusted engine](./view-security.md) matched: an untrusted caller whose `referenced-by` would have been ignored still gets a `400` for an over-deep chain.
+
+| Variable                                                    | Example | Description |
+|-------------------------------------------------------------|---------|-------------|
+| <nobr>`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`</nobr> | `10`    | Maximum number of views accepted in a `referenced-by` chain. Default: `10` |
 
 ### Maintenance Mode
 
@@ -539,9 +649,9 @@ Captured at startup; not dynamic. While `read-only`:
 - `GET /v1/config` skips user auto-registration.
 - `GET /health` exposes the current mode as `maintenance_mode` for operator fan-out checks.
 
-| Variable                                       | Example     | Description |
-|------------------------------------------------|-------------|-------------|
-| <nobr>`LAKEKEEPER__MAINTENANCE_MODE`</nobr>    | `read-only` | `off` (default) or `read-only`. Captured at startup; not dynamic. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | — | `off` (default) or `read-only`. Captured at startup; not dynamic. |
 
 ### Idempotency
 
@@ -551,20 +661,20 @@ Generate a fresh key per logical operation and never reuse one. Reusing a key on
 
 Any UUID version is accepted, though the specification asks for UUIDv7.
 
-| Variable | Example | Description |
-|---|---|---|
-| <nobr>`LAKEKEEPER__IDEMPOTENCY__ENABLED`</nobr> | `true` | Enable idempotency key support. When enabled, `idempotency-key-lifetime` is advertised in `getConfig`. Default: `true` |
-| <nobr>`LAKEKEEPER__IDEMPOTENCY__LIFETIME`</nobr> | `PT30M` | How long idempotency records are kept, in ISO-8601 duration format. This value is advertised to clients. Default: `PT30M` (30 minutes) |
-| <nobr>`LAKEKEEPER__IDEMPOTENCY__GRACE_PERIOD`</nobr> | `PT5M` | Grace period added on top of lifetime for clock skew and transit delays, in ISO-8601 duration format. Default: `PT5M` (5 minutes) |
-| <nobr>`LAKEKEEPER__IDEMPOTENCY__CLEANUP_TIMEOUT`</nobr> | `PT30S` | Maximum time a background cleanup task may run before being considered dead. If exceeded, the next attempt takes over. Default: `PT30S` (30 seconds) |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__IDEMPOTENCY__ENABLED` | `true` | `true` | Enable idempotency key support. When enabled, `idempotency-key-lifetime` is advertised in `getConfig`. |
+| `LAKEKEEPER__IDEMPOTENCY__LIFETIME` | `PT30M` | `PT30M` (30 minutes) | How long idempotency records are kept, in ISO-8601 duration format. This value is advertised to clients. |
+| `LAKEKEEPER__IDEMPOTENCY__GRACE_PERIOD` | `PT5M` | `PT5M` (5 minutes) | Grace period added on top of lifetime for clock skew and transit delays, in ISO-8601 duration format. |
+| `LAKEKEEPER__IDEMPOTENCY__CLEANUP_TIMEOUT` | `PT30S` | `PT30S` (30 seconds) | Maximum time a background cleanup task may run before being considered dead. If exceeded, the next attempt takes over. |
 
 ### Audit Logging
 
 Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Logging Guide](./logging.md).
 
-| Variable                                           | Example | Description   |
-|----------------------------------------------------|---------|---------------|
-| <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr> | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__AUDIT__TRACING__ENABLED` | `true` | `false` | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. |
 
 ### Trusted Engines
 
@@ -579,17 +689,17 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 
 #### Configuration
 
-| Variable | Example | Description |
-|----------|---------|-------------|
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | Engine type. Currently only `trino` is supported. |
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | The view property that identifies the owner for delegated execution. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property that identifies the owner for delegated execution. |
 
 Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 
-| Variable | Example | Description |
-|----------|---------|-------------|
-| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__AUDIENCES`</nobr> | `[trino_dev, trino_prod]` | List of JWT audiences. A token matches if any of its audiences appears in this list. |
-| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__SUBJECTS`</nobr> | `[trino-sa]` | List of JWT subjects. A token matches if its subject appears in this list. Useful for service accounts. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__AUDIENCES` | `[trino_dev, trino_prod]` | — | List of JWT audiences. A token matches if any of its audiences appears in this list. |
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__SUBJECTS` | `[trino-sa]` | — | List of JWT subjects. A token matches if its subject appears in this list. Useful for service accounts. |
 
 **Example:** Trust a Trino engine whose tokens come from the `oidc` provider with audience `trino`:
 
@@ -608,21 +718,23 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino_dev, trin
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
 ```
 
-### Role Provider <span class="lkp"></span>
+### Role Provider { .lkp }
 
 Authorizers such as `Cedar` support pluggable role providers that resolve a user's group memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured in parallel, each with a unique identifier. `OpenFGA` does not use role providers — roles are stored directly in OpenFGA.
 
+Roles in a provider's namespace are the provider's to manage — see [Provider-managed roles](./authorization.md#provider-managed-roles) for what the management API rejects and how membership becomes visible.
+
 Role providers that resolve groups over HTTPS — the Microsoft Graph (Entra ID) provider — honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables for outbound requests. There is no per-provider proxy setting.
 
-##### Chain settings
+#### Chain settings
 
 | Variable                                                             | Default | Description |
 |----------------------------------------------------------------------|---------|-----|
-| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`</nobr>  | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
-| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS`</nobr> | `false` | When `true`, an audit event listing every resolved role name is emitted after each successful role resolution. Very noisy — intended for debugging role-provider configuration only. See [Logging — Operational Audit Events](./logging.md) for the event schema. |
-| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES`</nobr>  | `false` | When `true`, roles extracted from OIDC tokens are persisted to the catalog database so they can be reused when the user is not the live caller — see [Token role provider](#token-role-provider) below. |
+| `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`  | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
+| `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS` | `false` | When `true`, an audit event listing every resolved role name is emitted after each successful role resolution. Very noisy — intended for debugging role-provider configuration only. See [Logging — Operational Audit Events](./logging.md) for the event schema. |
+| `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES`  | `false` | When `true`, roles extracted from OIDC tokens are persisted to the catalog database so they can be reused when the user is not the live caller — see [Token role provider](#token-role-provider) below. |
 
-##### Token role provider
+#### Token role provider
 
 When `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, Lakekeeper extracts roles directly from the authenticated user's JWT. A built-in token role provider is added to the chain **automatically** — no additional configuration is required.
 
@@ -636,32 +748,32 @@ Set `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES=true` to mirror each u
 
 On each request, the caller's token roles are compared against the stored set and written only when they differ; requests carrying unchanged roles do not write. A definer's roles are therefore as current as the most recent token that user presented. Roles are scoped to the project they were issued for: in multi-project deployments the owner must have presented a token for the project where the view lives. An empty roles claim is ignored rather than clearing the stored set.
 
-##### LDAP role provider
+#### LDAP role provider
 
 Each LDAP provider is configured under a unique `<ID>` of your choosing. All variables below use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
 **Required fields:**
 
-| Variable                       | Example                                | Description |
-|--------------------------------|----------------------------------------|-----|
-| <nobr>`…__TYPE`</nobr>         | `ldap`                                 | Provider type. Must be `ldap`. |
-| <nobr>`…__URL`</nobr>          | `ldaps://ldap.example.com:636`         | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
-| <nobr>`…__DOMAINS`</nobr>      | `["example.com","*.corp.example.com"]` | JSON array of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
-| <nobr>`…__USER_BASE_DN`</nobr> | `ou=people,dc=example,dc=com`          | Base DN for the LDAP user search. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `…__TYPE` | `ldap` | — | Provider type. Must be `ldap`. |
+| `…__URL` | `ldaps://ldap.example.com:636` | — | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
+| `…__DOMAINS` | `["example.com","*.corp.example.com"]` | — | JSON array of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
+| `…__USER_BASE_DN` | `ou=people,dc=example,dc=com` | — | Base DN for the LDAP user search. |
 
 **Authentication:**
 
 | Variable                        | Default     | Description                  |
 |---------------------------------|-------------|------------------------------|
-| <nobr>`…__BIND_DN`</nobr>       | (anonymous) | Distinguished name of the service account used to bind. Omit for anonymous bind. |
-| <nobr>`…__BIND_PASSWORD`</nobr> |             | Password for the service account. Required when `…__BIND_DN` is set; can also be supplied via `…__BIND_PASSWORD_FILE`. |
+| `…__BIND_DN`       | (anonymous) | Distinguished name of the service account used to bind. Omit for anonymous bind. |
+| `…__BIND_PASSWORD` |             | Password for the service account. Required when `…__BIND_DN` is set; can also be supplied via `…__BIND_PASSWORD_FILE`. |
 
 **User search:**
 
 | Variable                             | Default         | Description         |
 |--------------------------------------|-----------------|---------------------|
-| <nobr>`…__USER_SEARCH_FILTER`</nobr> | `(uid=${USER})` | LDAP filter used to locate a user entry. The literal `${USER}` is replaced with the subject portion of the user's login name (the part before `@`). |
-| <nobr>`…__USER_SEARCH_SCOPE`</nobr>  | `sub`           | Search scope: `sub` (entire subtree), `one` (one level below base), or `base`. |
+| `…__USER_SEARCH_FILTER` | `(uid=${USER})` | LDAP filter used to locate a user entry. The literal `${USER}` is replaced with the subject portion of the user's login name (the part before `@`). |
+| `…__USER_SEARCH_SCOPE`  | `sub`           | Search scope: `sub` (entire subtree), `one` (one level below base), or `base`. |
 
 **Group / role mapping:**
 
@@ -677,36 +789,36 @@ The selector and shared fields:
 
 | Variable                              | Default     | Description                                                                                            |
 |---------------------------------------|-------------|--------------------------------------------------------------------------------------------------------|
-| <nobr>`…__GROUP_RESOLUTION_MODE`</nobr> | `attribute` | One of `attribute`, `search`, or `branching`. The remaining fields depend on the mode you choose.    |
-| <nobr>`…__GROUP_BASE_DN`</nobr>         |             | Base DN for the group search. Required by `search` and `branching`; ignored by `attribute`.            |
-| <nobr>`…__GROUP_CASE`</nobr>            | `keep`      | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+| `…__GROUP_RESOLUTION_MODE` | `attribute` | One of `attribute`, `search`, or `branching`. The remaining fields depend on the mode you choose.    |
+| `…__GROUP_BASE_DN`         |             | Base DN for the group search. Required by `search` and `branching`; ignored by `attribute`.            |
+| `…__GROUP_CASE`            | `keep`      | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
 
 **Attribute mode (`group_resolution_mode = "attribute"`):**
 
 | Variable                                   | Default    | Description        |
 |--------------------------------------------|------------|--------------------|
-| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. |
-| <nobr>`…__GROUP_NAME_SOURCE`</nobr>        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
+| `…__USER_MEMBER_OF_ATTRIBUTE` | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. |
+| `…__GROUP_NAME_SOURCE`        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
 
 **Search mode (`group_resolution_mode = "search"`)** — _available since 0.12.2 with `${USER}` / `${DOMAIN}` placeholder support and the composed default filter_:
 
 | Variable                                | Default                       | Description                                                                                            |
 |-----------------------------------------|-------------------------------|--------------------------------------------------------------------------------------------------------|
-| <nobr>`…__GROUP_SEARCH_FILTER`</nobr>     | `({GROUP_MEMBER_ATTRIBUTE}=${USER_DN})` | LDAP filter for the group search. May reference `${USER_DN}`, `${USER}`, and `${DOMAIN}` placeholders. When omitted, composed from `…__GROUP_MEMBER_ATTRIBUTE` — works on AD (`objectClass=group`), OpenLDAP (`groupOfNames` with `member`, or `groupOfUniqueNames` with `uniqueMember`), and 389-DS. For AD transitive resolution, set to `(member:1.2.840.113556.1.4.1941:=${USER_DN})`. |
-| <nobr>`…__GROUP_MEMBER_ATTRIBUTE`</nobr>  | `member`                      | Attribute on the group entry that references members; drives the default filter when `…__GROUP_SEARCH_FILTER` is unset. Use `uniqueMember` for `groupOfUniqueNames` directories. |
-| <nobr>`…__GROUP_NAME_ATTRIBUTE`</nobr>    | `cn`                          | Attribute on each returned group entry used as the role name. Use `sAMAccountName` for AD if you want the short name instead of the CN. |
+| `…__GROUP_SEARCH_FILTER`     | `({GROUP_MEMBER_ATTRIBUTE}=${USER_DN})` | LDAP filter for the group search. May reference `${USER_DN}`, `${USER}`, and `${DOMAIN}` placeholders. When omitted, composed from `…__GROUP_MEMBER_ATTRIBUTE` — works on AD (`objectClass=group`), OpenLDAP (`groupOfNames` with `member`, or `groupOfUniqueNames` with `uniqueMember`), and 389-DS. For AD transitive resolution, set to `(member:1.2.840.113556.1.4.1941:=${USER_DN})`. |
+| `…__GROUP_MEMBER_ATTRIBUTE`  | `member`                      | Attribute on the group entry that references members; drives the default filter when `…__GROUP_SEARCH_FILTER` is unset. Use `uniqueMember` for `groupOfUniqueNames` directories. |
+| `…__GROUP_NAME_ATTRIBUTE`    | `cn`                          | Attribute on each returned group entry used as the role name. Use `sAMAccountName` for AD if you want the short name instead of the CN. |
 
 **Branching mode (`group_resolution_mode = "branching"`)** — _available since 0.12.2_ — per-user-DN dispatch between a Search-style `then` branch and an explicit `else` branch:
 
 | Variable                                                 | Description |
 |----------------------------------------------------------|-------------|
-| <nobr>`…__BRANCH_IF_USER_DN_MATCHES`</nobr>                | Regex tested against the user's DN (case-insensitive by default; prepend `(?-i)` for strict casing). Named captures `(?<name>…)` become `${name}` placeholders in the `then` filter. Reserved names `USER`, `DOMAIN`, `USER_DN` are rejected. |
-| <nobr>`…__BRANCH_THEN__GROUP_SEARCH_FILTER`</nobr>         | LDAP filter for the `then` branch. May reference `${USER_DN}`, `${USER}`, `${DOMAIN}`, and any named capture from `…__BRANCH_IF_USER_DN_MATCHES`. Every placeholder must resolve at startup (unknown placeholders are rejected). |
-| <nobr>`…__BRANCH_THEN__GROUP_MEMBER_ATTRIBUTE`</nobr>      | Same role as in Search mode — drives the default filter when `…__BRANCH_THEN__GROUP_SEARCH_FILTER` is unset. Defaults to `member`. |
-| <nobr>`…__BRANCH_THEN__GROUP_NAME_ATTRIBUTE`</nobr>        | Attribute used as the role name for groups returned by the `then` branch. Defaults to `cn`. |
-| <nobr>`…__BRANCH_ELSE__MODE`</nobr>                        | **Required.** One of `attribute` (run Attribute-mode resolution against the user entry) or `none` (return empty roles, emit `outcome = "dn_no_match"` to audit). No implicit default — pick explicitly so audit logs distinguish "no roles" from "no match". |
-| <nobr>`…__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE`</nobr>    | When `…__BRANCH_ELSE__MODE=attribute`: the `memberOf`-style attribute to read. Defaults to `memberOf`. |
-| <nobr>`…__BRANCH_ELSE__GROUP_NAME_SOURCE`</nobr>           | When `…__BRANCH_ELSE__MODE=attribute`: how to derive the role name. Defaults to `dn_cn`. |
+| `…__BRANCH_IF_USER_DN_MATCHES`                | Regex tested against the user's DN (case-insensitive by default; prepend `(?-i)` for strict casing). Named captures `(?<name>…)` become `${name}` placeholders in the `then` filter. Reserved names `USER`, `DOMAIN`, `USER_DN` are rejected. |
+| `…__BRANCH_THEN__GROUP_SEARCH_FILTER`         | LDAP filter for the `then` branch. May reference `${USER_DN}`, `${USER}`, `${DOMAIN}`, and any named capture from `…__BRANCH_IF_USER_DN_MATCHES`. Every placeholder must resolve at startup (unknown placeholders are rejected). |
+| `…__BRANCH_THEN__GROUP_MEMBER_ATTRIBUTE`      | Same role as in Search mode — drives the default filter when `…__BRANCH_THEN__GROUP_SEARCH_FILTER` is unset. Defaults to `member`. |
+| `…__BRANCH_THEN__GROUP_NAME_ATTRIBUTE`        | Attribute used as the role name for groups returned by the `then` branch. Defaults to `cn`. |
+| `…__BRANCH_ELSE__MODE`                        | **Required.** One of `attribute` (run Attribute-mode resolution against the user entry) or `none` (return empty roles, emit `outcome = "dn_no_match"` to audit). No implicit default — pick explicitly so audit logs distinguish "no roles" from "no match". |
+| `…__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE`    | When `…__BRANCH_ELSE__MODE=attribute`: the `memberOf`-style attribute to read. Defaults to `memberOf`. |
+| `…__BRANCH_ELSE__GROUP_NAME_SOURCE`           | When `…__BRANCH_ELSE__MODE=attribute`: how to derive the role name. Defaults to `dn_cn`. |
 
 !!! note "Capture-driven filters and cross-scope memberships"
     A capture-driven filter (e.g. `sAMAccountName=${tenant}*ABC-*`) constrains resolution to the captured value; memberships outside that scope are not returned. For cross-scope memberships, add another role provider in the chain with a broader filter.
@@ -754,10 +866,10 @@ LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=member
 
 | Variable                               | Default | Description               |
 |----------------------------------------|---------|---------------------------|
-| <nobr>`…__STARTTLS`</nobr>             | `false` | Upgrade a plain TCP connection with STARTTLS before binding. Only applies to `ldap://` URLs. |
-| <nobr>`…__ALLOW_INSECURE`</nobr>       | `false` | Skip TLS certificate verification. **Do not use in production.** |
-| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `30`    | Seconds to wait when establishing the initial connection. |
-| <nobr>`…__READ_TIMEOUT_SECS`</nobr>    | `60`    | Seconds to wait for an LDAP response. |
+| `…__STARTTLS`             | `false` | Upgrade a plain TCP connection with STARTTLS before binding. Only applies to `ldap://` URLs. |
+| `…__ALLOW_INSECURE`       | `false` | Skip TLS certificate verification. **Do not use in production.** |
+| `…__CONNECT_TIMEOUT_SECS` | `30`    | Seconds to wait when establishing the initial connection. |
+| `…__READ_TIMEOUT_SECS`    | `60`    | Seconds to wait for an LDAP response. |
 
 **Caching & performance:**
 
@@ -770,20 +882,20 @@ If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts L
 
 | Variable                             | Default | Description                 |
 |--------------------------------------|---------|-----------------------------|
-| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300`   | Maximum age (in seconds) of a cached role-assignment record before Lakekeeper re-fetches from LDAP. Increase to reduce LDAP traffic; decrease when group membership changes must propagate more quickly. Also controls the TTL of the corresponding database record. |
+| `…__SYNC_INTERVAL_SECS` | `300`   | Maximum age (in seconds) of a cached role-assignment record before Lakekeeper re-fetches from LDAP. Increase to reduce LDAP traffic; decrease when group membership changes must propagate more quickly. Also controls the TTL of the corresponding database record. |
 
 **Startup and resilience:**
 
 | Variable                                       | Default | Description       |
 |------------------------------------------------|---------|-------------------|
-| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if this provider cannot connect. Useful for catching misconfiguration early. When `false`, the provider starts in a disconnected state and reconnects automatically on first use. |
-| <nobr>`…__RECONNECT_COOLDOWN_SECS`</nobr>      | `30`    | Minimum seconds between reconnection attempts after a failure. |
+| `…__REQUIRE_CONNECTED_ON_STARTUP` | `false` | When `true`, Lakekeeper refuses to start if this provider cannot connect. Useful for catching misconfiguration early. When `false`, the provider starts in a disconnected state and reconnects automatically on first use. |
+| `…__RECONNECT_COOLDOWN_SECS`      | `30`    | Minimum seconds between reconnection attempts after a failure. |
 
 **IDP filtering (optional):**
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| `…__IDP_IDS` | _(all IDPs)_ | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
 
 **Example — minimal LDAP provider (env vars):**
 
@@ -796,7 +908,7 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_DN=cn=svc-lakekeeper,ou=service-account
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-password
 ```
 
-##### Microsoft Graph (Entra ID) role provider
+#### Microsoft Graph (Entra ID) role provider
 
 _Available since Lakekeeper Plus 0.13.0_
 
@@ -806,43 +918,43 @@ The app registration this provider authenticates as needs the Microsoft Graph **
 
 **Required fields:**
 
-| Variable | Example | Description |
-|----------|---------|-------------|
-| <nobr>`…__TYPE`</nobr>              | `entra-graph` | Provider type. Must be `entra-graph` (aliases: `entra_graph`, `azure-ad`). |
-| <nobr>`…__CREDENTIAL__METHOD`</nobr> | `secret`      | Azure credential type — one of `secret`, `certificate`, `managed_identity`, `workload_identity`. Selects the remaining `…__CREDENTIAL__*` fields below. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `…__TYPE` | `entra-graph` | — | Provider type. Must be `entra-graph` (aliases: `entra_graph`, `azure-ad`). |
+| `…__CREDENTIAL__METHOD` | `secret` | — | Azure credential type — one of `secret`, `certificate`, `managed_identity`, `workload_identity`. Selects the remaining `…__CREDENTIAL__*` fields below. |
 
 **Credential** — the `…__CREDENTIAL__*` fields depend on `…__CREDENTIAL__METHOD`:
 
 | Method | Fields |
 |--------|--------|
-| <nobr>`secret`</nobr>            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
-| <nobr>`certificate`</nobr>       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
-| <nobr>`managed_identity`</nobr>  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
-| <nobr>`workload_identity`</nobr> | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
+| `secret`            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
+| `certificate`       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
+| `managed_identity`  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
+| `workload_identity` | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
 
 **Cloud / endpoints:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__CLOUD`</nobr>          | `public`       | Sovereign cloud: `public`, `us_government`, `china`, or `custom`. Drives the default Graph endpoint and the token authority. |
-| <nobr>`…__GRAPH_BASE`</nobr>     | _(per cloud)_  | Microsoft Graph endpoint base. Overrides the cloud default; **required** for `custom`. |
-| <nobr>`…__AUTHORITY_HOST`</nobr> | _(per cloud)_  | Entra ID token authority. Overrides the cloud default (e.g. a national-cloud proxy); **required** for `custom`. |
+| `…__CLOUD`          | `public`       | Sovereign cloud: `public`, `us_government`, `china`, or `custom`. Drives the default Graph endpoint and the token authority. |
+| `…__GRAPH_BASE`     | _(per cloud)_  | Microsoft Graph endpoint base. Overrides the cloud default; **required** for `custom`. |
+| `…__AUTHORITY_HOST` | _(per cloud)_  | Entra ID token authority. Overrides the cloud default (e.g. a national-cloud proxy); **required** for `custom`. |
 
 Built-in cloud endpoints:
 
 | Cloud | Graph base | Authority |
 |-------|------------|-----------|
-| <nobr>`public`</nobr>        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
-| <nobr>`us_government`</nobr> | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
-| <nobr>`china`</nobr>         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
-| <nobr>`custom`</nobr>        | _(none — set `…__GRAPH_BASE`)_             | _(none — set `…__AUTHORITY_HOST`)_  |
+| `public`        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
+| `us_government` | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
+| `china`         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
+| `custom`        | _(none — set `…__GRAPH_BASE`)_             | _(none — set `…__AUTHORITY_HOST`)_  |
 
 **HTTP timeouts:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `10` | Seconds to wait when establishing a connection to Graph. |
-| <nobr>`…__REQUEST_TIMEOUT_SECS`</nobr> | `30` | Seconds to wait for a Graph response. |
+| `…__CONNECT_TIMEOUT_SECS` | `10` | Seconds to wait when establishing a connection to Graph. |
+| `…__REQUEST_TIMEOUT_SECS` | `30` | Seconds to wait for a Graph response. |
 
 Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connection/timeout errors) are retried a few times with exponential backoff before the request fails and the cache falls back to the last good result. Outbound requests honor the standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables.
 
@@ -850,19 +962,19 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Graph. Uses the same two-layer (in-memory + database) cache as the LDAP provider, including stale-fallback on a Graph outage. |
+| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Graph. Uses the same two-layer (in-memory + database) cache as the LDAP provider, including stale-fallback on a Graph outage. |
 
 **Startup:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire a Graph token on startup. |
+| `…__REQUIRE_CONNECTED_ON_STARTUP` | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire a Graph token on startup. |
 
 **IDP filtering (optional):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
 
 **Example — client-secret credential (env vars):**
 
@@ -877,7 +989,7 @@ LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__CLIENT_SECRET=<app-client-secret>
 LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
 ```
 
-##### Okta role provider
+#### Okta role provider
 
 _Available since Lakekeeper Plus 0.13.1_
 
@@ -889,32 +1001,32 @@ Authentication uses OAuth 2.0 client-credentials with a **private-key-JWT** clie
 
 **Required fields:**
 
-| Variable | Example | Description |
-|----------|---------|-------------|
-| <nobr>`…__TYPE`</nobr>      | `okta`                    | Provider type. Must be `okta`. |
-| <nobr>`…__ORG_URL`</nobr>   | `https://acme.okta.com`   | Okta org base URL. Must use `https`. Base for both the token endpoint and the API. |
-| <nobr>`…__CLIENT_ID`</nobr> | `0oa…`                    | The service app's client id. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `…__TYPE` | `okta` | — | Provider type. Must be `okta`. |
+| `…__ORG_URL` | `https://acme.okta.com` | — | Okta org base URL. Must use `https`. Base for both the token endpoint and the API. |
+| `…__CLIENT_ID` | `0oa…` | — | The service app's client id. |
 
 **Signing key** — supply the service app's private key via exactly one of:
 
 | Variable | Description |
 |----------|-------------|
-| <nobr>`…__PRIVATE_KEY`</nobr>      | Inline private key — the JWK (Okta's default "Copy to clipboard") **or** a PEM block. |
-| <nobr>`…__PRIVATE_KEY_FILE`</nobr> | Path to a file holding the private key (JWK or PEM), read at startup. |
-| <nobr>`…__KEY_ID`</nobr>           | Public key id. **Required** when the key is PEM; a JWK carries its own `kid`. |
+| `…__PRIVATE_KEY`      | Inline private key — the JWK (Okta's default "Copy to clipboard") **or** a PEM block. |
+| `…__PRIVATE_KEY_FILE` | Path to a file holding the private key (JWK or PEM), read at startup. |
+| `…__KEY_ID`           | Public key id. **Required** when the key is PEM; a JWK carries its own `kid`. |
 
 **Scopes (optional):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__SCOPES`</nobr> | `["okta.users.read"]` | JSON array of OAuth scopes requested for the token. |
+| `…__SCOPES` | `["okta.users.read"]` | JSON array of OAuth scopes requested for the token. |
 
 **HTTP timeouts:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `10` | Seconds to wait when establishing a connection to Okta. |
-| <nobr>`…__REQUEST_TIMEOUT_SECS`</nobr> | `30` | Seconds to wait for an Okta response. |
+| `…__CONNECT_TIMEOUT_SECS` | `10` | Seconds to wait when establishing a connection to Okta. |
+| `…__REQUEST_TIMEOUT_SECS` | `30` | Seconds to wait for an Okta response. |
 
 Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connection/timeout errors) are retried a few times with exponential backoff before the request fails and the cache falls back to the last good result. Outbound requests honor the standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables.
 
@@ -922,25 +1034,25 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the same two-layer (in-memory + database) cache as the LDAP and Entra providers, including stale-fallback on an Okta outage. |
+| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the same two-layer (in-memory + database) cache as the LDAP and Entra providers, including stale-fallback on an Okta outage. |
 
 **Startup:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire an Okta token on startup. |
+| `…__REQUIRE_CONNECTED_ON_STARTUP` | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire an Okta token on startup. |
 
 **DPoP:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__DPOP`</nobr> | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has _Require DPoP_ set, so leave it on. Set `false` only if an org rejects DPoP. |
+| `…__DPOP` | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has _Require DPoP_ set, so leave it on. Set `false` only if an org rejects DPoP. |
 
 **IDP filtering (optional):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
 
 **Example — inline JWK key (env vars):**
 
@@ -961,7 +1073,7 @@ LAKEKEEPER__ROLE_PROVIDER__OKTA__PRIVATE_KEY_FILE=/run/secrets/okta-key.pem
 LAKEKEEPER__ROLE_PROVIDER__OKTA__KEY_ID=<public-key-id>
 ```
 
-##### File-based configuration
+#### File-based configuration
 
 All providers can alternatively be configured through a single TOML file. This is convenient when secrets management or config management tools produce a single artefact (e.g. Vault agent, Kubernetes projected volumes, Ansible templates).
 
@@ -1017,35 +1129,35 @@ LAKEKEEPER__ROLE_PROVIDER_FILE=/etc/lakekeeper/role-providers.toml
 
 Lakekeeper emits [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics) with a default report interval of 30 seconds. If necessary, this interval can be fine-tuned.
 
-| Variable                                                   | Example | Description                                                                                  |
-|------------------------------------------------------------|---------|----------------------------------------------------------------------------------------------|
-| <nobr>`LAKEKEEPER__METRICS__TOKIO__REPORT_INTERVAL`</nobr> | `30s`   | Length of interval for which Tokio Runtime Metrics are collected and emitted. Default: `30s` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__METRICS__TOKIO__REPORT_INTERVAL` | `30s` | `30s` | Length of interval for which Tokio Runtime Metrics are collected and emitted. |
 
 ### Debug
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.
 
-| Variable                                                   | Example | Description |
-|------------------------------------------------------------|---------|-------|
-| <nobr>`LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES`</nobr>       | `true`  | If set to `true`, Lakekeeper will log all incoming and outgoing request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE`</nobr>     | `true`  | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__AUTO_SERVE`</nobr>               | `true`  | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__EXTENDED_LOGS`</nobr>            | `false` | Controls whether file names and line numbers are included in JSON log output. When set to `false`, these fields are omitted for cleaner logs. When set to `true`, each log entry includes `filename` and `line_number` fields for easier debugging. Default: `false` |
-| <nobr>`LAKEKEEPER__DEBUG__LOG_AUTHORIZATION_HEADER`</nobr> | `false` | If set to `true`, the `Authorization` header is included in request trace spans for the `/catalog/v1/config` and `/management/v1/info` endpoints. This exposes sensitive credentials (tokens, passwords) and should **never** be enabled in production. Default: `false` |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES` | `true` | `false` | If set to `true`, Lakekeeper will log all incoming and outgoing request bodies at debug level. This is useful for debugging API interactions but should **never** be enabled in production as it can expose sensitive data (credentials, tokens, etc.) and significantly impact performance. |
+| `LAKEKEEPER__DEBUG__MIGRATE_BEFORE_SERVE` | `true` | `false` | If set to `true`, Lakekeeper waits for the DB (30s) and runs migrations when `serve` is called. |
+| `LAKEKEEPER__DEBUG__AUTO_SERVE` | `true` | `false` | If set to `true`, Lakekeeper will automatically start the server when no subcommand is provided (i.e., when running the binary without arguments). This is useful for development environments to quickly start the server without explicitly specifying the `serve` command. |
+| `LAKEKEEPER__DEBUG__EXTENDED_LOGS` | `false` | `false` | Controls whether file names and line numbers are included in JSON log output. When set to `false`, these fields are omitted for cleaner logs. When set to `true`, each log entry includes `filename` and `line_number` fields for easier debugging. |
+| `LAKEKEEPER__DEBUG__LOG_AUTHORIZATION_HEADER` | `false` | `false` | If set to `true`, the `Authorization` header is included in request trace spans for the `/catalog/v1/config` and `/management/v1/info` endpoints. This exposes sensitive credentials (tokens, passwords) and should **never** be enabled in production. |
 
 **Warning**: Debug options can expose sensitive information in logs and should only be used in secure development environments.
 
 ### Test Configurations
 
-| Variable                                          | Example | Description    |
-|---------------------------------------------------|---------|----------------|
-| <nobr>`LAKEKEEPER__SKIP_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__SKIP_STORAGE_VALIDATION` | true | false | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. |
 
 ### License Configuration
 
-Lakekeeper Plus<nobr><span class="lkp"></span></nobr> requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
+Lakekeeper Plus<span class="lkp"></span> requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
 
-| Variable                                     | Example                | Description |
-|----------------------------------------------|------------------------|------|
-| <nobr>`LAKEKEEPER__LICENSE__KEY`</nobr>      | `<license-key>`        | License key as a string. Takes precedence over `LAKEKEEPER__LICENSE__KEY_PATH` if both are set. |
-| <nobr>`LAKEKEEPER__LICENSE__KEY_PATH`</nobr> | `/path/to/license.lic` | Path to a file containing the license key. |
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__LICENSE__KEY` | `<license-key>` | — | License key as a string. Takes precedence over `LAKEKEEPER__LICENSE__KEY_PATH` if both are set. |
+| `LAKEKEEPER__LICENSE__KEY_PATH` | `/path/to/license.lic` | — | Path to a file containing the license key. |

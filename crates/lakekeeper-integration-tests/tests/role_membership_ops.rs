@@ -16,7 +16,8 @@ use lakekeeper::{
     },
     service::{
         CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
-        RoleSourceId, State, Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
+        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId, UserUpsertMode,
+        authz::AllowAllAuthorizer,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -43,6 +44,14 @@ fn metadata(project_id: &ProjectId) -> RequestMetadata {
         .build()
 }
 
+/// An instance-admin caller, scoped to `project_id` (`test_instance_admin` alone
+/// carries no project).
+fn instance_admin_metadata(project_id: &ProjectId, user_id: &UserId) -> RequestMetadata {
+    let mut md = RequestMetadata::test_instance_admin(user_id.clone());
+    md.with_project_id(project_id.clone());
+    md
+}
+
 /// Create a catalog-managed (`lakekeeper` provider) role directly in the DB.
 async fn make_role(ctx: &Ctx, project_id: &ProjectId, name: &str, source_id: &str) -> RoleId {
     let provider = RoleProviderId::try_new("lakekeeper").unwrap();
@@ -65,6 +74,33 @@ async fn make_role(ctx: &Ctx, project_id: &ProjectId, name: &str, source_id: &st
     .unwrap();
     tx.commit().await.unwrap();
     role.id()
+}
+
+/// Seed a catalog-managed (`system` provider) role directly in the DB, bypassing
+/// the role-management API's create guard — the same way `role_ops.rs` obtains
+/// an existing system row to verify the membership guard.
+async fn make_system_role(
+    ctx: &Ctx,
+    project_id: &ProjectId,
+    name: &str,
+    source_id: &str,
+) -> RoleId {
+    let source = RoleSourceId::try_new(source_id).unwrap();
+    let request = CatalogCreateRoleRequest::builder()
+        .role_id(RoleId::new_random())
+        .role_name(name)
+        .source_id(&source)
+        .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+        .build();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let created = PostgresBackend::create_roles(project_id, vec![request], tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    created[0].id()
 }
 
 async fn provision_user(ctx: &Ctx, user_id: &UserId, name: &str) {
@@ -1102,4 +1138,270 @@ async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: P
         &RoleSourceId::try_new("new-src").unwrap(),
         "role-members entry served the stale ident after a source-system rebind",
     );
+}
+
+// ==================== system-role membership guard ====================
+
+/// A `system` role's membership can only be written by an instance admin — both
+/// adding and removing a user member. A plain caller (holding
+/// `ManageRoleAssignments` via the `AllowAll` authorizer) is rejected with
+/// `SystemRoleMembershipRequiresInstanceAdmin` on both operations; an instance
+/// admin succeeds on both.
+#[sqlx::test]
+async fn system_role_membership_requires_instance_admin(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let system_role =
+        make_system_role(&ctx, &project_id, "workspace_admin", "workspace_admin").await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    provision_user(&ctx, &alice, "Alice").await;
+    let root = UserId::new_unchecked("oidc", "root");
+
+    // 1. Plain caller adds a user member -> 403.
+    let err = ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.error.r#type,
+        "SystemRoleMembershipRequiresInstanceAdmin"
+    );
+    assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+
+    // The denied add wrote nothing: zero members, not merely a member the later
+    // (successful, same-identity) add would dedupe against.
+    let page = ApiServer::list_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        list_query(None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.members.len(), 0);
+
+    // 2. Instance admin adds the same user member -> 200, member listed.
+    let resp = ApiServer::add_role_members(
+        ctx.clone(),
+        instance_admin_metadata(&project_id, &root),
+        system_role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.members, vec![user_member(&alice)]);
+
+    let page = ApiServer::list_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        list_query(None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.members.len(), 1);
+
+    // 3. Plain caller removes that member -> 403, same error type.
+    let err = ApiServer::remove_role_member(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        RoleMemberType::User,
+        alice.to_string(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.error.r#type,
+        "SystemRoleMembershipRequiresInstanceAdmin"
+    );
+    assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+
+    // 4. Instance admin removes it -> 200, member gone.
+    ApiServer::remove_role_member(
+        ctx.clone(),
+        instance_admin_metadata(&project_id, &root),
+        system_role,
+        RoleMemberType::User,
+        alice.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let page = ApiServer::list_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        list_query(None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.members.len(), 0);
+}
+
+/// A `system` role never accepts a role-type member, even from an instance
+/// admin (`400 SystemRoleMemberRolesNotSupported`) — nesting into system roles
+/// is not supported. A non-admin caller sending the same request is rejected by
+/// the instance-admin check first (`403`), pinning that the admin gate runs
+/// before the member-type check.
+#[sqlx::test]
+async fn system_role_rejects_role_type_members(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let system_role =
+        make_system_role(&ctx, &project_id, "workspace_admin", "workspace_admin").await;
+    let team = make_role(&ctx, &project_id, "team", "team-src").await;
+    let root = UserId::new_unchecked("oidc", "root");
+
+    // 1. Instance admin adds `team` as a ROLE member -> 400.
+    let err = ApiServer::add_role_members(
+        ctx.clone(),
+        instance_admin_metadata(&project_id, &root),
+        system_role,
+        AddRoleMembersRequest {
+            members: vec![role_member(team)],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "SystemRoleMemberRolesNotSupported");
+    assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+
+    // 2. Plain caller, same request -> 403: the instance-admin check fires
+    // first, so a non-admin never even reaches the member-type check.
+    let err = ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        AddRoleMembersRequest {
+            members: vec![role_member(team)],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.error.r#type,
+        "SystemRoleMembershipRequiresInstanceAdmin"
+    );
+    assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+}
+
+/// An instance admin may REMOVE a role-type member from a `system` role, even
+/// though `add_role_members` never lets one be added there through the API. Seed
+/// the role->role edge directly at the store layer (the store's own restriction,
+/// `RoleNotManuallyAssignable`, permits `lakekeeper`/`system` members, so this edge
+/// is a state the catalog itself allows to exist) and confirm the removal path
+/// stays open as the cleanup route the guard's doc comment promises.
+#[sqlx::test]
+async fn instance_admin_removes_role_member_from_system_role(pool: PgPool) {
+    use lakekeeper::service::CatalogRoleAssignmentOps as _;
+
+    let (ctx, project_id) = setup(pool).await;
+    let system_role =
+        make_system_role(&ctx, &project_id, "workspace_admin", "workspace_admin").await;
+    let team = make_role(&ctx, &project_id, "team", "team-src").await;
+    let root = UserId::new_unchecked("oidc", "root");
+
+    // Seed the edge directly at the store layer, bypassing the API guard, which
+    // never lets `add_role_members` create it.
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::add_role_members(&project_id, system_role, &[team], tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // An instance admin can remove that pre-existing role-type member.
+    ApiServer::remove_role_member(
+        ctx.clone(),
+        instance_admin_metadata(&project_id, &root),
+        system_role,
+        RoleMemberType::Role,
+        team.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let page = ApiServer::list_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        system_role,
+        list_query(None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.members.len(), 0);
+}
+
+/// Non-`system` roles are completely unaffected by the guard: a plain caller
+/// with `ManageRoleAssignments` (the `AllowAll` authorizer) can add both a user
+/// and a role member, and remove both.
+#[sqlx::test]
+async fn ordinary_role_membership_unaffected(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let role = make_role(&ctx, &project_id, "R", "r-src").await;
+    let other = make_role(&ctx, &project_id, "other", "other-src").await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    provision_user(&ctx, &alice, "Alice").await;
+
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![role_member(other)],
+        },
+    )
+    .await
+    .unwrap();
+
+    let page =
+        ApiServer::list_role_members(ctx.clone(), metadata(&project_id), role, list_query(None))
+            .await
+            .unwrap();
+    assert_eq!(page.members.len(), 2);
+
+    ApiServer::remove_role_member(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        RoleMemberType::User,
+        alice.to_string(),
+    )
+    .await
+    .unwrap();
+    ApiServer::remove_role_member(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        RoleMemberType::Role,
+        other.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let page =
+        ApiServer::list_role_members(ctx.clone(), metadata(&project_id), role, list_query(None))
+            .await
+            .unwrap();
+    assert_eq!(page.members.len(), 0);
 }

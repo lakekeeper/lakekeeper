@@ -39,6 +39,14 @@ linkcheck:
   fi
   lychee --offline --root-dir "$PWD/site" --no-progress \
     site/index.html site/getting-started site/support site/about site/docs/nightly
+  just seo-check
+
+# Assert the built site stays crawlable: non-empty sitemap, canonical tags,
+# noindex on the duplicate version trees, absolute Open Graph URLs, and the
+# llms.txt / robots.txt agent files. Expects an already-built `site/`, which
+# `just linkcheck` produces — it runs this as its final step.
+seo-check:
+  python3 dev/seo_check.py site
 
 # Clean the local docs site.
 clean:

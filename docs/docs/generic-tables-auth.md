@@ -1,3 +1,7 @@
+---
+description: "Authenticate the Lakekeeper Python and Java clients with OAuth2 bearer tokens, and choose the right strategy for scripts, services and notebooks."
+---
+
 # Client Authentication
 
 The Lakekeeper clients — [`pylakekeeper`](generic-tables-pylakekeeper.md) (Python) and the [`lakekeeper-client`](generic-tables-flink.md) (Java, also used from [Spark](generic-tables-spark.md) via py4j) — authenticate to Lakekeeper by sending an OAuth2 **bearer token** on every request. This page covers the **client side**: how to obtain and pass that token. For the **server side** — configuring the OpenID provider, how Lakekeeper validates tokens, and mapping tokens to identities — see [Authentication](authentication.md).

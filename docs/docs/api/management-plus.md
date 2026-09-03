@@ -1,6 +1,7 @@
 ---
 hide:
   - toc
+description: "Interactive OpenAPI reference for the Lakekeeper Plus extensions to the Management API."
 ---
 <style>
 /*

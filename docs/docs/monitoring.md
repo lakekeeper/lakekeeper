@@ -1,3 +1,7 @@
+---
+description: "Monitor Lakekeeper with Prometheus metrics and per-project endpoint statistics, and wire them into a Kubernetes, Prometheus and Grafana stack."
+---
+
 # Monitoring Lakekeeper
 
 Lakekeeper exposes Prometheus metrics and per-project endpoint statistics. We recommend integrating these into your Kubernetes/Grafana/Prometheus stack.
@@ -23,7 +27,7 @@ Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Members. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Members, and Role Ancestors. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
@@ -31,7 +35,7 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [Admission Gate Metrics](#admission-gate-metrics)). A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [Admission Gate Metrics](#admission-gate-metrics)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased — except for `table_metadata`, where a low hit rate is expected. See [Configuration > Caching](./configuration.md#caching) for details.
 
 Role-membership cache invalidation emits one additional metric:
 
@@ -41,7 +45,24 @@ Role-membership cache invalidation emits one additional metric:
 
 The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
 
-### Role Provider Metrics <span class="lkp"></span>
+The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance, so it falls after a clear rather than at the moment of one — do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all, since OpenFGA resolves role nesting from its own tuples and never reads this cache: alert on absence there, not on a zero value.
+
+#### Table Metadata Cache { #table-metadata-cache .lkp }
+
+During [table maintenance](./table-maintenance.md#expire-snapshots), Lakekeeper caches parsed Iceberg manifests and manifest lists under `cache_type="table_metadata"`. This cache is bounded by the memory its entries occupy rather than by their number, and one entry ranges from a few KiB to several MiB, so `lakekeeper_cache_size` says little about the memory held. Two further metrics cover that:
+
+| Metric                                                                    | Type  | Labels       | Description |
+|---------------------------------------------------------------------------|-------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>weighted_bytes</code> | Gauge | `cache_type` | Bytes held across all live instances of the cache |
+| <code class="selectable">lakekeeper_cache_<wbr>instances</code>      | Gauge | `cache_type` | Live instances of the cache in this process |
+
+One cache is built per maintenance task rather than once per process, so its budget applies once per running task and `lakekeeper_cache_weighted_bytes` is the sum across the `lakekeeper_cache_instances` that are live. Peak memory therefore scales with how many maintenance tasks run at once: raising `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS` or `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS` raises it proportionally. Size a pod's memory limit against the observed value at your own worker counts rather than against a single task.
+
+Both gauges return to zero once the last task finishes, because each cache is dropped with the task that built it.
+
+A low hit rate here does not mean the cache is too small, unlike the other caches. Every task starts with an empty cache and reads most manifests once, so misses dominate by design. Judge the budget by whether `lakekeeper_cache_weighted_bytes` plateaus — at capacity, manifests are evicted and re-read from object storage — and by the headroom the peak leaves against the container memory limit.
+
+### Role Provider Metrics { .lkp }
 
 When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
 
@@ -58,7 +79,7 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 |-------------------------------|----------------------------------------------|
 | `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
 | `success`                     | Fresh roles were fetched from the external provider and synced to Postgres. |
-| <nobr>`stale_fallback`</nobr> | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
+| `stale_fallback` | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
 | `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
 
 **Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle (to drive reconnection attempts and keep `lakekeeper_role_provider_up` current), but an unreachable provider does **not** cause the pod to fail its liveness or readiness probe. Lakekeeper continues serving the roles it last synced to Postgres (`stale_fallback`), so authorization keeps working during a provider outage — at the cost of potentially stale group memberships.

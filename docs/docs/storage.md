@@ -1,3 +1,7 @@
+---
+description: "Configure Lakekeeper warehouse storage profiles for S3, Google Cloud Storage, Azure Data Lake Storage and other backends, including credential vending."
+---
+
 # Storage
 
 Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a location defined by a `StorageProfile` attached to it.
@@ -307,7 +311,7 @@ The following table describes all configuration parameters for an S3 storage pro
 
 ### AWS
 
-###### Direct File-Access with Access Key
+#### Direct File-Access with Access Key
 
 First create a new S3 bucket for the warehouse. Buckets can be re-used for multiple Warehouses as long as the `key-prefix` is different. We recommend to block all public access.
 
@@ -419,7 +423,7 @@ Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) l
 
 A `us-gov-*` or `cn-*` region determines the partition, as do the ISO regions (`us-iso-*`, `us-isob-*`, `us-isof-*`, `eu-isoe-*`) and the European Sovereign Cloud (`eusc-de-*`). This applies to profiles that let the AWS SDK resolve the endpoint from the region. For every other profile — an explicit `endpoint`, a commercial region, or a region of a partition newer than your Lakekeeper release — the partition of `sts-role-arn` or `assume-role-arn` is used, and `aws` if neither names an AWS partition. Storage profiles with a `flavor` other than `aws` always use `aws`.
 
-##### System Identities / Managed Identities
+#### System Identities / Managed Identities
 
 Since Lakekeeper version 0.8, credentials for S3 access can also be loaded directly from the environment. Lakekeeper integrates with the AWS SDK to support standard environment-based authentication, including all common configuration options through AWS_* environment variables.
 
@@ -529,9 +533,9 @@ We are now ready to create the Warehouse using the system identity:
 
 The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the object store. It is also used as a default for `sts-role-arn`, which is the role that is assumed when generating vended credentials for clients (with an attached policy for the accessed table).
 
-##### CORS Configuration
+#### CORS Configuration
 
-For browser-based access to S3 buckets (required for [DuckDB WASM](engines.md#duckdb-wasm)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
+For browser-based access to S3 buckets (required for [LoQE, the in-browser query console](engines.md#loqe)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
 
 To configure CORS for your S3 bucket:
 
@@ -569,7 +573,7 @@ Example CORS policy:
 
 Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted.
 
-##### STS Session Tags
+#### STS Session Tags
 
 The optional `sts-session-tags` setting can be used to provide Session Tags when assuming roles via STS. Doing so requires that the IAM Role's Trust Relationship also allow `sts:TagSession`. Here's the above example with this addition:
 
@@ -833,7 +837,7 @@ A POST request to `/management/v1/warehouse` would expects the following body:
 }
 ```
 
-##### Azure System Identity
+#### Azure System Identity
 
 !!! warning
     Enabling Azure system identities allows Lakekeeper to access any storage location that the managed identity has permissions for. To minimize security risks, ensure the managed identity is restricted to only the necessary resources. Additionally, limit Warehouse creation permission in Lakekeeper to users who are authorized to access all locations that the system identity can access.
@@ -981,7 +985,7 @@ The service account should have appropriate permissions (such as Storage Admin r
 
 Lakekeeper supports two primary authentication methods for GCS:
 
-##### Service Account Key
+#### Service Account Key
 
 You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
 
@@ -1015,7 +1019,7 @@ You can provide a service account key directly when creating a warehouse. This i
 
 The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (typically Storage Admin role on the bucket).
 
-##### GCP System Identity
+#### GCP System Identity
 
 !!! warning
     Enabling GCP system identities grants Lakekeeper access to any storage location the service account has permissions for. Carefully review and limit the permissions of the service account to avoid unintended access to sensitive resources. Additionally, limit Warehouse creation permissions in Lakekeeper to users who are authorized to access all locations that the system identity can access.

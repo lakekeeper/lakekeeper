@@ -1,3 +1,7 @@
+---
+description: "Catalog non-Iceberg data — Lance, Parquet, CSV and any other format — alongside Iceberg tables with Lakekeeper's format-agnostic Generic Table API."
+---
+
 # Generic Tables
 
 Lakekeeper's **Generic Table API** catalogs non-Iceberg tables — Lance, CSV, Parquet, or any other format — alongside Iceberg tables in the same Warehouse. Each generic table sits in a Namespace, has a name, a `format` string, an optional base `location`, `schema`, `statistics`, `properties`, and a free-form `doc` field. Engines handle writes against the underlying format; Lakekeeper handles **identity, governance, access control, and lifecycle**.

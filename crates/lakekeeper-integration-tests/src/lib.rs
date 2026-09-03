@@ -154,6 +154,23 @@ pub async fn create_view_helper(
 /// signature for tests extracted from lakekeeper that pre-date the
 /// num-warehouses / project-id arguments.
 #[allow(clippy::too_many_arguments)]
+/// Assert a `loadTable`-shaped response advertises client-side scan planning.
+///
+/// `loadTable`, `createTable` and `registerTable` all return the same body, so all
+/// three must carry it; asserting on the response rather than on the server-side
+/// helper is what catches a path that was never wired up.
+pub fn assert_advertises_client_planning(
+    config: Option<&std::collections::HashMap<String, String>>,
+    endpoint: &str,
+) {
+    let config = config.unwrap_or_else(|| panic!("{endpoint} must carry a config"));
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "{endpoint} must advertise client-side planning: {config:?}"
+    );
+}
+
 pub async fn setup_simple<T: lakekeeper::service::authz::Authorizer>(
     pool: sqlx::PgPool,
     storage_profile: lakekeeper::service::storage::StorageProfile,

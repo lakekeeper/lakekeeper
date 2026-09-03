@@ -24,7 +24,7 @@ use lakekeeper::{
     service::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
         AddUserRoleAssignmentsResult, ApplyGrantsStoreError, ApplyTagError, ArcProjectId,
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        AssignedRole, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
         CatalogCreateTagDefinitionRequest, CatalogCreateWarehouseError,
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
@@ -643,6 +643,13 @@ impl CatalogStore for super::PostgresBackend {
             .await
     }
 
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+        super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
+    }
+
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
         role_ident: &RoleIdent,
@@ -967,7 +974,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 

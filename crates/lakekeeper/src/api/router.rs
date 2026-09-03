@@ -1,9 +1,16 @@
 use std::{fmt::Debug, sync::Arc};
 
-use axum::{Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get, serve::Listener,
+};
 use axum_extra::{either::Either, middleware::option_layer};
-use axum_prometheus::PrometheusMetricLayer;
+use axum_prometheus::{PrometheusMetricLayer, metrics};
 use http::{HeaderName, HeaderValue, Method, StatusCode, header};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo, TokioTimer},
+    server::{conn::auto, graceful::GracefulShutdown},
+    service::TowerToHyperService,
+};
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -30,7 +37,7 @@ use crate::{
         management::v1::ApiServer,
     },
     request_metadata::{
-        X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
+        X_BREAK_GLASS_HEADER_NAME, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
         create_request_metadata_with_trace_and_project_fn,
     },
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -416,6 +423,7 @@ fn get_cors_layer(
                 IF_NONE_MATCH_HEADER_NAME,
                 X_USER_AGENT_HEADER_NAME,
                 DATA_ACCESS_HEADER_NAME,
+                X_BREAK_GLASS_HEADER_NAME,
             ])
             .expose_headers(vec![ETAG_HEADER_NAME])
             .allow_methods(vec![
@@ -466,24 +474,174 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     }
 }
 
-/// Serve the given router on the given listener
+/// Serve the given router on the given listener until `cancellation_token` is
+/// cancelled, then drain in-flight connections.
 ///
 /// # Errors
-/// Fails if the webserver panics
+/// Returns `Ok` once draining finishes; the error type is kept for callers.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     router: Router,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let cancellation_future = async move {
-        cancellation_token.cancelled().await;
-        tracing::info!("HTTP server shutdown requested (cancellation token)");
-    };
-    axum::serve(listener, router)
-        .with_graceful_shutdown(cancellation_future)
-        .await
-        .map_err(|e| anyhow::anyhow!(e).context("error running HTTP server"))
+    // One accept loop of our own, because `axum::serve` exposes no way to reach
+    // hyper's per-connection settings. Three of them matter here, and all three
+    // are per-connection state that lives until the connection closes:
+    //
+    // * `timer` — hyper defaults `header_read_timeout` to 30s but silently
+    //   disables it when no timer is installed, which is what `axum::serve`
+    //   does. Installing one activates it, and because hyper arms it whenever
+    //   the connection is waiting for a request head, it also bounds how long
+    //   an idle kept-alive connection is held.
+    // * `max_buf_size` — hyper's read buffer grows adaptively to 408 KiB and
+    //   keeps that capacity for the connection's lifetime, so one large commit
+    //   permanently inflates the connection that carried it.
+    // * TCP keepalive — lets the kernel retire a connection whose peer vanished
+    //   without FIN or RST, which nothing else here would ever notice.
+    //
+    // `Listener::accept` is axum's, so accept-error backoff (EMFILE and
+    // friends) still comes from upstream.
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(CONNECTION_IDLE_TIMEOUT)
+        .max_buf_size(MAX_CONNECTION_BUFFER_SIZE);
+    // CONNECT protocol carries websockets over HTTP/2.
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .enable_connect_protocol();
+
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_IDLE)
+        .with_interval(TCP_KEEPALIVE_PROBE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_PROBE_RETRIES);
+
+    let graceful = GracefulShutdown::new();
+    let mut listener = listener;
+
+    // Separates "many connections open" from "we are leaking tasks":
+    // `tokio_live_tasks_count` counts every task on the runtime, so on its own it
+    // cannot tell one from the other.
+    metrics::describe_gauge!(
+        METRIC_HTTP_CONNECTIONS,
+        "Currently open HTTP connections, one tokio task each"
+    );
+    metrics::gauge!(METRIC_HTTP_CONNECTIONS).set(0.0);
+
+    loop {
+        let (stream, peer) = tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => {
+                tracing::info!("HTTP server shutdown requested (cancellation token)");
+                break;
+            }
+            accepted = Listener::accept(&mut listener) => accepted,
+        };
+
+        // Nagle would otherwise delay small responses waiting for an ACK.
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::debug!(%peer, "Failed to set TCP_NODELAY: {e}");
+        }
+        if let Err(e) = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+            tracing::debug!(%peer, "Failed to set TCP keepalive: {e}");
+        }
+
+        let open_connection = OpenConnection::new();
+        let connection = builder
+            .serve_connection_with_upgrades(
+                TokioIo::new(stream),
+                TowerToHyperService::new(router.clone()),
+            )
+            .into_owned();
+        let connection = graceful.watch(connection);
+        tokio::spawn(async move {
+            let _open_connection = open_connection;
+            if let Err(e) = connection.await {
+                tracing::debug!(%peer, "Connection closed with error: {e}");
+            }
+        });
+    }
+
+    // Refuse new connections immediately. Held open, the socket keeps
+    // completing handshakes into the backlog for the whole drain, and those
+    // clients wait for a reply that never comes instead of failing fast.
+    drop(listener);
+
+    let in_flight = graceful.count();
+    tracing::info!(in_flight, "Draining connections");
+    tokio::select! {
+        // `GracefulShutdown::shutdown` signals the connections on its first
+        // poll, so it must be polled before the deadline can win.
+        biased;
+        () = graceful.shutdown() => tracing::info!("All connections drained"),
+        () = tokio::time::sleep(SHUTDOWN_GRACE_PERIOD) => tracing::warn!(
+            "Grace period elapsed; abandoning connections still open"
+        ),
+    }
+    Ok(())
 }
+
+/// Open HTTP connections. Compare against `tokio_live_tasks_count`: a gap that
+/// grows is a task leak somewhere other than the accept loop.
+const METRIC_HTTP_CONNECTIONS: &str = "lakekeeper_http_connections";
+
+/// Holds [`METRIC_HTTP_CONNECTIONS`] up for as long as it is alive.
+///
+/// The decrement happens in `Drop` so that it cannot be skipped. This gauge is
+/// the signal for spotting a task leak, so a path that leaks the gauge itself
+/// would fabricate the very thing it is meant to detect.
+struct OpenConnection;
+
+impl OpenConnection {
+    fn new() -> Self {
+        metrics::gauge!(METRIC_HTTP_CONNECTIONS).increment(1.0);
+        Self
+    }
+}
+
+impl Drop for OpenConnection {
+    fn drop(&mut self) {
+        metrics::gauge!(METRIC_HTTP_CONNECTIONS).decrement(1.0);
+    }
+}
+
+/// How long an HTTP/1 connection may wait for a request head before the server
+/// closes it.
+///
+/// hyper arms this timer whenever the connection is waiting for a request head,
+/// so it covers both a client dribbling headers and a connection sitting idle
+/// between requests. 75s matches nginx's `keepalive_timeout` and sits just above
+/// the 60s idle timeout common to cloud load balancers, which retire a
+/// connection before we do.
+///
+/// Two gaps: hyper has no equivalent for HTTP/2, and the timer is armed only
+/// once `auto` has sniffed the protocol, so a peer that connects and sends
+/// nothing at all is bounded by neither this nor TCP keepalive.
+const CONNECTION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
+/// Ceiling on hyper's per-connection HTTP/1 read/write buffer.
+///
+/// hyper grows the buffer adaptively and keeps the capacity for the connection's
+/// lifetime, so this is the steady-state cost of a connection that has carried a
+/// large request. hyper's own default is 408 `KiB`. Measured on 4 `MiB` bodies,
+/// 64 `KiB` costs nothing: 1828 req/s here against 1742 at hyper's default.
+///
+/// This also caps the request head, which hyper rejects with `431` once it no
+/// longer fits.
+const MAX_CONNECTION_BUFFER_SIZE: usize = 64 * 1024;
+/// Idle time before the kernel starts TCP keepalive probing.
+///
+/// Covers the states the idle timeout above does not: a peer that disappears
+/// while we are reading a request body or writing a response leaves no
+/// wait-for-head timer armed.
+const TCP_KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_mins(1);
+/// Gap between TCP keepalive probes once the idle time has elapsed.
+const TCP_KEEPALIVE_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// Unanswered TCP keepalive probes before the kernel drops the connection.
+const TCP_KEEPALIVE_PROBE_RETRIES: u32 = 6;
+/// How long `serve` waits for in-flight connections after cancellation.
+const SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 mod test {

@@ -20,9 +20,9 @@ use lakekeeper::{
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
         SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
-        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
-        WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
-        WarehouseVersion, registered_system_roles, storage::StorageProfile,
+        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked,
+        WarehouseStatus, WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 use sqlx::{PgPool, types::Json};
@@ -93,6 +93,7 @@ pub(crate) async fn create_warehouse(
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let CatalogCreateWarehouseRequest {
         warehouse_name,
+        warehouse_id,
         storage_profile,
         storage_secret_id,
         delete_profile: tabular_delete_profile,
@@ -117,6 +118,7 @@ pub(crate) async fn create_warehouse(
         WarehouseRecord,
         r#"WITH
             whi AS (INSERT INTO warehouse (
+                                   warehouse_id,
                                    warehouse_name,
                                    project_id,
                                    storage_profile,
@@ -127,7 +129,9 @@ pub(crate) async fn create_warehouse(
                                    allowed_format_versions,
                                    default_format_version,
                                    managed_by)
-                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)
+                                -- COALESCE keeps the column's own default as the
+                                -- fallback for callers that do not pick an id.
+                                VALUES (COALESCE($10, uuid_generate_v1mc()), $1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)
                                 RETURNING
                                     project_id,
                                     warehouse_id,
@@ -158,7 +162,8 @@ pub(crate) async fn create_warehouse(
         prof as _,
         &allowed_format_versions_db,
         default_format_version_db,
-        managed_by as ManagedBy
+        managed_by as ManagedBy,
+        warehouse_id.map(|id| *id)
     )
     .fetch_one(&mut **transaction)
     .await
@@ -168,6 +173,13 @@ pub(crate) async fn create_warehouse(
             Some("unique_warehouse_name_in_project") => CatalogCreateWarehouseError::from(
                 WarehouseAlreadyExists::new(warehouse_name, project_id.clone()),
             ),
+            // Reachable only for a caller-supplied id: the column default cannot
+            // collide in practice.
+            Some("warehouse_pkey") => warehouse_id
+                .map_or_else(
+                    || e.into_catalog_backend_error().into(),
+                    |id| CatalogCreateWarehouseError::from(WarehouseIdAlreadyExists::new(id)),
+                ),
             Some("warehouse_project_id_fk") => {
                 ProjectIdNotFoundError::new(project_id.clone()).into()
             }
@@ -531,7 +543,7 @@ pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseId,
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(), CatalogDeleteWarehouseError> {
+) -> Result<Option<SecretId>, CatalogDeleteWarehouseError> {
     let unfinished_task_counts_per_queue = sqlx::query!(
         r#"WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)
             SELECT COUNT(task_id) as "task_count!", queue_name FROM active_tasks GROUP BY queue_name"#,
@@ -550,12 +562,19 @@ pub(crate) async fn delete_warehouse(
         .into());
     }
 
-    let protected = sqlx::query_scalar!(
+    // `storage_secret_id` comes back from the DELETE itself rather than from the
+    // pre-delete SELECT, so the caller cleans up the credential of exactly the row
+    // that was removed. Reading it before the transaction could hand back a
+    // credential a concurrent rotation had already replaced, leaking the new one.
+    let deleted = sqlx::query!(
         r#"WITH delete_info as (
                SELECT protected FROM warehouse w WHERE w.warehouse_id = $1
            ),
-           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2))
-           SELECT protected as "protected!" FROM delete_info"#,
+           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2)
+                       RETURNING storage_secret_id)
+           SELECT protected as "protected!",
+                  (SELECT storage_secret_id FROM deleted) as "storage_secret_id"
+           FROM delete_info"#,
         *warehouse_id,
         force
     )
@@ -575,11 +594,11 @@ pub(crate) async fn delete_warehouse(
         _ => e.into_catalog_backend_error().into(),
     })?;
 
-    if protected && !force {
+    if deleted.protected && !force {
         return Err(WarehouseProtected::new().into());
     }
 
-    Ok(())
+    Ok(deleted.storage_secret_id.map(Into::into))
 }
 
 pub(crate) async fn rename_warehouse(
@@ -1615,6 +1634,57 @@ pub mod test {
 
         assert_eq!(stats.stats.len(), 0);
         assert!(stats.next_page_token.is_none());
+    }
+
+    /// The delete reports the secret of the row it removed, so the caller cleans up
+    /// the right credential. Sourced from the DELETE's own RETURNING rather than a
+    /// prior read, which a concurrent credential rotation could invalidate.
+    #[sqlx::test]
+    async fn test_delete_warehouse_reports_the_deleted_rows_secret(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let (_, without_secret) =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+
+        let secret_id = SecretId::from(uuid::Uuid::now_v7());
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let with_secret = create_warehouse(
+            &project_id,
+            CatalogCreateWarehouseRequest::builder()
+                .warehouse_name(format!("secret-owner-{}", uuid::Uuid::now_v7()))
+                .storage_profile(crate::tests::memory_io_profile())
+                .storage_secret_id(Some(secret_id))
+                .delete_profile(TabularDeleteProfile::Hard {})
+                .build(),
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            delete_warehouse(
+                with_secret.warehouse_id,
+                DeleteWarehouseQuery { force: false },
+                trx.transaction(),
+            )
+            .await
+            .unwrap(),
+            Some(secret_id)
+        );
+        // A warehouse without a credential reports nothing to clean up.
+        assert_eq!(
+            delete_warehouse(
+                without_secret,
+                DeleteWarehouseQuery { force: false },
+                trx.transaction(),
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        trx.commit().await.unwrap();
     }
 
     #[sqlx::test]

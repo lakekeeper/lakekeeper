@@ -61,5 +61,12 @@ type warehouse
     define can_grant_pass_grants: manage_grants
     define can_grant_manage_grants: manage_grants
     define can_grant_manage_tags: manage_grants
+
+    # REVOKE Permissions
+    # Taking a privilege back is administration, never delegation
+    define can_revoke_create: manage_grants
+    define can_revoke_describe: manage_grants
+    define can_revoke_modify: manage_grants
+    define can_revoke_select: manage_grants
     define can_change_ownership: manage_grants
     define can_set_managed_access: manage_grants

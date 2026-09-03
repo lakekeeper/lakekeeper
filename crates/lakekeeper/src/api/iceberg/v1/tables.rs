@@ -657,21 +657,26 @@ impl DataAccess {
     }
 }
 
+/// Split one `If-None-Match` field value into its entries, each held as the
+/// client spelled it.
+///
+/// Normalisation is deliberately left to [`ETag::validator`] at comparison
+/// time. Quotes are the only thing separating the `*` wildcard from a tag whose
+/// opaque value is `*`, so stripping them here would promote the latter into a
+/// wildcard the client never sent — see [`ETag::is_wildcard`].
 fn parse_etags(etags: &str) -> Vec<ETag> {
-    let etags = etags.trim().trim_matches('"');
     etags
         .split(',')
-        .map(|s| {
-            s.trim()
-                .trim_matches('"')
-                .trim_start_matches("W/")
-                .trim_matches('"')
-        })
-        .filter(|s| !s.is_empty())
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
         .map(ETag::from)
         .collect()
 }
 
+/// Every `If-None-Match` entry across all field lines, in order.
+///
+/// Entries are unnormalised: compare them with [`ETag::validator`], and test
+/// [`ETag::is_wildcard`] before doing so.
 pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
     headers
         .get_all(header::IF_NONE_MATCH)
@@ -1283,6 +1288,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
@@ -1387,7 +1393,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "entries are held as received");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1399,7 +1406,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "list padding is trimmed");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1411,7 +1419,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "the weak marker is kept as sent");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1424,6 +1433,26 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(etags, vec!["*".into()]);
+        assert!(etags[0].is_wildcard());
+    }
+
+    /// Quotes are the only thing separating the wildcard from a tag whose opaque
+    /// value is `*`, so parsing must not strip them. Normalising here promoted
+    /// `"*"` into a wildcard the client never sent, and a wildcard skips
+    /// validator comparison — so the request got a `304` on the strength of a tag
+    /// nothing had ever minted.
+    #[test]
+    fn test_parse_if_none_match_keeps_a_quoted_asterisk_a_tag() {
+        for sent in ["\"*\"", "W/\"*\""] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::IF_NONE_MATCH, sent.parse().unwrap());
+
+            let etags = parse_if_none_match(&headers);
+
+            assert_eq!(etags, vec![sent.into()]);
+            assert!(!etags[0].is_wildcard(), "{sent} was read as a wildcard");
+            assert_eq!(etags[0].validator(), "*", "still a tag once normalised");
+        }
     }
 
     #[test]
@@ -1441,8 +1470,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 
@@ -1461,8 +1490,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 
@@ -1494,20 +1523,20 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec![
-                "etag-without-quote".into(),
-                "etag-with-normal-quote".into(),
-                "etag-with-quotes-twice".into(),
-                "weak-etag-without-quote".into(),
-                "weak-etag-with-normal-quote".into(),
-                "weak-etag-with-quotes-twice".into(),
-                "weak-etag-without-inner-quote-and-outer-quote".into(),
-                "weak-etag-without-inner-quote-and-outer-quote-twice".into(),
-                "weak-etag-with-normal-inner-quote-and-outer-quote".into(),
-                "weak-etag-with-normal-inner-quote-and-outer-quote-twice".into(),
-                "weak-etag-with-inner-quote-twice-and-outer-quote".into(),
-                "weak-etag-with-inner-quote-twice-and-outer-quote-twice".into(),
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            [
+                "etag-without-quote",
+                "etag-with-normal-quote",
+                "etag-with-quotes-twice",
+                "weak-etag-without-quote",
+                "weak-etag-with-normal-quote",
+                "weak-etag-with-quotes-twice",
+                "weak-etag-without-inner-quote-and-outer-quote",
+                "weak-etag-without-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-normal-inner-quote-and-outer-quote",
+                "weak-etag-with-normal-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-inner-quote-twice-and-outer-quote",
+                "weak-etag-with-inner-quote-twice-and-outer-quote-twice",
             ]
         );
     }
@@ -1545,7 +1574,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1561,8 +1590,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 

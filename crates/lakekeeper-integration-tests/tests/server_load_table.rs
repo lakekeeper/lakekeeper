@@ -16,13 +16,13 @@ use iceberg_ext::catalog::rest::{CreateTableRequest, ETag, LoadTableResult};
 /// `parse_etags` yields from the wire value — weak marker and quotes stripped.
 /// These tests drive the handler directly, so they have to do it themselves.
 fn as_client_etag(etag: &ETag) -> ETag {
-    ETag::from(etag.as_str().trim_start_matches("W/").trim_matches('"'))
+    ETag::from(etag.validator())
 }
 use lakekeeper::{
     api::{
         ApiContext,
         iceberg::v1::{
-            NamespaceParameters, TableParameters,
+            NamespaceParameters, Prefix, TableParameters,
             namespace::NamespaceService as _,
             tables::{
                 DataAccess, DataAccessMode, LoadTableFilters, LoadTableRequest,
@@ -32,9 +32,15 @@ use lakekeeper::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     server::{CatalogServer, tables::load_table::load_table},
-    service::{State, authz::AllowAllAuthorizer},
+    service::{
+        State,
+        authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
+    },
 };
-use lakekeeper_integration_tests::{random_request_metadata, setup_simple};
+use lakekeeper_integration_tests::{
+    SetupTestCatalog, create_ns, create_table, memory_io_profile, random_request_metadata,
+    setup_simple,
+};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 
@@ -310,6 +316,93 @@ async fn setup_table_with_snapshots(
     .unwrap();
 
     (ctx, ns_params, table_ident, table)
+}
+
+/// A caller with `GetMetadata` but neither `ReadData` nor `WriteData` gets no
+/// storage config — the one body shape the `CatalogDefaultsOnly` ETag axis exists
+/// for. It must still carry the advertisement, and must still carry a `config`
+/// map at all, which is what distinguishes it from a commit response.
+#[sqlx::test]
+async fn test_load_table_without_storage_access_still_advertises_planning(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .storage_profile(memory_io_profile())
+        .build()
+        .setup()
+        .await;
+
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "planning_ns".to_string()).await;
+    create_table(ctx.clone(), &prefix, "planning_ns", "t1", false)
+        .await
+        .unwrap();
+
+    // Metadata stays visible; storage access does not.
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::ReadData));
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::WriteData));
+
+    let result = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent::new(ns.namespace.clone(), "t1".to_string()),
+        },
+        LoadTableRequest::builder().build(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect("metadata access alone must still load the table");
+
+    let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+        panic!("an unconditional load must not return 304");
+    };
+
+    assert!(
+        result.storage_credentials.is_none(),
+        "no storage access must vend nothing: {:?}",
+        result.storage_credentials
+    );
+    let config = result
+        .config
+        .expect("a load without storage access still carries a config");
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "the advertisement must not depend on storage access: {config:?}"
+    );
+}
+
+/// The spec puts `scan-planning-mode` in the `loadTable` config map, and we serve
+/// no `planTableScan` endpoint, so every load must say `client`. Asserted on the
+/// response rather than on the helper, since the helper is easy to leave unwired.
+#[sqlx::test]
+async fn test_load_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
+
+    let result = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+        panic!("an unconditional load must not return 304");
+    };
+
+    let config = result.config.expect("a load always carries a config");
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "loadTable must advertise client-side planning: {config:?}"
+    );
 }
 
 #[sqlx::test]

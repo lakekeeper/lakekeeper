@@ -1,3 +1,7 @@
+---
+description: "Use the Lakekeeper OPA bridge to enforce catalog permissions in Trino and other engines that delegate access control to Open Policy Agent."
+---
+
 # Open Policy Agent (OPA)
 
 [Lakekeeper's Open Policy Agent bridge](https://github.com/lakekeeper/lakekeeper/tree/main/authz/opa-bridge) enables compute engines that support fine-grained access control via Open Policy Agent (OPA) as authorization engine to respect privileges in Lakekeeper. We have also prepared a self-contained [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced) to get started quickly.
@@ -23,12 +27,12 @@ If configuration is done via environment variables, the following settings are a
 
 | Variable                                 | Example                                                             | Description |
 |------------------------------------------|---------------------------------------------------------------------|-----|
-| <nobr>`LAKEKEEPER_URL`</nobr>            | <nobr>`https://lakekeeper.example.com`<nobr>                        | URL where lakekeeper is externally reachable. Default: `https://localhost:8181` |
-| <nobr>`LAKEKEEPER_TOKEN_ENDPOINT`</nobr> | `http://keycloak:8080/realms/iceberg/protocol/openid-connect/token` | Token endpoint of the IdP used to secure Lakekeeper. This endpoint is used to exchange OPAs client credentials for an access token. |
-| <nobr>`LAKEKEEPER_CLIENT_ID`</nobr>      | `trino`                                                             | Client ID used by OPA to access Lakekeeper's permissions API. |
-| <nobr>`LAKEKEEPER_CLIENT_SECRET`</nobr>  | `abcd`                                                              | Client Secret for the Client ID. |
-| <nobr>`LAKEKEEPER_SCOPE`</nobr>          | `lakekeeper`                                                        | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
-| <nobr>`LAKEKEEPER_MAX_BATCH_CHECK_SIZE`</nobr> | `1000`                                                       | Maximum number of checks per `batch-check` HTTP request. Larger values mean fewer HTTP calls but more load on the authorization backend. Default: `1000` |
+| `LAKEKEEPER_URL`            | `https://lakekeeper.example.com`                        | URL where lakekeeper is externally reachable. Default: `https://localhost:8181` |
+| `LAKEKEEPER_TOKEN_ENDPOINT` | `http://keycloak:8080/realms/iceberg/protocol/openid-connect/token` | Token endpoint of the IdP used to secure Lakekeeper. This endpoint is used to exchange OPAs client credentials for an access token. |
+| `LAKEKEEPER_CLIENT_ID`      | `trino`                                                             | Client ID used by OPA to access Lakekeeper's permissions API. |
+| `LAKEKEEPER_CLIENT_SECRET`  | `abcd`                                                              | Client Secret for the Client ID. |
+| `LAKEKEEPER_SCOPE`          | `lakekeeper`                                                        | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
+| `LAKEKEEPER_MAX_BATCH_CHECK_SIZE` | `1000`                                                       | Maximum number of checks per `batch-check` HTTP request. Larger values mean fewer HTTP calls but more load on the authorization backend. Default: `1000` |
 
 ### Catalog Mapping
 
@@ -36,20 +40,20 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 
 | Variable                                       | Example                   | Description |
 |------------------------------------------------|---------------------------|-----|
-| <nobr>`TRINO_DEV_CATALOG_NAME`</nobr>          | <nobr>`dev`<nobr>         | Name of the development catalog in trino. Default: `dev` |
-| <nobr>`LAKEKEEPER_DEV_WAREHOUSE`</nobr>        | <nobr>`development`<nobr> | Name of the development warehouse in lakekeeper that corresponds to the `TRINO_DEV_CATALOG_NAME` catalog in trino. Default: `development` |
-| <nobr>`TRINO_PROD_CATALOG_NAME`</nobr>         | <nobr>`prod`<nobr>        | Name of the production catalog in trino. Default: `prod` |
-| <nobr>`LAKEKEEPER_PROD_WAREHOUSE`</nobr>       | <nobr>`production`<nobr>  | Name of the production warehouse in lakekeeper that corresponds to the `TRINO_PROD_CATALOG_NAME` catalog in trino. Default: `production` |
-| <nobr>`TRINO_DEMO_CATALOG_NAME`</nobr>         | <nobr>`demo`<nobr>        | Name of the demo catalog in trino. Default: `demo` |
-| <nobr>`LAKEKEEPER_DEMO_WAREHOUSE`</nobr>       | <nobr>`demo`<nobr>        | Name of the demo warehouse in lakekeeper that corresponds to the `TRINO_DEMO_CATALOG_NAME` catalog in trino. Default: `demo` |
-| <nobr>`TRINO_LAKEKEEPER_CATALOG_NAME`</nobr>   | <nobr>`lakekeeper`<nobr>  | Name of the lakekeeper catalog in trino. Default: `lakekeeper` |
-| <nobr>`LAKEKEEPER_LAKEKEEPER_WAREHOUSE`</nobr> | <nobr>`lakekeeper`<nobr>  | Name of the lakekeeper warehouse in lakekeeper that corresponds to the `TRINO_LAKEKEEPER_CATALOG_NAME` catalog in trino. Default: `lakekeeper` |
+| `TRINO_DEV_CATALOG_NAME`          | `dev`         | Name of the development catalog in trino. Default: `dev` |
+| `LAKEKEEPER_DEV_WAREHOUSE`        | `development` | Name of the development warehouse in lakekeeper that corresponds to the `TRINO_DEV_CATALOG_NAME` catalog in trino. Default: `development` |
+| `TRINO_PROD_CATALOG_NAME`         | `prod`        | Name of the production catalog in trino. Default: `prod` |
+| `LAKEKEEPER_PROD_WAREHOUSE`       | `production`  | Name of the production warehouse in lakekeeper that corresponds to the `TRINO_PROD_CATALOG_NAME` catalog in trino. Default: `production` |
+| `TRINO_DEMO_CATALOG_NAME`         | `demo`        | Name of the demo catalog in trino. Default: `demo` |
+| `LAKEKEEPER_DEMO_WAREHOUSE`       | `demo`        | Name of the demo warehouse in lakekeeper that corresponds to the `TRINO_DEMO_CATALOG_NAME` catalog in trino. Default: `demo` |
+| `TRINO_LAKEKEEPER_CATALOG_NAME`   | `lakekeeper`  | Name of the lakekeeper catalog in trino. Default: `lakekeeper` |
+| `LAKEKEEPER_LAKEKEEPER_WAREHOUSE` | `lakekeeper`  | Name of the lakekeeper warehouse in lakekeeper that corresponds to the `TRINO_LAKEKEEPER_CATALOG_NAME` catalog in trino. Default: `lakekeeper` |
 
 ### Unmanaged Catalogs
 
 | Variable                                       | Example | Description |
 |------------------------------------------------|---------|-----|
-| <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
+| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
 
@@ -57,7 +61,7 @@ Admin users get full access to Trino system schemas and tables across all catalo
 
 | Variable                                  | Example                          | Description |
 |-------------------------------------------|----------------------------------|-----|
-| <nobr>`TRINO_ADMIN_USERS`</nobr>         | <nobr>`user-id-1,user-id-2`</nobr> | Comma-separated list of Trino user IDs (typically OIDC subject identifiers) that receive admin access. Default: empty (no admins). |
+| `TRINO_ADMIN_USERS`         | `user-id-1,user-id-2` | Comma-separated list of Trino user IDs (typically OIDC subject identifiers) that receive admin access. Default: empty (no admins). |
 
 Admin users can also be configured directly in the `trino_admin_users` list in `configuration.rego`.
 

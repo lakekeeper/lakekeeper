@@ -1,3 +1,7 @@
+---
+description: "Configure Lakekeeper's structured JSON logging and RUST_LOG filtering, and understand the fields emitted by the tracing pipeline."
+---
+
 # Logging
 
 ## Overview
@@ -54,6 +58,8 @@ Audit logs cover two distinct schemas depending on the source of the event:
 
 Emitted for every authz check. Always contain `action`/`actions`, `entity`/`entities`, `actor`, and `decision`.
 
+Discriminate on `operation`, not on the presence of `entity`: a record carrying `operation` belongs to the [operational family](#operational-audit-events) below even when it also carries `action`/`entity`.
+
 **Structure:**
 
 | Field                  | Type            | Description                       |
@@ -64,8 +70,10 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
 | `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
+| `break_glass`          | String          | Optional; present only when the caller sent the `x-break-glass` request header with a value that was non-empty after trimming, which nearly no request does. The reason the caller stated for marking the request an emergency override, recorded as sent (undecodable bytes replaced) and truncated to 256 bytes. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
+| `idempotency_key`      | String \| null  | The request's `Idempotency-Key`, or `null` when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
 | `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
@@ -75,6 +83,8 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 **`user_agent` is client-supplied and unverified.** It is the `User-Agent` request header, recorded as sent. Any caller can set it to any value, including one that names a different client, and Lakekeeper neither validates it nor cross-checks it against the token. Treat it as a hint — fleet inventory, spotting an unexpected client library, triaging why one client started failing — never as identity, and never as an authorization or attribution input. The authoritative statements of *who* and *as what* are `actor` and `privilege_source` on the same event. A detection rule keyed on `user_agent` can be evaded by changing one header; one keyed on `actor` cannot.
 
 Lakekeeper records the header rather than a parsed client name, so a consumer can classify it however it needs and no information is lost to normalisation. Two consequences worth planning for: values are free-form and some clients embed hostnames or usernames in them, so treat the field as potentially disclosing infrastructure detail; and browsers cannot set `User-Agent`, so requests from the web UI are recorded with the browser's own value.
+
+**`break_glass` records a claim, not a grant.** Any caller can send `x-break-glass`, and Lakekeeper's built-in authorizers ignore it — on its own the header changes no decision, so the field appearing does not mean the request received anything it would otherwise have been denied. What the request actually got is `decision` and `authorizations`; a pluggable Authorizer that does act on the header reports that in `determined_by` (see [Per-decision breakdown](#per-decision-breakdown-authorizations)). The value is free-form text supplied by the caller, so treat it as a stated reason to correlate against a ticket, never as an authenticated fact. Because it is trivial to send, the presence of `break_glass` on an unexpected principal is worth alerting on.
 
 **Ordering:** An authorization event records the *attempt*, and is dispatched to the audit log before the authorized operation issues its write. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. Audit consumers should treat authorization events as attempts rather than as confirmation that state changed.
 
@@ -156,7 +166,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `action`        | Object  | Same shape as the top-level `action` field.                                          |
 | `entity`        | Object  | Same shape as the top-level `entity` field.                                          |
 | `allowed`       | Boolean | The decision for *this* tuple. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
-| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `Permit` or `Forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. |
+| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `Permit` or `Forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
 
 **Top-level vs. per-entry semantics.** The top-level `actor` always reflects the *API caller* (the bearer token holder); `authorizations[].for-principal` reflects *whose permissions were checked*. For most calls these are the same and `for-principal` is omitted. For introspection endpoints like `GET /lakekeeper/v1/permissions/...?for-user=X` the actor is the caller while every entry's `for-principal` is `X` — both facts are recorded structurally on the same event, no `context.for-user` string needed.
 
@@ -332,7 +342,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
 
 #### Operational Audit Events
 
-Emitted for non-authz operations that touch user identity (PII) — such as LDAP/directory role resolution and user enrichment. Use these to audit *what the system fetched on behalf of a user*, rather than *whether the user was allowed to do something*.
+Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, and requests answered from an idempotency record. Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
 
 **Structure:**
 
@@ -374,6 +384,32 @@ So a `grant_created` event with no matching `grant_revoked` does **not** imply t
 **Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
 
 That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
+
+**Idempotent replays (`operation = "idempotent_replay"`):**
+
+Emitted when a request carrying an `Idempotency-Key` was answered from the stored record instead of being executed. `outcome` is always `replayed`.
+
+These records also carry the top-level `action`, `entity`, `privilege_source` and `user_agent` fields of an authorization event, so a retry reads with the same queries as the request that did the work — join the two on `idempotency_key`, which every *authorization* record carries too. The operational records above (`grant_created`, `ldap_resolve_roles`) do not carry it.
+
+| Field             | Description                                                                 |
+|-------------------|-----------------------------------------------------------------------------|
+| `idempotency_key` | The key whose record served the request                                     |
+| `action`          | The action the retry asked for, in the same shape as an authorization event  |
+| `entity`          | The target the retry named, in the same shape as an authorization event      |
+
+**`action` and `entity` are what the retry asked for, not what the original request did.** A record is matched on warehouse, key and endpoint — never on the target or the request parameters ([Idempotency](./configuration.md#idempotency)). A key reused on the same endpoint against a different table produces a record naming that table, which was not touched; a retry sent with `purgeRequested=true` after an original without it is recorded as a purging drop. Read these as what was asked and answered from a record, not as evidence of what happened.
+
+**A replay record does not establish that its actor was ever authorized for that entity.** The replay is served before authorization runs, so any authenticated caller holding the key can produce one — including one with no grants in that warehouse. The key cannot cause a mutation: a replay executes nothing.
+
+**Audit records carry live idempotency keys**, on authorization records as well as these. A reader of the audit log can replay those keys to a 204 and mint further records; treat audit-log access accordingly. `idempotency-key-lifetime` sets the earliest a record becomes eligible for deletion; keyed traffic decides when that deletion runs, because cleanup rides on a small fraction of keyed requests. A record stays replayable until then, so a quiet deployment keeps its keys live until traffic resumes.
+
+**Seven endpoints emit this marker**, and no others: `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and serve the replay before authorizing, so no `decision` is recorded — the mutation already happened, and denying the retry would report a failure for a completed operation.
+
+**Replays of the other idempotent endpoints are not marked, and do not look like the original request.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView` and `createGenericTable` re-derive their response body by loading it, so a retry emits the authorization record of that *load* — `action_name = "get_metadata"` on the entity — and no record for the create or update; `updateTable` emits both `commit` and `get_metadata`. For these the replay is a different authorization event from the original, and `idempotency_key` is what ties the two together.
+
+**`commitTransaction` is the exception: nothing marks its replay.** It authorizes before it detects the replay, so the retry emits the same `commit` record as a first execution, carrying the same `idempotency_key`. Only the pair of records sharing one key shows that a retry happened — neither record does on its own.
+
+These records are audit-log only. Like the grant records above, they are never published to the configured event stream (Kafka, NATS, CloudEvents), and delivery is best-effort.
 
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 

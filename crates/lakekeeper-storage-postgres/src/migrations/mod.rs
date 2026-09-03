@@ -28,6 +28,7 @@ use crate::{
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
+mod normalize_fs_location;
 pub(crate) mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
@@ -686,6 +687,10 @@ fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
         (
             normalize_schema::NormalizeSchemaHook::version(),
             Box::new(normalize_schema::NormalizeSchemaHook) as Box<_>,
+        ),
+        (
+            normalize_fs_location::NormalizeFsLocationHook::version(),
+            Box::new(normalize_fs_location::NormalizeFsLocationHook) as Box<_>,
         ),
     ])
 }

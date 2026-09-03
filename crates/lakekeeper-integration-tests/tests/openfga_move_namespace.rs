@@ -5,7 +5,7 @@
 //! * `namespace_ops.rs` drives the same endpoint but with `AllowAllAuthorizer` /
 //!   `HidingAuthorizer`, which never consult a model — a `CatalogNamespaceAction` that maps
 //!   to a relation the deployed model does not define would still pass there.
-//! * `authz/openfga/v4.9/store.fga.yaml` pins the model's semantics but runs no Rust, so it
+//! * `authz/openfga/v4.10/store.fga.yaml` pins the model's semantics but runs no Rust, so it
 //!   cannot catch a wrong action → relation mapping.
 //! * `authz-openfga`'s own `openfga_integration_tests` exercise the hook's tuple writes
 //!   directly, without the catalog.

@@ -1,3 +1,7 @@
+---
+description: "Configure Lakekeeper instance admins — principals from static configuration that bypass the Authorizer for administrative operations."
+---
+
 # Instance Admins
 
 *Available since Lakekeeper 0.12.1.*
