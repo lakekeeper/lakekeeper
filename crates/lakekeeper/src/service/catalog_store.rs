@@ -857,9 +857,8 @@ where
     /// One page of the direct grants held anywhere under `root`, keyset-paginated on
     /// `(created_at, grant_id)` across every resource kind the root covers.
     ///
-    /// Rows the caller may not read are **not** filtered here: grant-read authority is
-    /// resolved per resource by the caller, which is the only layer holding the resolved
-    /// entities to ask about.
+    /// No per-row authorization: the caller gates the whole subtree at the root, and one
+    /// answer there covers every member of the page.
     async fn list_grants_in_subtree_impl(
         root: GrantSubtreeRoot,
         filter: &GrantSubtreeFilter,
@@ -867,13 +866,24 @@ where
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
 
+    /// How many namespaces a namespace-rooted subtree spans, the root included.
+    ///
+    /// Resolving the subtree is cheap; reading its grants is proportional to it. Callers
+    /// bound the expensive half by asking this first, so an oversized subtree is refused
+    /// with its actual size instead of running until a timeout.
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError>;
+
     /// At most `limit` of the grants under `root` that match `filter`, plus whether more
     /// remain — the read half of a revoke.
     ///
-    /// Split from the delete so the authority check can cover exactly the rows that go:
-    /// nothing here is authorized, and the caller must put these candidates' distinct
-    /// `(privilege, grantee)` pairs to the authorizer before calling
-    /// [`Self::revoke_grant_candidates_impl`] with them.
+    /// Nothing here is authorized. The caller gates the whole batch at the root — one
+    /// content-independent answer covering everything beneath it — and that gate must
+    /// pass before this read runs, or a refusal reports what the subtree holds. The read
+    /// is split from the delete so no row lock is held across the authorizer call.
     ///
     /// Bounded rather than paginated: removed rows are gone, so re-issuing the same
     /// request is the continuation. Termination is the caller's `created_before` ceiling,

@@ -33,7 +33,6 @@ use lakekeeper::{
                 GrantResourceResponse, ListSubtreeGrantsQuery, RevokeSubtreeGrantsRequest,
                 Service as _,
             },
-            role_membership::{AddRoleMembersRequest, RoleMemberRef, Service as _},
             warehouse::{Service as _, TabularDeleteProfile},
         },
     },
@@ -211,6 +210,43 @@ async fn create_table<A: lakekeeper::service::authz::Authorizer>(
     created.metadata.uuid().into()
 }
 
+/// A table that was created but never committed: it holds no metadata yet, and grants
+/// written against its id are still real access to it.
+async fn create_staged_table<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    warehouse_id: WarehouseId,
+    namespace: &[&str],
+    name: &str,
+) -> TableId {
+    let schema = Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+        ])
+        .build()
+        .unwrap();
+    let created = CatalogServer::create_table(
+        NamespaceParameters {
+            namespace: NamespaceIdent::from_strs(namespace).unwrap(),
+            prefix: Some(Prefix::from(warehouse_id.to_string())),
+        },
+        CreateTableRequest {
+            name: name.to_string(),
+            location: None,
+            schema,
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(true),
+            properties: None,
+        },
+        DataAccess::not_specified(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    created.metadata.uuid().into()
+}
+
 /// Seeds grants through the store rather than the apply API: the denying authorizer
 /// publishes an empty vocabulary, so only a direct write puts real rows behind a gate.
 async fn seed<A: lakekeeper::service::authz::Authorizer>(
@@ -221,6 +257,24 @@ async fn seed<A: lakekeeper::service::authz::Authorizer>(
         .into_iter()
         .map(|(user, privilege, resource)| GrantSpec {
             principal: UserOrRoleId::User(user.clone()),
+            resource,
+            privilege: privilege.to_string(),
+        })
+        .collect();
+    PostgresBackend::apply_grants(&writes, &[], ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+}
+
+/// Seed grants for principals of either kind.
+async fn seed_principals<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    grants: Vec<(UserOrRoleId, &str, GrantResource)>,
+) {
+    let writes: Vec<GrantSpec> = grants
+        .into_iter()
+        .map(|(principal, privilege, resource)| GrantSpec {
+            principal,
             resource,
             privilege: privilege.to_string(),
         })
@@ -318,7 +372,6 @@ fn revoke_all() -> RevokeSubtreeGrantsRequest {
         created_before: None,
         limit: None,
         allow_partial: false,
-        include_self: false,
         include_root_level: true,
         dry_run: false,
     }
@@ -583,7 +636,6 @@ async fn a_resource_type_outside_the_subtree_is_refused(pool: PgPool) {
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
             resource_type: vec![lakekeeper::service::authz::ResourceType::Warehouse],
-            include_self: true,
             ..revoke_all()
         },
     )
@@ -741,10 +793,7 @@ async fn a_namespace_revoke_clears_the_subtree_and_leaves_the_warehouse(pool: Pg
         tree.parent,
         ctx.clone(),
         f.metadata.clone(),
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap();
@@ -798,7 +847,6 @@ async fn a_batch_larger_than_the_limit_revokes_nothing(pool: PgPool) {
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
             limit: Some(1),
-            include_self: true,
             ..revoke_all()
         },
     )
@@ -840,7 +888,6 @@ async fn a_bounded_loop_drains_the_subtree_and_leaves_later_grants(pool: PgPool)
         RevokeSubtreeGrantsRequest {
             limit: Some(2),
             allow_partial: true,
-            include_self: true,
             ..revoke_all()
         },
     )
@@ -871,7 +918,6 @@ async fn a_bounded_loop_drains_the_subtree_and_leaves_later_grants(pool: PgPool)
         RevokeSubtreeGrantsRequest {
             limit: Some(2),
             allow_partial: true,
-            include_self: true,
             created_before: Some(first.created_before),
             ..revoke_all()
         },
@@ -907,12 +953,11 @@ async fn a_bounded_loop_drains_the_subtree_and_leaves_later_grants(pool: PgPool)
     );
 }
 
-/// Without `include-self` the actor keeps their grant **on the root** — the one their
-/// authority to finish the loop can flow through — and loses the rest. Protecting their
-/// descendant grants too would silently leave them behind while reporting the subtree
-/// cleared.
+/// The caller's own grants are revoked like anyone else's — there is no self-exemption.
+/// The way to keep the administration plane, including the grant the caller's own
+/// authority flows through, is to leave the root level out.
 #[sqlx::test]
-async fn the_actors_own_root_grant_survives_without_include_self(pool: PgPool) {
+async fn the_actors_own_root_grant_goes_with_the_rest(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
 
@@ -925,7 +970,41 @@ async fn the_actors_own_root_grant_survives_without_include_self(pool: PgPool) {
     )
     .await
     .unwrap();
-    // Bob's grant, plus alice's two below the root. Only alice's root grant is spared.
+    // Alice acts, and her grant on the root goes with bob's and the two below it.
+    assert_eq!(response.revoked, 4);
+
+    let page = Server::list_namespace_subtree_grants(
+        f.warehouse_id,
+        tree.parent,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants, vec![]);
+}
+
+/// Keeping the root level keeps every grant on the root, the caller's included, and
+/// clears everything beneath it — the deterministic replacement for a self-exemption.
+#[sqlx::test]
+async fn leaving_the_root_level_out_keeps_the_actors_own_grant(pool: PgPool) {
+    let f = setup(pool).await;
+    let tree = build_tree(&f).await;
+
+    let response = Server::revoke_namespace_subtree_grants(
+        f.warehouse_id,
+        tree.parent,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        RevokeSubtreeGrantsRequest {
+            include_root_level: false,
+            ..revoke_all()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(response.revoked, 3);
 
     let page = Server::list_namespace_subtree_grants(
@@ -949,6 +1028,107 @@ async fn the_actors_own_root_grant_survives_without_include_self(pool: PgPool) {
             }
         )]
     );
+}
+
+/// A namespace-rooted read costs in proportion to the namespaces it spans, so an
+/// oversized root is refused before that read starts — with the size it would have read,
+/// rather than after running into a timeout. The warehouse-rooted form has no such bound.
+#[sqlx::test]
+async fn an_oversized_namespace_subtree_is_refused(pool: PgPool) {
+    let f = setup(pool.clone()).await;
+    let tree = build_tree(&f).await;
+    // One past the bound, counting the root and the child the fixture already made.
+    sqlx::query(
+        "insert into namespace (namespace_id, warehouse_id, namespace_name, namespace_properties)
+         select gen_random_uuid(), $1, ARRAY['parent', 'wide_' || i], '{}'::jsonb
+         from generate_series(1, $2) i",
+    )
+    .bind(*f.warehouse_id)
+    .bind(i64::from(
+        u32::try_from(lakekeeper::api::management::v1::grant::MAX_SUBTREE_NAMESPACES).unwrap(),
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let err = Server::list_namespace_subtree_grants(
+        f.warehouse_id,
+        tree.parent,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "GrantSubtreeTooLarge");
+
+    let err = Server::revoke_namespace_subtree_grants(
+        f.warehouse_id,
+        tree.parent,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        revoke_all(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "GrantSubtreeTooLarge");
+
+    // Nothing was removed, and the warehouse-rooted form still answers.
+    let page = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 5);
+}
+
+/// A table created but never committed still has an id, and a grant on that id is real
+/// access to it. Both operations therefore cover it, on the same footing as one in the
+/// recycle bin.
+#[sqlx::test]
+async fn a_staged_table_is_in_scope(pool: PgPool) {
+    let f = setup(pool).await;
+    let tree = build_tree(&f).await;
+    let staged = create_staged_table(&f.ctx, f.warehouse_id, &["parent", "child"], "staged").await;
+    seed(
+        &f.ctx,
+        vec![(
+            &f.bob,
+            "get_metadata",
+            GrantResource::Table {
+                warehouse_id: f.warehouse_id,
+                table_id: staged,
+            },
+        )],
+    )
+    .await;
+
+    let page = Server::list_namespace_subtree_grants(
+        f.warehouse_id,
+        tree.parent,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery {
+            resource_type: vec![lakekeeper::service::authz::ResourceType::Table],
+            ..ListSubtreeGrantsQuery::default()
+        },
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 2);
+    assert!(page.grants.iter().any(|grant| grant.resource
+        == GrantResourceResponse::Table {
+            warehouse_id: f.warehouse_id,
+            table_id: staged
+        }));
 
     let response = Server::revoke_namespace_subtree_grants(
         f.warehouse_id,
@@ -956,13 +1136,13 @@ async fn the_actors_own_root_grant_survives_without_include_self(pool: PgPool) {
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
+            resource_type: vec![lakekeeper::service::authz::ResourceType::Table],
             ..revoke_all()
         },
     )
     .await
     .unwrap();
-    assert_eq!(response.revoked, 1);
+    assert_eq!(response.revoked, 2);
 }
 
 /// A revoke reaches into the recycle bin whatever a listing would show: an undrop
@@ -981,7 +1161,6 @@ async fn a_revoke_removes_grants_on_soft_deleted_tables(pool: PgPool) {
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
             resource_type: vec![lakekeeper::service::authz::ResourceType::Table],
-            include_self: true,
             ..revoke_all()
         },
     )
@@ -1003,7 +1182,6 @@ async fn a_warehouse_revoke_takes_the_warehouse_level_unless_opted_out(pool: PgP
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             include_root_level: false,
             ..revoke_all()
         },
@@ -1027,10 +1205,7 @@ async fn a_warehouse_revoke_takes_the_warehouse_level_unless_opted_out(pool: PgP
         f.warehouse_id,
         f.ctx.clone(),
         f.metadata.clone(),
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap();
@@ -1050,7 +1225,6 @@ async fn a_namespace_revoke_keeps_the_roots_own_grants_on_request(pool: PgPool) 
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             include_root_level: false,
             ..revoke_all()
         },
@@ -1161,6 +1335,60 @@ async fn the_page_token_pins_the_walk_to_one_snapshot(pool: PgPool) {
     assert_eq!(err.error.r#type, "InvalidPaginationToken");
 }
 
+/// A caller-supplied ceiling finer than a token can carry is answered at the token's
+/// precision, and echoing it back alongside the token is not read as changing the
+/// filter — a walk that pins `as-of` must not fail on its own second page.
+#[sqlx::test]
+async fn a_sub_microsecond_ceiling_survives_pagination(pool: PgPool) {
+    let f = setup(pool).await;
+    build_tree(&f).await;
+
+    // 500ns past a microsecond boundary: representable in `chrono`, not in a token.
+    let ragged = chrono::DateTime::from_timestamp_nanos(
+        (chrono::Utc::now() + chrono::TimeDelta::seconds(60))
+            .timestamp_nanos_opt()
+            .unwrap()
+            / 1_000
+            * 1_000
+            + 500,
+    );
+    assert_eq!(ragged.timestamp_subsec_nanos() % 1_000, 500);
+
+    let query = || ListSubtreeGrantsQuery {
+        created_before: Some(ragged),
+        ..ListSubtreeGrantsQuery::default()
+    };
+    let first = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        query(),
+        PaginationQuery::new(PageToken::Empty, Some(2)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.grants.len(), 2);
+    // Reported at the precision a token round-trips, so the caller can echo it.
+    assert_eq!(first.as_of.timestamp_subsec_nanos() % 1_000, 0);
+    assert_eq!(first.as_of.timestamp_micros(), ragged.timestamp_micros());
+
+    // The caller's own ragged value, alongside the token that pinned it.
+    let second = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        query(),
+        PaginationQuery::new(
+            PageToken::Present(first.next_page_token.clone().unwrap()),
+            Some(2),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.as_of, first.as_of);
+    assert_eq!(second.grants.len(), 2);
+}
+
 /// A dry run answers with the batch and removes nothing. It is not refused for size —
 /// `has-more: true` is how the caller learns the live call needs `allow-partial` — and
 /// the live call under the same ceiling removes exactly what was previewed.
@@ -1174,7 +1402,6 @@ async fn a_dry_run_previews_the_batch_and_removes_nothing(pool: PgPool) {
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             dry_run: true,
             limit: Some(2),
             ..revoke_all()
@@ -1191,7 +1418,6 @@ async fn a_dry_run_previews_the_batch_and_removes_nothing(pool: PgPool) {
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             dry_run: true,
             ..revoke_all()
         },
@@ -1219,7 +1445,6 @@ async fn a_dry_run_previews_the_batch_and_removes_nothing(pool: PgPool) {
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             created_before: Some(full.created_before),
             ..revoke_all()
         },
@@ -1257,10 +1482,7 @@ async fn a_tabular_moved_into_the_subtree_is_swept_by_the_next_call(pool: PgPool
         tree.parent,
         f.ctx.clone(),
         f.metadata.clone(),
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap();
@@ -1290,7 +1512,6 @@ async fn a_tabular_moved_into_the_subtree_is_swept_by_the_next_call(pool: PgPool
         f.ctx.clone(),
         f.metadata.clone(),
         RevokeSubtreeGrantsRequest {
-            include_self: true,
             created_before: Some(first.created_before),
             ..revoke_all()
         },
@@ -1312,19 +1533,13 @@ async fn overlapping_revokes_do_not_deadlock(pool: PgPool) {
         tree.parent,
         f.ctx.clone(),
         f.metadata.clone(),
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     );
     let right = Server::revoke_warehouse_subtree_grants(
         f.warehouse_id,
         f.ctx.clone(),
         f.metadata.clone(),
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     );
     let (left, right) = tokio::join!(left, right);
     // Both succeed; between them they remove each grant exactly once, because a
@@ -1340,6 +1555,386 @@ async fn overlapping_revokes_do_not_deadlock(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(page.grants, vec![]);
+}
+
+// ---------------------------------------------------------------------------
+// Principal filters
+// ---------------------------------------------------------------------------
+
+/// The principal filter is bound separately in every arm of both statements, each with a
+/// guard against matching the other principal kind. A wrong guard in one arm answers
+/// `200` having matched less than it should, which reads as "that access is gone" — so
+/// each arm is asserted: warehouse level, namespace, and tabular.
+#[sqlx::test]
+async fn a_user_principal_filter_matches_every_arm(pool: PgPool) {
+    let f = setup(pool).await;
+    let tree = build_tree(&f).await;
+    // build_tree gives alice all four resources and bob the child namespace; add bob
+    // everywhere else so a filter that ignores its guard would pick him up.
+    seed(
+        &f.ctx,
+        vec![
+            (
+                &f.bob,
+                "get_metadata",
+                GrantResource::Warehouse(f.warehouse_id),
+            ),
+            (
+                &f.bob,
+                "get_metadata",
+                GrantResource::Table {
+                    warehouse_id: f.warehouse_id,
+                    table_id: tree.table,
+                },
+            ),
+        ],
+    )
+    .await;
+
+    let page = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery {
+            principal_user: Some(f.alice.clone()),
+            ..ListSubtreeGrantsQuery::default()
+        },
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(page.grants),
+        sorted(vec![
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Warehouse {
+                    warehouse_id: f.warehouse_id
+                }
+            ),
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Namespace {
+                    warehouse_id: f.warehouse_id,
+                    namespace_id: tree.parent
+                }
+            ),
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Namespace {
+                    warehouse_id: f.warehouse_id,
+                    namespace_id: tree.child
+                }
+            ),
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Table {
+                    warehouse_id: f.warehouse_id,
+                    table_id: tree.table
+                }
+            ),
+        ])
+    );
+
+    // A filtered revoke takes that principal's grants and leaves the other's standing.
+    let response = Server::revoke_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        RevokeSubtreeGrantsRequest {
+            principal: Some(UserOrRole::User(f.alice.clone())),
+            ..revoke_all()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.revoked, 4);
+
+    let page = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(page.grants),
+        sorted(vec![
+            (
+                UserOrRole::User(f.bob.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Warehouse {
+                    warehouse_id: f.warehouse_id
+                }
+            ),
+            (
+                UserOrRole::User(f.bob.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Namespace {
+                    warehouse_id: f.warehouse_id,
+                    namespace_id: tree.child
+                }
+            ),
+            (
+                UserOrRole::User(f.bob.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Table {
+                    warehouse_id: f.warehouse_id,
+                    table_id: tree.table
+                }
+            ),
+        ])
+    );
+}
+
+/// The role filter is the other half of every guard: a role-held grant must match by
+/// role and a user-held one must not, in each arm.
+#[sqlx::test]
+async fn a_role_principal_filter_matches_only_that_role(pool: PgPool) {
+    let f = setup(pool).await;
+    let tree = build_tree(&f).await;
+    let project_id = f.metadata.require_project_id(None).unwrap();
+    let role = make_role(&f.ctx, &project_id, "analysts", "analysts-src").await;
+    seed_principals(
+        &f.ctx,
+        vec![
+            (
+                UserOrRoleId::Role(role),
+                "get_metadata",
+                GrantResource::Warehouse(f.warehouse_id),
+            ),
+            (
+                UserOrRoleId::Role(role),
+                "get_metadata",
+                GrantResource::Namespace {
+                    warehouse_id: f.warehouse_id,
+                    namespace_id: tree.child,
+                },
+            ),
+            (
+                UserOrRoleId::Role(role),
+                "get_metadata",
+                GrantResource::Table {
+                    warehouse_id: f.warehouse_id,
+                    table_id: tree.table,
+                },
+            ),
+        ],
+    )
+    .await;
+
+    let page = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery {
+            principal_role: Some(role),
+            ..ListSubtreeGrantsQuery::default()
+        },
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    let resources: Vec<GrantResourceResponse> = page
+        .grants
+        .iter()
+        .map(|grant| grant.resource.clone())
+        .collect();
+    assert_eq!(page.grants.len(), 3);
+    assert!(page.grants.iter().all(|grant| grant.principal
+        == UserOrRole::Role(
+            lakekeeper::api::management::v1::check::RoleAssignee::from_role(role)
+        )));
+    assert!(resources.contains(&GrantResourceResponse::Warehouse {
+        warehouse_id: f.warehouse_id
+    }));
+    assert!(resources.contains(&GrantResourceResponse::Namespace {
+        warehouse_id: f.warehouse_id,
+        namespace_id: tree.child
+    }));
+    assert!(resources.contains(&GrantResourceResponse::Table {
+        warehouse_id: f.warehouse_id,
+        table_id: tree.table
+    }));
+
+    // Revoking the role's grants leaves every user-held grant in place.
+    let response = Server::revoke_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        RevokeSubtreeGrantsRequest {
+            principal: Some(UserOrRole::Role(
+                lakekeeper::api::management::v1::check::RoleAssignee::from_role(role),
+            )),
+            ..revoke_all()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.revoked, 3);
+
+    let page = Server::list_warehouse_subtree_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 5);
+    assert!(
+        page.grants
+            .iter()
+            .all(|grant| matches!(grant.principal, UserOrRole::User(_)))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Subtree membership below depth one
+// ---------------------------------------------------------------------------
+
+/// Membership is a path-prefix slice, and a root deeper than one element is the case
+/// where an off-by-one in the slice bound would show: `analytics.finance_archive` sorts
+/// after `analytics.finance` and shares its first element, so only the slice equality
+/// keeps it out of `analytics.finance`'s subtree.
+#[sqlx::test]
+async fn a_deeper_root_excludes_a_sibling_sharing_its_prefix(pool: PgPool) {
+    let f = setup(pool).await;
+    let analytics = create_namespace(&f.ctx, f.warehouse_id, &["analytics"]).await;
+    let finance = create_namespace(&f.ctx, f.warehouse_id, &["analytics", "finance"]).await;
+    let archive = create_namespace(&f.ctx, f.warehouse_id, &["analytics", "finance_archive"]).await;
+    let quarter = create_namespace(&f.ctx, f.warehouse_id, &["analytics", "finance", "q1"]).await;
+    let table = create_table(
+        &f.ctx,
+        f.warehouse_id,
+        &["analytics", "finance", "q1"],
+        "t1",
+    )
+    .await;
+    let warehouse_id = f.warehouse_id;
+    seed(
+        &f.ctx,
+        vec![
+            (
+                &f.alice,
+                "get_metadata",
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: analytics,
+                },
+            ),
+            (
+                &f.alice,
+                "get_metadata",
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: finance,
+                },
+            ),
+            (
+                &f.alice,
+                "get_metadata",
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: archive,
+                },
+            ),
+            (
+                &f.alice,
+                "get_metadata",
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: quarter,
+                },
+            ),
+            (
+                &f.alice,
+                "get_metadata",
+                GrantResource::Table {
+                    warehouse_id,
+                    table_id: table,
+                },
+            ),
+        ],
+    )
+    .await;
+
+    let page = Server::list_namespace_subtree_grants(
+        warehouse_id,
+        finance,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(page.grants),
+        sorted(vec![
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Namespace {
+                    warehouse_id,
+                    namespace_id: finance
+                }
+            ),
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Namespace {
+                    warehouse_id,
+                    namespace_id: quarter
+                }
+            ),
+            (
+                UserOrRole::User(f.alice.clone()),
+                "get_metadata".to_string(),
+                GrantResourceResponse::Table {
+                    warehouse_id,
+                    table_id: table
+                }
+            ),
+        ])
+    );
+
+    // The revoke's own membership recheck runs under the lock: same three go.
+    let response = Server::revoke_namespace_subtree_grants(
+        warehouse_id,
+        finance,
+        f.ctx.clone(),
+        f.metadata.clone(),
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.revoked, 3);
+
+    // The ancestor and the prefix-sharing sibling are untouched.
+    for namespace_id in [analytics, archive] {
+        let remaining = PostgresBackend::list_grants(
+            &lakekeeper::service::authz::GrantFilter::on(
+                GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id,
+                },
+                None,
+            ),
+            no_pagination(),
+            f.ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(remaining.grants.len(), 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,10 +2102,7 @@ async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
         parent,
         ctx.clone(),
         metadata,
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap_err();
@@ -1534,6 +2126,125 @@ async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
     assert_eq!(page.grants.len(), 1);
 }
 
+/// The warehouse-rooted gate is a separate branch from the namespace-rooted one, with
+/// its own refusal shape: both mask as not-found, each naming the resource it was asked
+/// about.
+#[sqlx::test]
+async fn a_warehouse_revoke_without_subtree_read_is_refused(pool: PgPool) {
+    let (ctx, metadata, warehouse_id, _parent, child) =
+        denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
+    ctx.v1_state.authz.block_action(&format!(
+        "warehouse:{:?}",
+        lakekeeper::service::authz::CatalogWarehouseAction::ReadSubtreeGrants
+    ));
+
+    let err = DenyServer::revoke_warehouse_subtree_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata,
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 404);
+    assert_eq!(err.error.r#type, "NoSuchWarehouseException");
+
+    let page = PostgresBackend::list_grants(
+        &lakekeeper::service::authz::GrantFilter::on(
+            GrantResource::Namespace {
+                warehouse_id,
+                namespace_id: child,
+            },
+            None,
+        ),
+        no_pagination(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 1);
+}
+
+/// Reading a warehouse's subtree grants does not carry revoking them: the batch is
+/// refused, by an error that names no privilege.
+#[sqlx::test]
+async fn a_warehouse_revoke_without_revoke_authority_is_refused(pool: PgPool) {
+    let (ctx, metadata, warehouse_id, _parent, child) =
+        denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
+    ctx.v1_state.authz.block_action(&format!(
+        "warehouse:{:?}",
+        lakekeeper::service::authz::CatalogWarehouseAction::RevokeSubtreeGrants
+    ));
+
+    let err = DenyServer::revoke_warehouse_subtree_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata,
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "GrantActionForbidden");
+
+    let page = PostgresBackend::list_grants(
+        &lakekeeper::service::authz::GrantFilter::on(
+            GrantResource::Namespace {
+                warehouse_id,
+                namespace_id: child,
+            },
+            None,
+        ),
+        no_pagination(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 1);
+}
+
+/// The warehouse-rooted listing has its own gate, and it refuses differently from the
+/// revoke's: a listing asks through the visibility-aware path, so a caller who may see
+/// the warehouse is told the permission is missing. The revoke asks the action bare —
+/// an authority holder needs no `describe` — and therefore masks every refusal as
+/// not-found. A caller who may not see the warehouse gets not-found from either.
+#[sqlx::test]
+async fn a_warehouse_listing_without_subtree_read_is_refused(pool: PgPool) {
+    let (ctx, metadata, warehouse_id, _parent, _child) = denying_tree(pool, &[]).await;
+    ctx.v1_state.authz.block_action(&format!(
+        "warehouse:{:?}",
+        lakekeeper::service::authz::CatalogWarehouseAction::ReadSubtreeGrants
+    ));
+
+    let err = DenyServer::list_warehouse_subtree_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata.clone(),
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // Invisible instead of merely unreadable: not-found, disclosing nothing.
+    ctx.v1_state
+        .authz
+        .hide(&format!("warehouse:{warehouse_id}"));
+    let err = DenyServer::list_warehouse_subtree_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata,
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 404);
+    assert_eq!(err.error.r#type, "NoSuchWarehouseException");
+}
+
 /// A revoke asks `ReadSubtreeGrants` on the root before it reads anything. Without that
 /// gate the refusal itself answers whether the subtree holds a matching grant, and the
 /// scan runs for anyone able to name the root.
@@ -1554,10 +2265,7 @@ async fn a_revoke_without_grant_read_on_the_root_is_refused(pool: PgPool) {
         parent,
         ctx.clone(),
         metadata,
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap_err();
@@ -1594,10 +2302,7 @@ async fn revoke_authority_at_the_root_covers_the_descendants(pool: PgPool) {
         parent,
         ctx,
         metadata,
-        RevokeSubtreeGrantsRequest {
-            include_self: true,
-            ..revoke_all()
-        },
+        RevokeSubtreeGrantsRequest { ..revoke_all() },
     )
     .await
     .unwrap();
@@ -1646,203 +2351,6 @@ async fn soft_delete_table(f: &Fixture, table: TableId) {
 async fn with_listener(ctx: &Ctx, listener: Arc<RevokedRecorder>) -> Ctx {
     ctx.v1_state.events.append(listener).await;
     ctx.clone()
-}
-
-/// `include-self` covers every role the caller holds authority through, not just their
-/// own identity. Authority is normally conferred on a role, so excluding only the acting
-/// user would let the first call take the grant the second call needs and strand every
-/// member of that role.
-#[sqlx::test]
-async fn include_self_protects_a_role_the_caller_belongs_to(pool: PgPool) {
-    let (ctx, warehouse) = SetupTestCatalog::builder()
-        .pool(pool.clone())
-        .storage_profile(memory_io_profile())
-        .authorizer(AllowAllAuthorizer::default())
-        .number_of_warehouses(1)
-        .build()
-        .setup()
-        .await;
-    let warehouse_id = warehouse.warehouse_id;
-    let project_id = warehouse.project_id.clone();
-    let alice = UserId::try_from("oidc~alice").unwrap();
-    let bob = UserId::try_from("oidc~bob").unwrap();
-    provision_user(&ctx, &alice).await;
-    provision_user(&ctx, &bob).await;
-    let metadata = RequestMetadataTestBuilder::builder()
-        .actor(Actor::Principal(alice.clone()))
-        .project_id(Some(project_id.clone()))
-        .build();
-
-    let role = make_role(&ctx, &project_id, "admins", "admins-src").await;
-    ApiServer::add_role_members(
-        ctx.clone(),
-        metadata.clone(),
-        role,
-        AddRoleMembersRequest {
-            members: vec![RoleMemberRef::User { id: alice.clone() }],
-        },
-    )
-    .await
-    .unwrap();
-
-    let parent = create_namespace(&ctx, warehouse_id, &["parent"]).await;
-    let resource = GrantResource::Namespace {
-        warehouse_id,
-        namespace_id: parent,
-    };
-    let writes = vec![
-        GrantSpec {
-            principal: UserOrRoleId::Role(role),
-            resource: resource.clone(),
-            privilege: "manage_grants".to_string(),
-        },
-        GrantSpec {
-            principal: UserOrRoleId::User(alice.clone()),
-            resource: resource.clone(),
-            privilege: "get_metadata".to_string(),
-        },
-        GrantSpec {
-            principal: UserOrRoleId::User(bob.clone()),
-            resource: resource.clone(),
-            privilege: "get_metadata".to_string(),
-        },
-    ];
-    PostgresBackend::apply_grants(&writes, &[], ctx.v1_state.catalog.clone())
-        .await
-        .unwrap();
-
-    let resp = Server::revoke_namespace_subtree_grants(
-        warehouse_id,
-        parent,
-        ctx.clone(),
-        metadata,
-        revoke_all(),
-    )
-    .await
-    .unwrap();
-    // Only bob's. Alice is the actor; the role is what her authority would flow through.
-    assert_eq!(resp.revoked, 1);
-    assert!(!resp.has_more);
-
-    let page = PostgresBackend::list_grants(
-        &lakekeeper::service::authz::GrantFilter::on(resource, None),
-        no_pagination(),
-        ctx.v1_state.catalog.clone(),
-    )
-    .await
-    .unwrap();
-    let mut got: Vec<String> = page
-        .grants
-        .iter()
-        .map(|grant| match &grant.principal {
-            UserOrRoleId::User(user) => format!("user:{user}:{}", grant.privilege),
-            UserOrRoleId::Role(role_id) => format!("role:{role_id}:{}", grant.privilege),
-        })
-        .collect();
-    got.sort();
-    assert_eq!(
-        got,
-        vec![
-            format!("role:{role}:manage_grants"),
-            format!("user:{alice}:get_metadata"),
-        ]
-    );
-}
-
-/// `include-self` protects the root's own grants, not the whole subtree. A role the
-/// caller belongs to routinely holds grants on descendants; skipping those would silently
-/// leave them behind while `has-more: false` reported the subtree cleared.
-#[sqlx::test]
-async fn include_self_does_not_protect_a_roles_grants_below_the_root(pool: PgPool) {
-    let (ctx, warehouse) = SetupTestCatalog::builder()
-        .pool(pool.clone())
-        .storage_profile(memory_io_profile())
-        .authorizer(AllowAllAuthorizer::default())
-        .number_of_warehouses(1)
-        .build()
-        .setup()
-        .await;
-    let warehouse_id = warehouse.warehouse_id;
-    let project_id = warehouse.project_id.clone();
-    let alice = UserId::try_from("oidc~alice").unwrap();
-    provision_user(&ctx, &alice).await;
-    let metadata = RequestMetadataTestBuilder::builder()
-        .actor(Actor::Principal(alice.clone()))
-        .project_id(Some(project_id.clone()))
-        .build();
-
-    let role = make_role(&ctx, &project_id, "everyone", "everyone-src").await;
-    ApiServer::add_role_members(
-        ctx.clone(),
-        metadata.clone(),
-        role,
-        AddRoleMembersRequest {
-            members: vec![RoleMemberRef::User { id: alice.clone() }],
-        },
-    )
-    .await
-    .unwrap();
-
-    let parent = create_namespace(&ctx, warehouse_id, &["parent"]).await;
-    let child = create_namespace(&ctx, warehouse_id, &["parent", "child"]).await;
-    let root_resource = GrantResource::Namespace {
-        warehouse_id,
-        namespace_id: parent,
-    };
-    let child_resource = GrantResource::Namespace {
-        warehouse_id,
-        namespace_id: child,
-    };
-    let writes = vec![
-        // On the root: what the caller's authority could flow through. Kept.
-        GrantSpec {
-            principal: UserOrRoleId::Role(role),
-            resource: root_resource.clone(),
-            privilege: "manage_grants".to_string(),
-        },
-        // Below the root: ordinary access the same role happens to hold. Revoked.
-        GrantSpec {
-            principal: UserOrRoleId::Role(role),
-            resource: child_resource.clone(),
-            privilege: "select".to_string(),
-        },
-    ];
-    PostgresBackend::apply_grants(&writes, &[], ctx.v1_state.catalog.clone())
-        .await
-        .unwrap();
-
-    let resp = Server::revoke_namespace_subtree_grants(
-        warehouse_id,
-        parent,
-        ctx.clone(),
-        metadata,
-        revoke_all(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(resp.revoked, 1);
-    assert!(!resp.has_more);
-
-    // The descendant grant is gone; the root grant that carries authority survives.
-    let below = PostgresBackend::list_grants(
-        &lakekeeper::service::authz::GrantFilter::on(child_resource, None),
-        no_pagination(),
-        ctx.v1_state.catalog.clone(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(below.grants.len(), 0);
-
-    let at_root = PostgresBackend::list_grants(
-        &lakekeeper::service::authz::GrantFilter::on(root_resource, None),
-        no_pagination(),
-        ctx.v1_state.catalog.clone(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(at_root.grants.len(), 1);
-    assert_eq!(at_root.grants[0].privilege, "manage_grants");
-    assert_eq!(at_root.grants[0].principal, UserOrRoleId::Role(role));
 }
 
 /// The two phases of a revoke are separated by an authorizer round trip, and a tabular

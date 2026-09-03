@@ -59,12 +59,12 @@ use crate::{
         },
     },
     service::{
-        ArcRole, CachePolicy, CatalogGrantOps, CatalogNamespaceOps, CatalogRoleAssignmentOps,
-        CatalogRoleOps, CatalogStore, CatalogTagOps, CatalogWarehouseOps, GenericTableId,
-        GrantRevokeBatchTooLarge, ListRolesError, NamespaceHierarchy, NamespaceId,
-        NamespaceIdentOrId, ProjectId, ResolvedWarehouse, RoleId, SecretStore, State, TableId,
-        TabularListFlags, TagDefinitionId, ViewId, WarehouseId, WarehouseStatus,
-        authn::{Actor, UserId},
+        ArcRole, CachePolicy, CatalogGrantOps, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        CatalogTagOps, CatalogWarehouseOps, GenericTableId, GrantRevokeBatchTooLarge,
+        GrantSubtreeTooLarge, ListGrantsStoreError, ListRolesError, NamespaceHierarchy,
+        NamespaceId, NamespaceIdentOrId, ProjectId, ResolvedWarehouse, RoleId, SecretStore, State,
+        TableId, TabularListFlags, TagDefinitionId, ViewId, WarehouseId, WarehouseStatus,
+        authn::UserId,
         authz::{
             ActionDescriptor, AuthZCannotSeeNamespace, AuthZCannotSeeTag,
             AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps, AuthZGrantActionForbidden,
@@ -489,6 +489,15 @@ fn default_true() -> bool {
 /// own.
 pub const MAX_GRANTS_PER_SUBTREE_REVOKE: usize = 1000;
 
+/// How many namespaces a namespace-rooted subtree operation reads.
+///
+/// Its cost is proportional to the namespaces the subtree spans, and a page of a subtree
+/// this wide stays inside a few hundred milliseconds. Beyond it the request is refused
+/// with the size it would have read, so an operator learns the shape of their catalog
+/// instead of watching a call run. The warehouse-rooted operations carry no such bound:
+/// an index answers them in page-proportional time whatever the warehouse holds.
+pub const MAX_SUBTREE_NAMESPACES: u64 = 5000;
+
 /// Query parameters of the subtree listings.
 ///
 /// Every parameter narrows; none is required, because the subtree already bounds the
@@ -528,7 +537,7 @@ pub struct ListSubtreeGrantsQuery {
     /// token is refused. Omit it to have the server bind the ceiling and report it as
     /// `as-of`.
     #[serde(default)]
-    #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<String>))]
+    #[cfg_attr(feature = "open-api", param(required = false))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
     /// Include the grants held on the addressed resource itself. On by default: a grant
     /// on a container confers access beneath it, so a listing meant to preview a revoke
@@ -554,9 +563,7 @@ impl Default for ListSubtreeGrantsQuery {
 
 /// A page of a subtree grant listing.
 ///
-/// Separate from [`ListGrantsResponse`] for `as-of`: the value the page was read under is
-/// what a caller passes to the matching revoke, and a preview that cannot publish it
-/// cannot promise the revoke is a subset of it.
+/// A page of grants from a subtree, and the instant it was read under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -609,9 +616,10 @@ pub struct RevokeSubtreeGrantsRequest {
     /// grants made after the operation began are deliberately left alone.
     #[serde(default)]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
-    /// At most this many grants are removed by one call. Clamped to 1000.
+    /// At most this many grants are removed by one call. A value outside 1–1000 is
+    /// clamped into it, so the response's `revoked` and `has-more` describe what the
+    /// server actually did.
     #[serde(default)]
-    #[cfg_attr(feature = "open-api", schema(minimum = 1, maximum = 1000))]
     pub limit: Option<usize>,
     /// Allow the call to leave matching grants behind, to be removed by repeating the
     /// request. Without it, a filter matching more than `limit` grants is refused and
@@ -619,19 +627,13 @@ pub struct RevokeSubtreeGrantsRequest {
     /// each call is its own transaction and the whole is not atomic.
     #[serde(default)]
     pub allow_partial: bool,
-    /// Include grants held by the acting principal — and by the roles it belongs to — on
-    /// the addressed resource itself. Excluded by default: authority normally comes from a
-    /// role, and a grant old enough to land in the first call would leave every member of
-    /// that role without the authority to make the second. Only the root's own grants are
-    /// protected; everything beneath it is removed either way.
-    #[serde(default)]
-    pub include_self: bool,
     /// Also revoke the grants held on the addressed resource itself. On by default: a
     /// grant on a container confers access beneath it, so a revoke that skipped the root
     /// would leave standing the access it names. Pass `false` to keep the root's own
-    /// grants — its administration plane — untouched. The caller's own root grants have
-    /// their own guard; see `include-self`.
+    /// grants — its administration plane — untouched, including the one that gives the
+    /// caller authority here.
     #[serde(default = "default_true")]
+    #[cfg_attr(feature = "open-api", schema(default = true))]
     pub include_root_level: bool,
     /// Compute and return what this request would revoke, removing nothing. The same
     /// read and the same authority checks as the live call; the response's `preview`
@@ -1136,6 +1138,23 @@ async fn apply_and_emit<A: Authorizer, C: CatalogStore>(
     Ok(())
 }
 
+/// Refuse a namespace root that spans more namespaces than the subtree read covers.
+///
+/// Asked after the authorization gate: the size of a subtree is information about it, so
+/// a caller who may not read it does not learn this either.
+async fn require_bounded_subtree<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    catalog_state: C::State,
+) -> std::result::Result<(), ListGrantsStoreError> {
+    let namespaces =
+        C::count_subtree_namespaces_impl(warehouse_id, namespace_id, catalog_state).await?;
+    if namespaces > MAX_SUBTREE_NAMESPACES {
+        return Err(GrantSubtreeTooLarge::new(namespaces, MAX_SUBTREE_NAMESPACES).into());
+    }
+    Ok(())
+}
+
 /// How many grants one revoke call may remove: the caller's `limit`, clamped.
 fn revoke_limit(request: &RevokeSubtreeGrantsRequest) -> usize {
     request
@@ -1144,64 +1163,17 @@ fn revoke_limit(request: &RevokeSubtreeGrantsRequest) -> usize {
         .clamp(1, MAX_GRANTS_PER_SUBTREE_REVOKE)
 }
 
-/// The principals the caller's authority can flow through: their own identity and every
-/// role it is a member of, transitively.
-///
-/// `manage_grants` is normally held by a role, so excluding only the acting identity would
-/// let the first call take the grant the second needs and strand every member of that role.
-/// The store applies this to the root's own grants only — see
-/// [`GrantSubtreeFilter::exclude_principals`].
-async fn actor_grantees<C: CatalogStore>(
-    request_metadata: &RequestMetadata,
-    catalog_state: C::State,
-) -> std::result::Result<Vec<UserOrRoleId>, ListRolesError> {
-    let mut grantees = Vec::new();
-    let mut roles = Vec::new();
-    match request_metadata.actor() {
-        Actor::Anonymous => return Ok(grantees),
-        Actor::Principal(user_id) => {
-            grantees.push(UserOrRoleId::User(user_id.clone()));
-            let assignments =
-                C::list_role_assignments_for_user(user_id, catalog_state.clone()).await?;
-            roles.extend(assignments.roles.iter().map(|role| role.role_id));
-        }
-        // Authorization is evaluated as the assumed role, so that is where authority
-        // flows from — not the user behind it.
-        Actor::Role { assumed_role, .. } => roles.push(assumed_role.id()),
-    }
-    let ancestors = C::list_role_ancestors(&roles, catalog_state).await?;
-    roles.extend(
-        ancestors
-            .values()
-            .flat_map(|reachable| reachable.iter().map(|role| role.role_id)),
-    );
-    roles.sort_unstable();
-    roles.dedup();
-    grantees.extend(roles.into_iter().map(UserOrRoleId::Role));
-    Ok(grantees)
-}
-
 /// The store filter a revoke request asks for.
-async fn subtree_filter<C: CatalogStore>(
-    request: &RevokeSubtreeGrantsRequest,
-    request_metadata: &RequestMetadata,
-    catalog_state: C::State,
-) -> std::result::Result<GrantSubtreeFilter, ListRolesError> {
-    let exclude_principals = if request.include_self {
-        Vec::new()
-    } else {
-        actor_grantees::<C>(request_metadata, catalog_state).await?
-    };
-    Ok(GrantSubtreeFilter {
+fn subtree_filter(request: &RevokeSubtreeGrantsRequest) -> GrantSubtreeFilter {
+    GrantSubtreeFilter {
         include_root_level: request.include_root_level,
         principal: request.principal.as_ref().map(UserOrRoleId::from),
         privileges: request.privilege.clone(),
         resource_types: request.resource_type.clone(),
         // Not a choice on the revoke: see `GrantSubtreeFilter::include_soft_deleted`.
         include_soft_deleted: true,
-        exclude_principals,
         created_before: request.created_before,
-    })
+    }
 }
 
 /// Read one page of the subtree and render it.
@@ -1222,8 +1194,6 @@ async fn list_subtree_and_render<A: Authorizer, C: CatalogStore>(
         privileges: query.privilege.clone(),
         resource_types: query.resource_type.clone(),
         include_soft_deleted: query.include_soft_deleted,
-        // A listing hides nothing: the caller's own grants are part of what they asked for.
-        exclude_principals: Vec::new(),
         created_before: query.created_before,
     };
     let page = C::list_grants_in_subtree(root, &filter, pagination, catalog_state).await?;
@@ -1517,7 +1487,7 @@ fn require_catalog_grants<A: Authorizer>(authorizer: &A) -> Result<()> {
         "Subtree grant operations are not available under the configured authorization \
          backend, which stores grants itself. Read and change grants through each \
          resource's own grant endpoints.",
-        "GrantListingNotImplemented",
+        "SubtreeGrantsNotImplemented",
         None,
     )
     .into())
@@ -1692,7 +1662,6 @@ pub struct RevokeSubtreeGrants {
     resource_types: Vec<String>,
     created_before: Option<String>,
     allow_partial: bool,
-    include_self: bool,
     include_root_level: bool,
     dry_run: bool,
 }
@@ -1720,7 +1689,6 @@ impl RevokeSubtreeGrants {
             resource_types,
             created_before: request.created_before.map(|at| at.to_rfc3339()),
             allow_partial: request.allow_partial,
-            include_self: request.include_self,
             include_root_level: request.include_root_level,
             dry_run: request.dry_run,
         }
@@ -1734,7 +1702,6 @@ impl APIEventActions for RevokeSubtreeGrants {
             .context_list("privileges", self.privileges.clone())
             .context_list("resource-types", self.resource_types.clone())
             .context_string("allow-partial", self.allow_partial.to_string())
-            .context_string("include-self", self.include_self.to_string())
             .context_string("include-root-level", self.include_root_level.to_string())
             .context_string("dry-run", self.dry_run.to_string());
         if let Some(principal) = &self.principal {
@@ -1831,10 +1798,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
     }
 
-    /// List the direct grants held anywhere under a namespace.
+    /// List the direct grants held anywhere under a namespace, the namespace's own
+    /// included.
     ///
-    /// Entering needs the namespace's own grant-read; every member of the answer is then
-    /// checked on its own, because grant-read does not inherit.
+    /// One `ReadSubtreeGrants` check on the root covers every member, so pages come
+    /// back full.
     async fn list_namespace_subtree_grants(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -1874,6 +1842,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
         .await;
         let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
+        require_bounded_subtree::<C>(warehouse_id, namespace_id, catalog_state.clone()).await?;
 
         list_subtree_and_render::<A, C>(
             &authorizer,
@@ -1972,15 +1941,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             RevokeSubtreeGrants::of(&request),
         );
         let authz_result = async {
-            let filter = subtree_filter::<C>(
-                &request,
-                event_ctx.request_metadata(),
-                catalog_state.clone(),
-            )
-            .await?;
-            // Presence, then the root's subtree actions. Both before the candidates are
-            // read, so a root the caller may not reach is a 404 rather than a query, and
-            // the refusal cannot report what the subtree holds.
+            // Presence, then the root's subtree actions. Both before anything else, so a
+            // root the caller may not reach is a 404 rather than a query, and neither the
+            // refusal nor the work done to reach it reports what the subtree holds.
             let (warehouse, namespace) = tokio::join!(
                 C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
                 C::get_namespace_cache_aware(
@@ -2001,8 +1964,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 Some(&namespace),
             )
             .await?;
-            // The read stays inside this one result, so a store failure is recorded and
-            // reported rather than escaping the gate it happened under.
+            // Inside this one result, so a store failure is recorded and reported rather
+            // than escaping the gate it happened under.
+            require_bounded_subtree::<C>(warehouse_id, namespace_id, catalog_state.clone()).await?;
+            let filter = subtree_filter(&request);
             let candidates = C::select_subtree_grant_candidates_impl(
                 root,
                 &filter,
@@ -2030,6 +1995,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 
     /// Revoke the direct grants held anywhere under a warehouse, bounded per call.
+    ///
+    /// Gated on the warehouse's `ReadSubtreeGrants` and `RevokeSubtreeGrants`.
     async fn revoke_warehouse_subtree_grants(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -2063,12 +2030,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await;
         let authz_result = async {
-            let filter = subtree_filter::<C>(
-                &request,
-                event_ctx.request_metadata(),
-                catalog_state.clone(),
-            )
-            .await?;
+            let filter = subtree_filter(&request);
             // Presence, then the root's subtree actions; see the namespace-rooted twin.
             let resolved = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
             ensure_warehouse_in_project(warehouse_id, &resolved.project_id, &project_id)?;
@@ -3673,7 +3635,6 @@ mod tests {
                 created_before: None,
                 limit,
                 allow_partial: false,
-                include_self: false,
                 include_root_level: true,
                 dry_run: false,
             })

@@ -82,14 +82,15 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
     grant::{
-        SubtreeBounds, apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
-        list_grants_in_subtree, list_grants_on_resources, resolve_ceiling, revoke_grant_candidates,
-        select_subtree_grant_candidates,
+        SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
+        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
+        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
         update_namespace_properties,
     },
+    pagination::to_token_precision,
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     tag::{
@@ -452,16 +453,30 @@ impl CatalogStore for super::PostgresBackend {
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
-        // The token pins the walk's ceiling; page one resolves it — from the caller's
-        // `created_before`, or from the primary's clock, because `as-of` is handed to a
-        // revoke that compares it against primary-stamped `created_at`, and minting it
-        // on a replica would compare two clocks.
+        // The token pins the walk's ceiling; page one resolves it, from the caller's
+        // `created_before` or from the clock. Truncated to what a token round-trips, so
+        // every page of the walk reports and compares the same instant.
+        //
+        // Ceiling and page come from the primary, together. `as-of` is handed to a revoke
+        // that compares it against primary-stamped `created_at`, so it cannot be a replica
+        // clock; and rows committed within a replica's lag sort last in the walk, so a
+        // lagging page would end it early and drop exactly the newest grants below the
+        // ceiling. The revoke's own read is on the primary for the same reason.
+        let pool = catalog_state.write_pool();
         let bounds = SubtreeBounds::of(pagination, filter.created_before)?;
         let as_of = match bounds.ceiling {
             Some(pinned) => pinned,
-            None => resolve_ceiling(filter.created_before, &catalog_state.write_pool()).await?,
+            None => to_token_precision(resolve_ceiling(filter.created_before, &pool).await?),
         };
-        list_grants_in_subtree(root, filter, bounds.page, as_of, &catalog_state.read_pool()).await
+        list_grants_in_subtree(root, filter, bounds.page, as_of, &pool).await
+    }
+
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError> {
+        count_subtree_namespaces(warehouse_id, namespace_id, &catalog_state.read_pool()).await
     }
 
     async fn select_subtree_grant_candidates_impl(

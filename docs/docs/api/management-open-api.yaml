@@ -171,6 +171,10 @@ paths:
         Listing your own grants needs no extra permission; any other principal requires
         the project-level grant-read permission.
 
+        A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+        naming the size it would have read. The warehouse-rooted form carries no such
+        bound.
+
         **Availability depends on the configured authorizer.** This listing crosses every
         resource in the project, which an authorizer that stores permissions per resource
         cannot answer without reading its whole store. Those report
@@ -5106,14 +5110,15 @@ paths:
       description: |-
         This API may change in a backward-incompatible way in a future release.
 
-        Lists the grants held on every namespace in this warehouse and on every table,
-        view and generic table in them. The warehouse's own grants are not included —
-        read those from `GET /management/v1/warehouse/{warehouse_id}/grants`.
+        Lists the grants held on this warehouse, on every namespace in it, and on every
+        table, view and generic table in those. A subtree contains its root, so the
+        warehouse's own grants are part of the answer; pass `includeRootLevel=false` to
+        list only what lies beneath it.
 
-        Same rules as the namespace-rooted listing: direct grants only, entry gated on the
-        warehouse's grant-read permission, each member checked on its own and omitted
-        silently if you may not read it. An inactive warehouse is refused, because
-        deactivating one is defined to hide its children's grants.
+        Same rules as the namespace-rooted listing: direct grants only, and the
+        warehouse's subtree grant-read permission covers the whole answer. An inactive
+        warehouse is refused, because deactivating one is defined to hide its children's
+        grants.
       operationId: list_warehouse_subtree_grants
       parameters:
         - name: principalUser
@@ -5176,6 +5181,7 @@ paths:
             type:
               - string
               - 'null'
+            format: date-time
         - name: includeRootLevel
           in: query
           description: |-
@@ -5246,9 +5252,17 @@ paths:
         Removes the matching grants held anywhere under this warehouse, up to `limit` per
         call, with the same loop and the same guarantees as the namespace-rooted revoke.
 
-        The warehouse's own grants are left alone unless `include-warehouse-level` is set,
-        so that "revoke everything under this warehouse" does not silently remove the
-        grant that made you its administrator.
+        A subtree contains its root, so the warehouse's own grants go too — a grant on the
+        warehouse confers access to everything in it, so a revoke that skipped them would
+        leave standing the access it names. Pass `include-root-level: false` to keep them
+        and clear only what lies beneath.
+
+        Requires two permissions on this warehouse: reading its subtree grants, since the
+        batch is read before it is removed, and revoking them, asked once for the whole
+        batch.
+
+        An inactive warehouse is accepted here, unlike the warehouse-rooted listing, so
+        access can be stripped from a deactivated warehouse. Preview with `dry-run` there.
       operationId: revoke_warehouse_subtree_grants
       parameters:
         - name: warehouse_id
@@ -5605,25 +5619,35 @@ paths:
 
         Lists the grants held on this namespace, on every namespace beneath it, and on
         every table, view and generic table inside those — the whole subtree in one
-        paginated answer, instead of one request per resource.
+        paginated answer, instead of one request per resource. A subtree contains its
+        root, so this namespace's own grants are part of the answer; pass
+        `includeRootLevel=false` to list only what lies beneath it.
 
         **Direct grants only.** A grant held through a role is listed under the role, not
         under its members, and grants on tag definitions are not included: a tag
         definition belongs to the project, not to this subtree, even when the tag is
         attached to tables in it.
 
-        Entering requires the namespace's grant-read permission. Each member of the answer
-        is then checked on its own, because grant-read does not inherit — members you may
-        not read are omitted silently, so a page can come back short or empty while more
-        grants remain. Follow `next-page-token` until it is absent.
+        Requires permission to read the namespace's subtree grants — a permission of its
+        own, stronger than reading one resource's grants. It is asked once, here, and
+        covers every member of the answer, so pages come back full: follow
+        `next-page-token` until it is absent.
+
+        Each page reports the instant it read under as `as-of`, and the page token pins
+        it, so every page of one walk sees the same instant. A `createdBefore` that
+        disagrees with a token is refused.
 
         Reading a subtree's grants enumerates resources, principals and privileges the
-        caller may not otherwise know exist. Grant-read on a namespace is therefore an
-        enumeration capability over everything beneath it.
+        caller may not otherwise know exist. That reach is what the permission grants —
+        hand it out as deliberately as grant administration itself.
+
+        A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+        naming the size it would have read. The warehouse-rooted form carries no such
+        bound.
 
         **Availability depends on the configured authorizer.** An authorizer that stores
         grants itself indexes them per resource and cannot answer a subtree question;
-        those report `GrantListingNotImplemented` (501). `GET /info` reports the
+        those report `SubtreeGrantsNotImplemented` (501). `GET /info` reports the
         configured backend.
       operationId: list_namespace_subtree_grants
       parameters:
@@ -5687,6 +5711,7 @@ paths:
             type:
               - string
               - 'null'
+            format: date-time
         - name: includeRootLevel
           in: query
           description: |-
@@ -5762,7 +5787,9 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Removes the matching grants held anywhere under this namespace, up to `limit` per
-        call. Preview what a request would remove with the matching listing.
+        call. A subtree contains its root, so this namespace's own grants go too; pass
+        `include-root-level: false` to keep them and clear only what lies beneath. Send
+        the same body with `dry-run: true` to see the batch first, removing nothing.
 
         **One call is not the whole operation.** There is no continuation token: removed
         grants are gone, so repeating the same request is how the next batch is taken.
@@ -5775,11 +5802,17 @@ paths:
 
         **Direct grants only**, and only under this namespace. Access held through a role,
         through an ancestor, or through a tag definition's own grants is untouched.
-        Grants on tables in the recycle bin are removed too: an undrop would otherwise
-        restore the table together with access you believed you had removed.
+        Grants on tables in the recycle bin are removed too, and so are grants on tables
+        that were created but never committed: an undrop would otherwise restore the
+        table together with access you believed you had removed.
 
-        Your own grants are excluded unless `include-self` is set, because removing them
-        mid-loop would leave you without the authority to finish.
+        Your own grants are revoked like anyone else's, including the one your authority
+        here flows through. `include-root-level: false` keeps every grant on this
+        namespace and clears only what lies beneath it.
+
+        Requires two permissions on this namespace: reading its subtree grants, since the
+        batch is read before it is removed, and revoking them, asked once for the whole
+        batch.
       operationId: revoke_namespace_subtree_grants
       parameters:
         - name: warehouse_id
@@ -13153,9 +13186,7 @@ components:
       description: |-
         A page of a subtree grant listing.
 
-        Separate from [`ListGrantsResponse`] for `as-of`: the value the page was read under is
-        what a caller passes to the matching revoke, and a preview that cannot publish it
-        cannot promise the revoke is a subset of it.
+        A page of grants from a subtree, and the instant it was read under.
       required:
         - grants
         - as-of
@@ -14061,23 +14092,18 @@ components:
             Also revoke the grants held on the addressed resource itself. On by default: a
             grant on a container confers access beneath it, so a revoke that skipped the root
             would leave standing the access it names. Pass `false` to keep the root's own
-            grants — its administration plane — untouched. The caller's own root grants have
-            their own guard; see `include-self`.
-        include-self:
-          type: boolean
-          description: |-
-            Include grants held by the acting principal — and by the roles it belongs to — on
-            the addressed resource itself. Excluded by default: authority normally comes from a
-            role, and a grant old enough to land in the first call would leave every member of
-            that role without the authority to make the second. Only the root's own grants are
-            protected; everything beneath it is removed either way.
+            grants — its administration plane — untouched, including the one that gives the
+            caller authority here.
+          default: true
         limit:
           type:
             - integer
             - 'null'
-          description: At most this many grants are removed by one call. Clamped to 1000.
-          maximum: 1000
-          minimum: 1
+          description: |-
+            At most this many grants are removed by one call. A value outside 1–1000 is
+            clamped into it, so the response's `revoked` and `has-more` describe what the
+            server actually did.
+          minimum: 0
         principal:
           oneOf:
             - type: 'null'

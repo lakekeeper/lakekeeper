@@ -425,16 +425,6 @@ pub struct GrantSubtreeFilter {
     /// restores a table together with its grants, so skipping the recycle bin would
     /// leave access the operator believed removed.
     pub include_soft_deleted: bool,
-    /// Skip grants held by any of these principals **on the root itself**.
-    ///
-    /// The revoke excludes the acting principal's grantee set — the identity and the roles
-    /// it is a member of — because authority normally comes from a role, and taking that
-    /// grant in the first call would leave every member of it unable to make the second.
-    ///
-    /// Root-level only, and deliberately: authority at the root can only come from a grant
-    /// on the root or above it, so protecting descendants would silently skip unrelated
-    /// grants the caller asked to remove and still report the subtree cleared.
-    pub exclude_principals: Vec<UserOrRoleId>,
     /// Only grants created at or before this instant — inclusive, despite the name.
     ///
     /// Bounds a multi-call revoke so it terminates: grants made after the operation began
@@ -456,7 +446,6 @@ impl Default for GrantSubtreeFilter {
             privileges: Vec::new(),
             resource_types: Vec::new(),
             include_soft_deleted: false,
-            exclude_principals: Vec::new(),
             created_before: None,
         }
     }
@@ -526,9 +515,8 @@ pub struct GrantCandidate {
 
 /// What one bounded subtree revoke would remove, read before anything is authorized.
 ///
-/// The revoke is two phases so the authority check covers exactly the rows that go: read
-/// the candidates, put their distinct `(privilege, grantee)` pairs to the authorizer, then
-/// remove those rows. A grant created between the two is not removed by this call and is
+/// The revoke is two phases so no row lock is held across the authorizer call: the batch
+/// is gated at the root, read here, then removed. A grant created between the two is not removed by this call and is
 /// reported by the next — the same footing as one created after the ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantRevokeCandidates {

@@ -24,7 +24,6 @@
 //! deployments are unaffected.
 
 use std::{
-    borrow::Cow,
     sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
@@ -32,7 +31,6 @@ use std::{
 use async_trait::async_trait;
 use axum_prometheus::metrics;
 use iceberg_ext::catalog::rest::ErrorModel;
-use valuable::Valuable as _;
 
 use crate::request_metadata::{RequestMetadata, TokenRoles};
 
@@ -68,12 +66,7 @@ pub enum AdmissionRejection {
     /// The principal is authenticated but not entitled to this instance. This
     /// is an authoritative decision and is **terminal**: returned as
     /// `403 Forbidden` with no `Retry-After`.
-    Forbidden {
-        error: ErrorModel,
-        /// Which of the gate's own rules decided this, for the log record. A
-        /// gate with a single rule leaves it `None`.
-        denied_by: Option<Cow<'static, str>>,
-    },
+    Forbidden(ErrorModel),
     /// The gate could not reach an upstream it depends on and is **failing
     /// closed**. Returned as `503 Service Unavailable` with a `Retry-After`
     /// header set to `retry_after`, so clients back off and retry instead of
@@ -83,9 +76,6 @@ pub enum AdmissionRejection {
     Unavailable {
         error: ErrorModel,
         retry_after: Duration,
-        /// Which of the gate's own rules decided this, for the log record. A
-        /// gate with a single rule leaves it `None`.
-        denied_by: Option<Cow<'static, str>>,
     },
 }
 
@@ -97,10 +87,7 @@ impl AdmissionRejection {
         r#type: impl Into<String>,
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     ) -> Self {
-        Self::Forbidden {
-            error: ErrorModel::forbidden(message, r#type, source),
-            denied_by: None,
-        }
+        Self::Forbidden(ErrorModel::forbidden(message, r#type, source))
     }
 
     /// Fail-closed `503 Service Unavailable` with a gate-chosen `Retry-After`.
@@ -114,30 +101,6 @@ impl AdmissionRejection {
         Self::Unavailable {
             error: ErrorModel::service_unavailable(message, r#type, source),
             retry_after,
-            denied_by: None,
-        }
-    }
-
-    /// Name the gate's own rule that produced this rejection, so the log
-    /// record identifies the decision rather than leaving it inside prose.
-    #[must_use]
-    pub fn denied_by(mut self, rule: impl Into<Cow<'static, str>>) -> Self {
-        let rule = rule.into();
-        match &mut self {
-            Self::Forbidden { denied_by, .. } | Self::Unavailable { denied_by, .. } => {
-                *denied_by = Some(rule);
-            }
-        }
-        self
-    }
-
-    /// The gate's own rule that decided this, when it named one.
-    #[must_use]
-    pub fn deciding_rule(&self) -> Option<&str> {
-        match self {
-            Self::Forbidden { denied_by, .. } | Self::Unavailable { denied_by, .. } => {
-                denied_by.as_deref()
-            }
         }
     }
 
@@ -145,13 +108,7 @@ impl AdmissionRejection {
     #[must_use]
     pub fn error(&self) -> &ErrorModel {
         match self {
-            Self::Forbidden { error, .. } | Self::Unavailable { error, .. } => error,
-        }
-    }
-
-    fn error_mut(&mut self) -> &mut ErrorModel {
-        match self {
-            Self::Forbidden { error, .. } | Self::Unavailable { error, .. } => error,
+            Self::Forbidden(error) | Self::Unavailable { error, .. } => error,
         }
     }
 }
@@ -171,11 +128,6 @@ pub struct Admission {
     /// separate from token-claim roles so the provenance stays explicit.
     /// `None` when the gate resolves no roles.
     pub resolved_roles: Option<TokenRoles>,
-    /// Set when the gate does not govern this request at all — it adjudicated
-    /// nothing. Kept distinct from an allow so that a gate scoped to some
-    /// subset of principals cannot report the requests it never examined as
-    /// ones it approved.
-    not_applicable: bool,
 }
 
 impl Admission {
@@ -185,31 +137,11 @@ impl Admission {
         Self::default()
     }
 
-    /// The gate does not govern this request, so it decided nothing.
-    ///
-    /// Admits, like [`Admission::admit`], but reports `outcome="skipped"` so a
-    /// gate that silently stopped covering its principals is visible rather
-    /// than indistinguishable from one approving them.
-    #[must_use]
-    pub fn not_applicable() -> Self {
-        Self {
-            resolved_roles: None,
-            not_applicable: true,
-        }
-    }
-
-    /// Whether the gate actually adjudicated this request.
-    #[must_use]
-    pub fn is_applicable(&self) -> bool {
-        !self.not_applicable
-    }
-
     /// Admit the request and contribute the roles the gate resolved.
     #[must_use]
     pub fn with_roles(roles: TokenRoles) -> Self {
         Self {
             resolved_roles: Some(roles),
-            not_applicable: false,
         }
     }
 }
@@ -319,39 +251,20 @@ impl AdmissionGates {
                         }
                     }
                 }
-                Err(mut rejection) => {
-                    // The one record of the rejection. It names the principal,
-                    // so it belongs in the audit stream: a denial nothing can
-                    // attribute answers "someone was refused" and never "who".
-                    // `skip_log` then suppresses the generic error-response
-                    // line, which would otherwise repeat this without the
-                    // actor — and, for a fail-closed `503`, repeat it at ERROR
-                    // as an internal error this server did not have.
+                Err(rejection) => {
                     let error = rejection.error();
                     tracing::info!(
-                        event_source = "audit",
-                        operation = "admission_decided",
-                        actor = tracing::field::valuable(
-                            &ctx.metadata.internal_actor().as_value()
-                        ),
-                        outcome = rejection_label(&rejection),
                         gate = gate.name(),
-                        denied_by = rejection.deciding_rule(),
                         status = error.code,
                         error_type = %error.r#type,
-                        error_id = %error.error_id,
                         request_id = %ctx.metadata.request_id(),
                         "Request rejected by admission gate"
                     );
-                    rejection.error_mut().skip_log = true;
                     return Err(rejection);
                 }
             }
         }
-        Ok(Admission {
-            resolved_roles,
-            not_applicable: false,
-        })
+        Ok(Admission { resolved_roles })
     }
 }
 
@@ -360,18 +273,9 @@ impl AdmissionGates {
 /// up as an outage rather than as a wave of denials.
 fn outcome_label(result: &Result<Admission, AdmissionRejection>) -> &'static str {
     match result {
-        Ok(admission) if admission.is_applicable() => "admitted",
-        Ok(_) => "skipped",
-        Err(rejection) => rejection_label(rejection),
-    }
-}
-
-/// Label for a rejection, shared by the metric and the audit record so the two
-/// cannot drift into different vocabularies for the same outcome.
-fn rejection_label(rejection: &AdmissionRejection) -> &'static str {
-    match rejection {
-        AdmissionRejection::Forbidden { .. } => "forbidden",
-        AdmissionRejection::Unavailable { .. } => "unavailable",
+        Ok(_) => "admitted",
+        Err(AdmissionRejection::Forbidden(_)) => "forbidden",
+        Err(AdmissionRejection::Unavailable { .. }) => "unavailable",
     }
 }
 
@@ -515,106 +419,6 @@ mod tests {
         );
     }
 
-    /// A gate scoped to principals it does not cover: it adjudicates nothing.
-    #[derive(Debug)]
-    struct NotApplicableGate;
-    #[async_trait]
-    impl AdmissionGate for NotApplicableGate {
-        fn name(&self) -> &'static str {
-            "not-applicable"
-        }
-        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-            Ok(Admission::not_applicable())
-        }
-    }
-
-    #[derive(Debug)]
-    struct NamedRuleDenyGate;
-    #[async_trait]
-    impl AdmissionGate for NamedRuleDenyGate {
-        fn name(&self) -> &'static str {
-            "named-rule"
-        }
-        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-            Err(AdmissionRejection::forbidden("nope", "TestDenied", None)
-                .denied_by("instance_access"))
-        }
-    }
-
-    /// A gate that does not govern the request must not report the requests it
-    /// never examined as ones it approved: the metric label is what tells an
-    /// operator a gate has stopped covering its principals.
-    #[tokio::test]
-    async fn a_gate_that_does_not_apply_is_not_an_allow() {
-        let md = RequestMetadata::new_unauthenticated();
-        let ctx = AdmissionContext::new(&md, None);
-        // The histogram labels each gate's own result, which is what the driver
-        // passes to `record_gate_duration` — not its merged return value.
-        for (gate, expected) in [
-            (Arc::new(AllowGate) as Arc<dyn AdmissionGate>, "admitted"),
-            (Arc::new(NotApplicableGate), "skipped"),
-            (Arc::new(RolesGate(&["a"])), "admitted"),
-            (Arc::new(DenyGate), "forbidden"),
-            (Arc::new(UnavailableGate), "unavailable"),
-        ] {
-            assert_eq!(
-                outcome_label(&gate.admit(ctx).await),
-                expected,
-                "{}",
-                gate.name()
-            );
-        }
-
-        // Skipping still admits, and contributes nothing.
-        let skipped = gates(vec![Arc::new(NotApplicableGate)])
-            .admit(ctx)
-            .await
-            .expect("a gate that does not apply admits");
-        assert!(skipped.resolved_roles.is_none());
-    }
-
-    /// The driver emits the one record of a rejection, so the generic
-    /// error-response line must not repeat it — for a fail-closed `503` that
-    /// duplicate is logged at ERROR as an internal error this server did not
-    /// have.
-    #[tokio::test]
-    async fn a_rejection_suppresses_the_duplicate_error_log() {
-        let md = RequestMetadata::new_unauthenticated();
-        for gate in [
-            Arc::new(DenyGate) as Arc<dyn AdmissionGate>,
-            Arc::new(UnavailableGate) as Arc<dyn AdmissionGate>,
-        ] {
-            let rejection = gates(vec![gate])
-                .admit(AdmissionContext::new(&md, None))
-                .await
-                .expect_err("gate rejects");
-            assert!(
-                rejection.error().skip_log,
-                "{:?} must not be logged twice",
-                rejection.error().r#type
-            );
-        }
-    }
-
-    /// The deciding rule reaches the record as a field, rather than surviving
-    /// only inside the caller-facing message.
-    #[tokio::test]
-    async fn a_rejection_carries_the_rule_that_decided_it() {
-        let md = RequestMetadata::new_unauthenticated();
-        let named = gates(vec![Arc::new(NamedRuleDenyGate)])
-            .admit(AdmissionContext::new(&md, None))
-            .await
-            .expect_err("gate rejects");
-        assert_eq!(named.deciding_rule(), Some("instance_access"));
-
-        // A gate with one rule names none, and that is not an error.
-        let unnamed = gates(vec![Arc::new(DenyGate)])
-            .admit(AdmissionContext::new(&md, None))
-            .await
-            .expect_err("gate rejects");
-        assert_eq!(unnamed.deciding_rule(), None);
-    }
-
     #[tokio::test]
     async fn empty_admits() {
         let md = RequestMetadata::new_unauthenticated();
@@ -645,7 +449,7 @@ mod tests {
             .admit(AdmissionContext::new(&md, None))
             .await
             .expect_err("DenyGate rejects");
-        assert!(matches!(rejection, AdmissionRejection::Forbidden { .. }));
+        assert!(matches!(rejection, AdmissionRejection::Forbidden(_)));
         assert_eq!(rejection.error().code, StatusCode::FORBIDDEN.as_u16());
         assert_eq!(rejection.error().r#type, "TestDenied");
     }
@@ -658,13 +462,11 @@ mod tests {
             .await
             .expect_err("UnavailableGate rejects");
         match rejection {
-            AdmissionRejection::Unavailable {
-                error, retry_after, ..
-            } => {
+            AdmissionRejection::Unavailable { error, retry_after } => {
                 assert_eq!(error.code, StatusCode::SERVICE_UNAVAILABLE.as_u16());
                 assert_eq!(retry_after, Duration::from_secs(7));
             }
-            AdmissionRejection::Forbidden { .. } => panic!("expected Unavailable"),
+            AdmissionRejection::Forbidden(_) => panic!("expected Unavailable"),
         }
     }
 

@@ -967,6 +967,10 @@ pub mod v1 {
     /// Listing your own grants needs no extra permission; any other principal requires
     /// the project-level grant-read permission.
     ///
+    /// A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+    /// naming the size it would have read. The warehouse-rooted form carries no such
+    /// bound.
+    ///
     /// **Availability depends on the configured authorizer.** This listing crosses every
     /// resource in the project, which an authorizer that stores permissions per resource
     /// cannot answer without reading its whole store. Those report
@@ -1073,25 +1077,35 @@ pub mod v1 {
     ///
     /// Lists the grants held on this namespace, on every namespace beneath it, and on
     /// every table, view and generic table inside those — the whole subtree in one
-    /// paginated answer, instead of one request per resource.
+    /// paginated answer, instead of one request per resource. A subtree contains its
+    /// root, so this namespace's own grants are part of the answer; pass
+    /// `includeRootLevel=false` to list only what lies beneath it.
     ///
     /// **Direct grants only.** A grant held through a role is listed under the role, not
     /// under its members, and grants on tag definitions are not included: a tag
     /// definition belongs to the project, not to this subtree, even when the tag is
     /// attached to tables in it.
     ///
-    /// Entering requires the namespace's grant-read permission. Each member of the answer
-    /// is then checked on its own, because grant-read does not inherit — members you may
-    /// not read are omitted silently, so a page can come back short or empty while more
-    /// grants remain. Follow `next-page-token` until it is absent.
+    /// Requires permission to read the namespace's subtree grants — a permission of its
+    /// own, stronger than reading one resource's grants. It is asked once, here, and
+    /// covers every member of the answer, so pages come back full: follow
+    /// `next-page-token` until it is absent.
+    ///
+    /// Each page reports the instant it read under as `as-of`, and the page token pins
+    /// it, so every page of one walk sees the same instant. A `createdBefore` that
+    /// disagrees with a token is refused.
     ///
     /// Reading a subtree's grants enumerates resources, principals and privileges the
-    /// caller may not otherwise know exist. Grant-read on a namespace is therefore an
-    /// enumeration capability over everything beneath it.
+    /// caller may not otherwise know exist. That reach is what the permission grants —
+    /// hand it out as deliberately as grant administration itself.
+    ///
+    /// A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+    /// naming the size it would have read. The warehouse-rooted form carries no such
+    /// bound.
     ///
     /// **Availability depends on the configured authorizer.** An authorizer that stores
     /// grants itself indexes them per resource and cannot answer a subtree question;
-    /// those report `GrantListingNotImplemented` (501). `GET /info` reports the
+    /// those report `SubtreeGrantsNotImplemented` (501). `GET /info` reports the
     /// configured backend.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
@@ -1127,7 +1141,9 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Removes the matching grants held anywhere under this namespace, up to `limit` per
-    /// call. Preview what a request would remove with the matching listing.
+    /// call. A subtree contains its root, so this namespace's own grants go too; pass
+    /// `include-root-level: false` to keep them and clear only what lies beneath. Send
+    /// the same body with `dry-run: true` to see the batch first, removing nothing.
     ///
     /// **One call is not the whole operation.** There is no continuation token: removed
     /// grants are gone, so repeating the same request is how the next batch is taken.
@@ -1140,11 +1156,17 @@ pub mod v1 {
     ///
     /// **Direct grants only**, and only under this namespace. Access held through a role,
     /// through an ancestor, or through a tag definition's own grants is untouched.
-    /// Grants on tables in the recycle bin are removed too: an undrop would otherwise
-    /// restore the table together with access you believed you had removed.
+    /// Grants on tables in the recycle bin are removed too, and so are grants on tables
+    /// that were created but never committed: an undrop would otherwise restore the
+    /// table together with access you believed you had removed.
     ///
-    /// Your own grants are excluded unless `include-self` is set, because removing them
-    /// mid-loop would leave you without the authority to finish.
+    /// Your own grants are revoked like anyone else's, including the one your authority
+    /// here flows through. `include-root-level: false` keeps every grant on this
+    /// namespace and clears only what lies beneath it.
+    ///
+    /// Requires two permissions on this namespace: reading its subtree grants, since the
+    /// batch is read before it is removed, and revoking them, asked once for the whole
+    /// batch.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1178,14 +1200,15 @@ pub mod v1 {
     ///
     /// This API may change in a backward-incompatible way in a future release.
     ///
-    /// Lists the grants held on every namespace in this warehouse and on every table,
-    /// view and generic table in them. The warehouse's own grants are not included —
-    /// read those from `GET /management/v1/warehouse/{warehouse_id}/grants`.
+    /// Lists the grants held on this warehouse, on every namespace in it, and on every
+    /// table, view and generic table in those. A subtree contains its root, so the
+    /// warehouse's own grants are part of the answer; pass `includeRootLevel=false` to
+    /// list only what lies beneath it.
     ///
-    /// Same rules as the namespace-rooted listing: direct grants only, entry gated on the
-    /// warehouse's grant-read permission, each member checked on its own and omitted
-    /// silently if you may not read it. An inactive warehouse is refused, because
-    /// deactivating one is defined to hide its children's grants.
+    /// Same rules as the namespace-rooted listing: direct grants only, and the
+    /// warehouse's subtree grant-read permission covers the whole answer. An inactive
+    /// warehouse is refused, because deactivating one is defined to hide its children's
+    /// grants.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -1221,9 +1244,17 @@ pub mod v1 {
     /// Removes the matching grants held anywhere under this warehouse, up to `limit` per
     /// call, with the same loop and the same guarantees as the namespace-rooted revoke.
     ///
-    /// The warehouse's own grants are left alone unless `include-warehouse-level` is set,
-    /// so that "revoke everything under this warehouse" does not silently remove the
-    /// grant that made you its administrator.
+    /// A subtree contains its root, so the warehouse's own grants go too — a grant on the
+    /// warehouse confers access to everything in it, so a revoke that skipped them would
+    /// leave standing the access it names. Pass `include-root-level: false` to keep them
+    /// and clear only what lies beneath.
+    ///
+    /// Requires two permissions on this warehouse: reading its subtree grants, since the
+    /// batch is read before it is removed, and revoking them, asked once for the whole
+    /// batch.
+    ///
+    /// An inactive warehouse is accepted here, unlike the warehouse-rooted listing, so
+    /// access can be stripped from a deactivated warehouse. Preview with `dry-run` there.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",

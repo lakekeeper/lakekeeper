@@ -40,16 +40,29 @@ pub(crate) struct V2PaginateToken<T> {
     pub(crate) ceiling: chrono::DateTime<Utc>,
 }
 
+/// Truncates an instant to the precision a token round-trips.
+///
+/// A token carries `timestamp_micros`, so a caller-supplied ceiling with finer
+/// precision would not survive one. Comparing or reporting an untruncated value against
+/// a token's would then differ by sub-microsecond noise and read as a different filter.
+/// Postgres stores microseconds, so truncating changes no row's membership.
+pub(crate) fn to_token_precision(at: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp_micros(at.timestamp_micros()).unwrap_or(at)
+}
+
 impl<T> PaginateToken<T> {
     /// The keyset position, for the listings that use plain `V1` tokens. A `V2` token
     /// belongs to a subtree listing and pins that walk's ceiling; handing it to another
     /// listing is refused, so it cannot silently walk a different snapshot.
-    pub(crate) fn v1_parts(&self) -> Result<(&chrono::DateTime<Utc>, &T), InvalidPaginationToken> {
+    pub(crate) fn v1_parts(&self) -> Result<(&chrono::DateTime<Utc>, &T), InvalidPaginationToken>
+    where
+        T: Display,
+    {
         match self {
             PaginateToken::V1(V1PaginateToken { created_at, id }) => Ok((created_at, id)),
             PaginateToken::V2(_) => Err(InvalidPaginationToken::new(
                 "This token belongs to a subtree listing",
-                "",
+                self.to_string(),
             )),
         }
     }
@@ -447,7 +460,7 @@ mod test {
             encode("1"),
             encode("1&"),
             encode("1&123456789"),
-            // Wrong version
+            // A V2 token needs three fields; unknown versions are refused outright.
             encode("2&123456789&test"),
             encode("0&123456789&test"),
             encode("invalid&123456789&test"),

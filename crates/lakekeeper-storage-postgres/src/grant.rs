@@ -41,9 +41,9 @@ use lakekeeper::{
     api::iceberg::v1::PaginationQuery,
     service::{
         ApplyGrantsStoreError, CatalogBackendError, DatabaseIntegrityError, GenericTableId,
-        GrantLockTimeout, GrantTargetNotFound, GrantUserNotFound, InvalidPaginationToken,
-        ListGrantsStoreError, NamespaceId, ProjectId, RevokeSubtreeGrantsStoreError, TableId,
-        TagDefinitionId, ViewId, WarehouseId,
+        GrantLockTimeout, GrantSubtreeReadTimeout, GrantTargetNotFound, GrantUserNotFound,
+        InvalidPaginationToken, ListGrantsStoreError, NamespaceId, ProjectId,
+        RevokeSubtreeGrantsStoreError, TableId, TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
@@ -58,7 +58,7 @@ use uuid::Uuid;
 
 use crate::{
     dbutils::DBErrorHandler,
-    pagination::{PaginateToken, V1PaginateToken, V2PaginateToken},
+    pagination::{PaginateToken, V1PaginateToken, V2PaginateToken, to_token_precision},
     tabular::TabularType,
 };
 
@@ -1025,23 +1025,6 @@ where
 
 /// A principal as the two nullable columns the listing statements bind: exactly one is
 /// set, which is what makes `principal_type` redundant to test alongside them.
-/// Split a principal set by kind. Each side is `None` when it holds nobody, so a
-/// statement binds `NULL` rather than an empty array.
-fn split_principals(principals: &[UserOrRoleId]) -> (Option<Vec<String>>, Option<Vec<Uuid>>) {
-    let mut users = Vec::new();
-    let mut roles = Vec::new();
-    for principal in principals {
-        match principal {
-            UserOrRoleId::User(user_id) => users.push(user_id.to_string()),
-            UserOrRoleId::Role(role_id) => roles.push(**role_id),
-        }
-    }
-    (
-        Some(users).filter(|u| !u.is_empty()),
-        Some(roles).filter(|r| !r.is_empty()),
-    )
-}
-
 fn split_principal(principal: Option<&UserOrRoleId>) -> (Option<String>, Option<Uuid>) {
     match principal {
         Some(UserOrRoleId::User(user_id)) => (Some(user_id.to_string()), None),
@@ -1120,7 +1103,12 @@ impl SubtreeBounds {
                 id,
                 ceiling,
             })) => {
-                if created_before.is_some_and(|explicit| explicit != ceiling) {
+                // Compared at the token's own precision: a caller echoing the `as-of`
+                // they were given must not be read as changing the filter.
+                if created_before
+                    .map(to_token_precision)
+                    .is_some_and(|explicit| explicit != ceiling)
+                {
                     return Err(InvalidPaginationToken::new(
                         "The page token pins `created-before`; start a new listing to \
                          change it",
@@ -1546,9 +1534,6 @@ struct SubtreeParams {
     privileges: Option<Vec<String>>,
     principal_user: Option<String>,
     principal_role: Option<Uuid>,
-    /// Principals whose grants are skipped, split by kind. `None` excludes nobody.
-    exclude_users: Option<Vec<String>>,
-    exclude_roles: Option<Vec<Uuid>>,
     ceiling: DateTime<Utc>,
 }
 
@@ -1570,7 +1555,6 @@ impl SubtreeParams {
         // being handed an empty `= ANY`.
         let match_tabulars = tabular_types.as_ref().is_none_or(|kinds| !kinds.is_empty());
         let (principal_user, principal_role) = split_principal(filter.principal.as_ref());
-        let (exclude_users, exclude_roles) = split_principals(&filter.exclude_principals);
         Self {
             match_namespaces: filter.matches_namespaces(),
             match_tabulars,
@@ -1583,11 +1567,44 @@ impl SubtreeParams {
             privileges: Some(filter.privileges.clone()).filter(|p| !p.is_empty()),
             principal_user,
             principal_role,
-            exclude_users,
-            exclude_roles,
             ceiling,
         }
     }
+}
+
+/// How many namespaces the subtree rooted at `namespace_id` spans, the root included.
+///
+/// The same prefix walk the listing statements use, without their grant arms: resolving
+/// the subtree is a fraction of the cost of reading its grants, so this answers whether
+/// the expensive half is worth starting.
+pub(crate) async fn count_subtree_namespaces<'e, 'c: 'e, E>(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    connection: E,
+) -> Result<u64, ListGrantsStoreError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    let count = sqlx::query_scalar!(
+        r#"
+        WITH root AS (
+            SELECT namespace_name AS path, array_length(namespace_name, 1) AS depth
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_id = $2
+        )
+        SELECT count(*) AS "count!"
+        FROM namespace n, root r
+        WHERE n.warehouse_id = $1
+          AND n.namespace_name >= r.path
+          AND n.namespace_name[1:r.depth] = r.path
+        "#,
+        *warehouse_id,
+        *namespace_id,
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(count.try_into().unwrap_or(u64::MAX))
 }
 
 /// The instant a subtree operation runs under: the caller's ceiling, or the database's
@@ -1626,6 +1643,46 @@ where
 /// `as_of` is the walk's ceiling, resolved by the caller (token first, then the filter,
 /// then the primary's clock) and echoed into the emitted `V2` token so every later page
 /// of the walk reads under the same instant.
+/// How long one subtree read may run before the database stops it.
+///
+/// Ten seconds: a backstop under the caller's namespace-count bound, which cannot see a
+/// subtree that spans few namespaces but holds very many tabular grants. It occupies a
+/// write-pool connection for its duration, so operators of very large catalogs size that
+/// pool for it.
+const SET_SUBTREE_READ_TIMEOUT: &str = "SET LOCAL statement_timeout = '10s'";
+
+/// Map a subtree statement's failure, telling the bounded read's own timeout apart from
+/// any other database error.
+fn map_subtree_read(err: sqlx::Error) -> ListGrantsStoreError {
+    // 57014 = query_canceled: `statement_timeout` elapsed.
+    if let sqlx::Error::Database(ref db) = err
+        && db.code().as_deref() == Some("57014")
+    {
+        return GrantSubtreeReadTimeout::new().into();
+    }
+    DBErrorHandler::into_catalog_backend_error(err).into()
+}
+
+/// A read-only transaction whose statements are bounded by
+/// [`SET_SUBTREE_READ_TIMEOUT`].
+///
+/// `SET LOCAL` needs a transaction to be scoped to, which is what keeps the bound off
+/// every later user of a pooled connection. Nothing is written, so dropping it is the
+/// whole cleanup.
+async fn begin_bounded_read(
+    pool: &sqlx::PgPool,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, ListGrantsStoreError> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    sqlx::query(SET_SUBTREE_READ_TIMEOUT)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(transaction)
+}
+
 pub(crate) async fn list_grants_in_subtree(
     root: GrantSubtreeRoot,
     filter: &GrantSubtreeFilter,
@@ -1635,15 +1692,26 @@ pub(crate) async fn list_grants_in_subtree(
 ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
     let params = SubtreeParams::of(root, filter, as_of);
 
+    let mut transaction = begin_bounded_read(pool).await?;
     let rows = match root {
         GrantSubtreeRoot::Namespace {
             warehouse_id,
             namespace_id,
-        } => select_grants_under_namespace(warehouse_id, namespace_id, &params, page, pool).await?,
+        } => {
+            select_grants_under_namespace(
+                warehouse_id,
+                namespace_id,
+                &params,
+                page,
+                &mut *transaction,
+            )
+            .await?
+        }
         GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
-            select_grants_under_warehouse(warehouse_id, &params, page, pool).await?
+            select_grants_under_warehouse(warehouse_id, &params, page, &mut *transaction).await?
         }
     };
+    drop(transaction);
 
     let next_page_token = rows.last().map(|r| {
         PaginateToken::V2(V2PaginateToken::<Uuid> {
@@ -1715,7 +1783,7 @@ where
               AND ga.resource_type = 'namespace'::grant_resource_type
               AND ga.namespace_id IN (SELECT namespace_id FROM subtree)
               -- Root-level opt-out: grants on the root namespace itself.
-              AND ($16::bool OR ga.namespace_id <> $2)
+              AND ($14::bool OR ga.namespace_id <> $2)
               AND ($7::text[] IS NULL OR ga.privilege = ANY($7))
               -- The unused principal column is held null; see select_grants_on_resource.
               AND ($8::text IS NULL
@@ -1724,24 +1792,14 @@ where
               AND ($9::uuid IS NULL
                    OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $9
                        AND ga.user_id IS NULL))
-              -- Only the root's own grants: a grant on a descendant cannot confer
-              -- authority at the root, so it is not what `include-self` protects.
-              -- `IS NOT NULL` on the column is load-bearing: `NULL = ANY(...)` is NULL,
-              -- not false, so without it every grant of the other principal kind would
-              -- evaluate to NULL here and be dropped.
-              AND NOT (ga.namespace_id = $2
-                       AND (($10::text[] IS NOT NULL AND ga.user_id IS NOT NULL
-                             AND ga.user_id = ANY($10))
-                            OR ($11::uuid[] IS NOT NULL AND ga.role_id IS NOT NULL
-                                AND ga.role_id = ANY($11))))
-              AND ga.created_at <= $12
+              AND ga.created_at <= $10
               -- Keyset; written as an unconditional row comparison against a floor for
               -- the reason given on select_grants_on_resource.
               AND (ga.created_at, ga.grant_id)
-                  > (COALESCE($13, '-infinity'::timestamptz),
-                     COALESCE($14, '00000000-0000-0000-0000-000000000000'::uuid))
+                  > (COALESCE($11, '-infinity'::timestamptz),
+                     COALESCE($12, '00000000-0000-0000-0000-000000000000'::uuid))
             ORDER BY ga.created_at, ga.grant_id
-            LIMIT $15
+            LIMIT $13
         ),
         tab AS (
             SELECT
@@ -1768,12 +1826,12 @@ where
               AND ($9::uuid IS NULL
                    OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $9
                        AND ga.user_id IS NULL))
-              AND ga.created_at <= $12
+              AND ga.created_at <= $10
               AND (ga.created_at, ga.grant_id)
-                  > (COALESCE($13, '-infinity'::timestamptz),
-                     COALESCE($14, '00000000-0000-0000-0000-000000000000'::uuid))
+                  > (COALESCE($11, '-infinity'::timestamptz),
+                     COALESCE($12, '00000000-0000-0000-0000-000000000000'::uuid))
             ORDER BY ga.created_at, ga.grant_id
-            LIMIT $15
+            LIMIT $13
         )
         SELECT
             x.grant_id AS "grant_id!",
@@ -1786,7 +1844,7 @@ where
             x.created_at AS "created_at!"
         FROM (SELECT * FROM ns UNION ALL SELECT * FROM tab) x
         ORDER BY x.created_at, x.grant_id
-        LIMIT $15
+        LIMIT $13
         "#,
         *warehouse_id,
         *namespace_id,
@@ -1797,8 +1855,6 @@ where
         params.privileges.as_deref(),
         params.principal_user.as_deref(),
         params.principal_role,
-        params.exclude_users.as_deref(),
-        params.exclude_roles.as_deref(),
         params.ceiling,
         page.created_at,
         page.id,
@@ -1807,8 +1863,7 @@ where
     )
     .fetch_all(connection)
     .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)
-    .map_err(Into::into)
+    .map_err(map_subtree_read)
 }
 
 /// The warehouse-rooted listing. No subtree to resolve — every namespace and tabular in
@@ -1850,12 +1905,12 @@ where
               AND ($8::uuid IS NULL
                    OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8
                        AND ga.user_id IS NULL))
-              AND ga.created_at <= $11
+              AND ga.created_at <= $9
               AND (ga.created_at, ga.grant_id)
-                  > (COALESCE($12, '-infinity'::timestamptz),
-                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))
+                  > (COALESCE($10, '-infinity'::timestamptz),
+                     COALESCE($11, '00000000-0000-0000-0000-000000000000'::uuid))
             ORDER BY ga.created_at, ga.grant_id
-            LIMIT $14
+            LIMIT $12
         ),
         tab AS (
             SELECT
@@ -1878,12 +1933,12 @@ where
               AND ($8::uuid IS NULL
                    OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8
                        AND ga.user_id IS NULL))
-              AND ga.created_at <= $11
+              AND ga.created_at <= $9
               AND (ga.created_at, ga.grant_id)
-                  > (COALESCE($12, '-infinity'::timestamptz),
-                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))
+                  > (COALESCE($10, '-infinity'::timestamptz),
+                     COALESCE($11, '00000000-0000-0000-0000-000000000000'::uuid))
             ORDER BY ga.created_at, ga.grant_id
-            LIMIT $14
+            LIMIT $12
         ),
         wh AS (
             SELECT
@@ -1892,7 +1947,7 @@ where
                 ga.tabular_id, ga.tag_definition_id,
                 NULL::tabular_type AS tabular_typ, ga.created_at
             FROM grant_assignment ga
-            WHERE $15::bool
+            WHERE $13::bool
               AND ga.warehouse_id = $1
               AND ga.resource_type = 'warehouse'::grant_resource_type
               AND ($6::text[] IS NULL OR ga.privilege = ANY($6))
@@ -1903,17 +1958,12 @@ where
                    OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $8
                        AND ga.user_id IS NULL))
               -- The warehouse level is this root; nothing below it confers authority here.
-              -- `IS NOT NULL` on the column is load-bearing; see the namespace twin.
-              AND NOT (($9::text[] IS NOT NULL AND ga.user_id IS NOT NULL
-                        AND ga.user_id = ANY($9))
-                       OR ($10::uuid[] IS NOT NULL AND ga.role_id IS NOT NULL
-                           AND ga.role_id = ANY($10)))
-              AND ga.created_at <= $11
+              AND ga.created_at <= $9
               AND (ga.created_at, ga.grant_id)
-                  > (COALESCE($12, '-infinity'::timestamptz),
-                     COALESCE($13, '00000000-0000-0000-0000-000000000000'::uuid))
+                  > (COALESCE($10, '-infinity'::timestamptz),
+                     COALESCE($11, '00000000-0000-0000-0000-000000000000'::uuid))
             ORDER BY ga.created_at, ga.grant_id
-            LIMIT $14
+            LIMIT $12
         )
         SELECT
             x.grant_id AS "grant_id!",
@@ -1930,7 +1980,7 @@ where
             UNION ALL SELECT * FROM wh
         ) x
         ORDER BY x.created_at, x.grant_id
-        LIMIT $14
+        LIMIT $12
         "#,
         *warehouse_id,
         params.match_namespaces,
@@ -1940,8 +1990,6 @@ where
         params.privileges.as_deref(),
         params.principal_user.as_deref(),
         params.principal_role,
-        params.exclude_users.as_deref(),
-        params.exclude_roles.as_deref(),
         params.ceiling,
         page.created_at,
         page.id,
@@ -1950,17 +1998,13 @@ where
     )
     .fetch_all(connection)
     .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)
-    .map_err(Into::into)
+    .map_err(map_subtree_read)
 }
 
-/// The grants one revoke call would remove, read before anything is authorized.
+/// The grants one revoke call would remove, read after the batch is gated at the root.
 ///
-/// A revoke is two phases so that the authority check covers exactly the rows that go:
-/// the candidates are read here, the distinct `(privilege, grantee)` pairs are put to the
-/// authorizer, and only then are these rows removed by id. A grant created between the
-/// two phases is not removed by this call — the next call reports it, on the same footing
-/// as one created after the ceiling.
+/// A grant created between this read and the delete is not removed by this call — the
+/// next call reports it, on the same footing as one created after the ceiling.
 ///
 /// Deliberately not one `DELETE ... RETURNING` with the authority check folded in: that
 /// would hold row locks on a whole batch across a network call to the authorizer.
@@ -1985,17 +2029,26 @@ pub(crate) async fn select_subtree_grant_candidates(
         id: None,
         page_size: i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
     };
+    let mut transaction = begin_bounded_read(pool).await?;
     let mut rows = match root {
         GrantSubtreeRoot::Namespace {
             warehouse_id,
             namespace_id,
         } => {
-            select_grants_under_namespace(warehouse_id, namespace_id, &params, bounds, pool).await?
+            select_grants_under_namespace(
+                warehouse_id,
+                namespace_id,
+                &params,
+                bounds,
+                &mut *transaction,
+            )
+            .await?
         }
         GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
-            select_grants_under_warehouse(warehouse_id, &params, bounds, pool).await?
+            select_grants_under_warehouse(warehouse_id, &params, bounds, &mut *transaction).await?
         }
     };
+    drop(transaction);
     let has_more = rows.len() > limit;
     rows.truncate(limit);
 
@@ -2078,10 +2131,11 @@ pub(crate) async fn revoke_grant_candidates(
             LEFT JOIN tabular t
               ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
             WHERE ga.grant_id = ANY($1)
+              -- Scope re-derived under the lock, never trusted from the id alone.
+              AND ga.warehouse_id = $2
               AND ($3::uuid IS NULL
-                   OR (ga.warehouse_id = $2
-                       AND COALESCE(t.namespace_id, ga.namespace_id)
-                           IN (SELECT namespace_id FROM subtree)))
+                   OR COALESCE(t.namespace_id, ga.namespace_id)
+                      IN (SELECT namespace_id FROM subtree))
             ORDER BY ga.grant_id
             FOR UPDATE OF ga
         ),

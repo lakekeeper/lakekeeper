@@ -1017,7 +1017,6 @@ mod grant {
                 created_before: None,
                 limit: None,
                 allow_partial: false,
-                include_self: false,
                 include_root_level: true,
                 dry_run: false,
             };
@@ -1057,7 +1056,7 @@ mod grant {
             ];
             for err in errors {
                 assert_eq!(err.error.code, 501);
-                assert_eq!(err.error.r#type, "GrantListingNotImplemented");
+                assert_eq!(err.error.r#type, "SubtreeGrantsNotImplemented");
             }
         }
 

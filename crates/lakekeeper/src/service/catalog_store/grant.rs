@@ -125,6 +125,82 @@ impl From<GrantLockTimeout> for ErrorModel {
     }
 }
 
+/// A namespace spans more namespaces than the subtree operations read.
+///
+/// Reading a subtree's grants costs in proportion to the namespaces it spans, so an
+/// oversized one is refused before that read starts rather than left to run. The caller
+/// addresses a namespace further down, or uses the warehouse-rooted operation, which is
+/// served by an index and carries no such bound.
+#[derive(thiserror::Error, PartialEq, Eq, Debug)]
+#[error(
+    "This namespace spans {namespaces} namespaces; subtree grant operations read up to \
+     {limit}. Address a namespace further down, or use the warehouse-rooted operation."
+)]
+pub struct GrantSubtreeTooLarge {
+    namespaces: u64,
+    limit: u64,
+    stack: Vec<String>,
+}
+impl_error_stack_methods!(GrantSubtreeTooLarge);
+impl GrantSubtreeTooLarge {
+    #[must_use]
+    pub fn new(namespaces: u64, limit: u64) -> Self {
+        Self {
+            namespaces,
+            limit,
+            stack: Vec::new(),
+        }
+    }
+}
+impl From<GrantSubtreeTooLarge> for ErrorModel {
+    fn from(err: GrantSubtreeTooLarge) -> Self {
+        ErrorModel::builder()
+            .r#type("GrantSubtreeTooLarge")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A subtree read did not finish inside the time the database allows it.
+///
+/// Distinct from [`GrantSubtreeTooLarge`], which is decided from the namespace count
+/// before the read starts: this is what remains when a subtree spans few namespaces but
+/// holds very many grants, or when the catalog database is under load. Retrying the same
+/// request unchanged reaches the same bound.
+#[derive(thiserror::Error, PartialEq, Eq, Debug)]
+#[error(
+    "Reading this subtree's grants did not finish in time. Narrow the request with a \
+     filter or a root further down; if the subtree is modest, the catalog database may \
+     be under load."
+)]
+pub struct GrantSubtreeReadTimeout {
+    stack: Vec<String>,
+}
+impl_error_stack_methods!(GrantSubtreeReadTimeout);
+impl GrantSubtreeReadTimeout {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl Default for GrantSubtreeReadTimeout {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl From<GrantSubtreeReadTimeout> for ErrorModel {
+    fn from(err: GrantSubtreeReadTimeout) -> Self {
+        ErrorModel::builder()
+            .r#type("GrantSubtreeReadTimeout")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 /// A subtree revoke matched more grants than one call may remove.
 ///
 /// Nothing was removed. The caller either narrows the filter or re-issues with
@@ -181,6 +257,8 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         InvalidPaginationToken,
+        GrantSubtreeTooLarge,
+        GrantSubtreeReadTimeout,
         DatabaseIntegrityError
     ]
 }
