@@ -1,0 +1,1227 @@
+namespace Lakekeeper {
+  // ============================================================================
+  // OVERVIEW
+  // ============================================================================
+  //
+  // This schema defines the Cedar entities, attributes, and actions used by
+  // Lakekeeper's authorization engine.  Cedar policies are evaluated against
+  // this schema to decide whether a principal may perform an action on a
+  // resource.
+  //
+  // Resource hierarchy
+  // ------------------
+  //   Server > Project > Warehouse > Namespace > Table
+  //                                             > View
+  //                    > Role
+  //
+  // ENTITY REFERENCE SYNTAX
+  // -----------------------
+  // In Cedar policy rules entities are written as:
+  //
+  //   <Namespace>::<EntityType>::"<entity-id>"
+  //
+  // or, when already inside the `Lakekeeper` namespace:
+  //
+  //   <EntityType>::"<entity-id>"
+  //
+  // For example:
+  //   Lakekeeper::Project::"my-project"
+  //   Lakekeeper::User::"oidc~alice@example.com"
+  //
+  // ID FORMATS BY ENTITY TYPE
+  // -------------------------
+  // Each entity type uses a specific string format as its Cedar entity ID:
+  //
+  //   Server     UUID
+  //              "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
+  //
+  //   Project    String (alphanumeric, hyphens, underscores)
+  //              "my-project"
+  //
+  //   Warehouse  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
+  //
+  //   Namespace  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
+  //
+  //   Table      "<warehouse-UUID>/<table-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
+  //
+  //   View       "<warehouse-UUID>/<view-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
+  //
+  //   User       "<provider_id>~<subject-in-provider>"
+  //              "oidc~alice@example.com"
+  //              "kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284"
+  //
+  //   Role       "<project-id>/<provider_id>~<source_id>"
+  //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //              "my-project/oidc~data-engineers"
+  //
+  // ============================================================================
+  // ENTITY TYPE DEFINITIONS
+  // ============================================================================
+
+  // ---------- Principals ----------
+
+  // A user principal, typically derived from an authentication token.
+  // ID: "<provider_id>~<subject-in-provider>"  e.g. "oidc~alice@example.com"
+  //
+  // PROVIDER ROLES — TWO REPRESENTATIONS
+  // -------------------------------------
+  // Provider-resolved roles (from LDAP, token claims, etc.) are surfaced on
+  // the User entity in two complementary forms:
+  //
+  //   `roles`        — Cedar Role entity UIDs, e.g. Role::"my-project/ldap~admins"
+  //                    The user entity is also a Cedar *parent* of every listed
+  //                    role, enabling `principal in Role::"..."` hierarchy checks.
+  //                    These UIDs embed the project ID, so they are project-scoped.
+  //                    Use this form when the policy already knows the exact
+  //                    project-scoped role UID it wants to match.
+  //
+  //   `project_roles` — flat records {provider_id, source_id} without a project
+  //                    field. Includes server-wide provider roles as well as any
+  //                    project-specific provider roles that apply to the current
+  //                    request. The recommended attribute for provider-backed
+  //                    policies; prefer it over `roles` when the policy does not
+  //                    need to reference an exact project-scoped role UID.
+  //                    Use `principal.project_roles.contains({provider_id: "ldap",
+  //                    source_id: "admins"})` to match.
+  //
+  // Both attributes are populated from the same provider role resolution, which
+  // resolves the roles of ONE project: the one the request names, or the
+  // configured default project when it names none. They are empty only when
+  // neither exists.
+  //
+  // That matters above the project level. A role is defined inside a project, so
+  // at a server or user-management action — `CreateProject`, `ListUsers` — these
+  // attributes still hold one project's roles, and which project that is comes
+  // from the request. A policy of the form
+  //
+  //   permit(principal in Role::"<project>/ldap~ops", action in ServerActions, ..)
+  //
+  // therefore matches or does not according to `x-project-id`, and a `forbid`
+  // written that way can stop firing when the header changes. Express authority
+  // that must not depend on the request as a grant on the server — grants are
+  // project-less and are read across every project the caller holds a role in —
+  // or name the user.
+  entity User in [Role, Server] {
+    // Email of the user, extracted from the authentication token.
+    // Not available for all token types.
+    // NOT UNIQUE: Lakekeeper does not enforce email uniqueness. Two distinct
+    // users may legitimately share an email (e.g. service principals using a
+    // shared mailbox, or default emails issued by an IDP). Do not use `email`
+    // as an identity discriminator in policies — use the entity UID
+    // (`Lakekeeper::User::"<provider>~<source>"`) or `provider_id`/`source_id`.
+    email?: String,
+    // Provider-resolved role memberships as Cedar Role entity UIDs.
+    // The user entity is a Cedar parent of every role in this set, so
+    // `principal in Role::"<project>/<provider>~<source>"` works for hierarchy checks.
+    // Roles are project-scoped to the request's project context; prefer
+    // `project_roles` for policies that need to work across project contexts.
+    roles: Set<Role>,
+    // Provider-resolved role memberships as flat {provider_id, source_id} records.
+    // Includes server-wide provider roles and any project-specific provider roles
+    // that apply to the current request. Unlike `roles`, these records carry no
+    // project ID, making them the preferred attribute for provider-backed policies.
+    // Empty when no project context exists.
+    // Use `.contains({provider_id: "ldap", source_id: "admins"})` to match.
+    project_roles: Set<{provider_id: String, source_id: String}>,
+    // source_id of every provider-resolved role, as a plain Set<String>.
+    // Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+    // Meaningful only when all configured role providers use globally unique
+    // source IDs (no two providers share the same source_id for different roles).
+    // Prefer `project_roles` when provider uniqueness cannot be guaranteed.
+    // Use `principal.global_role_ids.contains("admins")` to match.
+    // Carries no project in its *shape*, but its *content* is one project's roles,
+    // the same ones `project_roles` holds — it is not a server-wide set.
+    // Always present (empty set when the feature is disabled or no project context exists).
+    global_role_ids: Set<String>,
+    // Authentication provider of the user (e.g. "oidc", "kubernetes", etc.)
+    provider_id: String,
+    // The ID of this user in its authentication provider
+    source_id: String,
+    // Derived identity attributes, populated from configured regex derivations.
+    // Configured via `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
+    // Each derivation matches a regex with named capture groups against a source
+    // field (source_id, provider_id). Named groups become string tags on this
+    // entity.
+    //
+    // Optional — only present when user derivations are configured.
+    //
+    // Access in policies (guard with has() since the field is optional):
+    //   principal has derived_attributes &&
+    //   principal.derived_attributes.hasTag("username") &&
+    //   principal.derived_attributes.getTag("username")
+    derived_attributes?: UserDerivedAttributes,
+  };
+
+  // Derived identity attributes for a User, populated from configurable regex
+  // derivations (see `LAKEKEEPER__CEDAR__USER_DERIVATIONS`).
+  // Tags are keyed by regex named capture group names with String values.
+  // ID: same as the owning User entity ID (1:1 relationship).
+  entity UserDerivedAttributes = {} tags String;
+
+  // Roles in Lakekeeper are scoped to projects.
+  // ID: "<project-id>/<provider_id>~<source_id>"
+  //     e.g. "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //          "my-project/oidc~data-engineers"
+  //
+  // A role nested in other roles has them as Cedar parents, so `in` means
+  // membership: `principal in Role::"my-project/oidc~admins"` holds for a
+  // caller acting as any role nested inside `admins`, at any depth. The same
+  // applies to a role named as a grant's grantee, to the subject of an
+  // introspection, and to the role named when assuming one.
+  entity Role in [Role, Project] = {
+    project: Project,
+    // Provider of this role (e.g. "oidc", "lakekeeper", etc.)
+    provider_id: String,
+    // The ID of this role in its provider
+    source_id: String,
+  };
+
+  // ---------- Grants ----------
+  //
+  // Every object below carries two records naming the privileges the principal
+  // being authorized holds, granted to them or to one of their roles:
+  //
+  //   direct_privileges    — granted on this object.
+  //   inherited_privileges — granted on an object above it, up to the server.
+  //
+  // Read a field: `resource.direct_privileges.select`. Every field is always
+  // set; with no grants they are all false. Values are relative to the
+  // principal being authorized.
+  //
+  // Each level has its own record type below, listing the privileges grantable
+  // there. `inherited_privileges` uses that same vocabulary, so an ancestor
+  // privilege that means nothing here is absent.
+  //
+  // Two consequences worth knowing before writing a policy against an inherited
+  // field:
+  //   - `create` is grantable from the server down to a namespace but not on a
+  //     table, view or generic table, so a warehouse-level `create` grant does
+  //     not appear in a table's inherited record. Creating a table is authorized
+  //     on its namespace, which is where that grant does appear.
+  //   - `apply` is grantable only on a tag, and a tag's only ancestor is a
+  //     project, so `Tag.inherited_privileges.apply` is always false. Read
+  //     `direct_privileges.apply` instead.
+  //
+  // What a privilege confers is decided by the policies you load: these fields
+  // are an input to a policy, never a decision on their own.
+  // `GET /management/v1/grants/grantable-privileges` describes each name.
+  //
+  // Read these records on the objects a request decides and on the objects above
+  // them, and nowhere else. A request fetches the grants held on every object it
+  // decides — each item of a batch included — and on their ancestors, so those
+  // records say what is really held. The same request also places objects it does
+  // not decide in the store: the grantee of a grant question, and the project a
+  // grantee's role belongs to. Their records are all `false` because nothing asked
+  // what is held there, so `false` there means "not asked" rather than "not held",
+  // and a policy cannot tell the two apart.
+  //
+  // In a `forbid`, read attributes of `resource` only, for a second reason: a
+  // forbid that reads another entity is skipped when that entity is absent,
+  // which allows access.
+
+  // Grantable on the server.
+  type ServerPrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    create: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a project.
+  type ProjectPrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    create: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a warehouse.
+  type WarehousePrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    create: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a namespace.
+  type NamespacePrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    create: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a table.
+  type TablePrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a view.
+  type ViewPrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a generic table.
+  type GenericTablePrivileges = {
+    describe: Bool,
+    select: Bool,
+    write: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // Grantable on a tag definition.
+  type TagPrivileges = {
+    describe: Bool,
+    apply: Bool,
+    manage: Bool,
+    pass_grants: Bool,
+    manage_grants: Bool,
+  };
+
+  // A governance-tag definition: a project-scoped vocabulary entry that can be
+  // attached to warehouses, namespaces, tables, views, generic tables and columns.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a99f0029gcgd"
+  entity Tag in [Project] {
+    project: Project,
+    // Name of the tag definition (e.g. "pii.classification").
+    name: String,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: TagPrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: TagPrivileges,
+  };
+
+  // ---------- Resource Hierarchy ----------
+  // Server > Project > Warehouse > Namespace > Table / View
+
+  // Server is the top-level administrative entity.
+  // ID: UUID  e.g. "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
+  entity Server {
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: ServerPrivileges,
+    // Always all false: the server has nothing above it.
+    inherited_privileges: ServerPrivileges,
+  };
+
+  // Project is a container for warehouses.
+  // ID: String (alphanumeric, hyphens, underscores)  e.g. "my-project"
+  entity Project in [Server] {
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: ProjectPrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: ProjectPrivileges,
+  };
+
+  // Warehouse is a container for namespaces.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
+  entity Warehouse in [Project] {
+    name: String,
+    project: Project,
+    is_active: Bool,
+    protected: Bool,
+    // Whether this warehouse has soft-deletion configured. When true, a `force`
+    // drop bypasses the configured grace period and is irreversible immediately;
+    // when false, drops are already hard deletes and `force` changes nothing.
+    soft_delete_enabled: Bool,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: WarehousePrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: WarehousePrivileges,
+  };
+
+  // Namespace can be nested within other namespaces or directly within a warehouse.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
+  entity Namespace in [Namespace, Warehouse] {
+    project: Project,
+    warehouse: Warehouse,
+    // Full name of the namespace including all UTF-8 characters.
+    // Segments are separated by '.'.
+    // Lakekeeper enforces that no segment contains '.'.
+    name: String,
+    protected: Bool,
+    // Current properties of this namespace, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the UpdateNamespaceProperties action.
+    properties: ResourceProperties,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: NamespacePrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: NamespacePrivileges,
+  };
+
+  // Table entity for Iceberg tables.
+  // ID: "<warehouse-UUID>/<table-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
+  entity Table in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the table within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this table, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitTable action.
+    properties: ResourceProperties,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: TablePrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: TablePrivileges,
+  };
+
+  // View entity for Iceberg views.
+  // ID: "<warehouse-UUID>/<view-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
+  entity View in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the view within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this view, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitView action.
+    properties: ResourceProperties,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: ViewPrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: ViewPrivileges,
+  };
+
+  // GenericTable entity for non-Iceberg ("generic") tables.
+  // ID: "<warehouse-UUID>/<generic-table-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a88faa29gcad"
+  entity GenericTable in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the generic table within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this generic table.
+    properties: ResourceProperties,
+    // Privileges held here by the principal being authorized; see `Grants` above.
+    direct_privileges: GenericTablePrivileges,
+    // Privileges the same principal holds on this object's ancestors.
+    inherited_privileges: GenericTablePrivileges,
+  };
+
+  // ---------- Resource Properties ----------
+
+  // ResourceProperties is modeled as a Cedar entity with `tags` to represent
+  // the key-value properties of Namespaces, Tables and Views in a dynamic yet
+  // type-safe way. Tags allow key names that are only known at runtime (e.g.,
+  // user-defined property keys like "owner" or "classification") while still
+  // enforcing a typed value schema (ResourcePropertyValue) for each entry.
+  entity ResourceProperties = {} tags ResourcePropertyValue;
+
+  // Value type for each entry in ResourceProperties.
+  type ResourcePropertyValue = {
+      // The original value of the property as a string, as stored in the
+      // Table / View / Namespace properties.
+      raw: String,
+      // Roles parsed from the property value.
+      // Provide roles using Cedar entity syntax:
+      // "[Lakekeeper::Role::\"<role-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      roles: Set<Role>,
+      // Users parsed from the property value.
+      // Provide users using Cedar entity syntax:
+      // "[Lakekeeper::User::\"<user-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      users: Set<User>,
+      // source_id of every role parsed from this property value, as plain strings.
+      // Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+      // Mirrors `User.global_role_ids` — enables simple policies like:
+      //   resource.properties.getTag("access_read").global_role_ids.containsAny(principal.global_role_ids)
+      // Prefer `roles` when provider uniqueness cannot be guaranteed.
+      global_role_ids: Set<String>,
+  };
+
+  // ============================================================================
+  // ACTION DEFINITIONS
+  // ============================================================================
+
+  // ---------- Server Actions ----------
+  action "ServerActions";
+  action "ServerDescribeActions" in ["ServerActions", "ServerCreateActions", "ServerModifyActions"];
+  action "ServerCreateActions" in ["ServerActions", "ServerModifyActions"];
+  action "ServerModifyActions" in ["ServerActions"];
+  // Read-only actions on the server itself.
+  //
+  //   ReadUserRoleAssignments — list the roles assigned to a user. Everyone can
+  //     always read their own assignments; that is built into the authorizer,
+  //     so you do not need a policy for it.
+  //   EvaluateCedarPolicies — try policies out against the engine without
+  //     saving them. It changes nothing, but it does show how the engine would
+  //     answer. If you would rather not offer that to everyone who can read,
+  //     you can forbid this one action and leave the rest of their access
+  //     untouched.
+  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources,
+         ListServerCedarPolicySources, ListUsers,
+         ReadUserRoleAssignments,
+         EvaluateCedarPolicies in ["ServerDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+  action UpdateUsers, DeleteUsers, ProvisionUsers in ["ServerModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+  action CreateProject in ["ServerCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server],
+      context: {
+        // Name of the project being created. Absent when listing allowed actions
+        // or when not specified via the check API.
+        project_name?: String,
+        // Externally provided project ID. Absent when listing allowed actions
+        // or when not specified via the check API.
+        project_id?: String,
+      }
+    };
+
+  // ---------- Project Actions ----------
+  action "ProjectActions";
+  action "ProjectDescribeActions" in ["ProjectActions", "ProjectCreateActions", "ProjectModifyActions"];
+  action "ProjectCreateActions" in ["ProjectActions", "ProjectModifyActions"];
+  action "ProjectModifyActions" in ["ProjectActions"];
+  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles,
+         SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
+         GetProjectTasks, ListTags in ["ProjectDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action DeleteProject, RenameProject,
+         ModifyProjectTaskQueueConfig,
+         ControlProjectTasks in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action CreateWarehouse in ["ProjectCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the warehouse being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        warehouse_name?: String,
+      }
+    };
+  // `ProjectCreateActions` is about creating places to put data: warehouses
+  // here, and namespaces, tables and views further down. Creating roles and tag
+  // definitions is not part of it — those shape how the project is governed
+  // rather than what it stores, so they live in `ProjectModifyActions` with the
+  // other administrative actions.
+  //
+  // If you want someone to create tags or roles without handing them the whole
+  // of `ProjectModifyActions`, permit the individual action instead.
+  action CreateRole in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the role being created. Absent when listing allowed actions
+        // or when not specified via the check API.
+        role_name?: String,
+      }
+    };
+  action CreateTag in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the tag definition being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        tag_name?: String,
+      }
+    };
+
+  // ---------- Role Actions ----------
+  action "RoleActions";
+
+  // Asking what another principal may do on a role is grant administration, not a role
+  // action: a role is not a grant resource, so there is no `RoleGrantActions` to sit in, and
+  // `ReadGrantsActions` is what the one-forbid recipe below covers.
+  action IntrospectRoleAuthorization in ["ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+
+  action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+  // Role-membership (assignment) actions, gating the role-membership management
+  // API. Roles may have both users and other roles as members (recursive roles).
+  //   ManageRoleAssignments — add/remove members (user or role) of this role.
+  //   ReadRoleAssignments   — list this role's members, parents and assignments.
+  action ManageRoleAssignments, ReadRoleAssignments in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+  // UpdateRoleSourceSystem — rebind this role's external identity (provider +
+  // source id) to a different source system. Treated like role management. The
+  // rebind destination is surfaced as context so policies can gate it (e.g. forbid
+  // moving a role onto a particular provider). Context is absent for the
+  // destination-less introspection / base-capability form.
+  action UpdateRoleSourceSystem in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role],
+      context: {
+        requested_provider_id?: String,
+        requested_source_id?: String,
+      }
+    };
+
+  // ---------- Tag Actions ----------
+  // Actions on a governance-tag definition.
+  //   ReadTag            — read a tag definition (name, value kind, allowed values).
+  //   UpdateTag          — update a tag definition (rename, widen scope, add values).
+  //   DeleteTag          — delete a tag definition.
+  //   ApplyTag           — attach this tag to a target (also gated by ManageTags on the target).
+  //   RemoveTag          — detach this tag from a target (also gated by ManageTags on the target).
+  //   ReadTagAttachments      — list every target a tag definition is attached to (reverse lookup).
+  //   IntrospectTagAuthorization — inspect another principal's access to this tag.
+  action "TagActions";
+  action "TagDescribeActions" in ["TagActions", "TagApplyActions", "TagModifyActions"];
+  action "TagApplyActions" in ["TagActions", "TagModifyActions"];
+  action "TagModifyActions" in ["TagActions"];
+  action ReadTag in ["TagDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag]
+    };
+  // Attaching and detaching a tag uses the definition rather than changing it,
+  // so these have their own group. That lets you give someone the right to
+  // classify objects without also letting them rename or delete the tag.
+  //
+  // Attaching needs two keys: `ApplyTag` here, and `ManageTags` on whatever the
+  // tag is being attached to.
+  action ApplyTag, RemoveTag in ["TagApplyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag]
+    };
+  // `ReadTagAttachments` sits here rather than with the read actions because it
+  // lists every object a tag is attached to. That says a good deal more about
+  // what is in the catalog than reading the tag's own definition does.
+  action UpdateTag, DeleteTag, ReadTagAttachments in ["TagModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag]
+    };
+
+  // ---------- Warehouse Actions ----------
+  action "WarehouseActions";
+  action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseCreateActions", "WarehouseModifyActions"];
+  action "WarehouseCreateActions" in ["WarehouseActions", "WarehouseModifyActions"];
+  action "WarehouseModifyActions" in ["WarehouseActions"];
+  action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
+         IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
+         ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
+         DeactivateWarehouse, ActivateWarehouse,
+         RenameWarehouse, ModifySoftDeletion,
+         ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection,
+         SetWarehouseFormatVersionPolicy, ManageWarehouseTags in ["WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action CreateNamespaceInWarehouse in ["WarehouseCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // Name of the namespace being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        namespace_name?: String,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
+      }
+    };
+  // Accepting a namespace moved in from elsewhere, as a child of the warehouse
+  // root. Distinct from creating one: a create adds an *empty* child, while a
+  // move arrives carrying existing contents and the grants held on them, which
+  // this warehouse's grantees can then read. Authorized alongside
+  // `CreateNamespaceInWarehouse`, so a policy must allow both to admit a move.
+  action AcceptMovedNamespaceInWarehouse
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // Full path the namespace is moving from, as it stands before the move.
+        // Dotted, as in `Namespace.name`.
+        source: String,
+      }
+    };
+
+  // ---------- Namespace Actions ----------
+  action "NamespaceActions";
+  action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceCreateActions", "NamespaceModifyActions"];
+  action "NamespaceCreateActions" in ["NamespaceActions", "NamespaceModifyActions"];
+  action "NamespaceModifyActions" in ["NamespaceActions"];
+
+  action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList,
+         ListTables, ListViews, ListGenericTables,
+         ListNamespacesInNamespace in ["NamespaceDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+  action SetNamespaceProtection, ManageNamespaceTags in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+  // Moving a namespace to a new path — re-parenting, renaming, or both. Only the
+  // source half of a move: the destination is authorized separately as
+  // `CreateNamespaceIn{Namespace,Warehouse}` plus
+  // `AcceptMovedNamespaceIn{Namespace,Warehouse}` on the parent it arrives under,
+  // so a policy allowing a move out does not by itself allow the move in.
+  //
+  // Re-parenting changes what the namespace's contents inherit — the destination
+  // subtree's grants start applying and the old parent's stop — without a grant
+  // record changing anywhere. That makes a move an act of grant administration as
+  // much as of modification, so it is in neither `NamespaceModifyActions` nor
+  // `GrantActions`: a policy has to name it, and one that wants the pair of rights
+  // together says so as a condition, which a group edge cannot express. Policies
+  // that care about where data may live should read `destination`.
+  action MoveNamespace
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Full destination path, including the new leaf name. Dotted, as in
+        // `Namespace.name`, so `like "prod.*"` matches a destination subtree.
+        destination: String,
+        // Whether protection is overridden, as for `DeleteNamespace`.
+        force: Bool,
+      }
+    };
+  // The destination half; see `AcceptMovedNamespaceInWarehouse`. Outside
+  // `NamespaceCreateActions` for the reason `MoveNamespace` is outside
+  // `NamespaceModifyActions`: accepting a subtree changes what it inherits.
+  action AcceptMovedNamespaceInNamespace
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Full path the namespace is moving from, as it stands before the move.
+        // Dotted, as in `Namespace.name`.
+        source: String,
+      }
+    };
+  action DeleteNamespace in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e.
+        // contained tabulars are hard-deleted immediately instead of being
+        // recoverable for the configured grace period.
+        force: Bool,
+        // Whether the underlying data/metadata files are physically purged.
+        purge: Bool,
+        // Whether the drop recurses into child namespaces, tables and views,
+        // deleting the entire subtree rooted at this namespace.
+        recursive: Bool,
+      }
+    };
+  action CreateTable in ["NamespaceCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the table being created. Absent when listing allowed actions
+        // or when not specified via the check API.
+        table_name?: String,
+        // Externally provided table ID (e.g. via register). Absent when listing
+        // allowed actions or when not specified via the check API.
+        table_id?: String,
+        // Initial property values for the table being created.
+        initial_table_properties: ResourceProperties,
+      }
+    };
+  action CreateView in ["NamespaceCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the view being created. Absent when listing allowed actions
+        // or when not specified via the check API.
+        view_name?: String,
+        // Initial property values for the view being created.
+        initial_view_properties: ResourceProperties,
+      }
+    };
+  action CreateGenericTableInNamespace in ["NamespaceCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the generic table being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        generic_table_name?: String,
+        // Externally provided generic table ID. Absent when listing allowed
+        // actions or when not specified via the check API.
+        generic_table_id?: String,
+        // Generic table format (e.g. "lance", "delta"). Absent when listing
+        // allowed actions or when not specified via the check API.
+        format?: String,
+        // User-supplied base location override. Absent when listing allowed
+        // actions or when not specified via the check API.
+        base_location?: String,
+        // Initial property values for the generic table being created.
+        initial_generic_table_properties: ResourceProperties,
+      }
+    };
+  action CreateNamespaceInNamespace in ["NamespaceCreateActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the namespace being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        namespace_name?: String,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
+      }
+    };
+  action UpdateNamespaceProperties in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Property values to be added or updated on this namespace.
+        namespace_properties_updates: ResourceProperties,
+        // Property keys to be removed from this namespace.
+        namespace_properties_removal: Set<String>,
+      }
+    };
+
+  // ---------- Table Actions ----------
+  action "TableActions";
+  action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableWriteActions", "TableModifyActions"];
+  action "TableSelectActions" in ["TableActions", "TableWriteActions", "TableModifyActions"];
+  action "TableWriteActions" in ["TableActions", "TableModifyActions"];
+  action "TableModifyActions" in ["TableActions"];
+  action GetTableMetadata, IncludeTableInList, GetTableTasks in ["TableDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action ReadTableData in ["TableSelectActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  // Writing to the table: getting write credentials, and committing the change.
+  // These are kept apart from `TableModifyActions` so you can let a loading job
+  // write data without also letting it drop, rename or unprotect the table.
+  //
+  // Committing covers schema changes too — a writer that adds a column is doing
+  // its ordinary job. Policies cannot tell the two apart, so if you need to
+  // prevent schema changes specifically, do that in the engine.
+  action WriteTableData in ["TableWriteActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action RenameTable,
+         UndropTable, ControlTableTasks,
+         SetTableProtection, ManageTableTags in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action DropTable in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        // table is hard-deleted immediately instead of being recoverable for the
+        // configured grace period. Extra destructive — irreversible right away.
+        force: Bool,
+        // Whether the underlying data files are physically purged from storage.
+        purge: Bool,
+      }
+    };
+  action CommitTable in ["TableWriteActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Property values to be added or updated on this table.
+        table_properties_updates: ResourceProperties,
+        // Property keys to be removed from this table.
+        table_properties_removal: Set<String>,
+      }
+    };
+
+  // ---------- View Actions ----------
+  action "ViewActions";
+  action "ViewDescribeActions" in ["ViewActions", "ViewSelectActions", "ViewWriteActions", "ViewModifyActions"];
+  action "ViewSelectActions" in ["ViewActions", "ViewWriteActions", "ViewModifyActions"];
+  action "ViewWriteActions" in ["ViewActions", "ViewModifyActions"];
+  action "ViewModifyActions" in ["ViewActions"];
+  action GetViewMetadata, IncludeViewInList, GetViewTasks in ["ViewDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action SelectView in ["ViewSelectActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action RenameView, UndropView,
+         ControlViewTasks, SetViewProtection, ManageViewTags in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action DropView in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        // view is hard-deleted immediately instead of being recoverable for the
+        // configured grace period. Extra destructive — irreversible right away.
+        force: Bool,
+        // Whether the underlying metadata files are physically purged from storage.
+        purge: Bool,
+      }
+    };
+  // Committing a new version of the view's definition. Kept apart from
+  // `ViewModifyActions` so someone can maintain the view's query without also
+  // being able to drop, rename or unprotect it.
+  action CommitView in ["ViewWriteActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Property values to be added or updated on this view.
+        view_properties_updates: ResourceProperties,
+        // Property keys to be removed from this view.
+        view_properties_removal: Set<String>,
+      }
+    };
+
+  // ---------- Generic Table Actions ----------
+  action "GenericTableActions";
+  action "GenericTableDescribeActions" in ["GenericTableActions", "GenericTableSelectActions", "GenericTableWriteActions", "GenericTableModifyActions"];
+  action "GenericTableSelectActions" in ["GenericTableActions", "GenericTableWriteActions", "GenericTableModifyActions"];
+  action "GenericTableWriteActions" in ["GenericTableActions", "GenericTableModifyActions"];
+  action "GenericTableModifyActions" in ["GenericTableActions"];
+  action GetGenericTableMetadata, IncludeGenericTableInList,
+         GetGenericTableTasks in ["GenericTableDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  action ReadGenericTableData in ["GenericTableSelectActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  // Getting write credentials for the generic table. Kept apart from
+  // `GenericTableModifyActions` so a loading job can write data without also
+  // being able to drop, rename or unprotect it.
+  action WriteGenericTableData in ["GenericTableWriteActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  action DropGenericTable,
+         RenameGenericTable, UndropGenericTable, ControlGenericTableTasks,
+         SetGenericTableProtection, ManageGenericTableTags in ["GenericTableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+
+  // ---------- Grant Administration Actions ----------
+  // A grant is a direct (principal, privilege, resource) permission, managed
+  // through the grants API rather than written as a policy. These actions
+  // control who may hand those permissions out.
+  //
+  //   GrantActions      — every grant-administration action, on every level.
+  //   ReadGrantsActions — the read-only subset, across every level.
+  //   XGrantActions     — reading and managing grants on one level.
+  //
+  // Each level's grant group belongs to `GrantActions` alone — not to that level's
+  // `XActions` umbrella, nor to its `XModifyActions` group. So neither
+  // `action in "WarehouseActions"` nor `action in "WarehouseModifyActions"` includes
+  // grant administration; name a grant group or a leaf action. See the note above the
+  // declarations below for why.
+  //
+  // To keep grant administration with one team, a single forbid covers every
+  // level, and a forbid always wins over a permit:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"GrantActions", resource)
+  //   unless { principal in Lakekeeper::Role::"my-project/oidc~security" };
+  //
+  //   ManageXGrants — grant and revoke privileges on X. Each privilege is
+  //                   authorized on its own, even when one request covers
+  //                   several, and `context.privilege` always holds the one
+  //                   being decided:
+  //
+  //                     when { context.privilege == "select" }
+  //
+  //                   delegates exactly `select`. A permit with no privilege
+  //                   condition covers every privilege.
+  //
+  //                   `grantee` and `direction` say who would receive the
+  //                   privilege and which way it is moving. See the `Grantee`
+  //                   and `GrantDirection` types below.
+  //
+  //                   The API that lists which privileges you may administer
+  //                   here asks "may I grant this?" — direction `"grant"`, no
+  //                   grantee. A policy testing the grantee does not apply to
+  //                   that question, so read the list as a guide; every grant
+  //                   is authorized again as it is applied.
+  //   IntrospectXAuthorization — ask what another principal may do on X.
+  //   ReadXGrants   — see who holds grants on X. It also makes X itself visible
+  //                   to you, with no separate read permission needed.
+  //                   `XGrantActions` covers this alongside ManageXGrants.
+  // Who a grant would go to, or be taken away from.
+  //
+  // One of the two is set: `user` when the grant names a user, `role` when it
+  // names a role. Neither is set when the question names nobody — when the API
+  // asks which privileges you could grant here to anyone, and when a revoke
+  // names a role that no longer exists.
+  //
+  // Check that the one you want is present before reading it. Cedar's strict
+  // validation requires this, and it is also what keeps a policy written for a
+  // particular grantee from firing on a question that names none:
+  //
+  //   when {
+  //     context.grantee has role &&
+  //     context.grantee.role == Lakekeeper::Role::"my-project/oidc~analysts"
+  //   }
+  //
+  // `==` names that one role. `in` also covers the roles nested inside it:
+  //
+  //   context.grantee.role in Lakekeeper::Role::"my-project/oidc~analysts"
+  //
+  // matches a grant to `analysts` and to every role that is a member of it, at
+  // any depth. Pick whichever you mean.
+  type Grantee = {
+    user?: User,
+    role?: Role,
+  };
+
+  // Which way a grant is moving: `"grant"` when a privilege is being handed
+  // out, `"revoke"` when it is being taken away.
+  //
+  //   when { context.direction == Lakekeeper::GrantDirection::"revoke" }
+  //
+  // Misspell a direction and your policy fails validation, so you hear about
+  // it rather than quietly never matching.
+  entity GrantDirection enum ["grant", "revoke"];
+
+  // Grant administration stands outside the per-resource `<X>Actions` groups on purpose.
+  // Those groups mean "everything you can do to this object", and a customer who wrote one
+  // before grants existed did not ask to hand out access as well — group membership is
+  // conferral they cannot take back short of replacing this file. So deciding who else gets
+  // access is opt-in: name `GrantActions`, one of the per-level `<X>GrantActions`, or a leaf.
+  action "GrantActions";
+  action "ReadGrantsActions" in ["GrantActions"];
+
+  action "ServerGrantActions" in ["GrantActions"];
+  action ManageServerGrants in ["ServerGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server],
+      context: {
+        // The privilege being granted or revoked, one at a time even when the
+        // request covers several. See the section comment above.
+        privilege: String,
+        // Who would gain the privilege, or lose it on a revoke. Empty when the
+        // question names no grantee.
+        grantee: Grantee,
+        // Which way the privilege is moving.
+        direction: GrantDirection,
+      }
+    };
+  action ReadServerGrants, IntrospectServerAuthorization in ["ServerGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+
+  action "ProjectGrantActions" in ["GrantActions"];
+  action ManageProjectGrants in ["ProjectGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadProjectGrants, IntrospectProjectAuthorization in ["ProjectGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+
+  action "WarehouseGrantActions" in ["GrantActions"];
+  action ManageWarehouseGrants in ["WarehouseGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadWarehouseGrants, IntrospectWarehouseAuthorization in ["WarehouseGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+
+  action "NamespaceGrantActions" in ["GrantActions"];
+  action ManageNamespaceGrants in ["NamespaceGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadNamespaceGrants, IntrospectNamespaceAuthorization in ["NamespaceGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+
+  action "TableGrantActions" in ["GrantActions"];
+  action ManageTableGrants in ["TableGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadTableGrants, IntrospectTableAuthorization in ["TableGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+
+  action "ViewGrantActions" in ["GrantActions"];
+  action ManageViewGrants in ["ViewGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadViewGrants, IntrospectViewAuthorization in ["ViewGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+
+  action "GenericTableGrantActions" in ["GrantActions"];
+  action ManageGenericTableGrants in ["GenericTableGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadGenericTableGrants, IntrospectGenericTableAuthorization in ["GenericTableGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+
+  action "TagGrantActions" in ["GrantActions"];
+  action ManageTagGrants in ["TagGrantActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag],
+      context: {
+        // Same three terms as ManageServerGrants; see the section comment.
+        privilege: String,
+        grantee: Grantee,
+        direction: GrantDirection,
+      }
+    };
+  action ReadTagGrants, IntrospectTagAuthorization in ["TagGrantActions", "ReadGrantsActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag]
+    };
+}
