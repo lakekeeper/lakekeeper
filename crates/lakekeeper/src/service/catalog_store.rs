@@ -39,8 +39,9 @@ use crate::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         authz::{
-            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
-            UserOrRoleId,
+            AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
+            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
+            ListSubtreeGrantsResultPage, UserOrRoleId,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -852,6 +853,61 @@ where
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
+
+    /// One page of the direct grants held anywhere under `root`, keyset-paginated on
+    /// `(created_at, grant_id)` across every resource kind the root covers.
+    ///
+    /// No per-row authorization: the caller gates the whole subtree at the root, and one
+    /// answer there covers every member of the page.
+    async fn list_grants_in_subtree_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
+
+    /// How many namespaces a namespace-rooted subtree spans, the root included.
+    ///
+    /// Resolving the subtree is cheap; reading its grants is proportional to it. Callers
+    /// bound the expensive half by asking this first, so an oversized subtree is refused
+    /// with its actual size instead of running until a timeout.
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError>;
+
+    /// At most `limit` of the grants under `root` that match `filter`, plus whether more
+    /// remain — the read half of a revoke.
+    ///
+    /// Nothing here is authorized. The caller gates the whole batch at the root — one
+    /// content-independent answer covering everything beneath it — and that gate must
+    /// pass before this read runs, or a refusal reports what the subtree holds. The read
+    /// is split from the delete so no row lock is held across the authorizer call.
+    ///
+    /// Bounded rather than paginated: removed rows are gone, so re-issuing the same
+    /// request is the continuation. Termination is the caller's `created_before` ceiling,
+    /// which the store binds to the database's own clock when the caller supplies none
+    /// and reports back so the next call can repeat it.
+    ///
+    /// Grants on soft-deleted tabulars are always candidates, whatever `filter` says
+    /// about listing them: an undrop restores a table together with its grants.
+    async fn select_subtree_grant_candidates_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        limit: usize,
+        catalog_state: Self::State,
+    ) -> Result<GrantRevokeCandidates, ListGrantsStoreError>;
+
+    /// Remove exactly the rows named by `candidates`, returning what actually went.
+    ///
+    /// Idempotent: a candidate already revoked is simply absent from the result, so a
+    /// retry reports the delta rather than repeating it.
+    async fn revoke_grant_candidates_impl<'a>(
+        root: GrantSubtreeRoot,
+        candidates: &[GrantCandidate],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError>;
 
     /// Every grant held by any of `principals` on any of `resources`.
     ///

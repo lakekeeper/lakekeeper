@@ -47,10 +47,10 @@ use lakekeeper::{
         MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
         RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
         RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
-        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError,
+        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
@@ -63,8 +63,9 @@ use lakekeeper::{
         WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
-            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
-            UserOrRoleId,
+            AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
+            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
+            ListSubtreeGrantsResultPage, UserOrRoleId,
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -81,13 +82,15 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
     grant::{
-        apply_grants, delete_grants_for_user, insert_grants_bounded, list_grants,
-        list_grants_on_resources,
+        SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
+        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
+        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
         update_namespace_properties,
     },
+    pagination::to_token_precision,
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     tag::{
@@ -442,6 +445,58 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<ListGrantsResultPage, ListGrantsStoreError> {
         list_grants(filter, pagination, &catalog_state.read_pool()).await
+    }
+
+    async fn list_grants_in_subtree_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
+        // The token pins the walk's ceiling; page one resolves it, from the caller's
+        // `created_before` or from the clock. Truncated to what a token round-trips, so
+        // every page of the walk reports and compares the same instant.
+        //
+        // Ceiling and page come from the primary, together. `as-of` is handed to a revoke
+        // that compares it against primary-stamped `created_at`, so it cannot be a replica
+        // clock; and rows committed within a replica's lag sort last in the walk, so a
+        // lagging page would end it early and drop exactly the newest grants below the
+        // ceiling. The revoke's own read is on the primary for the same reason.
+        let pool = catalog_state.write_pool();
+        let bounds = SubtreeBounds::of(pagination, filter.created_before)?;
+        let as_of = match bounds.ceiling {
+            Some(pinned) => pinned,
+            None => to_token_precision(resolve_ceiling(filter.created_before, &pool).await?),
+        };
+        list_grants_in_subtree(root, filter, bounds.page, as_of, &pool).await
+    }
+
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError> {
+        count_subtree_namespaces(warehouse_id, namespace_id, &catalog_state.read_pool()).await
+    }
+
+    async fn select_subtree_grant_candidates_impl(
+        root: GrantSubtreeRoot,
+        filter: &GrantSubtreeFilter,
+        limit: usize,
+        catalog_state: Self::State,
+    ) -> Result<GrantRevokeCandidates, ListGrantsStoreError> {
+        // The primary, not the read pool: this read decides what a delete removes and
+        // whether `has_more` reports the subtree clear. A lagging replica would answer
+        // "nothing left" while grants remain.
+        select_subtree_grant_candidates(root, filter, limit, &catalog_state.write_pool()).await
+    }
+
+    async fn revoke_grant_candidates_impl<'a>(
+        root: GrantSubtreeRoot,
+        candidates: &[GrantCandidate],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError> {
+        revoke_grant_candidates(root, candidates, transaction).await
     }
 
     async fn list_grants_on_resources_impl(

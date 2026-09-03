@@ -1545,6 +1545,39 @@ tests:
         object: namespace:namespace_1
         assertions:
           can_revoke_select: true      # manage_grants inherits from the parent warehouse
+  - name: subtree grant actions follow manage_grants down, never pass_grants
+    check:
+      - user: user:warehouse_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_read_subtree_assignments: true    # ownership confers manage_grants
+          can_revoke_subtree_assignments: true
+      - user: user:warehouse_1_owner
+        object: namespace:namespace_1
+        assertions:
+          can_read_subtree_assignments: true    # manage_grants inherits from the warehouse
+          can_revoke_subtree_assignments: true
+      - user: user:namespace_1_1_owner
+        object: namespace:namespace_1_1
+        assertions:
+          can_read_subtree_assignments: true
+          can_revoke_subtree_assignments: true
+      - user: user:namespace_1_1_owner
+        object: namespace:namespace_1_2
+        assertions:
+          can_read_subtree_assignments: true    # follows manage_grants down to the child
+          can_revoke_subtree_assignments: true
+      - user: user:namespace_1_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_read_subtree_assignments: false   # nothing flows upward
+          can_revoke_subtree_assignments: false
+      - user: user:namespace_1_delegator
+        object: namespace:namespace_1
+        assertions:
+          can_read_assignments: true            # pass_grants reads one resource's grants
+          can_read_subtree_assignments: false   # and never enumerates the subtree
+          can_revoke_subtree_assignments: false # nor sweeps it
   # Every level that publishes a revoke action, asserted at least once in each
   # direction. Nothing cross-checks the model against the Rust relation enums, so a
   # level missing a `can_revoke_*` rule would otherwise surface only as a runtime

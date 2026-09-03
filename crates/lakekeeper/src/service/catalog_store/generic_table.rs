@@ -14,8 +14,8 @@ use crate::{
     WarehouseId,
     service::{
         CatalogBackendError, ConcurrentUpdateError, GenericTableId, InternalParseLocationError,
-        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, NamespaceVersion,
-        ProtectedTabularDeletionWithoutForce, TabularId, WarehouseVersion,
+        InvalidNamespaceIdentifier, InvalidPaginationToken, LocationAlreadyTaken, NamespaceId,
+        NamespaceVersion, ProtectedTabularDeletionWithoutForce, TabularId, WarehouseVersion,
     },
 };
 
@@ -256,6 +256,7 @@ define_transparent_error! {
     stack_message: "Error listing generic tables",
     variants: [
         CatalogBackendError,
+        InvalidPaginationToken,
     ]
 }
 

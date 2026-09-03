@@ -34,7 +34,9 @@ pub mod v1 {
     use generic_table::GenericTableManagementService as _;
     use grant::{
         ApplyGrantsRequest, GetGrantAccessQuery, GrantablePrivilegesResponse, ListGrantsQuery,
-        ListGrantsResponse, ResourceGrantablePrivilegesResponse, Service as _,
+        ListGrantsResponse, ListSubtreeGrantsQuery, ListSubtreeGrantsResponse,
+        ResourceGrantablePrivilegesResponse, RevokeSubtreeGrantsRequest,
+        RevokeSubtreeGrantsResponse, Service as _,
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
@@ -965,6 +967,10 @@ pub mod v1 {
     /// Listing your own grants needs no extra permission; any other principal requires
     /// the project-level grant-read permission.
     ///
+    /// A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+    /// naming the size it would have read. The warehouse-rooted form carries no such
+    /// bound.
+    ///
     /// **Availability depends on the configured authorizer.** This listing crosses every
     /// resource in the project, which an authorizer that stores permissions per resource
     /// cannot answer without reading its whole store. Those report
@@ -1063,6 +1069,218 @@ pub mod v1 {
         )
         .await
         .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Namespace Subtree Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held on this namespace, on every namespace beneath it, and on
+    /// every table, view and generic table inside those — the whole subtree in one
+    /// paginated answer, instead of one request per resource. A subtree contains its
+    /// root, so this namespace's own grants are part of the answer; pass
+    /// `includeRootLevel=false` to list only what lies beneath it.
+    ///
+    /// **Direct grants only.** A grant held through a role is listed under the role, not
+    /// under its members, and grants on tag definitions are not included: a tag
+    /// definition belongs to the project, not to this subtree, even when the tag is
+    /// attached to tables in it.
+    ///
+    /// Requires permission to read the namespace's subtree grants — a permission of its
+    /// own, stronger than reading one resource's grants. It is asked once, here, and
+    /// covers every member of the answer, so pages come back full: follow
+    /// `next-page-token` until it is absent.
+    ///
+    /// Each page reports the instant it read under as `as-of`, and the page token pins
+    /// it, so every page of one walk sees the same instant. A `createdBefore` that
+    /// disagrees with a token is refused.
+    ///
+    /// Reading a subtree's grants enumerates resources, principals and privileges the
+    /// caller may not otherwise know exist. That reach is what the permission grants —
+    /// hand it out as deliberately as grant administration itself.
+    ///
+    /// A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+    /// naming the size it would have read. The warehouse-rooted form carries no such
+    /// bound.
+    ///
+    /// **Availability depends on the configured authorizer.** An authorizer that stores
+    /// grants itself indexes them per resource and cannot answer a subtree question;
+    /// those report `SubtreeGrantsNotImplemented` (501). `GET /info` reports the
+    /// configured backend.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListNamespaceSubtreeGrants.path(),
+        params(ListSubtreeGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held under the namespace", body = ListSubtreeGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Subtree grant listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_namespace_subtree_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListSubtreeGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListSubtreeGrantsResponse> {
+        ApiServer::<C, A, S>::list_namespace_subtree_grants(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Revoke Namespace Subtree Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Removes the matching grants held anywhere under this namespace, up to `limit` per
+    /// call. A subtree contains its root, so this namespace's own grants go too; pass
+    /// `include-root-level: false` to keep them and clear only what lies beneath. Send
+    /// the same body with `dry-run: true` to see the batch first, removing nothing.
+    ///
+    /// **One call is not the whole operation.** There is no continuation token: removed
+    /// grants are gone, so repeating the same request is how the next batch is taken.
+    /// Repeat until `has-more` is `false`, passing the `created-before` from the first
+    /// response every time — that ceiling is what makes the loop terminate, and grants
+    /// created after the operation began are deliberately left alone. Each call is its
+    /// own transaction; the operation as a whole is not atomic, which is why a request
+    /// matching more than `limit` grants is refused outright unless `allow-partial` is
+    /// set.
+    ///
+    /// **Direct grants only**, and only under this namespace. Access held through a role,
+    /// through an ancestor, or through a tag definition's own grants is untouched.
+    /// Grants on tables in the recycle bin are removed too, and so are grants on tables
+    /// that were created but never committed: an undrop would otherwise restore the
+    /// table together with access you believed you had removed.
+    ///
+    /// Your own grants are revoked like anyone else's, including the one your authority
+    /// here flows through. `include-root-level: false` keeps every grant on this
+    /// namespace and clears only what lies beneath it.
+    ///
+    /// Requires two permissions on this namespace: reading its subtree grants, since the
+    /// batch is read before it is removed, and revoking them, asked once for the whole
+    /// batch.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::RevokeNamespaceSubtreeGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = RevokeSubtreeGrantsRequest,
+        responses(
+            (status = 200, description = "Grants revoked", body = RevokeSubtreeGrantsResponse),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — nothing was revoked and the request can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Subtree grant revocation is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn revoke_namespace_subtree_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RevokeSubtreeGrantsRequest>,
+    ) -> Result<RevokeSubtreeGrantsResponse> {
+        ApiServer::<C, A, S>::revoke_namespace_subtree_grants(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+    }
+
+    /// List Warehouse Subtree Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held on this warehouse, on every namespace in it, and on every
+    /// table, view and generic table in those. A subtree contains its root, so the
+    /// warehouse's own grants are part of the answer; pass `includeRootLevel=false` to
+    /// list only what lies beneath it.
+    ///
+    /// Same rules as the namespace-rooted listing: direct grants only, and the
+    /// warehouse's subtree grant-read permission covers the whole answer. An inactive
+    /// warehouse is refused, because deactivating one is defined to hide its children's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListWarehouseSubtreeGrants.path(),
+        params(ListSubtreeGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held under the warehouse", body = ListSubtreeGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Subtree grant listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_warehouse_subtree_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListSubtreeGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListSubtreeGrantsResponse> {
+        ApiServer::<C, A, S>::list_warehouse_subtree_grants(
+            warehouse_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Revoke Warehouse Subtree Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Removes the matching grants held anywhere under this warehouse, up to `limit` per
+    /// call, with the same loop and the same guarantees as the namespace-rooted revoke.
+    ///
+    /// A subtree contains its root, so the warehouse's own grants go too — a grant on the
+    /// warehouse confers access to everything in it, so a revoke that skipped them would
+    /// leave standing the access it names. Pass `include-root-level: false` to keep them
+    /// and clear only what lies beneath.
+    ///
+    /// Requires two permissions on this warehouse: reading its subtree grants, since the
+    /// batch is read before it is removed, and revoking them, asked once for the whole
+    /// batch.
+    ///
+    /// An inactive warehouse is accepted here, unlike the warehouse-rooted listing, so
+    /// access can be stripped from a deactivated warehouse. Preview with `dry-run` there.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::RevokeWarehouseSubtreeGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = RevokeSubtreeGrantsRequest,
+        responses(
+            (status = 200, description = "Grants revoked", body = RevokeSubtreeGrantsResponse),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — nothing was revoked and the request can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Subtree grant revocation is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn revoke_warehouse_subtree_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RevokeSubtreeGrantsRequest>,
+    ) -> Result<RevokeSubtreeGrantsResponse> {
+        ApiServer::<C, A, S>::revoke_warehouse_subtree_grants(
+            warehouse_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
     }
 
     /// List Tag Grants [Preview]
@@ -4433,6 +4651,22 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListNamespaceGrants.path_in_management_v1(),
                     get(list_namespace_grants).post(apply_namespace_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListNamespaceSubtreeGrants.path_in_management_v1(),
+                    get(list_namespace_subtree_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::RevokeNamespaceSubtreeGrants.path_in_management_v1(),
+                    post(revoke_namespace_subtree_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListWarehouseSubtreeGrants.path_in_management_v1(),
+                    get(list_warehouse_subtree_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::RevokeWarehouseSubtreeGrants.path_in_management_v1(),
+                    post(revoke_warehouse_subtree_grants),
                 )
                 .route(
                     ManagementV1Endpoint::ListTagGrants.path_in_management_v1(),

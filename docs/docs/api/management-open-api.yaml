@@ -171,6 +171,10 @@ paths:
         Listing your own grants needs no extra permission; any other principal requires
         the project-level grant-read permission.
 
+        A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+        naming the size it would have read. The warehouse-rooted form carries no such
+        bound.
+
         **Availability depends on the configured authorizer.** This listing crosses every
         resource in the project, which an authorizer that stores permissions per resource
         cannot answer without reading its whole store. Those report
@@ -5098,6 +5102,215 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/grants/subtree:
+    get:
+      tags:
+        - grant
+      summary: List Warehouse Subtree Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held on this warehouse, on every namespace in it, and on every
+        table, view and generic table in those. A subtree contains its root, so the
+        warehouse's own grants are part of the answer; pass `includeRootLevel=false` to
+        list only what lies beneath it.
+
+        Same rules as the namespace-rooted listing: direct grants only, and the
+        warehouse's subtree grant-read permission covers the whole answer. An inactive
+        warehouse is refused, because deactivating one is defined to hide its children's
+        grants.
+      operationId: list_warehouse_subtree_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: List only the grants held by this user. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: List only the grants held by this role. Mutually exclusive with `principalUser`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: privilege
+          in: query
+          description: |-
+            List only grants carrying one of these privileges. Repeat the parameter for
+            several. A name this server's authorizer does not publish is rejected, so a
+            misspelling cannot read as "nobody holds that".
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: resourceType
+          in: query
+          description: |-
+            List only grants on resources of these kinds. Repeat the parameter for several.
+            `table` does not imply `view` or `generic-table`; name each kind you want.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ResourceType'
+        - name: includeSoftDeleted
+          in: query
+          description: |-
+            Include grants on tables, views and generic tables that are in the recycle bin.
+            On by default, so that a listing previews exactly what the matching revoke would
+            remove — an undrop restores a table together with its grants.
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: createdBefore
+          in: query
+          description: |-
+            Read only grants created at or before this instant. Meaningful on the first page:
+            the page token pins the walk's ceiling, and a later value that disagrees with the
+            token is refused. Omit it to have the server bind the ceiling and report it as
+            `as-of`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: includeRootLevel
+          in: query
+          description: |-
+            Include the grants held on the addressed resource itself. On by default: a grant
+            on a container confers access beneath it, so a listing meant to preview a revoke
+            must show it. Pass `false` for strictly-below.
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held under the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSubtreeGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Subtree grant listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/grants/subtree/revoke:
+    post:
+      tags:
+        - grant
+      summary: Revoke Warehouse Subtree Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Removes the matching grants held anywhere under this warehouse, up to `limit` per
+        call, with the same loop and the same guarantees as the namespace-rooted revoke.
+
+        A subtree contains its root, so the warehouse's own grants go too — a grant on the
+        warehouse confers access to everything in it, so a revoke that skipped them would
+        leave standing the access it names. Pass `include-root-level: false` to keep them
+        and clear only what lies beneath.
+
+        Requires two permissions on this warehouse: reading its subtree grants, since the
+        batch is read before it is removed, and revoking them, asked once for the whole
+        batch.
+
+        An inactive warehouse is accepted here, unlike the warehouse-rooted listing, so
+        access can be stripped from a deactivated warehouse. Preview with `dry-run` there.
+      operationId: revoke_warehouse_subtree_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeSubtreeGrantsRequest'
+        required: true
+      responses:
+        '200':
+          description: Grants revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeSubtreeGrantsResponse'
+        '409':
+          description: Conflict — nothing was revoked and the request can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Subtree grant revocation is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/managed-by:
     post:
       tags:
@@ -5392,6 +5605,265 @@ paths:
                 $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree:
+    get:
+      tags:
+        - grant
+      summary: List Namespace Subtree Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held on this namespace, on every namespace beneath it, and on
+        every table, view and generic table inside those — the whole subtree in one
+        paginated answer, instead of one request per resource. A subtree contains its
+        root, so this namespace's own grants are part of the answer; pass
+        `includeRootLevel=false` to list only what lies beneath it.
+
+        **Direct grants only.** A grant held through a role is listed under the role, not
+        under its members, and grants on tag definitions are not included: a tag
+        definition belongs to the project, not to this subtree, even when the tag is
+        attached to tables in it.
+
+        Requires permission to read the namespace's subtree grants — a permission of its
+        own, stronger than reading one resource's grants. It is asked once, here, and
+        covers every member of the answer, so pages come back full: follow
+        `next-page-token` until it is absent.
+
+        Each page reports the instant it read under as `as-of`, and the page token pins
+        it, so every page of one walk sees the same instant. A `createdBefore` that
+        disagrees with a token is refused.
+
+        Reading a subtree's grants enumerates resources, principals and privileges the
+        caller may not otherwise know exist. That reach is what the permission grants —
+        hand it out as deliberately as grant administration itself.
+
+        A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
+        naming the size it would have read. The warehouse-rooted form carries no such
+        bound.
+
+        **Availability depends on the configured authorizer.** An authorizer that stores
+        grants itself indexes them per resource and cannot answer a subtree question;
+        those report `SubtreeGrantsNotImplemented` (501). `GET /info` reports the
+        configured backend.
+      operationId: list_namespace_subtree_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: List only the grants held by this user. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: List only the grants held by this role. Mutually exclusive with `principalUser`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: privilege
+          in: query
+          description: |-
+            List only grants carrying one of these privileges. Repeat the parameter for
+            several. A name this server's authorizer does not publish is rejected, so a
+            misspelling cannot read as "nobody holds that".
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: resourceType
+          in: query
+          description: |-
+            List only grants on resources of these kinds. Repeat the parameter for several.
+            `table` does not imply `view` or `generic-table`; name each kind you want.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ResourceType'
+        - name: includeSoftDeleted
+          in: query
+          description: |-
+            Include grants on tables, views and generic tables that are in the recycle bin.
+            On by default, so that a listing previews exactly what the matching revoke would
+            remove — an undrop restores a table together with its grants.
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: createdBefore
+          in: query
+          description: |-
+            Read only grants created at or before this instant. Meaningful on the first page:
+            the page token pins the walk's ceiling, and a later value that disagrees with the
+            token is refused. Omit it to have the server bind the ceiling and report it as
+            `as-of`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: includeRootLevel
+          in: query
+          description: |-
+            Include the grants held on the addressed resource itself. On by default: a grant
+            on a container confers access beneath it, so a listing meant to preview a revoke
+            must show it. Pass `false` for strictly-below.
+          required: false
+          schema:
+            type: boolean
+            default: true
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held under the namespace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSubtreeGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Subtree grant listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree/revoke:
+    post:
+      tags:
+        - grant
+      summary: Revoke Namespace Subtree Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Removes the matching grants held anywhere under this namespace, up to `limit` per
+        call. A subtree contains its root, so this namespace's own grants go too; pass
+        `include-root-level: false` to keep them and clear only what lies beneath. Send
+        the same body with `dry-run: true` to see the batch first, removing nothing.
+
+        **One call is not the whole operation.** There is no continuation token: removed
+        grants are gone, so repeating the same request is how the next batch is taken.
+        Repeat until `has-more` is `false`, passing the `created-before` from the first
+        response every time — that ceiling is what makes the loop terminate, and grants
+        created after the operation began are deliberately left alone. Each call is its
+        own transaction; the operation as a whole is not atomic, which is why a request
+        matching more than `limit` grants is refused outright unless `allow-partial` is
+        set.
+
+        **Direct grants only**, and only under this namespace. Access held through a role,
+        through an ancestor, or through a tag definition's own grants is untouched.
+        Grants on tables in the recycle bin are removed too, and so are grants on tables
+        that were created but never committed: an undrop would otherwise restore the
+        table together with access you believed you had removed.
+
+        Your own grants are revoked like anyone else's, including the one your authority
+        here flows through. `include-root-level: false` keeps every grant on this
+        namespace and clears only what lies beneath it.
+
+        Requires two permissions on this namespace: reading its subtree grants, since the
+        batch is read before it is removed, and revoking them, asked once for the whole
+        batch.
+      operationId: revoke_namespace_subtree_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeSubtreeGrantsRequest'
+        required: true
+      responses:
+        '200':
+          description: Grants revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeSubtreeGrantsResponse'
+        '409':
+          description: Conflict — nothing was revoked and the request can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Subtree grant revocation is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -9994,6 +10466,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionReadSubtreeGrants'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionRevokeSubtreeGrants'
       discriminator:
         propertyName: action
         mapping:
@@ -10013,6 +10487,8 @@ components:
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionManageTags'
           move: '#/components/schemas/LakekeeperNamespaceActionMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
+          read_subtree_grants: '#/components/schemas/LakekeeperNamespaceActionReadSubtreeGrants'
+          revoke_subtree_grants: '#/components/schemas/LakekeeperNamespaceActionRevokeSubtreeGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionUpdateProperties'
     LakekeeperNamespaceActionAcceptMovedNamespace:
@@ -10205,6 +10681,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadSubtreeGrants'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindRevokeSubtreeGrants'
       discriminator:
         propertyName: action
         mapping:
@@ -10224,6 +10702,8 @@ components:
           manage_tags: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
           move: '#/components/schemas/LakekeeperNamespaceActionKindMove'
           read_grants: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
+          read_subtree_grants: '#/components/schemas/LakekeeperNamespaceActionKindReadSubtreeGrants'
+          revoke_subtree_grants: '#/components/schemas/LakekeeperNamespaceActionKindRevokeSubtreeGrants'
           set_protection: '#/components/schemas/LakekeeperNamespaceActionKindSetProtection'
           update_properties: '#/components/schemas/LakekeeperNamespaceActionKindUpdateProperties'
     LakekeeperNamespaceActionKindAcceptMovedNamespace:
@@ -10370,6 +10850,24 @@ components:
           type: string
           enum:
             - read_grants
+    LakekeeperNamespaceActionKindReadSubtreeGrants:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_subtree_grants
+    LakekeeperNamespaceActionKindRevokeSubtreeGrants:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - revoke_subtree_grants
     LakekeeperNamespaceActionKindSetProtection:
       type: object
       required:
@@ -10483,6 +10981,33 @@ components:
           type: string
           enum:
             - read_grants
+    LakekeeperNamespaceActionReadSubtreeGrants:
+      type: object
+      description: |-
+        Can list and read every grant in the subtree rooted here: the namespace's own and
+        those on every descendant namespace and tabular. Strictly stronger than
+        `ReadGrants`, which covers this one resource; granted separately because it
+        enumerates the subtree.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_subtree_grants
+    LakekeeperNamespaceActionRevokeSubtreeGrants:
+      type: object
+      description: |-
+        Can revoke any grant in the subtree rooted here, asked once at this namespace for
+        the whole batch. An authorizer must answer it as authority over everything
+        beneath — or refuse the subtree routes.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - revoke_subtree_grants
     LakekeeperNamespaceActionSetProtection:
       type: object
       required:
@@ -11936,6 +12461,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionReadSubtreeGrants'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
       discriminator:
         propertyName: action
         mapping:
@@ -11958,7 +12485,9 @@ components:
           modify_soft_deletion: '#/components/schemas/LakekeeperWarehouseActionModifySoftDeletion'
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
+          read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionReadSubtreeGrants'
           rename: '#/components/schemas/LakekeeperWarehouseActionRename'
+          revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
@@ -12122,6 +12651,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadSubtreeGrants'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
       discriminator:
         propertyName: action
         mapping:
@@ -12144,7 +12675,9 @@ components:
           modify_soft_deletion: '#/components/schemas/LakekeeperWarehouseActionKindModifySoftDeletion'
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionKindModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
+          read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadSubtreeGrants'
           rename: '#/components/schemas/LakekeeperWarehouseActionKindRename'
+          revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
@@ -12320,6 +12853,15 @@ components:
           type: string
           enum:
             - read_grants
+    LakekeeperWarehouseActionKindReadSubtreeGrants:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_subtree_grants
     LakekeeperWarehouseActionKindRename:
       type: object
       required:
@@ -12329,6 +12871,15 @@ components:
           type: string
           enum:
             - rename
+    LakekeeperWarehouseActionKindRevokeSubtreeGrants:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - revoke_subtree_grants
     LakekeeperWarehouseActionKindSetFormatVersionPolicy:
       type: object
       required:
@@ -12430,6 +12981,19 @@ components:
           type: string
           enum:
             - read_grants
+    LakekeeperWarehouseActionReadSubtreeGrants:
+      type: object
+      description: |-
+        Can list and read every grant in the warehouse: the warehouse's own and those on
+        every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+        covers this one resource; granted separately because it enumerates the subtree.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_subtree_grants
     LakekeeperWarehouseActionRename:
       type: object
       required:
@@ -12439,6 +13003,19 @@ components:
           type: string
           enum:
             - rename
+    LakekeeperWarehouseActionRevokeSubtreeGrants:
+      type: object
+      description: |-
+        Can revoke any grant in the warehouse, asked once at the warehouse for the whole
+        batch. An authorizer must answer it as authority over everything beneath — or
+        refuse the subtree routes.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - revoke_subtree_grants
     LakekeeperWarehouseActionSetFormatVersionPolicy:
       type: object
       required:
@@ -12700,6 +13277,38 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+    ListSubtreeGrantsResponse:
+      type: object
+      description: |-
+        A page of a subtree grant listing.
+
+        A page of grants from a subtree, and the instant it was read under.
+      required:
+        - grants
+        - as-of
+      properties:
+        as-of:
+          type: string
+          format: date-time
+          description: |-
+            The ceiling this walk reads under. Pass it to the matching revoke as
+            `created-before` to bound the revoke to what was previewed.
+        grants:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantResponse'
+          description: |-
+            Grants held anywhere under the addressed resource. Reading a subtree is
+            authorized once, at that resource, and covers every member — so pages come back
+            full.
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Present when another page may follow; follow it until it is absent. The token
+            also pins the walk's ceiling, so every page reads under the instant page one
+            bound.
     ListTagAttachmentsResponse:
       type: object
       required:
@@ -13547,6 +14156,116 @@ components:
         - view
         - generic-table
         - tag-definition
+    RevokeSubtreeGrantsRequest:
+      type: object
+      description: |-
+        Which of a subtree's grants to revoke, and how far one call may go.
+
+        Unknown fields are rejected: a misspelled `privilege` would otherwise widen the
+        request from "these privileges" to "every grant under here".
+      properties:
+        allow-partial:
+          type: boolean
+          description: |-
+            Allow the call to leave matching grants behind, to be removed by repeating the
+            request. Without it, a filter matching more than `limit` grants is refused and
+            nothing is removed — so nobody starts a multi-call revoke without knowing that
+            each call is its own transaction and the whole is not atomic.
+        created-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            Revoke only grants created at or before this instant. The first call may omit it
+            and echo back the `created-before` it is answered with; every later call of the
+            same operation repeats that value. This is what makes the loop terminate:
+            grants made after the operation began are deliberately left alone.
+        dry-run:
+          type: boolean
+          description: |-
+            Compute and return what this request would revoke, removing nothing. The same
+            read and the same authority checks as the live call; the response's `preview`
+            carries the batch. A dry run is never refused for size — `has-more: true` says
+            the live call needs `allow-partial`, or several calls.
+        include-root-level:
+          type: boolean
+          description: |-
+            Also revoke the grants held on the addressed resource itself. On by default: a
+            grant on a container confers access beneath it, so a revoke that skipped the root
+            would leave standing the access it names. Pass `false` to keep the root's own
+            grants — its administration plane — untouched, including the one that gives the
+            caller authority here.
+          default: true
+        limit:
+          type:
+            - integer
+            - 'null'
+          description: |-
+            At most this many grants are removed by one call. A value outside 1–1000 is
+            clamped into it, so the response's `revoked` and `has-more` describe what the
+            server actually did.
+          minimum: 0
+        principal:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserOrRole'
+              description: Revoke only the grants held by this principal.
+        privilege:
+          type: array
+          items:
+            type: string
+          description: |-
+            Revoke only grants carrying one of these privileges, each of which must be one
+            this server's authorizer publishes. Empty matches every privilege, including any
+            the authorizer no longer knows — which is how those are cleared in bulk.
+        resource-type:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceType'
+          description: |-
+            Revoke only grants on resources of these kinds. Empty matches every kind under
+            the addressed resource.
+      additionalProperties: false
+    RevokeSubtreeGrantsResponse:
+      type: object
+      description: What one revoke call removed.
+      required:
+        - revoked
+        - has-more
+        - created-before
+      properties:
+        created-before:
+          type: string
+          format: date-time
+          description: |-
+            The ceiling this call ran under. Pass it back on every later call of the same
+            operation.
+        has-more:
+          type: boolean
+          description: |-
+            Whether grants matching the same filter were still visible to this call. Repeat
+            the request — with `created-before` set to the value below — until this is
+            `false`. There is no continuation token: the filter is the continuation, and a
+            cursor over a delete would permanently skip a grant that sorts below it.
+
+            `false` reports that this call saw nothing further, not that the subtree is clear.
+            A grant whose transaction committed after the call began can carry a timestamp
+            below the ceiling and outlive the loop. Re-run the operation with a fresh ceiling
+            to confirm.
+        preview:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/GrantResponse'
+          description: |-
+            The grants a dry run would revoke, rendered as the listing renders them. Present
+            exactly when the request set `dry-run`.
+        revoked:
+          type: integer
+          description: How many grants this call removed.
+          minimum: 0
     Role:
       type: object
       required:

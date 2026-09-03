@@ -597,7 +597,21 @@ async fn authorize_get_warehouse_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogWarehouseAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-    let actions = CatalogWarehouseAction::variants();
+    // The subtree actions gate routes that answer 501 where the authorizer owns its
+    // grants, so reporting them allowed there would promise an operation that refuses.
+    let subtree_answers = authorizer.grants().is_none();
+    let actions: Vec<CatalogWarehouseAction> = CatalogWarehouseAction::variants()
+        .iter()
+        .filter(|action| {
+            subtree_answers
+                || !matches!(
+                    action,
+                    CatalogWarehouseAction::ReadSubtreeGrants
+                        | CatalogWarehouseAction::RevokeSubtreeGrants
+                )
+        })
+        .cloned()
+        .collect();
     let can_see_permission = CatalogWarehouseAction::IncludeInList;
 
     let warehouse = C::get_warehouse_by_id_cache_aware(
@@ -624,7 +638,7 @@ async fn authorize_get_warehouse_actions<C: CatalogStore>(
     let mut can_see = false;
     let allowed_actions = results
         .iter()
-        .zip(actions)
+        .zip(&actions)
         .filter_map(|(allowed, action)| {
             if *allowed {
                 if action == &can_see_permission {
@@ -689,7 +703,20 @@ async fn authorize_get_namespace_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogNamespaceAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-    let actions = CatalogNamespaceAction::variants();
+    // See the warehouse twin: subtree actions gate routes that refuse there.
+    let subtree_answers = authorizer.grants().is_none();
+    let actions: Vec<CatalogNamespaceAction> = CatalogNamespaceAction::variants()
+        .iter()
+        .filter(|action| {
+            subtree_answers
+                || !matches!(
+                    action,
+                    CatalogNamespaceAction::ReadSubtreeGrants
+                        | CatalogNamespaceAction::RevokeSubtreeGrants
+                )
+        })
+        .cloned()
+        .collect();
     let can_see_permission = CatalogNamespaceAction::IncludeInList;
 
     let (warehouse, namespace) = tokio::join!(
@@ -726,7 +753,7 @@ async fn authorize_get_namespace_actions<C: CatalogStore>(
     let mut can_see = false;
     let allowed_actions = results
         .iter()
-        .zip(actions)
+        .zip(&actions)
         .filter_map(|(allowed, action)| {
             if *allowed {
                 if action == &can_see_permission {
