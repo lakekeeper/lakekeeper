@@ -26,6 +26,86 @@ use crate::{
     },
 };
 
+/// Who owns a role's **identity** — its name, description, provider binding and
+/// existence.
+///
+/// Derived from the role's provider namespace and the authorizer's managed set,
+/// so every lifecycle guard reads one answer instead of testing namespaces for
+/// itself. Guards decide which owners they refuse; this only says who owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityOwner {
+    /// The management API. Create, rename, re-describe, rebind and delete are
+    /// the caller's to perform. Covers the native `lakekeeper` namespace and
+    /// every namespace nothing syncs — including one an external role provider
+    /// minted for itself, and one orphaned by a provider since removed from
+    /// config, which must stay writable so it can be cleaned up.
+    Api,
+    /// The catalog itself (`system`), which seeds and retires these roles.
+    Catalog,
+    /// A configured role provider, which converges the role by sync. Manual
+    /// edits would be clobbered by the next run.
+    Provider,
+}
+
+/// Who owns a role's **inbound member set** — its user assignments and the
+/// nesting edges that name it as parent.
+///
+/// A separate axis from [`IdentityOwner`] because the two genuinely disagree:
+/// a `system` role's identity is frozen while its membership is writable by an
+/// instance admin. Collapsing them into one predicate is what makes a single
+/// deny-set unable to describe that cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipOwner {
+    /// The management API. Membership here is real — under a catalog-backed
+    /// authorizer these rows reach `cross_project_role_ids` and carry grants,
+    /// and under an assignment-managing authorizer the tuple confers access
+    /// directly — so someone has to be able to write it.
+    Api,
+    /// `system`: writable, but only by an instance admin and only with users
+    /// (see `reject_system_role_membership`).
+    Provisioning,
+    /// A configured role provider. The member list is authoritative upstream
+    /// and converged by sync.
+    Provider,
+}
+
+/// Who owns the identity of a role in `provider_id`. See [`IdentityOwner`].
+#[must_use]
+pub fn identity_owner<S: std::hash::BuildHasher>(
+    provider_id: &RoleProviderId,
+    managed: &HashSet<RoleProviderId, S>,
+) -> IdentityOwner {
+    // `system` first. The trait forbids it from appearing in `managed` and only a
+    // debug_assert enforces that, so classify it by what it is rather than by a
+    // set that should not contain it: `Catalog` is the answer every guard already
+    // acts on, and none of them leaves such a role unguarded — the lifecycle sites
+    // refuse it with `SystemRoleImmutable`, the membership sites with the
+    // instance-admin and users-only rules of `reject_system_role_membership`.
+    if provider_id.is_system() {
+        IdentityOwner::Catalog
+    } else if managed.contains(provider_id) {
+        IdentityOwner::Provider
+    } else {
+        IdentityOwner::Api
+    }
+}
+
+/// Who owns the member set of a role in `provider_id`. See [`MembershipOwner`].
+#[must_use]
+pub fn membership_owner<S: std::hash::BuildHasher>(
+    provider_id: &RoleProviderId,
+    managed: &HashSet<RoleProviderId, S>,
+) -> MembershipOwner {
+    // `system` first, for the reason given in `identity_owner`.
+    if provider_id.is_system() {
+        MembershipOwner::Provisioning
+    } else if managed.contains(provider_id) {
+        MembershipOwner::Provider
+    } else {
+        MembershipOwner::Api
+    }
+}
+
 /// Rejects a `provider_id` **supplied in a request body** that is not writable
 /// through the role-management API: the catalog-managed `system` namespace (see
 /// [`crate::service::SYSTEM_ROLE_PROVIDER_ID`]), or any namespace owned by a
@@ -38,19 +118,19 @@ fn reject_managed_provider(
     provider_id: &RoleProviderId,
     managed: &HashSet<RoleProviderId>,
 ) -> Result<()> {
-    if provider_id.is_system() {
-        return Err(ErrorModel::bad_request(
+    match identity_owner(provider_id, managed) {
+        IdentityOwner::Catalog => Err(ErrorModel::bad_request(
             "provider_id `system` is reserved for catalog-managed roles \
              and cannot be used in role-management requests.",
             "RoleProviderIdReserved",
             None,
         )
-        .into());
+        .into()),
+        IdentityOwner::Provider => {
+            Err(ErrorModel::from(ManagedRoleImmutable::new(provider_id.to_string())).into())
+        }
+        IdentityOwner::Api => Ok(()),
     }
-    if managed.contains(provider_id) {
-        return Err(ErrorModel::from(ManagedRoleImmutable::new(provider_id.to_string())).into());
-    }
-    Ok(())
 }
 
 /// Rejects mutating an **already-resolved role** whose provider namespace is
@@ -74,10 +154,37 @@ where
     E: From<ManagedRoleImmutable>,
 {
     let provider_id = role.ident.provider_id();
-    if authorizer.managed_role_provider_ids().contains(provider_id) {
-        return Err(ManagedRoleImmutable::new(provider_id.to_string()).into());
+    match identity_owner(provider_id, authorizer.managed_role_provider_ids()) {
+        IdentityOwner::Provider => Err(ManagedRoleImmutable::new(provider_id.to_string()).into()),
+        // `Catalog` is deliberately permitted here: the lifecycle sites reject
+        // `system` themselves with `SystemRoleImmutable`, which names the reason.
+        IdentityOwner::Catalog | IdentityOwner::Api => Ok(()),
     }
-    Ok(())
+}
+
+/// Rejects a membership write on a role whose member set a configured role
+/// provider owns — it is authoritative upstream and converged by sync, so a
+/// manual edit would be clobbered by the next run.
+///
+/// The membership counterpart of [`reject_managed_role`], reading
+/// [`membership_owner`] rather than [`identity_owner`]. `Provisioning`
+/// (`system`) is permitted here and guarded separately by
+/// `reject_system_role_membership`, which enforces the instance-admin and
+/// users-only rules that apply to it alone.
+///
+/// Applies to adds and removes alike: a member set the provider owns must not be
+/// edited in either direction. Call it before the authorizer-arm split, so the
+/// rule holds whichever backend stores the assignment.
+pub fn reject_provider_owned_membership<A, E>(authorizer: &A, role: &ArcRole) -> Result<(), E>
+where
+    A: Authorizer,
+    E: From<ManagedRoleImmutable>,
+{
+    let provider_id = role.ident.provider_id();
+    match membership_owner(provider_id, authorizer.managed_role_provider_ids()) {
+        MembershipOwner::Provider => Err(ManagedRoleImmutable::new(provider_id.to_string()).into()),
+        MembershipOwner::Provisioning | MembershipOwner::Api => Ok(()),
+    }
 }
 
 #[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
