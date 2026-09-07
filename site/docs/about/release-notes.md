@@ -1,3 +1,7 @@
+---
+description: "Release highlights for every Lakekeeper version: new features, breaking changes and upgrade notes for the open source Iceberg REST Catalog."
+---
+
 # Release Notes
 
 Highlights for each Lakekeeper release. For the full commit-level

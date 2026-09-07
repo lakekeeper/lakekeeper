@@ -1,3 +1,7 @@
+---
+description: "Read and write Lance generic tables from PySpark using the Lakekeeper client and short-lived, prefix-scoped vended storage credentials."
+---
+
 # Apache Spark
 
 This page shows how to read and write a **Lance** [generic table](generic-tables.md) from **PySpark**. The Lakekeeper client resolves the table location and vends short-lived storage credentials; Spark (and `pylance`) then read/write the data directly.

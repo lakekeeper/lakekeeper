@@ -33,6 +33,9 @@ impl TableProperties {
             } else if [creds::ExpirationTimeMs::KEY].contains(&key.as_str()) {
                 creds::validate(&key, &value)?;
                 config.props.insert(key, value);
+            } else if [general::ScanPlanningMode::KEY].contains(&key.as_str()) {
+                general::validate(&key, &value)?;
+                config.props.insert(key, value);
             } else {
                 let pair = custom::CustomConfig {
                     key: key.clone(),
@@ -164,6 +167,23 @@ pub mod adls {
     );
 }
 
+/// Behaviour advertised per table with no storage namespace of its own. Named for
+/// the spec's "General Configurations" heading in `LoadTableResult`; `catalog`
+/// would collide with this crate's own `catalog` module.
+pub mod general {
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
+    use crate::configs::impl_config_values;
+    impl_config_values!(
+        Table,
+        {
+            ScanPlanningMode, String, "scan-planning-mode", "scan_planning_mode";
+        }
+    );
+}
+
 pub mod custom {
     use super::TableProperty;
     pub use crate::configs::CustomConfig;
@@ -183,6 +203,14 @@ mod tests {
         assert_eq!(iceberg::io::S3_ACCESS_KEY_ID, s3::AccessKeyId::KEY);
         assert_eq!(iceberg::io::S3_SECRET_ACCESS_KEY, s3::SecretAccessKey::KEY);
         assert_eq!(iceberg::io::S3_SESSION_TOKEN, s3::SessionToken::KEY);
+    }
+
+    /// Pinned against the spec literal, not against the constant, so a typo in the
+    /// key cannot rename it on the wire while every test that reads it through
+    /// `KEY` keeps agreeing with itself.
+    #[test]
+    fn test_scan_planning_mode_key_matches_the_spec() {
+        assert_eq!(general::ScanPlanningMode::KEY, "scan-planning-mode");
     }
 
     #[test]

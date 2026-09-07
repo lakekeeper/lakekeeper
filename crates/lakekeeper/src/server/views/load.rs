@@ -5,7 +5,7 @@ use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
 
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::{
         ApiContext,
         iceberg::v1::{ViewParameters, views::LoadViewRequest},
@@ -20,7 +20,8 @@ use crate::{
             get_relevant_namespaces_to_authorize_load_tabular,
             get_relevant_tabulars_to_authorize_load_tabular,
             load_objects_to_authorize_load_tabular, resolve_users_for_authorize_load_tabular,
-            sort_tabulars_for_authorize_load_tabular, validate_table_or_view_ident,
+            sort_tabulars_for_authorize_load_tabular, validate_referenced_by,
+            validate_table_or_view_ident,
         },
     },
     service::{
@@ -56,6 +57,10 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             }
         }
     }
+    validate_referenced_by(
+        request.referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;

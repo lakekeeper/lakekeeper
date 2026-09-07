@@ -527,6 +527,7 @@ pub(super) async fn generate_adls_table_config<T: BasicTabularInfo>(
         config: creds.clone(),
         creds,
         credentials_expiration_ms: Some(expiration_ms),
+        remote_signing: None,
     })
 }
 

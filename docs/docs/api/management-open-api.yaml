@@ -46,7 +46,7 @@ paths:
         required: true
       responses:
         '200':
-          description: Batch check results
+          description: Batch check results, one per request item and in request order
           content:
             application/json:
               schema:
@@ -2661,6 +2661,10 @@ paths:
         exist first and otherwise returns `404` — provision the user (via
         `POST /user`) or create the role before assigning. Behavior is consistent
         within a deployment.
+
+        Roles from the `system` provider are provisioned, not self-service: adding a
+        member requires an instance admin (`403`), and a role may not be added as a
+        member of one (`400`) — they hold users directly.
       operationId: add_role_members
       parameters:
         - name: role_id
@@ -2776,6 +2780,10 @@ paths:
       description: |-
         Removes a single member (a user or a role) from a role. Idempotent — removing
         an absent member is a no-op and still returns `204`.
+
+        Removing a member of a `system`-provider role requires an instance admin
+        (`403`). Unlike adding, removing a role-type member is permitted, so an
+        existing nesting can be cleaned up.
       operationId: remove_role_member
       parameters:
         - name: role_id
@@ -4067,13 +4075,19 @@ paths:
         - warehouse
       summary: Validate Warehouse Configuration
       description: |-
-        Runs the checks `Create Warehouse` runs — profile syntax, name
+        Runs the checks `Create Warehouse` runs — profile syntax, name and ID
         availability, location overlap, format-version policy, `managed-by`, and
         physical storage access including credential vending — without creating
         anything. No warehouse is persisted and no credential is stored.
 
         Returns 200 whether or not the configuration is usable; inspect `valid` and
         the per-check results. Requires the same permission as creating a warehouse.
+
+        Results are advisory and reserve nothing: a concurrent request can take a
+        name or ID between this call and the create. `warehouse-id-available` in
+        particular examines only the caller's own project, while warehouse IDs are
+        unique across the whole instance — so an ID it reports as available can
+        still be refused with `409 WarehouseIdAlreadyExists` on create.
       operationId: validate_warehouse
       parameters:
         - name: x-project-id
@@ -7980,10 +7994,24 @@ components:
       properties:
         allowed:
           type: boolean
+          description: Whether the checked identity may perform the operation.
+        determined-by:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeterminingFactor'
+          description: |-
+            What determined this decision: the policies that matched, each with its
+            identifier, optional name and source, or a system-authority override.
+
+            Absent when the configured authorizer produces no per-decision
+            diagnostics.
         id:
           type:
             - string
             - 'null'
+          description: |-
+            Echoes the `id` of the corresponding request item. Absent when the
+            request item carried none — match by position instead.
     CheckOperation:
       oneOf:
         - type: object
@@ -8413,6 +8441,17 @@ components:
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile to use for the warehouse.
+        warehouse-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Request a specific warehouse ID - optional.
+            If not provided, a new warehouse ID will be generated (recommended).
+            Warehouse IDs are unique across the whole Lakekeeper instance, not just
+            within a project. If you do provide one, prefer a UUIDv7, so that IDs
+            sort by creation time.
         warehouse-name:
           type: string
           description: |-
@@ -8463,6 +8502,88 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    DeterminingFactor:
+      oneOf:
+        - $ref: '#/components/schemas/DeterminingFactorPolicy'
+        - $ref: '#/components/schemas/DeterminingFactorSystemAuthority'
+      description: |-
+        A single factor that contributed to an authorization decision.
+
+        Discriminated by `type`: `policy` names a policy the authorizer matched,
+        `system-authority` records that a built-in authority tier decided the
+        request. Further kinds may be added, so treat an unrecognised `type` as an
+        opaque factor rather than an error.
+      discriminator:
+        propertyName: type
+        mapping:
+          policy: '#/components/schemas/DeterminingFactorPolicy'
+          system-authority: '#/components/schemas/DeterminingFactorSystemAuthority'
+    DeterminingFactorPolicy:
+      type: object
+      description: |-
+        A policy that determined the decision, surfaced by a policy-based
+        authorizer.
+      required:
+        - policy-id
+        - effect
+        - type
+      properties:
+        effect:
+          $ref: '#/components/schemas/PolicyEffect'
+          description: Whether the policy permits or forbids.
+        name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing name the author gave the policy (e.g. a `@name` or
+            `@id` annotation). Neither required nor guaranteed unique; absent
+            when the author provided none.
+        policy-id:
+          type: string
+          description: |-
+            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
+            `PolicyId`). Always present.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque origin of the policy (e.g. a policy-source identifier).
+            Absent when the authorizer cannot attribute a source.
+        type:
+          type: string
+          enum:
+            - policy
+    DeterminingFactorSystemAuthority:
+      type: object
+      description: |-
+        An allow contributed by a built-in/system authority tier that takes
+        precedence over normal authored policy — e.g. a recovery mechanism that
+        lets a privileged system role act despite a policy that would otherwise
+        forbid it. Its presence means the verdict rested on built-in authority
+        rather than on a configured policy.
+      required:
+        - type
+      properties:
+        reason:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing reason the tier applied (e.g. an administrator
+            lockout-recovery grant). Absent when the authorizer gives none.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque, authorizer-assigned identifier of the built-in authority
+            tier that granted the action. Absent when none can be attributed.
+        type:
+          type: string
+          enum:
+            - system-authority
     EndpointMode:
       oneOf:
         - $ref: '#/components/schemas/EndpointModeDefault'
@@ -9662,7 +9783,7 @@ components:
           $ref: '#/components/schemas/GrantResourceResponse'
     GrantablePrivilege:
       type: object
-      description: One privilege of a resource's vocabulary, and whether the principal may administer it.
+      description: One privilege of a resource's vocabulary, and whether the principal may grant it.
       required:
         - privilege
         - allowed
@@ -9670,8 +9791,14 @@ components:
         allowed:
           type: boolean
           description: |-
-            Whether the principal may administer this privilege here — grant it, revoke it, or
-            both. Advisory: an apply checks each of its entries on its own.
+            Whether the principal may grant this privilege here. Advisory: an apply checks
+            each of its entries on its own.
+
+            Granting only. Revoking is authorized separately and may be refused where this
+            says `true` — under the OpenFGA authorizer, delegated grant authority
+            (`pass_grants`) hands a privilege out without taking it back. There is no
+            discovery question for the revoke direction; a removal is authorized as it is
+            applied.
         privilege:
           $ref: '#/components/schemas/PrivilegeDescriptor'
           description: |-
@@ -13067,6 +13194,12 @@ components:
         - grant_manage_grants
         - grant_manage_tags
         - change_ownership
+    PolicyEffect:
+      type: string
+      description: Whether a determining policy permits or forbids.
+      enum:
+        - permit
+        - forbid
     PrivilegeDescriptor:
       type: object
       description: One grantable privilege, as published by an authorizer for discovery.
@@ -13370,7 +13503,7 @@ components:
       type: object
       description: |-
         This resource's whole vocabulary, each entry marked with whether the principal may
-        administer it — grant it, revoke it, or both.
+        grant it.
 
         The deployment-wide vocabulary answers "what does this server understand"; this
         answers "what may I do here", which is the question a grant dialog asks. Grant
@@ -14104,6 +14237,7 @@ components:
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
         - queues
+        - managed-role-providers
         - license-status
       properties:
         authz-backend:
@@ -14158,6 +14292,34 @@ components:
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
+        managed-role-providers:
+          type: array
+          items:
+            type: string
+          description: |-
+            Role-provider namespaces whose roles are maintained by a configured role
+            provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
+            appears here are the provider's to maintain: creating one, or renaming,
+            re-describing, rebinding, or deleting an existing one, is rejected with
+            `ManagedRoleImmutable` so provider sync cannot be clobbered.
+
+            This is live server configuration, not a property of the namespace
+            string. A provider removed from config drops out of the list, and the
+            roles it left behind become renamable and deletable again so they can be
+            cleaned up.
+
+            Empty when no role provider is configured. Two namespaces never appear,
+            and a client gating on this list must handle both itself: `lakekeeper`,
+            which is always writable, and the reserved `system`, whose roles reject
+            the same mutations with `SystemRoleImmutable`.
+
+            **Membership is gated differently — do not derive it from this list.**
+            Adding or removing a role's members requires the `lakekeeper` namespace
+            (or `system`, for an instance admin); every other namespace is refused
+            with `RoleNotManuallyAssignable` whether or not it appears here. So an
+            orphaned role from a since-removed provider is renamable and deletable
+            but still not assignable — gate member editing on
+            `provider-id == "lakekeeper"`, not on absence from this list.
         queues:
           type: array
           items:
@@ -16005,6 +16167,7 @@ components:
         - profile-well-formed
         - profile-compatible
         - warehouse-name-valid
+        - warehouse-id-available
         - location-exclusive
         - spec-mutable
         - format-version-policy-consistent

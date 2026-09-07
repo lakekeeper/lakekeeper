@@ -1,3 +1,7 @@
+---
+description: "Stream data from Apache Flink into Lakekeeper generic tables with the Java client, writing directly to S3, GCS or Azure using vended credentials."
+---
+
 # Apache Flink
 
 This guide shows how to stream data into Lakekeeper from [Apache Flink](https://flink.apache.org/) using the Lakekeeper Java client. Because Lakekeeper vends short-lived, prefix-scoped storage credentials, Flink writes directly to your object store (S3, GCS, Azure) without any long-lived keys in your job configuration.

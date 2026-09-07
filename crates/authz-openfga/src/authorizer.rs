@@ -1571,16 +1571,25 @@ impl OpenFGAAuthorizer {
                         .map_err(authz_to_error_no_audit)?;
 
                     if !tuples.tuples.is_empty() {
-                        return Err(IcebergErrorResponse::from(
-                            ErrorModel::conflict(
-                                format!(
-                                    "Object to create {fga_object_str} is used as user for type {o}",
-                                ),
-                                "ObjectUsedInRelation",
-                                None,
-                            )
-                                .append_detail(format!("Found: {tuples:?}")),
-                        ));
+                        // The tuples name other entities — a warehouse's hierarchy
+                        // tuple carries its owning project — and for a 4xx the
+                        // error `stack` is serialized to the caller verbatim. Now
+                        // that a caller can pick the id being created, and so aim
+                        // this check at an id they do not own, the tuples go to the
+                        // log rather than into the response.
+                        tracing::warn!(
+                            object = %fga_object_str,
+                            related_type = %o,
+                            ?tuples,
+                            "Refusing to create an object that is still used as a user in existing relations"
+                        );
+                        return Err(IcebergErrorResponse::from(ErrorModel::conflict(
+                            format!(
+                                "Object to create {fga_object_str} is used as user for type {o}",
+                            ),
+                            "ObjectUsedInRelation",
+                            None,
+                        )));
                     }
                 }
 
@@ -1846,6 +1855,15 @@ pub(crate) mod tests {
                 .unwrap_err();
             assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
             assert_eq!(err.error.r#type, "ObjectUsedInRelation");
+            // The tuples that triggered the refusal must not travel to the caller:
+            // for a 4xx the error `stack` is serialized verbatim, and the tuples
+            // name a *different* object than the one being created (here the
+            // server, for a warehouse its owning project). They belong in the log.
+            let rendered = format!("{:?}", err.error);
+            assert!(
+                !rendered.contains("this_server"),
+                "refusal disclosed the related object: {rendered}"
+            );
         }
 
         #[tokio::test]

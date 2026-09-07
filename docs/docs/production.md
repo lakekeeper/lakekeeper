@@ -1,3 +1,7 @@
+---
+description: "Checklist for running Lakekeeper in production: database, storage, identity provider, authorization and high-availability recommendations."
+---
+
 # Production Checklist
 
 Lakekeeper is the heart of your data platform and needs to integrate deeply with your existing infrastructure such as IdPs. The easiest way to get Lakekeeper to production is our enterprise support. Please find more information on our commercial offerings at [lakekeeper.io](https://lakekeeper.io)

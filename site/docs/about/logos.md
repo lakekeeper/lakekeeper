@@ -1,3 +1,7 @@
+---
+description: "Download the official Lakekeeper logos and brand marks as SVG, for light and dark backgrounds."
+---
+
 # Logos
 
 Below you can find the logos available for download. Click on the links to download the files.

@@ -4,6 +4,8 @@
 //! types, so they can live in the audit-event payload while each authorizer
 //! maps its own diagnostics down to them.
 
+use serde::{Deserialize, Serialize};
+
 /// One authorization verdict together with the diagnostics that explain it.
 ///
 /// Returned per checked `(resource, action)` tuple by the batch authorizer
@@ -70,48 +72,65 @@ impl From<bool> for AuthorizationDecision {
 
 /// A single factor that contributed to an authorization decision.
 ///
-/// Enum-tagged so new producers (restriction-profile matched rules, native
-/// OSS-authorizer diagnostics) add a variant without breaking existing audit
-/// consumers.
-#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
+/// Discriminated by `type`: `policy` names a policy the authorizer matched,
+/// `system-authority` records that a built-in authority tier decided the
+/// request. Further kinds may be added, so treat an unrecognised `type` as an
+/// opaque factor rather than an error.
+// Enum-tagged so new producers (restriction-profile matched rules, native
+// OSS-authorizer diagnostics) add a variant without breaking consumers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, valuable::Valuable)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based
     /// authorizer.
+    #[cfg_attr(feature = "open-api", schema(title = "DeterminingFactorPolicy"))]
+    #[serde(rename_all = "kebab-case")]
     Policy {
         /// Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
         /// `PolicyId`). Always present.
         policy_id: String,
-        /// Optional human-facing name the author gave the policy (e.g. a `@name`
-        /// or `@id` annotation). Neither required nor guaranteed unique; `None`
+        /// Human-facing name the author gave the policy (e.g. a `@name` or
+        /// `@id` annotation). Neither required nor guaranteed unique; absent
         /// when the author provided none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         /// Whether the policy permits or forbids.
         effect: PolicyEffect,
-        /// Opaque origin of the policy (e.g. a policy-source identifier). `None`
-        /// when the producer cannot attribute a source.
+        /// Opaque origin of the policy (e.g. a policy-source identifier).
+        /// Absent when the authorizer cannot attribute a source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
     },
     /// An allow contributed by a built-in/system authority tier that takes
     /// precedence over normal authored policy — e.g. a recovery mechanism that
     /// lets a privileged system role act despite a policy that would otherwise
-    /// forbid it. Recorded so audit consumers can see that the verdict rested on
-    /// built-in authority rather than on a configured policy.
-    ///
-    /// Authorizer-agnostic like the rest of this module: names no specific
-    /// authorizer or mechanism.
+    /// forbid it. Its presence means the verdict rested on built-in authority
+    /// rather than on a configured policy.
+    #[cfg_attr(
+        feature = "open-api",
+        schema(title = "DeterminingFactorSystemAuthority")
+    )]
+    #[serde(rename_all = "kebab-case")]
     SystemAuthority {
-        /// Opaque, authorizer-assigned identifier of the built-in authority tier
-        /// that granted the action. `None` when none can be attributed.
+        /// Opaque, authorizer-assigned identifier of the built-in authority
+        /// tier that granted the action. Absent when none can be attributed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
-        /// Optional human-facing reason the tier applied (e.g. an administrator
-        /// lockout-recovery grant). `None` when the producer gives none.
+        /// Human-facing reason the tier applied (e.g. an administrator
+        /// lockout-recovery grant). Absent when the authorizer gives none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
 }
 
 /// Whether a determining policy permits or forbids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, valuable::Valuable)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
 pub enum PolicyEffect {
+    /// The policy grants the action.
     Permit,
+    /// The policy denies the action.
     Forbid,
 }

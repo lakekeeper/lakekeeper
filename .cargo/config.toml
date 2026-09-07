@@ -9,3 +9,19 @@ rustflags = ["--cfg", "tracing_unstable", "--cfg", "tokio_unstable"]
 # cache against the live database.
 [env]
 SQLX_OFFLINE = "true"
+
+# Compile `thp:never` into jemalloc (applied as its `--with-malloc-conf`).
+#
+# Transparent huge pages defeat jemalloc's page release: it frees at 4 KiB
+# granularity with MADV_DONTNEED, but a 2 MiB huge page cannot be partially
+# freed, so one live page anywhere inside keeps all 2 MiB resident. On a node
+# with THP=always (common on EKS AMIs) a replica's RSS ratchets up permanently
+# and only a restart recovers it, while jemalloc's own `stats.resident`
+# under-reports real residency because it tracks its logical 4 KiB view.
+# Measured: AnonHugePages 286 MiB -> 0, settled RSS -68%, throughput +1.9%.
+#
+# A build variable, so the setting travels inside every binary built from this
+# tree, including `cargo install` and direct `cargo build` runs. jemalloc reads
+# `--with-malloc-conf` first and `MALLOC_CONF` last, so an operator can override
+# it at runtime with `_RJEM_MALLOC_CONF`.
+JEMALLOC_SYS_WITH_MALLOC_CONF = "thp:never"

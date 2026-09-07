@@ -440,6 +440,7 @@ define_transparent_error! {
     stack_message: "Error creating warehouse in catalog",
     variants: [
         WarehouseAlreadyExists,
+        WarehouseIdAlreadyExists,
         CatalogBackendError,
         StorageProfileSerializationError,
         ProjectIdNotFoundError,
@@ -472,6 +473,39 @@ impl From<WarehouseAlreadyExists> for ErrorModel {
     fn from(err: WarehouseAlreadyExists) -> Self {
         ErrorModel::builder()
             .r#type("WarehouseAlreadyExists")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// Warehouse ids are unique across the whole instance, so this conflict may be
+// with a warehouse in a project the caller cannot see. The message therefore
+// names neither the owning project nor the warehouse: a caller who may create
+// warehouses somewhere must not be able to use a requested id as an oracle for
+// what exists elsewhere on the instance.
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("A warehouse with id '{warehouse_id}' already exists")]
+pub struct WarehouseIdAlreadyExists {
+    pub warehouse_id: WarehouseId,
+    pub stack: Vec<String>,
+}
+impl WarehouseIdAlreadyExists {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId) -> Self {
+        Self {
+            warehouse_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(WarehouseIdAlreadyExists);
+
+impl From<WarehouseIdAlreadyExists> for ErrorModel {
+    fn from(err: WarehouseIdAlreadyExists) -> Self {
+        ErrorModel::builder()
+            .r#type("WarehouseIdAlreadyExists")
             .code(StatusCode::CONFLICT.as_u16())
             .message(err.to_string())
             .stack(err.stack)
@@ -789,14 +823,13 @@ where
         Self::ensure_warehouse_spec_mutable_impl(warehouse_id, bypass, transaction).await
     }
 
-    /// Delete a warehouse.
+    /// Delete a warehouse, returning the storage secret it referenced, if any.
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<(), CatalogDeleteWarehouseError> {
-        Self::delete_warehouse_impl(warehouse_id, query, transaction).await?;
-        Ok(())
+    ) -> Result<Option<SecretId>, CatalogDeleteWarehouseError> {
+        Self::delete_warehouse_impl(warehouse_id, query, transaction).await
     }
 
     /// Rename a warehouse.

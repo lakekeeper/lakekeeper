@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 use crate::{
-    catalog::{TableIdent, TableRequirement, TableUpdate},
+    catalog::{TableIdent, TableRequirement, TableUpdate, rest::RemoteSigningConfig},
     spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
@@ -37,6 +37,12 @@ pub struct LoadTableResult {
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
+    /// Signer settings for clients that support them, superseding the deprecated
+    /// `signer.uri` / `signer.endpoint` config keys. Omitted rather than sent as
+    /// `null` when remote signing is off, since a client that finds it absent
+    /// falls back to those keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_signing_config: Option<RemoteSigningConfig>,
     /// Validator for this exact body, emitted as the `ETag` header.
     ///
     /// Not serialized, and deliberately not derivable from this struct: the tag
@@ -142,9 +148,69 @@ pub struct CommitTransactionRequest {
 pub struct ETag(String);
 
 impl ETag {
+    /// The value as held, which for a server-minted tag is the wire form —
+    /// weak marker and quotes included.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The bare validator: this tag with HTTP's weak marker and surrounding
+    /// quotes removed.
+    ///
+    /// Comparisons must go through this rather than [`Self::as_str`]. A tag
+    /// arrives already bare when the HTTP layer parsed an `If-None-Match`
+    /// header, but in wire form when a server-minted tag is fed back in process
+    /// — and the two must not compare unequal for being spelled differently.
+    #[must_use]
+    pub fn validator(&self) -> &str {
+        Self::strip_wire_syntax(&self.0)
+    }
+
+    /// Strip HTTP's weak marker and surrounding quotes from one `ETag` value.
+    ///
+    /// The single definition of that transform, so a tag cannot be normalised
+    /// one way on the way in and another on the way out. Idempotent, so
+    /// applying it to an already-bare value is safe.
+    ///
+    /// Not wildcard-aware: it is quotes that tell `If-None-Match`'s `*` apart
+    /// from a tag whose opaque value is `*`, and this removes them. Ask
+    /// [`Self::is_wildcard`] before normalising.
+    ///
+    /// Deliberately tolerant about where the `W/` sits, so a client that
+    /// re-serialises a weak tag as `"W/lk3.beef"` still matches. That spelling
+    /// is strictly a *strong* tag whose opaque value happens to begin with
+    /// `W/`, so folding the two together is not injective over the syntax RFC
+    /// 9110 8.8.3 defines — but nothing here mints an opaque value starting
+    /// with `W/`, so the only source of that spelling is a mangled tag of ours,
+    /// and honouring it is what the client meant. Revisit if strong tags ever
+    /// get minted, or if a comparison that must reject weak validators (`If-Match`,
+    /// ranges) is added.
+    #[must_use]
+    pub fn strip_wire_syntax(value: &str) -> &str {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_start_matches("W/")
+            .trim_matches('"')
+    }
+
+    /// Whether this is `If-None-Match`'s `*` — "any current representation" —
+    /// rather than a validator to compare.
+    ///
+    /// RFC 9110 13.1.2 admits `*` only as an alternative to the tag list, not as
+    /// a member of it, and the entity-tag grammar in 8.8.3 is quoted-only — so
+    /// `"*"` and `W/"*"` are ordinary tags that merely happen to have `*` as
+    /// their opaque value, and must be compared like any other. The difference
+    /// matters: the wildcard skips validator comparison altogether, so reading
+    /// it too widely answers `304` to a request that was asking whether one
+    /// specific tag is current.
+    ///
+    /// Tested on the value as received, so it only reports the truth for a tag
+    /// that has not already been through [`Self::strip_wire_syntax`].
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.trim() == "*"
     }
 }
 
@@ -230,6 +296,54 @@ mod tests {
 
     use super::*;
 
+    /// Both spellings of the same tag must reduce to one validator: the wire form
+    /// a server mints, and the bare form header parsing yields.
+    #[test]
+    fn etag_validator_strips_wire_syntax_idempotently() {
+        let wire = ETag::from("W/\"lk3.deadbeef\"");
+        assert_eq!(wire.validator(), "lk3.deadbeef");
+        assert_eq!(wire.as_str(), "W/\"lk3.deadbeef\"", "as_str stays verbatim");
+
+        // Already-bare input is unchanged, so normalising twice is safe.
+        let bare = ETag::from("lk3.deadbeef");
+        assert_eq!(bare.validator(), "lk3.deadbeef");
+        assert_eq!(
+            wire.validator(),
+            bare.validator(),
+            "the two spellings must not compare unequal"
+        );
+
+        // Strong validators carry quotes but no weak marker.
+        assert_eq!(ETag::from("\"lk3.deadbeef\"").validator(), "lk3.deadbeef");
+        // Surrounding whitespace comes from splitting a header list.
+        assert_eq!(
+            ETag::from(" W/\"lk3.deadbeef\" ").validator(),
+            "lk3.deadbeef"
+        );
+        // The wildcard survives untouched.
+        assert_eq!(ETag::from("*").validator(), "*");
+        // A weak tag re-serialised with the marker inside the quotes still
+        // normalises to the same validator. See the note on `strip_wire_syntax`
+        // for why this tolerance is chosen over the strict reading.
+        assert_eq!(ETag::from("\"W/lk3.deadbeef\"").validator(), "lk3.deadbeef");
+    }
+
+    /// Only the bare token is the wildcard. A quoted `*` is a tag like any
+    /// other, and treating it as "any representation" would 304 a request that
+    /// asked whether that one tag is current.
+    #[test]
+    fn only_the_unquoted_asterisk_is_the_wildcard() {
+        assert!(ETag::from("*").is_wildcard());
+        // Padding is list syntax, not part of the token.
+        assert!(ETag::from(" * ").is_wildcard());
+
+        assert!(!ETag::from("\"*\"").is_wildcard());
+        assert!(!ETag::from("W/\"*\"").is_wildcard());
+        assert!(!ETag::from("lk3.deadbeef").is_wildcard());
+        // Still a tag once normalised — one that matches nothing we mint.
+        assert_eq!(ETag::from("\"*\"").validator(), "*");
+    }
+
     #[test]
     #[cfg(feature = "axum")]
     fn test_load_table_result_into_response_adds_etag_for_existing_tables() {
@@ -240,6 +354,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
@@ -259,6 +374,7 @@ mod tests {
             metadata: create_table_metadata_mock(),
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.abc.199e1e0f9c3\"")),
         };
 
@@ -279,6 +395,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             // Staged tables have no metadata location, so the caller mints no tag.
             etag: None,
         };
@@ -299,6 +416,7 @@ mod tests {
             metadata: table_metadata.clone(),
             config: None,
             storage_credentials: None,
+            remote_signing_config: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 

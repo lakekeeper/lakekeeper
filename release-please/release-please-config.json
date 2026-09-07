@@ -34,6 +34,11 @@
         {
             "type": "toml",
             "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-alloc\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
             "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
         },
         {

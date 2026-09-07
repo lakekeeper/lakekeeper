@@ -1,1 +1,1 @@
-doc-valid-idents = ["OpenFGA", "OAuth", "CloudEvents", "UUIDv7", "SemVer"]
+doc-valid-idents = ["OpenFGA", "OAuth", "CloudEvents", "UUIDv7", "SemVer", "MinIO", "SeaweedFS"]

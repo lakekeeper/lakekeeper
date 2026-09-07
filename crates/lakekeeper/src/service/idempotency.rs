@@ -73,15 +73,24 @@ impl IdempotencyKey {
 /// Result of checking an idempotency key before the mutation.
 ///
 /// With the in-transaction design, records only exist for committed successes.
-/// There is no "in-progress" state and no stored error bodies.
+/// There is no "in-progress" state and no stored error bodies, so "a record
+/// exists" is the whole of what a caller needs to know: the mutation already
+/// happened and the handler should re-derive its success response rather than
+/// execute again.
+///
+/// Deliberately carries no status. The recorded `http_status` is kept in the row
+/// for forensics, but replaying it would be the wrong contract — every handler
+/// already knows the one status its success produces, and re-deriving is what
+/// lets the response reflect current catalog state, which the spec explicitly
+/// permits. A stored status is only worth surfacing here once records exist for
+/// outcomes a handler cannot re-derive on its own, i.e. finalized terminal 4xx.
 #[derive(Debug)]
 pub enum IdempotencyCheck {
     /// No existing record — proceed with the mutation.
     NewRequest,
-    /// Finalized with success (2xx) — handler should re-derive the response.
-    ReplaySuccess { http_status: StatusCode },
-    /// Finalized with 204 — return 204 No Content.
-    ReplayNoContent,
+    /// A finalized record exists — re-derive the success response instead of
+    /// executing the mutation.
+    Replay,
 }
 
 impl IdempotencyCheck {
@@ -89,10 +98,7 @@ impl IdempotencyCheck {
     /// instead of executing the mutation).
     #[must_use]
     pub fn is_replay(&self) -> bool {
-        matches!(
-            self,
-            IdempotencyCheck::ReplaySuccess { .. } | IdempotencyCheck::ReplayNoContent
-        )
+        matches!(self, IdempotencyCheck::Replay)
     }
 }
 
@@ -220,13 +226,7 @@ mod tests {
     #[test]
     fn idempotency_check_is_replay() {
         assert!(!IdempotencyCheck::NewRequest.is_replay());
-        assert!(
-            IdempotencyCheck::ReplaySuccess {
-                http_status: StatusCode::OK
-            }
-            .is_replay()
-        );
-        assert!(IdempotencyCheck::ReplayNoContent.is_replay());
+        assert!(IdempotencyCheck::Replay.is_replay());
     }
 }
 
@@ -237,5 +237,8 @@ mod tests {
 pub struct IdempotencyInfo {
     pub key: IdempotencyKey,
     pub endpoint: crate::api::endpoints::EndpointFlat,
+    /// Recorded but not replayed — [`IdempotencyCheck`] says why. Kept because it
+    /// is the only trace of what the original request answered, which is what
+    /// makes a stored record interpretable when diagnosing a replay.
     pub http_status: StatusCode,
 }

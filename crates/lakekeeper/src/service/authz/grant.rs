@@ -771,8 +771,9 @@ impl<'a> GrantAuthorityCheck<'a> {
     /// questions again per entry, and those name the grantee.
     ///
     /// Granting, not revoking: the endpoint exists to say what a principal could hand
-    /// out. Revocation needs no discovery question of its own — what can be taken away
-    /// is read off the existing grants, and each removal is authorized as it is applied.
+    /// out. Revoke authority is a separate question and is not published — an authorizer
+    /// may confer the two directions differently, so a `true` here does not promise the
+    /// matching removal will be allowed. Each removal is authorized as it is applied.
     #[must_use]
     pub fn grantable(privilege: &'a str) -> Self {
         Self {

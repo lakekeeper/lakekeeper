@@ -1,6 +1,6 @@
-use std::fmt::Debug;
 #[cfg(feature = "router")]
 use std::sync::Arc;
+use std::{collections::HashMap, fmt::Debug};
 
 #[cfg(feature = "router")]
 use axum::{
@@ -89,6 +89,8 @@ pub(crate) const K8S_IDP_ID: &str = "kubernetes";
 /// `oid` is preferred so Entra-ID gets the stable per-tenant identifier
 /// out-of-the-box; everything else falls through to `sub`.
 const DEFAULT_SUBJECT_CLAIMS: &[&str] = &["oid", "sub"];
+/// The `separator` value that means "any whitespace" rather than a literal to match.
+pub(crate) const WHITESPACE_SEPARATOR: &str = "whitespace";
 
 /// Configuration for a single OIDC provider in multi-provider mode.
 ///
@@ -107,6 +109,7 @@ const DEFAULT_SUBJECT_CLAIMS: &[&str] = &["oid", "sub"];
 /// LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
 /// ```
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct OidcProviderConfig {
     /// The OIDC provider URI (must expose .well-known/openid-configuration)
     pub uri: url::Url,
@@ -128,7 +131,8 @@ pub struct OidcProviderConfig {
     /// A scope that must be present in tokens from this provider.
     #[serde(default)]
     pub scope: Option<String>,
-    /// Claims to use as the subject (user ID), in order of preference.
+    /// Claim paths to use as the subject (user ID), in order of preference.
+    /// Supports nested claims using dot notation, as for `roles_claim`.
     /// Defaults to `oid`, then `sub` if not specified.
     #[serde(
         default,
@@ -155,6 +159,122 @@ pub struct OidcProviderConfig {
     /// If true, fail startup when this provider's OIDC/JWKS configuration cannot be loaded.
     #[serde(default = "default_true")]
     pub require_connected_on_startup: bool,
+    /// Rules a verified token must satisfy, keyed by rule name (`[a-z0-9-]+`). All rules must
+    /// hold; a missing claim fails. Rejected tokens get a generic 401.
+    ///
+    /// ```bash
+    /// LAKEKEEPER__OPENID_PROVIDERS__OKTA__REQUIRED_CLAIMS__ORG__CLAIM=organizations
+    /// LAKEKEEPER__OPENID_PROVIDERS__OKTA__REQUIRED_CLAIMS__ORG__ANY_OF=[tenant-a, tenant-b]
+    /// ```
+    #[serde(default)]
+    pub required_claims: HashMap<String, ClaimRuleConfig>,
+}
+
+/// One required-claim rule as written in configuration; see
+/// [`OidcProviderConfig::required_claims`]. Exactly one of `any_of`, `all_of`, `none_of`,
+/// `exists` must be set; converted to a validated [`limes::ClaimRule`] at startup.
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimRuleConfig {
+    /// Dotted claim path, e.g. `organizations` or `realm_access.roles`.
+    pub claim: String,
+    /// Split a string claim on this literal before matching. Env values are trimmed, so a
+    /// space must be quoted: `SEPARATOR='" "'`.
+    #[serde(default)]
+    pub separator: Option<String>,
+    /// At least one claim value is in the list.
+    #[serde(default, deserialize_with = "crate::config::deserialize_string_list")]
+    pub any_of: Option<Vec<String>>,
+    /// Every listed value is a claim value.
+    #[serde(default, deserialize_with = "crate::config::deserialize_string_list")]
+    pub all_of: Option<Vec<String>>,
+    /// No claim value is in the list; a missing claim fails.
+    #[serde(default, deserialize_with = "crate::config::deserialize_string_list")]
+    pub none_of: Option<Vec<String>>,
+    /// `true`: the claim is populated — it holds a value that is not blank, or, for an
+    /// object, a member; `false`: absent or `null`. These are not opposites: a claim that is
+    /// present but empty (`[]`, `""`, `"   "`, `{}`) satisfies neither.
+    #[serde(default)]
+    pub exists: Option<bool>,
+}
+
+impl OidcProviderConfig {
+    /// Whether this provider rejects tokens a bare signature check would admit.
+    ///
+    /// The one definition, shared by startup validation and the routing check, so a third
+    /// kind of guard cannot be added to one and forgotten in the other.
+    pub(crate) fn is_guarded(&self) -> bool {
+        !self.required_claims.is_empty() || self.scope.is_some()
+    }
+}
+
+impl ClaimRuleConfig {
+    /// Build the validated rule.
+    ///
+    /// # Errors
+    /// If not exactly one operator is set, or the rule is structurally invalid.
+    pub fn to_rule(&self) -> anyhow::Result<limes::ClaimRule> {
+        type Build = fn(&str, &[String]) -> Result<limes::ClaimRule, limes::ClaimRuleError>;
+        let list: [(&Option<Vec<String>>, Build); 3] = [
+            (&self.any_of, |c, v| limes::ClaimRule::any_of(c, v)),
+            (&self.all_of, |c, v| limes::ClaimRule::all_of(c, v)),
+            (&self.none_of, |c, v| limes::ClaimRule::none_of(c, v)),
+        ];
+        let mut builders: Vec<_> = list
+            .into_iter()
+            .filter_map(|(values, build)| values.as_ref().map(|v| (v, build)))
+            .map(|(values, build)| build(&self.claim, values))
+            .collect();
+        if let Some(exists) = self.exists {
+            builders.push(limes::ClaimRule::exists(&self.claim, exists));
+        }
+        let [rule] = <[_; 1]>::try_from(builders).map_err(|found| {
+            anyhow::anyhow!(
+                "exactly one of `any_of`, `all_of`, `none_of`, `exists` must be set, found {}",
+                found.len()
+            )
+        })?;
+        let mut rule = rule?;
+        if let Some(separator) = &self.separator {
+            // A literal separator is byte-exact, so a deny written for space-delimited scopes
+            // is blind to a tab. `whitespace` reaches the separator that splits on any of them.
+            let separator = if separator.eq_ignore_ascii_case(WHITESPACE_SEPARATOR) {
+                limes::Separator::Whitespace
+            } else {
+                limes::Separator::Literal(separator.clone())
+            };
+            rule = rule.with_separator(separator).map_err(|e| match e {
+                limes::ClaimRuleError::EmptySeparator => anyhow::anyhow!(
+                    "{e}; environment values are trimmed, quote a space as SEPARATOR='\" \"'"
+                ),
+                e => anyhow::anyhow!("{e}"),
+            })?;
+        }
+        Ok(rule)
+    }
+}
+
+/// Validated rules for one provider, in deterministic (name) order.
+///
+/// Rules are named `<idp_id>/<rule>` so a rejection identifies the provider as well as the
+/// rule; rule names are only unique within a provider.
+fn required_claim_rules(
+    idp_id: &str,
+    rules: &HashMap<String, ClaimRuleConfig>,
+) -> anyhow::Result<Vec<(String, limes::ClaimRule)>> {
+    let mut names: Vec<&String> = rules.keys().collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let rule = rules[name].to_rule().map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid required claim rule `{name}` for OIDC provider `{idp_id}`: {e}"
+                )
+            })?;
+            Ok((format!("{idp_id}/{name}"), rule))
+        })
+        .collect()
 }
 
 const fn default_true() -> bool {
@@ -311,6 +431,7 @@ fn oidc_provider_configs_from_config(
                 roles_claim: config.openid_roles_claim.clone(),
                 display_name_template: config.openid_display_name_template.clone(),
                 require_connected_on_startup: true,
+                required_claims: config.openid_required_claims.clone(),
             },
         ));
     }
@@ -353,19 +474,31 @@ async fn build_oidc_authenticators(
             .map_err(|e| {
                 anyhow::anyhow!("invalid `display_name_template` for OIDC provider `{idp_id}`: {e}")
             })?;
-        validated.push((idp_id, provider, display_name_template));
+        let required_claims = required_claim_rules(&idp_id, &provider.required_claims)?;
+        validated.push((idp_id, provider, display_name_template, required_claims));
     }
 
     let mut authenticators = Vec::new();
-    for (idp_id, provider, display_name_template) in validated {
+    let mut routing = Vec::new();
+    for (idp_id, provider, display_name_template, required_claims) in validated {
         tracing::info!(
             "Creating OIDC authenticator for {} ({})",
             idp_id,
             provider.uri
         );
 
-        match build_oidc_authenticator(&idp_id, &provider, display_name_template).await {
+        match build_oidc_authenticator(&idp_id, &provider, display_name_template, required_claims)
+            .await
+        {
             Ok(authenticator) => {
+                routing.push(AuthenticatorRouting {
+                    idp_id: idp_id.clone(),
+                    // The first issuer is the one published by the provider's discovery
+                    // document, which is not derivable from configuration.
+                    issuers: authenticator.issuers().to_vec(),
+                    audiences: authenticator.audiences().to_vec(),
+                    guarded: provider.is_guarded(),
+                });
                 authenticators.push(AuthenticatorEnum::from(authenticator));
                 tracing::info!("Successfully added OIDC authenticator: {}", idp_id);
             }
@@ -386,13 +519,81 @@ async fn build_oidc_authenticators(
         }
     }
 
+    validate_authenticator_routing(&routing)?;
+
     Ok(authenticators)
+}
+
+/// How a built authenticator is selected for a token.
+#[derive(Debug)]
+struct AuthenticatorRouting {
+    idp_id: String,
+    issuers: Vec<String>,
+    audiences: Vec<String>,
+    /// The provider enforces a scope or required-claim rules, so it matters that its own
+    /// tokens actually reach it.
+    guarded: bool,
+}
+
+/// Reject provider combinations whose tokens cannot be routed as configured.
+///
+/// A token goes to the first authenticator whose issuer set contains its `iss` and whose
+/// audience set intersects its `aud` (an empty audience set matches anything); there is no
+/// fallthrough. Two providers publishing the same issuer therefore compete, and a token
+/// naming both audiences reaches only the first — which is why disjoint audiences are not
+/// enough to protect a provider that enforces a scope or required claims.
+///
+/// This runs on the issuers each provider actually published, so it also catches one identity
+/// provider reached through two URLs (an in-cluster and a public hostname, say).
+fn validate_authenticator_routing(providers: &[AuthenticatorRouting]) -> anyhow::Result<()> {
+    for (i, a) in providers.iter().enumerate() {
+        for b in &providers[i + 1..] {
+            if !a.issuers.iter().any(|issuer| b.issuers.contains(issuer)) {
+                continue;
+            }
+            let (first, second) = (&a.idp_id, &b.idp_id);
+            // Disjoint audience lists do not separate the providers: one token may name both
+            // audiences, and it reaches `{first}` alone. Only the second provider loses its
+            // rules — when `{first}` is the guarded one it still enforces them on everything
+            // it takes, which is strict rather than permissive.
+            anyhow::ensure!(
+                !b.guarded,
+                "OIDC providers `{first}` and `{second}` publish the same issuer, and \
+                 `{second}` enforces a scope or required claims. A token naming both \
+                 audiences reaches only `{first}`, so the rules of `{second}` would not be \
+                 enforced. Configure the same rules on `{first}`, or serve them from separate \
+                 issuers."
+            );
+            if a.audiences.is_empty()
+                || b.audiences.is_empty()
+                || a.audiences.iter().any(|aud| b.audiences.contains(aud))
+            {
+                tracing::warn!(
+                    "OIDC providers `{first}` and `{second}` publish the same issuer and accept \
+                     overlapping audiences. Tokens matching both reach only `{first}`, so the \
+                     settings of `{second}` may never apply."
+                );
+            } else if a.guarded {
+                // Disjoint audiences do not make this safe: `{first}` enforces its rules only
+                // on tokens it takes, and the issuer's other tokens reach `{second}`, which
+                // enforces nothing.
+                tracing::warn!(
+                    "OIDC provider `{first}` publishes the same issuer as `{second}` and \
+                     enforces a scope or required claims, but `{second}` does not. Tokens of \
+                     that issuer carrying only `{second}`'s audience are admitted without \
+                     `{first}`'s rules."
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn build_oidc_authenticator(
     idp_id: &str,
     provider: &OidcProviderConfig,
     display_name_template: Option<limes::jwks::DisplayNameTemplate>,
+    required_claims: Vec<(String, limes::ClaimRule)>,
 ) -> anyhow::Result<limes::jwks::JWKSWebAuthenticator> {
     let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
         provider.uri.as_ref(),
@@ -413,7 +614,11 @@ async fn build_oidc_authenticator(
 
     if let Some(scope) = &provider.scope {
         tracing::debug!("Setting scope for {idp_id}: {scope}");
-        authenticator = authenticator.set_scope(scope.clone());
+        // Unreachable when config validation ran (`validate_required_claims`); kept as a
+        // guard for programmatic configs.
+        authenticator = authenticator
+            .set_scope(scope.clone())
+            .map_err(|e| anyhow::anyhow!("invalid `scope` for OIDC provider `{idp_id}`: {e}"))?;
     }
 
     if let Some(claims) = &provider.subject_claims {
@@ -443,7 +648,32 @@ async fn build_oidc_authenticator(
         authenticator = authenticator.with_display_name_template(template);
     }
 
+    // At info, and unconditionally: an operator needs boot-time confirmation that the rules
+    // they configured are active, and a count of zero is how a misspelled `REQUIRED_CLAIMS`
+    // container shows up — the spelling that reaches no field is silently dropped, so the
+    // line that would be missing is exactly the one worth reading. Names only, never values.
+    let names: Vec<&str> = required_claims.iter().map(|(n, _)| n.as_str()).collect();
+    tracing::info!(
+        "Requiring {} claim rule(s) for OIDC provider {idp_id}: {names:?}",
+        names.len()
+    );
+    if !required_claims.is_empty() {
+        authenticator = authenticator.with_required_claims(required_claims);
+    }
+
     Ok(authenticator)
+}
+
+/// The 401 for a token the authenticator did not accept. The cause is attached for
+/// server-side logging only; the body never names a rule, claim or expected value.
+#[cfg(feature = "router")]
+fn authentication_failed_response(cause: limes::error::Error) -> Response {
+    ErrorModel::unauthorized(
+        "Authentication failed",
+        "AuthenticationFailed",
+        Some(Box::new(cause)),
+    )
+    .into_response()
 }
 
 #[cfg(feature = "router")]
@@ -480,14 +710,7 @@ pub(crate) async fn auth_middleware_fn<
     let introspection = limes::introspect::introspect(token);
     let authentication = match authenticator.authenticate(token, &introspection).await {
         Ok(principal) => principal,
-        Err(e) => {
-            return ErrorModel::unauthorized(
-                "Authentication failed",
-                "AuthenticationFailed",
-                Some(Box::new(e)),
-            )
-            .into_response();
-        }
+        Err(e) => return authentication_failed_response(e),
     };
     let user_id = match UserId::try_new(authentication.subject().clone()) {
         Ok(user_id) => user_id,
@@ -605,7 +828,7 @@ pub(crate) async fn auth_middleware_fn<
         // an already-authenticated principal that must not be admitted to this
         // instance at all (e.g. an external control-plane permission service).
         // Runs after instance-admin and assumed-role resolution so a gate can
-        // honor the instance-admin break-glass and see the resolved actor.
+        // honor instance-admin status and see the resolved actor.
         // No-op unless the host binary registered at least one gate.
         if !state.admission_gates.is_empty() {
             // The raw bearer is handed to gates via a transient context, never
@@ -917,6 +1140,8 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 }
 
 #[cfg(test)]
+// `figment::Jail::expect_with` closures return `Result<(), figment::Error>`.
+#[allow(clippy::result_large_err)]
 mod tests {
     use std::time::Duration;
 
@@ -931,6 +1156,12 @@ mod tests {
     use crate::{config::DynAppConfig, service::RoleId};
 
     async fn spawn_oidc_test_server() -> (Url, Url, JoinHandle<()>) {
+        spawn_oidc_test_server_with_keys(json!({ "keys": [] })).await
+    }
+
+    async fn spawn_oidc_test_server_with_keys(
+        jwks: serde_json::Value,
+    ) -> (Url, Url, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind oidc test server");
@@ -946,7 +1177,6 @@ mod tests {
         let bad_config = json!({
             "issuer": bad_base.as_str(),
         });
-        let jwks = json!({ "keys": [] });
 
         let app = Router::new()
             .route(
@@ -980,6 +1210,524 @@ mod tests {
         (good_base, bad_base, handle)
     }
 
+    fn any_of_rule(claim: &str, values: &[&str]) -> ClaimRuleConfig {
+        ClaimRuleConfig {
+            claim: claim.to_string(),
+            separator: None,
+            any_of: Some(values.iter().map(ToString::to_string).collect()),
+            all_of: None,
+            none_of: None,
+            exists: None,
+        }
+    }
+
+    fn provider(
+        uri: &Url,
+        required_claims: HashMap<String, ClaimRuleConfig>,
+    ) -> OidcProviderConfig {
+        OidcProviderConfig {
+            uri: uri.clone(),
+            audience: Some(vec![TEST_AUD.to_string()]),
+            additional_issuers: None,
+            scope: None,
+            subject_claims: None,
+            roles_claim: None,
+            display_name_template: None,
+            require_connected_on_startup: true,
+            required_claims,
+        }
+    }
+
+    const TEST_AUD: &str = "lakekeeper";
+
+    struct Signer {
+        key: jsonwebtoken::EncodingKey,
+        jwks: serde_json::Value,
+    }
+
+    impl Signer {
+        fn ed25519() -> Self {
+            use base64::Engine as _;
+            let key_pair = aws_lc_rs::signature::Ed25519KeyPair::generate().unwrap();
+            let pkcs8 = key_pair.to_pkcs8().unwrap();
+            let x = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(aws_lc_rs::signature::KeyPair::public_key(&key_pair).as_ref());
+            Self {
+                key: jsonwebtoken::EncodingKey::from_ed_der(pkcs8.as_ref()),
+                jwks: json!({ "keys": [
+                    { "kty": "OKP", "crv": "Ed25519", "alg": "EdDSA", "kid": "k1", "x": x }
+                ]}),
+            }
+        }
+
+        fn sign(&self, issuer: &Url, mut claims: serde_json::Value) -> String {
+            let exp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600;
+            claims["exp"] = json!(exp);
+            claims["iss"] = json!(issuer.as_str());
+            claims["aud"] = json!(TEST_AUD);
+            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+            header.kid = Some("k1".to_string());
+            jsonwebtoken::encode(&header, &claims, &self.key).unwrap()
+        }
+    }
+
+    async fn authenticate(
+        chain: &BuiltInAuthenticators,
+        token: &str,
+    ) -> Result<limes::Authentication, limes::error::Error> {
+        let introspection = limes::introspect::introspect(token);
+        match chain {
+            BuiltInAuthenticators::Single(auth) => auth.authenticate(token, &introspection).await,
+            BuiltInAuthenticators::Chain(chain) => chain.authenticate(token, &introspection).await,
+        }
+    }
+
+    fn routing(
+        idp_id: &str,
+        issuers: &[&str],
+        audiences: &[&str],
+        guarded: bool,
+    ) -> AuthenticatorRouting {
+        AuthenticatorRouting {
+            idp_id: idp_id.to_string(),
+            issuers: issuers.iter().map(ToString::to_string).collect(),
+            audiences: audiences.iter().map(ToString::to_string).collect(),
+            guarded,
+        }
+    }
+
+    /// One identity provider reached through two URLs publishes one issuer, which no
+    /// configuration-time check can see. Disjoint audiences do not rescue it: a token naming
+    /// both reaches only the first provider.
+    #[test]
+    fn shared_published_issuer_is_rejected_when_the_shadowed_provider_is_guarded() {
+        let err = validate_authenticator_routing(&[
+            routing(
+                "oidc",
+                &["https://sso.example.com/realms/x"],
+                &["internal"],
+                false,
+            ),
+            routing(
+                "corp",
+                &["https://sso.example.com/realms/x"],
+                &["lakekeeper"],
+                true,
+            ),
+        ])
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("publish the same issuer"), "{msg}");
+        assert!(msg.contains("`oidc`") && msg.contains("`corp`"), "{msg}");
+    }
+
+    #[test]
+    fn shared_published_issuer_is_allowed_when_no_provider_is_guarded() {
+        validate_authenticator_routing(&[
+            routing("oidc", &["https://idp.example.com"], &["a"], false),
+            routing("corp", &["https://idp.example.com"], &["b"], false),
+        ])
+        .unwrap();
+    }
+
+    /// The provider that wins routing enforces its own rules on everything it takes, so
+    /// guarding it and not the one it shadows leaves nothing under-enforced.
+    #[test]
+    fn shared_published_issuer_is_allowed_when_only_the_first_provider_is_guarded() {
+        validate_authenticator_routing(&[
+            routing("oidc", &["https://idp.example.com"], &["a"], true),
+            routing("corp", &["https://idp.example.com"], &["b"], false),
+        ])
+        .unwrap();
+    }
+
+    /// Only a shared issuer creates competition; different issuers never do, whatever the
+    /// audiences are.
+    #[test]
+    fn distinct_issuers_never_compete() {
+        validate_authenticator_routing(&[
+            routing("oidc", &["https://a.example.com"], &["lakekeeper"], true),
+            routing("corp", &["https://b.example.com"], &["lakekeeper"], true),
+        ])
+        .unwrap();
+    }
+
+    /// An issuer shared through `additional_issuers` competes just as much as a primary one.
+    #[test]
+    fn additional_issuers_are_compared_too() {
+        let err = validate_authenticator_routing(&[
+            routing(
+                "oidc",
+                &["https://a.example.com", "https://sts.example.com"],
+                &["a"],
+                false,
+            ),
+            routing(
+                "corp",
+                &["https://b.example.com", "https://sts.example.com"],
+                &["b"],
+                true,
+            ),
+        ])
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("publish the same issuer"));
+    }
+
+    /// The routing check is unit-tested; what feeds it is not. A hardcoded `guarded: false`
+    /// would make the check dead in production while every routing test stayed green.
+    #[tokio::test]
+    async fn routing_inputs_are_wired_from_the_built_authenticators() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+        let mut config = DynAppConfig::default();
+        // Alphabetical order puts the unguarded provider first, so the guarded one is shadowed.
+        config
+            .openid_providers
+            .insert("aaa".to_string(), provider(&issuer, HashMap::new()));
+        config.openid_providers.insert(
+            "bbb".to_string(),
+            provider(
+                &issuer,
+                HashMap::from([(
+                    "org".to_string(),
+                    any_of_rule("organizations", &["tenant-a"]),
+                )]),
+            ),
+        );
+        let err = assemble_authenticator_chain(&config, None, None)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("publish the same issuer"), "{msg}");
+        assert!(msg.contains("`bbb`"), "{msg}");
+        server.abort();
+    }
+
+    /// Every rule of a provider must hold, and the alphabetically first failure is reported.
+    #[tokio::test]
+    async fn all_rules_of_a_provider_are_enforced_in_name_order() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+        let mut config = DynAppConfig::default();
+        config.openid_providers.insert(
+            "x".to_string(),
+            provider(
+                &issuer,
+                HashMap::from([
+                    (
+                        "aaa".to_string(),
+                        any_of_rule("organizations", &["tenant-a"]),
+                    ),
+                    ("zzz".to_string(), any_of_rule("department", &["eng"])),
+                ]),
+            ),
+        );
+        let chain = assemble_authenticator_chain(&config, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let both = json!({ "sub": "u", "organizations": ["tenant-a"], "department": "eng" });
+        assert!(
+            authenticate(&chain, &signer.sign(&issuer, both))
+                .await
+                .is_ok()
+        );
+
+        // Satisfying only the first rule is not enough: the second is reported.
+        let only_first = json!({ "sub": "u", "organizations": ["tenant-a"] });
+        assert_eq!(
+            authenticate(&chain, &signer.sign(&issuer, only_first))
+                .await
+                .unwrap_err()
+                .rejection(),
+            Some(&limes::RejectionReason::ClaimRuleFailed {
+                rule: "x/zzz".to_string(),
+            })
+        );
+        // Failing both names the alphabetically first one only.
+        let neither = json!({ "sub": "u" });
+        assert_eq!(
+            authenticate(&chain, &signer.sign(&issuer, neither))
+                .await
+                .unwrap_err()
+                .rejection(),
+            Some(&limes::RejectionReason::ClaimRuleFailed {
+                rule: "x/aaa".to_string(),
+            })
+        );
+        server.abort();
+    }
+
+    /// Environment variables through to a signed token, the seam config tests and
+    /// token tests each stop short of.
+    #[tokio::test]
+    async fn env_configured_required_claims_are_enforced() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+        let mut captured = None;
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_PROVIDERS__X__URI", &issuer);
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__X__REQUIRED_CLAIMS__ORG__CLAIM",
+                "organizations",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__X__REQUIRED_CLAIMS__ORG__ANY_OF",
+                "[tenant-a]",
+            );
+            captured = Some(crate::config::get_config());
+            Ok(())
+        });
+        let config = captured.unwrap();
+        assert_eq!(config.openid_providers["x"].required_claims.len(), 1);
+
+        let chain = assemble_authenticator_chain(&config, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let ok = signer.sign(
+            &issuer,
+            json!({ "sub": "u", "organizations": ["tenant-a"] }),
+        );
+        assert_eq!(
+            authenticate(&chain, &ok)
+                .await
+                .unwrap()
+                .subject()
+                .subject_in_idp(),
+            "u"
+        );
+        let wrong = signer.sign(
+            &issuer,
+            json!({ "sub": "u", "organizations": ["tenant-b"] }),
+        );
+        assert_eq!(
+            authenticate(&chain, &wrong).await.unwrap_err().rejection(),
+            Some(&limes::RejectionReason::ClaimRuleFailed {
+                rule: "x/org".to_string(),
+            })
+        );
+        server.abort();
+    }
+
+    /// The flat container takes any spelling the environment offers, so a misspelt one reaches
+    /// no field and the rules simply vanish — every token from that provider is then admitted.
+    /// Nothing at parse time can catch it, which is why the rule count is logged at boot even
+    /// when it is zero: the missing confirmation is the only signal an operator gets.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn a_misspelt_required_claims_container_leaves_no_rules() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+        let load = |key: &str| {
+            let mut captured = None;
+            let (issuer, key) = (issuer.clone(), key.to_string());
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__OPENID_PROVIDER_URI", &issuer);
+                jail.set_env(
+                    format!("LAKEKEEPER_TEST__{key}__ORG__CLAIM"),
+                    "organizations",
+                );
+                jail.set_env(format!("LAKEKEEPER_TEST__{key}__ORG__ANY_OF"), "[tenant-a]");
+                captured = Some(crate::config::get_config());
+                Ok(())
+            });
+            captured.unwrap()
+        };
+        assert_eq!(
+            load("OPENID_REQUIRED_CLAIMS").openid_required_claims.len(),
+            1
+        );
+        // Singular, and transposed: both are silently dropped.
+        for misspelt in ["OPENID_REQUIRED_CLAIM", "OPENID_REQUIRED_CLAMIS"] {
+            let config = load(misspelt);
+            assert!(
+                config.openid_required_claims.is_empty(),
+                "{misspelt} must reach no field"
+            );
+            let chain = assemble_authenticator_chain(&config, None, None)
+                .await
+                .unwrap()
+                .unwrap();
+            let unwanted = signer.sign(
+                &issuer,
+                json!({ "sub": "u", "organizations": ["tenant-b"] }),
+            );
+            assert!(
+                authenticate(&chain, &unwanted).await.is_ok(),
+                "{misspelt}: no rule is enforced"
+            );
+            // The zero count is the operator's only signal that the rules never arrived, so
+            // it must be logged rather than skipped as uninteresting.
+            assert!(
+                logs_contain("Requiring 0 claim rule(s) for OIDC provider oidc: []"),
+                "{misspelt}: the zero rule count must be logged"
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn required_claims_admit_and_reject_signed_tokens() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+        let mut config = DynAppConfig::default();
+        config.openid_providers.insert(
+            "x".to_string(),
+            provider(
+                &issuer,
+                HashMap::from([(
+                    "org".to_string(),
+                    any_of_rule("organizations", &["tenant-a"]),
+                )]),
+            ),
+        );
+        let chain = assemble_authenticator_chain(&config, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let ok = signer.sign(
+            &issuer,
+            json!({ "sub": "u", "organizations": ["tenant-a"] }),
+        );
+        let auth = authenticate(&chain, &ok).await.unwrap();
+        assert_eq!(auth.subject().subject_in_idp(), "u");
+
+        let wrong = signer.sign(
+            &issuer,
+            json!({ "sub": "u", "organizations": ["tenant-b"] }),
+        );
+        let err = authenticate(&chain, &wrong).await.unwrap_err();
+        assert_eq!(
+            err.rejection(),
+            Some(&limes::RejectionReason::ClaimRuleFailed {
+                // Rules are reported as `<idp_id>/<rule>`.
+                rule: "x/org".to_string(),
+            })
+        );
+        let rendered = format!("{err} {err:?}");
+        assert!(!rendered.contains("tenant-"), "{rendered}");
+
+        let missing = signer.sign(&issuer, json!({ "sub": "u" }));
+        assert_eq!(
+            authenticate(&chain, &missing)
+                .await
+                .unwrap_err()
+                .rejection(),
+            Some(&limes::RejectionReason::ClaimRuleFailed {
+                rule: "x/org".to_string(),
+            })
+        );
+
+        server.abort();
+    }
+
+    /// `SCOPE=x` and an explicit whitespace-separated `all_of` rule on `scope` reject the
+    /// same token the same way.
+    #[tokio::test]
+    async fn scope_sugar_is_equivalent_to_explicit_scope_rule() {
+        let signer = Signer::ed25519();
+        let (issuer, _bad, server) = spawn_oidc_test_server_with_keys(signer.jwks.clone()).await;
+
+        let mut sugar = DynAppConfig::default();
+        let mut p = provider(&issuer, HashMap::new());
+        p.scope = Some("admin".to_string());
+        sugar.openid_providers.insert("x".to_string(), p);
+
+        let mut explicit = DynAppConfig::default();
+        let rule = ClaimRuleConfig {
+            claim: "scope".to_string(),
+            separator: Some(" ".to_string()),
+            any_of: None,
+            all_of: Some(vec!["admin".to_string()]),
+            none_of: None,
+            exists: None,
+        };
+        explicit.openid_providers.insert(
+            "x".to_string(),
+            provider(&issuer, HashMap::from([("scopes".to_string(), rule)])),
+        );
+
+        let token_ok = signer.sign(&issuer, json!({ "sub": "u", "scope": "openid admin" }));
+        let token_bad = signer.sign(&issuer, json!({ "sub": "u", "scope": "openid" }));
+        // Where the two intentionally diverge: the sugar splits on any whitespace and falls
+        // back to `scp`; an explicit rule splits only on its literal separator and reads
+        // only the named claim.
+        let token_tab = signer.sign(&issuer, json!({ "sub": "u", "scope": "openid\tadmin" }));
+        let token_scp = signer.sign(&issuer, json!({ "sub": "u", "scp": ["admin"] }));
+        for (config, rejection) in [
+            (sugar, limes::RejectionReason::ScopeMissing),
+            (
+                explicit,
+                limes::RejectionReason::ClaimRuleFailed {
+                    rule: "x/scopes".to_string(),
+                },
+            ),
+        ] {
+            let chain = assemble_authenticator_chain(&config, None, None)
+                .await
+                .unwrap()
+                .unwrap();
+            authenticate(&chain, &token_ok).await.unwrap();
+            let err = authenticate(&chain, &token_bad).await.unwrap_err();
+            assert_eq!(err.rejection(), Some(&rejection));
+
+            let tab = authenticate(&chain, &token_tab).await;
+            let scp = authenticate(&chain, &token_scp).await;
+            if rejection == limes::RejectionReason::ScopeMissing {
+                tab.unwrap();
+                scp.unwrap();
+            } else {
+                assert_eq!(tab.unwrap_err().rejection(), Some(&rejection));
+                assert_eq!(scp.unwrap_err().rejection(), Some(&rejection));
+            }
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_token_response_is_a_generic_401() {
+        use http_body_util::BodyExt as _;
+        let cause = limes::error::Error::rejected(limes::RejectionReason::ClaimRuleFailed {
+            rule: "org".to_string(),
+        });
+        let response = authentication_failed_response(cause);
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["type"], "AuthenticationFailed");
+        assert_eq!(body["error"]["message"], "Authentication failed");
+        assert_eq!(body["error"]["code"], 401);
+        let stack = body["error"]["stack"].as_array().unwrap();
+        assert_eq!(stack.len(), 1);
+        assert!(stack[0].as_str().unwrap().starts_with("Error ID: "));
+        let text = body.to_string();
+        assert!(!text.contains("org"), "{text}");
+        assert!(!text.contains("rule"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn invalid_required_claim_fails_startup_before_network() {
+        let (_good, bad_base, server) = spawn_oidc_test_server().await;
+        let mut rule = any_of_rule("org", &[]);
+        rule.any_of = Some(vec![]);
+        let providers = vec![(
+            "acme".to_string(),
+            provider(&bad_base, HashMap::from([("org".to_string(), rule)])),
+        )];
+        let err = build_oidc_authenticators(providers).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("required claim rule `org`"), "{msg}");
+        assert!(msg.contains("acme"), "{msg}");
+        server.abort();
+    }
+
     #[test]
     fn oidc_provider_configs_from_config_uses_legacy_provider_id_and_roles_claim() {
         let mut config = DynAppConfig::default();
@@ -990,11 +1738,19 @@ mod tests {
         config.openid_subject_claim = Some(vec!["sub".to_string()]);
         config.openid_roles_claim = Some("roles".to_string());
         config.openid_display_name_template = Some("Service Account {email}".to_string());
+        config.openid_required_claims.insert(
+            "org".to_string(),
+            any_of_rule("organizations", &["tenant-a"]),
+        );
 
         let providers = oidc_provider_configs_from_config(&config);
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, OIDC_IDP_ID);
+        assert_eq!(
+            providers[0].1.required_claims,
+            config.openid_required_claims
+        );
         assert_eq!(
             providers[0].1.audience,
             Some(vec!["lakekeeper".to_string()])
@@ -1028,6 +1784,7 @@ mod tests {
                 roles_claim: Some("groups".to_string()),
                 display_name_template: None,
                 require_connected_on_startup: false,
+                required_claims: HashMap::new(),
             },
         );
 
@@ -1065,6 +1822,7 @@ mod tests {
                     roles_claim: None,
                     display_name_template: None,
                     require_connected_on_startup: true,
+                    required_claims: HashMap::new(),
                 },
             );
         }
@@ -1088,6 +1846,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: template.map(str::to_string),
                 require_connected_on_startup: true,
+                required_claims: HashMap::new(),
             },
         )
     }
@@ -1121,6 +1880,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,
+                required_claims: HashMap::new(),
             },
         );
 
@@ -1178,6 +1938,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: false,
+                required_claims: HashMap::new(),
             },
         );
 
@@ -1219,6 +1980,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,
+                required_claims: HashMap::new(),
             },
         );
 
@@ -1247,6 +2009,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: false,
+                required_claims: HashMap::new(),
             },
         );
 
@@ -1283,6 +2046,7 @@ mod tests {
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,
+                required_claims: HashMap::new(),
             },
         );
 

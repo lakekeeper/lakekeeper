@@ -3119,6 +3119,11 @@ pub mod tests {
         /// Which grant directions this authorizer has authority over. Empty by default,
         /// which answers every grant-authority question with the trait's deny.
         grant_ops: &'static [GrantOp],
+        /// Namespaces to report from [`Authorizer::managed_role_provider_ids`]. Empty
+        /// by default, matching every real OSS authorizer; a test sets it to exercise
+        /// the non-empty path, which OSS otherwise cannot reach (no role providers
+        /// ship here, so the production set is always empty).
+        managed_role_providers: HashSet<RoleProviderId>,
     }
 
     impl Default for HidingAuthorizer {
@@ -3137,7 +3142,19 @@ pub mod tests {
                 server_id: ServerId::new_random(),
                 bootstrap: &[],
                 grant_ops: &[],
+                managed_role_providers: HashSet::new(),
             }
+        }
+
+        /// Report `providers` as provider-managed, so a test can exercise the
+        /// non-empty deny-set that no OSS authorizer produces on its own.
+        #[must_use]
+        pub fn with_managed_role_providers(
+            mut self,
+            providers: impl IntoIterator<Item = RoleProviderId>,
+        ) -> Self {
+            self.managed_role_providers = providers.into_iter().collect();
+            self
         }
 
         /// Give this authorizer authority over `ops` and nothing else, so a test can tell
@@ -3262,6 +3279,10 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn managed_role_provider_ids(&self) -> &HashSet<RoleProviderId> {
+            &self.managed_role_providers
         }
 
         fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {

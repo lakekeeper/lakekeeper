@@ -349,7 +349,7 @@ impl axum::response::IntoResponse for GrantablePrivilegesResponse {
     }
 }
 
-/// One privilege of a resource's vocabulary, and whether the principal may administer it.
+/// One privilege of a resource's vocabulary, and whether the principal may grant it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -360,13 +360,19 @@ pub struct GrantablePrivilege {
     /// distinct — and so a new descriptor field can never collide with `allowed`.
     #[cfg_attr(feature = "open-api", schema(value_type = PrivilegeDescriptor))]
     pub privilege: &'static PrivilegeDescriptor,
-    /// Whether the principal may administer this privilege here — grant it, revoke it, or
-    /// both. Advisory: an apply checks each of its entries on its own.
+    /// Whether the principal may grant this privilege here. Advisory: an apply checks
+    /// each of its entries on its own.
+    ///
+    /// Granting only. Revoking is authorized separately and may be refused where this
+    /// says `true` — under the OpenFGA authorizer, delegated grant authority
+    /// (`pass_grants`) hands a privilege out without taking it back. There is no
+    /// discovery question for the revoke direction; a removal is authorized as it is
+    /// applied.
     pub allowed: bool,
 }
 
 /// This resource's whole vocabulary, each entry marked with whether the principal may
-/// administer it — grant it, revoke it, or both.
+/// grant it.
 ///
 /// The deployment-wide vocabulary answers "what does this server understand"; this
 /// answers "what may I do here", which is the question a grant dialog asks. Grant

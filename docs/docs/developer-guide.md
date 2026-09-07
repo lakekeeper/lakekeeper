@@ -1,3 +1,7 @@
+---
+description: "Contribute to Lakekeeper: development setup, pull request and CI expectations, conventional commits, and the contributor licence agreement."
+---
+
 # Developer Guide
 
 All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first.
@@ -340,6 +344,14 @@ source .example.env-from-above
 cargo nextest run --all-features --ignore-default-filter -E "test(::aws_integration_tests::)"
 # see .config/nextest.toml for all filters
 ```
+
+To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects exactly the tests that use those variables and nothing else:
+
+```sh
+cargo nextest run --profile s3_compat --all-features --all-targets --workspace
+```
+
+This is what the SeaweedFS workflow runs.
 
 ## Running integration test
 

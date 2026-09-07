@@ -1704,6 +1704,7 @@ async fn test_cross_project_target_rejected(pool: PgPool) {
     let warehouse_b = Server::create_warehouse(
         CreateWarehouseRequest {
             warehouse_name: "warehouse-b".to_string(),
+            warehouse_id: None,
             project_id: Some((*project_b).clone()),
             storage_profile: memory_io_profile(),
             storage_credential: None,

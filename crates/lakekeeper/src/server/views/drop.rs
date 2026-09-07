@@ -42,24 +42,9 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     validate_table_or_view_ident(view)?;
 
-    // ------------------- IDEMPOTENCY CHECK -------------------
+    // ------------------- AUDIT CONTEXT -------------------
+    // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
-    if let Some(ref key) = idempotency_key {
-        let check = C::check_idempotency_key(
-            warehouse_id,
-            key,
-            EndpointFlat::CatalogV1DropView,
-            state.v1_state.catalog.clone(),
-        )
-        .await?;
-        if check.is_replay() {
-            return Ok(());
-        }
-    }
-
-    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
-    let authorizer = state.v1_state.authz;
-
     let event_ctx = APIEventContext::for_view(
         Arc::new(request_metadata),
         state.v1_state.events,
@@ -70,6 +55,24 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             purge: purge_requested,
         },
     );
+
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    if let Some(ref key) = idempotency_key {
+        let check = C::check_idempotency_key(
+            warehouse_id,
+            key,
+            EndpointFlat::CatalogV1DropView,
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
+        if check.is_replay() {
+            event_ctx.emit_idempotent_replay(*key);
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+    let authorizer = state.v1_state.authz;
 
     let authz_context = authorizer
         .load_and_authorize_view_operation::<C>(

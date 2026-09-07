@@ -1,3 +1,7 @@
+---
+description: "Run Lakekeeper's authorization on OpenFGA for hierarchical, inheritable permissions across warehouses, namespaces, tables and views."
+---
+
 # Authorization with OpenFGA
 
 Lakekeeper can use [OpenFGA](https://openfga.dev) to store and evaluate permissions. OpenFGA provides bi-directional inheritance, which is key for managing hierarchical namespaces in modern lakehouses. For query engines like Trino, Lakekeeper's OPA bridge translates OpenFGA permissions into Open Policy Agent (OPA) format. See the [OPA Bridge Guide](./opa.md) for details.
@@ -27,63 +31,65 @@ The default permission model is focused on collaborating on data. Permissions ar
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
 
-##### Ownership
+### Ownership
 
 Owners of objects have all rights on the specific object. When principals create new objects, they automatically become owners of these objects. This enables powerful self-service scenarios where users can act autonomously in a (sub-)namespace. By default, Owners of objects are also able to access grants on objects, which enables them to expand the access to their owned objects to new users. Enabling [Managed Access](#managed-access) for a Warehouse or Namespace removes the `grant` privilege from owners.
 
-##### Server: Admin
+### Server: Admin
 
 A `server`'s `admin` role is the most powerful role (apart from `operator`) on the server. In order to guarantee auditability, this role can list and administrate all Projects, but does not have access to data in projects. While the `admin` can assign himself the `project_admin` role for a project, this assignment is tracked by `OpenFGA` for audits. `admin`s can also manage all projects (but no entities within it), server settings and users.
 
-##### Server: Operator
+### Server: Operator
 
 The `operator` has unrestricted access to all objects in Lakekeeper. It is designed to be used by technical users (e.g., a Kubernetes Operator) managing the Lakekeeper deployment.
 
-##### Project: Security Admin
+### Project: Security Admin
 
 A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. However, they cannot modify or access the content of any object, except for listing and browsing purposes.
 
-##### Project: Data Admin
+### Project: Data Admin
 
 A `data_admin` in a project can manage all data-related aspects, including creating, modifying, and deleting objects within the project. They can delegate the `data_admin` role they already hold (for example to team members), but they do not have general grant or ownership administration capabilities.
 
-##### Project: Admin
+### Project: Admin
 
 A `project_admin` in a project has the combined responsibilities of both `security_admin` and `data_admin`. They can manage all security-related aspects, including grants and ownership, as well as all data-related aspects, including creating, modifying, and deleting objects within the project.
 
-##### Project: Role Creator
+### Project: Role Creator
 
 A `role_creator` in a project can create new roles within it. This role is essential for delegating the creation of roles without granting broader administrative privileges.
 
-##### Project: Tag Creator
+### Project: Tag Creator
 
 A `tag_creator` in a project can create new governance tag definitions within it, without holding broader administrative privileges — the tag analogue of `role_creator`. Managing an *existing* definition (update, delete, delegating who may apply it) is not conferred by `tag_creator`; it keys off the definition's `ownership` or `security_admin`. See [Tags](#tags).
 
-##### Describe
+### Describe
 
 The `describe` grant allows a user to view metadata and details about an object without modifying it. This includes listing objects and viewing their properties. The `describe` grant is inherited down the object hierarchy, meaning if a user has the `describe` grant on a higher-level entity, they can also describe all child entities within it. The `describe` grant is implicitly included with the `select`, `create`, and `modify` grants.
 
-##### Select
+### Select
 
 The `select` grant allows a user to read data from an object, such as tables or views. This includes querying and retrieving data. The `select` grant is inherited down the object hierarchy, meaning if a user has the `select` grant on a higher-level entity, they can select all views and tables within it. The `select` grant implicitly includes the `describe` grant.
 
-##### Create
+### Create
 
 The `create` grant allows a user to create new objects within an entity, such as tables, views, or namespaces. The `create` grant is inherited down the object hierarchy, meaning if a user has the `create` grant on a higher-level entity, they can also create objects within all child entities. The `create` grant implicitly includes the `describe` grant.
 
-##### Modify
+### Modify
 
 The `modify` grant allows a user to change the content or properties of an object, such as updating data in tables or altering views. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `select` and `describe` grants.
 
-##### Pass Grants
+### Pass Grants
 
-The `pass_grants` grant allows a user to pass their own privileges to other users. This means that if a user has certain permissions on an object, they can grant those same permissions to others. However, the `pass_grants` grant does not include the ability to pass the `pass_grants` privilege itself.
+The `pass_grants` grant allows a user to pass their own privileges to other users. This means that if a user has certain permissions on an object, they can grant those same permissions to others. However, the `pass_grants` grant does not include the ability to pass the `pass_grants` privilege itself, nor `manage_grants`.
 
-##### Manage Grants
+`pass_grants` delegates in one direction only: handing a privilege out, never taking it back. Revoking any grant requires `manage_grants` — including revoking a grant the `pass_grants` holder made themselves. This keeps delegation one hop deep, so every grant that exists is traceable to someone holding `manage_grants`, and there is no chain of delegated grants to unwind when access is withdrawn.
+
+### Manage Grants
 
 The `manage_grants` grant allows a user to manage all grants on an object, including creating, modifying, and revoking grants. This also includes `manage_grants` and `pass_grants`.
 
-##### Manage Tags
+### Manage Tags
 
 The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
 
@@ -101,7 +107,7 @@ Because a grant *is* a tuple, a few behaviors differ from deployments that store
 - **No grantor.** A tuple has nowhere to record who wrote it. Grant listings publish no grantor under any authorizer, so this costs nothing at the API — but it does mean the `grant_created` audit event is the only record of who granted a privilege here. `created-at` is the tuple's write timestamp.
 - **User ids are taken as given.** OpenFGA does not check that a user exists, so granting to a mistyped user id succeeds silently — and granting *before* a user's first login works, taking effect when they register. Role ids are checked: a `/grants` write below the server rejects a role outside the project with `GrantRoleNotInProject`. Server grants have no project to check against and skip that lookup. Deployments that store grants in the catalog database reject an unknown user with `GrantUserNotFound`.
 - **Grant events are never deduplicated.** Grant events assert state rather than transitions and may repeat under every authorizer (see [Logging](./logging.md#audit-logs)). A tuple write additionally reports nothing about prior state, so here no no-op can be suppressed at all: re-applying an unchanged diff emits the full set of events every time. Deployments that store grants in the catalog database skip events for no-ops; this one cannot.
-- **Unknown privileges cannot be revoked.** A privilege outside the model has no relation, so there is no tuple to remove and no `can_grant_…` relation to check — the request is refused with `403`. Nothing revocable is withheld; just do not mix unknown privileges into a diff with real ones.
+- **Unknown privileges cannot be revoked.** A privilege outside the model has no relation, so there is no tuple to remove and no `can_revoke_…` relation to check — the request is refused with `403`. Nothing revocable is withheld; just do not mix unknown privileges into a diff with real ones.
 - **The project-scoped listing is not supported.** `GET /management/v1/grants` reports `GrantListingNotImplemented` (501) here. Tuples are indexed by object, so "everything one principal holds in this project" has no index to answer it from: it would mean reading the store a level at a time and resolving every object back to its project through the hierarchy, producing one unpageable response sized by the deployment rather than by the request. Rather than ship that, the arm refuses. Read one resource's grants from `GET .../{resource}/grants` — those page normally and take `principalUser`/`principalRole` — or query OpenFGA directly, where the tuples are. Deployments that keep grants in the catalog database answer the project-scoped listing normally.
 - **`pageSize` is clamped to 100.** The authorizer's read caps a page there, whatever the deployment maximum is. Follow the continuation token rather than raising the page size.
 - **A privilege the model no longer defines disappears from listings.** It is stored as a relation, and a relation the model does not define has no name to report — so such a grant is invisible *and*, per the point above, unrevocable through the API. `openfga reconcile` does not clean grants. Remove the tuple in OpenFGA directly, or keep the relation in the model until its grants are gone.

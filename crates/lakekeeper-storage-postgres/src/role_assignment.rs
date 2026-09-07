@@ -524,6 +524,72 @@ pub(crate) async fn list_role_assignments_for_user<
     })
 }
 
+// ─── list_role_ancestors ─────────────────────────────────────────────────────
+
+/// Every role each of `role_ids` is a member of, transitively — their own rows excluded.
+///
+/// Upward only, and flat: an authorizer needs the whole set at once, and one that expresses
+/// nesting as direct parent links needs it flattened, because a chain broken by a missing
+/// intermediate stops resolving. Excluding the seed row mirrors the shape of the other
+/// closure readers here — the caller already holds the role it asked about.
+///
+/// One query for any number of seeds, and the recursion carries the seed it started from:
+/// unioning the closures without it would say which roles are ancestors of *something* in
+/// the batch, which is not a question anyone asked. Asking about one role is this with a
+/// single-element slice.
+///
+/// `UNION` (not `UNION ALL`) makes this terminate on a cyclic graph as well as deduplicate;
+/// cycles are rejected when an edge is written, so that is belt and braces.
+pub(crate) async fn list_role_ancestors<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    role_ids: &[RoleId],
+    connection: E,
+) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+    let seeds: Vec<Uuid> = role_ids.iter().map(|role_id| **role_id).collect();
+    let rows = sqlx::query!(
+        r#"
+        WITH RECURSIVE ancestors(seed, role_id) AS (
+                SELECT rm.member_role_id, rm.parent_role_id
+                FROM role_membership rm
+                WHERE rm.member_role_id = ANY($1)
+            UNION
+                SELECT a.seed, rm.parent_role_id
+                FROM role_membership rm
+                JOIN ancestors a ON rm.member_role_id = a.role_id
+        )
+        SELECT a.seed AS "seed!", r.id, r.source_id, r.provider_id, r.project_id
+        FROM ancestors a
+        JOIN "role" r ON r.id = a.role_id
+        "#,
+        &seeds,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    // Every seed gets an entry, ancestors or not. A role nested in nothing is the common
+    // case, and leaving it absent would make the caller unable to tell it from one nobody
+    // looked up — and would re-query for it on every request.
+    let mut by_seed: HashMap<RoleId, Vec<AssignedRole>> = role_ids
+        .iter()
+        .map(|role_id| (*role_id, Vec::new()))
+        .collect();
+    for row in rows {
+        by_seed
+            .entry(RoleId::new(row.seed))
+            .or_default()
+            .push(AssignedRole {
+                role_id: RoleId::new(row.id),
+                role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+                project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
+            });
+    }
+    Ok(by_seed)
+}
+
 // ─── list_role_assignments_for_role ──────────────────────────────────────────
 
 pub(crate) async fn list_role_assignments_for_role<
@@ -3179,7 +3245,7 @@ mod tests {
         );
         // The child is a lakekeeper-managed role, so it is manually assignable.
         assert_eq!(members.len(), 1);
-        assert!(members[0].manually_assignable());
+        assert!(members[0].is_catalog_managed());
         // The edge's creation timestamp is populated from `role_membership.created_at`.
         // Use a wide window (not `<= now()`) to tolerate DB-vs-host clock skew.
         assert!(
@@ -3533,6 +3599,175 @@ mod tests {
         assert_eq!(e.parent_role_id, p);
         assert_eq!(e.member_role_id, m);
         assert_eq!(e.max_depth, 0);
+    }
+
+    /// The reader returns the whole upward closure flat, not just the direct parent.
+    ///
+    /// Flat is the point: a consumer that turns these into direct links needs every level,
+    /// because a chain that skips one stops resolving there. The seed role is excluded — the
+    /// caller already has it — and a role nested in nothing yields an empty set rather than
+    /// an error, which is what makes the common case free of special handling.
+    #[sqlx::test]
+    async fn role_ancestors_are_the_whole_chain_flattened(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let grandparent = create_managed_role(&state, &project_id, "grandparent").await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // grandparent has member parent; parent has member leaf.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // One call, both seeds, and each closure attributed to the role it belongs to. A
+        // union of the two would answer neither question: `grandparent` is an ancestor of
+        // `leaf` and of nothing at all from its own row.
+        let by_seed = list_role_ancestors(&[leaf, grandparent], &pool)
+            .await
+            .unwrap();
+
+        let leaf_ancestors = &by_seed[&leaf];
+        let ids: HashSet<RoleId> = leaf_ancestors.iter().map(|r| r.role_id).collect();
+        assert_eq!(
+            ids,
+            HashSet::from([parent, grandparent]),
+            "both levels above the leaf, and not the leaf itself"
+        );
+
+        // Every entry carries what an external authorizer names a role by.
+        let parent_entry = leaf_ancestors
+            .iter()
+            .find(|r| r.role_id == parent)
+            .expect("the direct parent is in the closure");
+        assert_eq!(parent_entry.role_ident.source_id().as_str(), "parent");
+        assert_eq!(parent_entry.project_id.as_ref(), &project_id);
+
+        assert_eq!(
+            by_seed[&grandparent].len(),
+            0,
+            "the top of the chain is nested in nothing"
+        );
+        assert_eq!(
+            by_seed.len(),
+            2,
+            "one entry per requested role, so `nested in nothing` is an answer and not a gap"
+        );
+
+        // The middle of the chain, asked on its own.
+        let only_parent = list_role_ancestors(&[parent], &pool).await.unwrap();
+        assert_eq!(
+            only_parent[&parent]
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([grandparent]),
+            "asking about one role is the same call with a one-element slice"
+        );
+    }
+
+    /// The closure is a set over a DAG, not a walk up one chain.
+    ///
+    /// A role can be a member of several roles at the same level, and two roles can share an
+    /// ancestor. Both are what "flat set" means; a chain test cannot tell a correct
+    /// implementation from one that follows a single parent per level.
+    #[sqlx::test]
+    async fn role_ancestors_cover_multiple_parents_and_a_shared_ancestor(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+        let top = create_managed_role(&state, &project_id, "top").await;
+        let left = create_managed_role(&state, &project_id, "left").await;
+        let right = create_managed_role(&state, &project_id, "right").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let sibling = create_managed_role(&state, &project_id, "sibling").await;
+
+        // top -> {left, right}; left -> leaf; right -> leaf (diamond); right -> sibling.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, top, &[left, right], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, left, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(
+            &arc_project_id,
+            right,
+            &[leaf, sibling],
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let by_seed = list_role_ancestors(&[leaf, sibling], &pool).await.unwrap();
+
+        // Both parents, and the shared grandparent exactly once despite two paths to it.
+        let leaf_ancestors: Vec<RoleId> = by_seed[&leaf].iter().map(|r| r.role_id).collect();
+        assert_eq!(
+            leaf_ancestors.iter().copied().collect::<HashSet<_>>(),
+            HashSet::from([left, right, top]),
+        );
+        assert_eq!(
+            leaf_ancestors.len(),
+            3,
+            "`top` is reachable via both `left` and `right` but appears once"
+        );
+        assert_eq!(
+            by_seed[&sibling]
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([right, top]),
+            "the second seed gets its own closure, not the first seed's"
+        );
+    }
+
+    /// A role id nobody created answers an empty set, and a repeated seed collapses.
+    ///
+    /// The empty answer is the documented precondition: it cannot be told apart from a role
+    /// nested in nothing, which is safe only because callers pass roles they already resolved.
+    #[sqlx::test]
+    async fn role_ancestors_handle_unknown_and_repeated_seeds(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let unknown = RoleId::new_random();
+        let by_seed = list_role_ancestors(&[leaf, unknown, leaf], &pool)
+            .await
+            .unwrap();
+
+        assert_eq!(by_seed.len(), 2, "a repeated seed collapses to one entry");
+        assert_eq!(
+            by_seed[&leaf].iter().map(|r| r.role_id).collect::<Vec<_>>(),
+            vec![parent],
+            "the repeated seed's ancestors are not duplicated"
+        );
+        assert_eq!(
+            by_seed[&unknown].len(),
+            0,
+            "a role that does not exist is present with an empty set, not absent"
+        );
     }
 
     #[sqlx::test]

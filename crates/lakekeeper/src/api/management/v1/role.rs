@@ -64,8 +64,10 @@ fn reject_managed_provider(
 /// request body. The reserved `system` namespace is **not** checked here: the
 /// mutate-existing-role sites (delete, update, source-system rebind) reject it
 /// separately with an `is_system()` check yielding `SystemRoleImmutable`, while
-/// the membership sites deliberately permit it — `system` (and `lakekeeper`)
-/// roles are `manually_assignable`, so their member lists stay editable.
+/// the membership sites guard it separately — writes to a `system`-provider
+/// role's membership require an instance admin and never accept a role-type
+/// member (see `reject_system_role_membership` in `role_membership.rs`).
+/// `lakekeeper`-provider roles remain manually assignable without restriction.
 pub(crate) fn reject_managed_role<A, E>(authorizer: &A, role: &ArcRole) -> Result<(), E>
 where
     A: Authorizer,
@@ -787,6 +789,9 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     // cache-hardening notes).
     role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
     role_assignments_cache::role_members_cache_invalidate(role_id).await;
+    // The cascade also erased this role's `role_membership` edges, so it is no longer an
+    // ancestor of anything nested beneath it — a set cached per role, not per user.
+    role_assignments_cache::role_ancestors_cache_invalidate_all();
     Ok(role)
 }
 
@@ -892,6 +897,10 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
 
     role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
     role_assignments_cache::role_members_cache_invalidate(role_id).await;
+    // A rebind changes this role's ident, which is what an external authorizer names it by.
+    // Cached ancestor sets carry that ident per row, so they would keep publishing the old
+    // one — and a policy naming the new ident would match nothing.
+    role_assignments_cache::role_ancestors_cache_invalidate_all();
     Ok(role)
 }
 
