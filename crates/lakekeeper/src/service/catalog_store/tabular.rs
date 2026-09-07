@@ -1610,9 +1610,17 @@ where
         Self::search_tabular_impl(warehouse_id, search_term, catalog_state).await
     }
 
+    /// Rename a tabular, optionally into a different namespace.
+    ///
+    /// `source_namespace_id` is the namespace the caller resolved the tabular in. The
+    /// tabular is located by id *and* that namespace, so a rename that lost a race against
+    /// a concurrent one fails instead of acting on whatever the winner left behind. The
+    /// authorizer's re-parenting depends on this: it detaches the caller's source
+    /// namespace, which is only correct while that is still the tabular's real parent.
     async fn rename_tabular(
         warehouse_id: WarehouseId,
         source_id: impl Into<TabularId> + Send,
+        source_namespace_id: NamespaceId,
         source_ident: &TableIdent,
         destination_ident: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -1620,6 +1628,7 @@ where
         Self::rename_tabular_impl(
             warehouse_id,
             source_id.into(),
+            source_namespace_id,
             source_ident,
             destination_ident,
             transaction,

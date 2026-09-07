@@ -187,7 +187,20 @@ lakekeeper openfga reconcile --mode add-and-delete-drift --dry-run
 
 ### What reconcile touches
 
-Reconcile only operates on the **structural** parts of the OpenFGA store: the parent/child edges between server, projects, warehouses, namespaces, tables, views, and roles. Ownership tuples, grants, role assignments, bootstrap admin tuples, and authorization-model bookkeeping are left alone. Tuples whose endpoints both refer to objects that *don't* exist in the catalog are also untouched — there is no anchor by which to interpret them.
+Reconcile only operates on the **structural** parts of the OpenFGA store: the parent/child edges between server, projects, warehouses, namespaces, tables, views, generic tables, and roles. Ownership tuples, grants, role assignments, bootstrap admin tuples, and authorization-model bookkeeping are left alone. Tuples whose endpoints both refer to objects that *don't* exist in the catalog are also untouched — there is no anchor by which to interpret them.
+
+### Repairing tabulars renamed across namespaces
+
+Earlier releases did not re-point a table, view, or generic table in OpenFGA when a rename moved it into a different namespace. The catalog moved it, but OpenFGA kept the edge to the namespace it came from, so principals granted on the *source* namespace kept access to it in its new location. Renames performed after the fix need no follow-up.
+
+`--mode add-missing` does **not** repair this: the surviving edge is a surplus tuple, and the additive pass only adds the destination edge — leaving the tabular inheriting from both namespaces. Run the deleting mode once after upgrading:
+
+```sh
+lakekeeper openfga reconcile --mode add-and-delete-drift --dry-run
+lakekeeper openfga reconcile --mode add-and-delete-drift
+```
+
+The report's delete count is two tuples per stale edge — one per direction — plus any other structural drift the same run retracts.
 
 ### Operational notes
 

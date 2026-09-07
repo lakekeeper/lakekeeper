@@ -1383,6 +1383,7 @@ fn rename_tabular_error(
 pub(crate) async fn rename_tabular(
     warehouse_id: WarehouseId,
     source_id: TabularId,
+    source_namespace_id: NamespaceId,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -1408,6 +1409,11 @@ pub(crate) async fn rename_tabular(
                     AND typ = $3
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND deleted_at IS NULL
+                    -- The tabular must still be the one the caller resolved: same namespace,
+                    -- same name. Locating it by id alone would let a rename that lost a race
+                    -- act on whatever the winner left behind.
+                    AND namespace_id = $5
+                    AND name = $6
                 FOR UPDATE
             ),
             locked_source_namespace AS ( -- source namespace of the tabular
@@ -1495,6 +1501,8 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             *warehouse_id,
+            *source_namespace_id,
+            &**source_name,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1503,7 +1511,7 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "The source tabular could not be found.",
+                "The source tabular could not be found under the given namespace and name.",
             )
         })?
     } else {
@@ -1519,6 +1527,12 @@ pub(crate) async fn rename_tabular(
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND name = $6
                     AND deleted_at IS NULL
+                    -- The tabular must still be in the namespace the caller resolved. This
+                    -- is what the authorizer's re-parenting rests on: it detaches that
+                    -- namespace, which is only correct while it is still the real parent.
+                    -- A rename that lost a race must fail, not follow the tabular into the
+                    -- namespace the winner moved it to.
+                    AND namespace_id = $7
                 FOR UPDATE
             ),
             locked_namespace AS ( -- target namespace
@@ -1613,6 +1627,7 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             &**source_name,
+            *source_namespace_id,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1621,7 +1636,8 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "Either the source tabular or the destination namespace could not be found.",
+                "Either the destination namespace, or the source tabular under the given \
+                 namespace and name, could not be found.",
             )
         })?
     };

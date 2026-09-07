@@ -931,7 +931,6 @@ pub mod tests {
     }
 
     pub struct InitializedTable {
-        #[allow(dead_code)]
         pub namespace_id: NamespaceId,
         pub namespace: NamespaceIdent,
         pub table_id: TableId,
@@ -1548,6 +1547,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1602,6 +1602,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1636,6 +1637,140 @@ pub mod tests {
         assert_eq!(infos[0].tabular_id(), table.table_id.into());
     }
 
+    /// A rename must act on the tabular only while it is still in the namespace the caller
+    /// named.
+    ///
+    /// The row is located by id, so without a namespace predicate a rename would follow the
+    /// tabular into whichever namespace a concurrent rename had already moved it to. That
+    /// matters beyond the lost update: the authorizer re-parents by detaching the *caller's*
+    /// source namespace, which is only the tabular's real parent while this holds. Losing
+    /// the race must fail, not silently move the tabular a second time.
+    #[sqlx::test]
+    async fn test_rename_from_a_namespace_the_tabular_has_left_fails(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+
+        let elsewhere = NamespaceIdent::from_vec(vec!["elsewhere".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &elsewhere, None).await;
+        // The loser's destination must exist, or the pre-existing "destination namespace
+        // must exist" predicate would reject the call for the wrong reason and the
+        // assertion below would hold with or without the namespace guard.
+        let third = NamespaceIdent::from_vec(vec!["third".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &third, None).await;
+
+        // The move that wins the race.
+        let moved_ident = TableIdent {
+            namespace: elsewhere.clone(),
+            name: table.table_ident.name.clone(),
+        };
+        let mut transaction = pool.begin().await.unwrap();
+        rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            table.namespace_id,
+            &table.table_ident,
+            &moved_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // The loser still names the original namespace as its source. Same id, same name —
+        // only the namespace disagrees.
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            table.namespace_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: third.clone(),
+                name: table.table_ident.name.clone(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_)),
+            "unexpected error: {rename_err:?}"
+        );
+        transaction.rollback().await.unwrap();
+
+        // The same must hold for an in-place rename, which locates the row by id alone.
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            table.namespace_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: table.table_ident.namespace.clone(),
+                name: "renamed".to_string(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_)),
+            "unexpected error: {rename_err:?}"
+        );
+        transaction.rollback().await.unwrap();
+    }
+
+    /// The in-place branch locates the row by id, so it must also require the name the
+    /// caller resolved — otherwise a rename that lost a race renames whatever the winner
+    /// left behind.
+    #[sqlx::test]
+    async fn test_in_place_rename_from_a_stale_name_fails(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+
+        // The rename that wins the race.
+        let mut transaction = pool.begin().await.unwrap();
+        rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            table.namespace_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: table.table_ident.namespace.clone(),
+                name: "winner".to_string(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // The loser still names the original table name as its source.
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            table.namespace_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: table.table_ident.namespace.clone(),
+                name: "loser".to_string(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_)),
+            "unexpected error: {rename_err:?}"
+        );
+        transaction.rollback().await.unwrap();
+    }
+
     #[sqlx::test]
     async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -1654,6 +1789,7 @@ pub mod tests {
         let rename_err = rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1688,6 +1824,7 @@ pub mod tests {
         let rename_err = rename_tabular(
             warehouse_id,
             source.table_id.into(),
+            source.namespace_id,
             &source.table_ident,
             &occupant.table_ident,
             &mut transaction,
@@ -1725,6 +1862,7 @@ pub mod tests {
         let rename_err = rename_tabular(
             warehouse_id,
             source.table_id.into(),
+            source.namespace_id,
             &source.table_ident,
             &occupant.table_ident,
             &mut transaction,
@@ -1773,6 +1911,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             source.table_id.into(),
+            source.namespace_id,
             &source.table_ident,
             &dropped.table_ident,
             &mut transaction,
@@ -2230,6 +2369,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
