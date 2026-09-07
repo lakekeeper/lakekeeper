@@ -161,17 +161,12 @@ impl ExtensionMigrations {
 /// The migration that the namespace path-prefix casing repair is pinned to.
 ///
 /// The repair (see `repair_namespace_path_casing`) runs once, when this version is applied for the
-/// first time — not on every startup. This version ships in 0.14.0 and is in no earlier release, so
-/// every deployment upgrading from 0.13.x applies it then and gets repaired then; a fresh install
-/// applies it against an empty database and the repair is a no-op.
+/// first time — not on every startup.
 ///
-/// **Moving it:** if another write path is found to store a caller-cased prefix, re-pin this to a
+/// If another write path is found to store a caller-cased prefix, re-pin this to a
 /// migration that is *unreleased at that time* and the repair runs again on the next upgrade.
 /// Pinning to an already-released version would never fire, because the deployments that need
 /// repairing already have it recorded.
-///
-/// Deliberately a real migration rather than an empty sentinel: 0.14.0's move-namespace migration is
-/// part of the same change that closed the write paths, so the pin and the fix ship together.
 pub const NAMESPACE_PATH_CASING_REPAIR_AFTER: i64 = 20_260_812_090_000;
 
 /// Versions recorded as applied in the core migration tracker.

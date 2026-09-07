@@ -570,32 +570,6 @@ struct LockedParentNamespace {
 ///
 /// Both writers that place a namespace under a parent need this — `create_namespace` and
 /// `move_namespace` — and neither may write the caller's spelling of the ancestor segments.
-/// `namespace_name` is `text[] collate "case_insensitive"`, so `["PARENT"]` matches a row stored as
-/// `["parent"]`. Writing the caller's array verbatim stores a child whose prefix does not
-/// byte-match the parent row it points at. The catalog stays correct — the parent id is right, and
-/// every SQL comparison is collated — but `is_parent_ident` in the namespace cache compares
-/// `child[..len - 1]` against the parent's ident with plain equality. A mismatch makes
-/// `build_hierarchy_from_cache` invalidate and return `None` on *every* subsequent lookup, by id
-/// and by name alike, and the reload re-inserts the same canonical bytes and fails identically — a
-/// permanent miss plus eviction churn for that row and its whole subtree, not a stale read.
-///
-/// Callers must therefore build the written path as `namespace_name` plus the caller's leaf. Only
-/// the leaf keeps the caller's casing, because a case-only change to the leaf is a genuine rename.
-///
-/// `FOR KEY SHARE` is the weakest lock that works: it conflicts with the `FOR UPDATE` that a DELETE
-/// and a rename of the parent take (`namespace_name` is a key column of
-/// `unique_namespace_per_warehouse`), so neither can commit before us. It deliberately does not
-/// conflict with the `FOR NO KEY UPDATE` that property and protection updates take — nothing here
-/// reads either, so excluding them would only add contention.
-///
-/// Deliberately returns no `version`. The parent's version belongs in the `parent_ns` CTE of each
-/// caller's write statement, which reads it in the same statement as the write. Because
-/// `FOR NO KEY UPDATE` is *not* excluded, a property or protection update on the parent can commit
-/// between this lock and that write and bump `version` via `set_updated_at_and_increment_version`;
-/// a version captured here would then be strictly older than the truth at write time.
-///
-/// Issued as its own statement rather than folded into a CTE of the write, because the caller needs
-/// the stored name in Rust *before* the write is built.
 ///
 /// `Ok(None)` means the parent does not exist; callers map it to their own `NamespaceNotFound`,
 /// because their error types differ.
@@ -766,48 +740,6 @@ pub(crate) async fn create_namespace(
 
 /// Rewrite namespace path prefixes that disagree with their parent row's spelling, returning the
 /// number of rows changed.
-///
-/// Maintenance, run from the post-migration hooks rather than as a migration, and gated there on the
-/// migration it is pinned to having just been applied — so it runs once per upgrade, not on every
-/// startup. Deliberately not a migration itself: migrations run inside one transaction under
-/// `SET LOCAL statement_timeout = '60min'` while holding the advisory lock, with `serve` waiting on
-/// them, so a slow data rewrite there can abort an upgrade and keep the server down. As a hook it
-/// runs outside that transaction, and its failure is logged rather than fatal unless an operator
-/// asked for it explicitly.
-///
-/// Written to be idempotent regardless, because both recovery paths depend on it:
-/// `migrate --force-idempotent-post-migration-hooks` re-runs it after a failure, and re-pinning it to
-/// a later migration re-runs it for a newly found hole.
-///
-/// `create_namespace`
-/// used to insert the caller's whole path verbatim while resolving the parent under the
-/// `case_insensitive` collation, so creating `a/b/c` under a parent stored `a/B` stored the child as
-/// {a,b,c}. Nothing in the database is broken by that — the parent id is right, every SQL comparison
-/// is collated — but `is_parent_ident` in the namespace cache compares the prefix byte-wise, so such
-/// a row and every descendant can never be served from cache: each lookup invalidates, reloads the
-/// same bytes and fails identically. `lock_parent_namespace` stops new drift; this repairs what is
-/// already stored.
-///
-/// One statement per depth, ascending, is a performance requirement rather than a style choice. The
-/// natural recursive form joins on `child.namespace_name[1:parent.depth] = parent.stored`, whose
-/// left operand references both relations, so Postgres can never use it as a join key — it demotes
-/// to a per-row `Join Filter` over the cross product of each depth level with the next, which is
-/// quadratic. Measured with nothing to repair: 4.4 s at 28k namespaces, 18.6 s at 66k. Pinning the
-/// depth per statement makes the slice bound depend only on the child, yielding
-/// `Hash Cond: ((c.warehouse_id = p.warehouse_id) AND (c.namespace_name[1:2] = p.namespace_name))`
-/// — 154 ms at 128k for the whole loop. Same trap `move_namespace`'s `has_children` guard documents.
-///
-/// Ascending order is what makes it correct: each statement reads parents one level up that the
-/// previous statement already canonicalised, so a repair at depth 2 propagates downwards. Bounded by
-/// the deepest row present rather than `MAX_NAMESPACE_DEPTH`, so rows written while that limit was
-/// higher are still repaired. Rows whose ancestor is missing are left alone.
-///
-/// Collision-free by construction: every rewritten value is collation-equal to the value it
-/// replaces, and `unique_namespace_per_warehouse` is over that collation. `ON UPDATE CASCADE`
-/// carries the new spelling to `tabular.tabular_namespace_name`. `version` and `updated_at` are
-/// untouched, because the trigger's `WHEN` compares the collated column and a case-only rewrite is
-/// NOT DISTINCT there — replicas do not need the bump, since an affected row could never have been
-/// cached anyway.
 pub(crate) async fn repair_namespace_path_casing(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> std::result::Result<u64, CatalogBackendError> {
@@ -967,9 +899,7 @@ pub(crate) async fn move_namespace(
         return Err(NamespaceHasChildren::new(warehouse_id, namespace_id).into());
     }
 
-    // See `lock_parent_namespace` for the lock strength and why the stored spelling is read.
-    //
-    // What that lock does *not* stop is the parent being dropped immediately after our commit:
+    // This lock does *not* stop the parent being dropped immediately after our commit:
     // `drop_namespace` evaluates its emptiness guard in an unlocked statement and then deletes by
     // an id list frozen from that snapshot, so it neither sees our new child nor re-checks after
     // waiting on this lock. That is a pre-existing gap in `drop_namespace`, not one this lock can
