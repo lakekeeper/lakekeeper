@@ -89,138 +89,63 @@ We try to keep unit-tests close to the code they are testing. E.g., all tests fo
 
 You'll start at `api` and add the endpoint function to either `management` or `iceberg` depending on whether the endpoint belongs to official iceberg REST specification. The likely next step is to extend the respective `Service` trait so that there's a function to be called from the REST handler. Within the trait function, depending on your feature, you may need to store or fetch something from the storage backend. Depending on if the functionality already exists, you can do so via the respective function on the `C` generic and either the `state: ApiContext<State<...>>` struct or by first getting a transaction via `C::Transaction::begin_<write|read>(state.v1_state.catalog.clone()).await?;`. If you need to add a new function to the storage backend, extend the `Catalog` trait and implement it in the respective modules within `implementations`. Remember to do appropriate AuthZ checks within the function of the respective `Service` trait.
 
-### I changed the audit log format
+### I need to change the audit log format
 
-Audit log records — every line with `"event_source": "audit"` — carry a `MAJOR.MINOR` version in their `audit_format` field, declared as `AUDIT_FORMAT` in `crates/lakekeeper/src/service/events/backends/audit/mod.rs`. Consumers use it to pick a parser, so it has to be accurate. Nothing else in the tree observes the emitted JSON, which is why the fixtures below exist.
+Audit records — every line with `"event_source": "audit"` — carry a `MAJOR.MINOR` version in their `audit_format` field, declared as `AUDIT_FORMAT` in `crates/lakekeeper/src/service/events/backends/audit/mod.rs`. Consumers route on it.
 
-**The tests tell you which kind of change you made.** Run `just test`. If a fixture test fails, the failure message says whether the change is breaking or additive, and which JSON path moved:
+**Which bump.** Wire enums reach the log as string *values*, so renaming a variant changes the payload even though no key moves.
 
-- **The fixture-comparison failure** — a field was removed, renamed, retyped, *or a value changed*. The message asks you to decide which, because the two want opposite things and the comparison cannot tell them apart. A moved key, or a renamed value consumers switch on (`entity_type`, `decision`, `actor_type` and the other wire enums reach the log as string *values*), breaks consumers: bump the **major**, `1.4` becomes `2.0`, and regenerate. A changed test *input* — a scenario made more realistic, an id made deterministic — breaks nothing: regenerate and leave `AUDIT_FORMAT` alone. Bumping for that is rejected by the checker, which compares shapes and sees no format change to justify it.
-- **Failure says "gained a field"** — the change is purely additive and existing consumers keep working. Bump the **minor**: `1.4` becomes `1.5`, and regenerate the fixtures.
+| Change                                                                                          | Bump  |
+|-------------------------------------------------------------------------------------------------|-------|
+| A field added                                                                                   | minor |
+| A new action, entity type, entity field or action context key                                   | minor |
+| A field removed, renamed or retyped                                                             | major |
+| A wire value renamed — `entity_type`, `decision`, `actor_type`, `action_name`, a `Valuable` tag | major |
+| A fixture edited, renamed, added or dropped, with no change to what the server emits            | none  |
 
-Regenerate with `just update-audit-fixtures`, then read the resulting diff: it is exactly what a consumer's pipeline will see. If it contains anything you did not intend, that is the bug.
+A major bump resets the minor, so `1.4` becomes `2.0` and not `2.1`. Skipping numbers, going backwards, bumping both halves at once and removing `AUDIT_FORMAT` are all rejected.
 
-**What the fixtures are, and what a major bump does to them.** A fixture is a record of what the *current* code emits: the test emits an event and compares. That is the whole mechanism, and it has a consequence worth being clear about — a fixture can only ever describe the format the code emits *now*. After a major bump the code emits the new shape, so an old-version fixture cannot be reproduced and therefore cannot be tested. The path is `fixtures/v1/` today, and it is a literal in the test helper; a second version directory would need that helper changed first.
+#### Steps
 
-So on a major bump: regenerate the fixtures in place. Renaming, merging or dropping a fixture is fine — they are test scenarios, not a numbered archive, and a scenario that no longer exists should not have a fixture. If you want the previous format kept as a reference for consumers still reading old logs, that is a **documentation** decision: copy what you need into `docs/docs/logging.md` under the old version, where it will be read. Do not leave stale fixture files behind expecting them to be checked, because nothing can check them.
+**1. Make the change.** Adding a key, an action or a variant is a compile error by design: the build stops where the wire name and its documentation have to be chosen.
 
-One consequence for the bump checker: it compares fixtures by name, so renaming or removing them leaves it nothing to compare. It reports that it could not verify the bump rather than claiming the format did not change, and passes. The Rust fixture tests still catch the change itself — only the version bump goes unverified, so check that one by hand.
+- `EntityField::as_str` (`events/context.rs`) — an entity field key.
+- `EntityType::as_str` (`events/context.rs`) — an `entity_type` value.
+- `ActionContextKey::as_str` (`events/context.rs`) — an action context key.
+- `impl CatalogAction for Catalog*Action` (`service/authz/mod.rs`) — a catalog action. Decide what audit context it carries; if none, add it to the explicit no-context list in that `match`, which exists so that this is a decision rather than a default.
+- `determining_factor_tag` / `policy_effect_tag` (audit test module) and `failure_reason_tag` (`audit::contract`) — a variant of an enum that reaches the wire through `#[derive(Valuable)]`. These types have no hand-written `visit`, so nothing else stops the derive emitting a new variant.
 
-**Then, in the same change:**
+The first four fail `cargo build`. The last fails `cargo test` and `just check` but not a default `cargo build`, because `contract` is gated `#[cfg(any(test, feature = "test-utils"))]`. CI runs both.
 
-1. Update the field tables in `docs/docs/logging.md`. Two tests check this from different directions: one walks the fixtures and fails on any field they emit that is undocumented, and one iterates the key enums and fails on any key the emitter *can* produce that is undocumented. Neither can check that a *description* is still accurate, so re-read the row you touched.
-2. Put an `audit` mention in the pull request title, or a `## Release notes` section in the body, describing the change in consumer terms. Major bumps must appear in the release notes; a consumer that discovers a format change from a parse failure in production has been let down.
+**Never add a `_ =>` arm to those matches.** The missing wildcard is the mechanism: with one, a new entity key silently takes another key's wire name and a new action silently emits no context, and no fixture notices, because a fixture can only exercise a variant that already exists. They carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails `just check` and CI, though not a bare `cargo build`. A wildcard *alongside* the full list is caught by rustc's `unreachable_patterns`; the dangerous edit is replacing arms with one. The exhaustive lists make some of these functions long — one carries `#[allow(clippy::too_many_lines)]` — so do not shorten them by collapsing the list. Not every `action_descriptor` impl carries the deny yet, and `CatalogAction` is public, so authorizer crates have impls this repository cannot see; add the deny when you next touch an unprotected one.
 
-**Adding a key, an action, or a variant.** These are compile errors by design — the build stops at the place where the wire name and the documentation have to be decided. Each is an *additive* change, so it wants a minor bump unless it also renames or replaces something.
+**2. Regenerate: `just update-audit-fixtures`.** Read the diff. It is exactly what a consumer's pipeline will see, so anything in it you did not intend is the bug.
 
-| The build fails at | You added | What to do |
-|---|---|---|
-| `EntityField::as_str` (`events/context.rs`) | an entity field key | Pick the wire name in the `match`, then add a row to the entity field table in `docs/docs/logging.md` |
-| `EntityType::as_str` (`events/context.rs`) | an `entity_type` value | Same, and add it to the `entity_type` list in the docs |
-| `ActionContextKey::as_str` (`events/context.rs`) | an action context key | Same, and add a row to the action context table |
-| `impl CatalogAction for Catalog*Action` (`service/authz/mod.rs`) | a catalog action | Decide what audit context the action should carry. If none, add it to the explicit no-context list in that `match` — the list exists so that this is a decision rather than a default |
-| `determining_factor_tag` / `policy_effect_tag` / `failure_reason_tag` (audit test module) | a variant of an enum that reaches the wire through `#[derive(Valuable)]` | Give it a wire tag and document what it means. These types have no hand-written `visit`, so the derive would otherwise emit a new variant with nothing to stop it |
+**3. Set `AUDIT_FORMAT`.** A major bump also renames the fixture directory: `git mv fixtures/v1 fixtures/v2`, then regenerate again. No code change is needed — the tests derive the directory from `AUDIT_FORMAT` and fail until it exists. Keep exactly one directory. A fixture records what the current code emits, so a retired format can neither be reproduced nor kept passing; it lives in the release notes and in git history instead.
 
-On the `impl CatalogAction` row, what is and is not guaranteed. Every `action_descriptor` match in the tree is exhaustive today, so adding a variant does fail the build — but not every impl carries `#[deny(clippy::wildcard_enum_match_arm)]`, and `CatalogAction` is a public trait, so authorizer crates have impls this repository cannot see at all. For the unprotected ones the guarantee rests on nobody adding a `_ =>` arm. Add the deny when you next touch one.
+**4. Update `docs/docs/logging.md`** — the field tables, and on a major bump the example records, which are the only documentation carrying a version value.
 
-The first four fail a plain `cargo build`, because they are production code. The last lives in the audit test module, so it fails `cargo test` and `just check` but **not** `cargo build` — CI runs both, but a local `cargo build` will not tell you about it.
+**5. Check the bump: `just check-audit-format-bump`.** CI runs it on every pull request.
 
-**Do not add a `_ =>` arm to any of those matches.** Every one of them is exhaustive on purpose: the missing wildcard is the entire mechanism. A wildcard turns each of these build failures into silence — a new entity key would take some other key's wire name, and a new action would emit no audit context — and nothing downstream would notice, because a fixture can only exercise a variant that already exists.
+**6. Say so in the pull request** — an `audit` mention in the title, or a `## Release notes` section in the body describing the change in consumer terms. Major bumps must appear in the release notes.
 
-The rule is enforced rather than trusted to review: those functions carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails the build with *"wildcard match will also match any future added variants"*, and clippy even prints the explicit list to write instead. Note this one is a clippy lint, so it fails `just check` and CI but not a bare `cargo build`.
+#### What the checks cover
 
-Two things worth knowing if you are tempted:
+`AUDIT_FORMAT` is a claim and the fixtures are the evidence. The fixture tests compare emitted records against committed JSON and classify any difference, but only until you regenerate: afterwards they pass whether you bumped correctly, wrongly, or not at all. `check-audit-format-bump` closes that gap by comparing the committed fixtures and the action-name manifest either side of the merge base and requiring the bump to match. Its decision table is self-tested with `--self-test`.
 
-- Adding a wildcard *alongside* the full list is caught anyway, by rustc's own `unreachable_patterns`. The dangerous edit is **replacing** arms with a wildcard, which compiles clean without the deny above. That is the case the lint exists for.
-- The exhaustive lists make some of these functions long. One carries `#[allow(clippy::too_many_lines)]` for that reason. Do not "fix" the length by collapsing the list.
+Comparison is on key paths and JSON types rather than values, and containers record their own type, so `{}`, `[]` and an absent field stay distinguishable. Two consequences. A changed fixture *value* is reported but not classified — nothing can tell a renamed wire value from a more realistic test input, so the checker says so and leaves the decision to you. And fixtures present in only one revision are not compared, so renaming or removing one costs the checker its verdict, which it reports rather than reading as "nothing changed".
 
-There is deliberately no unit test for this. A test cannot observe a compile failure: if a probe variant exists, either the match covers it and the crate does not build (so no test runs), or a wildcard absorbs it and the test passes while proving nothing. The lint is the test.
+Checked exhaustively:
 
-The key enums exist for exactly this reason. Before them the key space was only checked against the fixtures, so a key emitted on a path no fixture exercised was invisible — see the coverage note below.
+- **Entity field keys, `entity_type` values, action context keys** — from the type system. The enums are closed, so a key cannot exist without a `match` arm and a documented row.
+- **Variants of the derived audit enums** — via the tag functions above.
+- **`action_name` removals, per enum.** Each action enum derives its names with `strum`'s `VariantNames`, committed as `audit/action_names.json`: keyed by enum, plus a `literals` list for hand-written descriptors. Per enum matters because most verbs are shared, so a flattened comparison would miss one enum renaming a verb the others still use. Additions are not a format change. Three things sit outside the manifest: an authorizer crate's own actions, since `CatalogAction` is public with a blanket `APIEventActions` impl; a brand-new action *enum*, until it is added to `derived_action_name_enums` in the audit test module; and a hand-written `ActionDescriptor`, covered only if its name is in `LITERAL_ACTION_NAMES`, which `grep -rn 'action_name("' crates/lakekeeper/src` will tell you.
 
-**The bump itself is checked.** The fixture tests classify a change, but only until you regenerate: after `just update-audit-fixtures` they pass whether you bumped the version correctly, bumped it the wrong way, or left it alone. So a separate check compares the committed fixtures either side of the merge base and requires the bump to match what actually changed. Run it locally with `just check-audit-format-bump`; CI runs it on every pull request.
+Checked by example only: **record shape** — nesting, value types, which optional fields are omitted versus `null`, and the singular/plural arity switch. The fixtures pin the scenarios they cover and nothing else, so **if you change a code path no fixture exercises, add a fixture**: write a test that builds the event, run `just update-audit-fixtures`, and register the name in `FIXTURE_NAMES`. That also widens the documentation test that walks the fixtures.
 
-| What changed in the fixtures | Version bump | Verdict |
-|---|---|---|
-| Nothing | none | OK |
-| Nothing | minor or major | **Illegal** — leave `AUDIT_FORMAT` alone. A bump tells every consumer to re-check their parser, so an empty one costs them work for nothing |
-| Fields added | minor | OK |
-| Fields added | none | **Illegal** — bump the minor, so consumers can tell which builds carry the new fields |
-| Fields added | major | **Illegal** — a major bump tells every consumer their parser is broken and to re-check it, which for an added field is false. Bump the minor |
-| A field removed, renamed, or retyped | major | OK |
-| A field removed, renamed, or retyped | minor | **Illegal** — a minor bump says the opposite, that old parsers keep working. Bump the major |
-| A field removed, renamed, or retyped | none | **Illegal** — bump the major |
+Outside `audit_format` entirely: the keys the subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber` and can move on a dependency upgrade. They are stripped before comparison, and `docs/docs/logging.md` states that as a contract.
 
-Also rejected: bumping both halves at once (a major bump resets the minor to zero, so `1.4` goes to `2.0`, not `2.1` — bumping both says two different things happened), skipping numbers, going backwards, and removing `AUDIT_FORMAT` altogether.
-
-Two things it deliberately does **not** treat as format changes, because they are not:
-
-- **A fixture's values changing.** Comparison is on key paths and JSON types, not values. Containers record their own type too, so an empty object, an empty array and an absent field stay distinguishable from one another. Fixtures get edited to be more realistic — a scenario is corrected, an id is made deterministic — and demanding a major bump for `true` becoming `false` in a test input would be wrong.
-- **Fixtures being added or removed.** Only fixtures present in both revisions are compared. A new fixture describes a scenario that was previously untested, not a format that was previously different.
-
-The decision table and the classification are self-tested: `python3 .github/scripts/check-audit-format-bump.py --self-test` exercises every shape-versus-bump combination and the edge cases above, and CI runs it alongside the check. Note that the end-to-end path can only be exercised against real history, so the self-test covers the logic while the run against the merge base covers the git plumbing.
-
-**What `audit_format` does not cover.** The keys the log subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber`, not to Lakekeeper, and can move on a dependency upgrade with no version bump. They are stripped before fixture comparison for that reason, and `docs/docs/logging.md` states it as a contract.
-
-**What the tests actually cover, and what they do not.** Worth knowing before you trust a green suite:
-
-| Part of the format | How it is checked |
-|---|---|
-| Entity field key names, `entity_type` values, action context key names | **Exhaustively, from the type system.** The enums are closed, so a key cannot exist without a `match` arm and a documented row |
-| Which variants the derived audit enums can emit | **Exhaustively**, via the tag functions above |
-| `action_name` values | **Removals, exhaustively.** The bump checker compares the in-repo `Catalog*Action` variant names either side of the merge base and requires a MAJOR bump for any that disappeared. Additions are not a format change: `action_name` is still a string, and consumers ignore values they do not know. `CatalogAction` is a public trait with a blanket `APIEventActions` impl, so an authorizer crate's own actions — `authz-openfga`'s, and any out-of-tree — are outside this check |
-| That every record declares `audit_format` | Structurally: one emission site, checked by a repo-wide `git grep` in CI. A unit test checks the same property within the audit module, for fast local feedback; only the CI check sees the rest of the tree, and neither sees a downstream repository |
-| Record **shape** — nesting, value types, which optional fields are omitted versus `null`, and the singular/plural arity switch | **By example only.** The fixtures pin the shape of the scenarios they cover, and nothing pins the shape of a scenario they do not |
-
-That last row is the real limit. A shape change on a path no fixture exercises will not fail anything. This is not hypothetical: comparing these fixtures against audit records from a running server found five keys no fixture emitted, two of them undocumented, and enumerating the action context keys afterwards found two more. Sampling missed all of them.
-
-So: **if you change a code path that no fixture exercises, add a fixture.** Adding one is cheap — write a test that builds the event, run `just update-audit-fixtures`, and register the name in `FIXTURE_NAMES`. Adding a fixture also widens the fixture-walking documentation test, which is the main reason to bother.
-
-**And extend the corpus test while you are there.** `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` drives requests through the real service layer and checks rules that hold for *any* audit record — that every key is a variant of the closed key enums, that a definitive denial never carries `allowed: true`, and so on. It catches a class of problem a fixture cannot: a fixture is generated by the test that asserts against it, so a wrongly built event produces a fixture that agrees with it and passes forever. That is not hypothetical either — one committed fixture claimed a `CannotSeeResource` denial whose per-decision entry said `allowed: true`, a combination the emitter cannot produce, and it passed every test until a human read the JSON.
-
-The rules there are already general; what is narrow is the set of requests exercised, which at the time of writing produces seven records. So changing the audit log is the best moment to widen it, because you know which path you touched and whether anything reaches it. Drive one more call through `CatalogServer` or `ApiServer` in that test and the existing rules apply to whatever it emits — no new assertion needed. The file's own header lists what is not yet reached, in rough order of how cheap each is to add.
-
-Two things worth knowing before you rely on it. Its capture is thread-local and works only because `sqlx::test` runs on a current-thread runtime; a test switching to `flavor = "multi_thread"` would capture nothing, which is why it asserts it captured something rather than treating an empty corpus as a pass. And it registers the audit listener on its own `ApiContext`, not in the shared harness, so no other integration test is affected by it.
-
-**Open issues, to be discussed for the next major version bump.** Each of these is a place where the current format is awkward rather than wrong: consumers can parse all of it today, and none is urgent on its own. They are recorded here so the discussion starts from a list rather than from memory.
-
-Two things about how to treat them.
-
-They want to be **coordinated**. Each one is a breaking change, so doing them one at a time costs consumers a separate migration every time. Whoever opens the major bump should decide which of these go in it, together, and say so in the release notes as one change of shape rather than several.
-
-And a major bump for some other reason **does not oblige you to touch any of them**. If you are bumping the major because you renamed one field, rename that field and stop. Pulling in unrelated items because "the version is moving anyway" turns a small break into a large one, and makes the release notes harder for a consumer to act on. Widen the scope only if someone has decided that is what the bump is for.
-
-- **Separator inconsistency across and within objects.** See [below](#audit-separators) — it is the largest of these and the least obvious.
-- **The empty-array enum encoding**: `{"Forbid": []}`, `{"ActionForbidden": []}`. The array is always empty — an artefact of how `valuable-serde` renders a Rust enum variant with no payload, not a decision anyone made. Code generators turn it into a wrapper class, and `jq` users need `keys[0]` where a plain string would do.
-- **The `action` / `actions` and `entity` / `entities` arity switch.** A record carries the singular key when one item was checked and the plural key otherwise, so every consumer needs both paths and the schema needs a branch. Always emitting arrays, even of length one, would be simpler for everyone.
-- **Counts encoded as strings.** `writes` and `deletes` in the `apply_grants` action context are numbers sent as JSON strings.
-- **Booleans encoded as strings.** `force`, `purge` and `recursive` are emitted as `"true"`, and only when true, so absence means false. That follows from `ActionContextKey`'s value space being `String` / `Vec<String>` / `BTreeMap<String, String>` — a JSON boolean means widening that value space, so this one is a slightly larger change than it looks.
-- <a id="audit-optional-fields"></a>**Optional fields are encoded inconsistently.** Three paths produce two outcomes, so no field's behaviour can be inferred from another's:
-    - `Authorization::visit` (hand-written) **omits** the key: `id`, `for-principal`, `allowed`, `determined_by`.
-    - `user_agent` (a top-level `tracing` field) is always recorded, so absent reads as `null`.
-    - `DeterminingFactor` (derived `Valuable`) is also always recorded — `valuable-derive` has no conditional skip. Same outcome as `user_agent` by coincidence, not design, so unifying one will not unify the other.
-
-    For consumers, *absent* and *`null`* both mean "not recorded". One rule should apply everywhere.
-- **`user_agent` is absent on operational records and present-or-null on authorization records.** A consumer checking the key exists gets different answers depending on the event family. Either it should always be present, or never be present outside the authorization family.
-- **The operational `context` object is unconstrained.** `audit_operation!` is `#[macro_export]`ed and accepts any `Valuable`, so a crate outside this repository can emit keys nothing here can see, document or test. Closing that means sealing the macro, which breaks those callers — so it is a coordination problem with downstream consumers rather than a change that can be made unilaterally.
-
-#### Separator inconsistency in the audit log {#audit-separators}
-
-It is not simply that entity keys are hyphenated and action keys underscored: **five of the record's objects mix both conventions inside themselves**, so a consumer cannot learn the rule from one object and apply it to the next.
-
-| Object | Mixes |
-|---|---|
-| `entity` / `entities` | `entity_type` alongside `warehouse-id`, `namespace-id`, `table-id`, `project-id` |
-| `action` / `actions` | `action_name`, `table_id`, `force`, `purge` alongside `removed-properties`, `updated-properties`, `target-refs`, `update-kinds` |
-| `authorizations[]` | `determined_by` alongside `for-principal`, the only hyphenated key among its siblings |
-| `context` on authorization events | `queue_name`, `entity_id` alongside `invoked-by`, `self-read`, `self-provisioning` |
-| `context` on grant events | internally consistent, but its `warehouse_id` is `warehouse-id` on an entity — the same field spelled two ways in one stream |
-
-The sharpest single example: `authz_succeeded_rich_action_context.json` carries `table_id` in an action context and `table-id` in an entity, in the same record.
-
-Enum tags are PascalCase again — `Policy`, `SystemAuthority`, `ActionForbidden`, `Forbid`. That third convention is more defensible, since those are type names rather than field names, but it is worth deciding rather than inheriting.
-
-Whichever convention wins, most of this is now cheap to apply: every key-space wire name lives in one `as_str`, so it is a handful of `match` arms rather than a hunt through call sites. The `extra_context` keys are the exception — those are string literals at roughly fourteen call sites.
+**Extend the corpus test while you are here.** `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` drives real requests through the service layer and checks rules that hold for *any* record: every key a variant of the closed enums, a definitive denial never carrying `allowed: true`, and so on. It catches what a fixture cannot, because a fixture is generated by the test that asserts against it — a wrongly built event yields a fixture that agrees with it. The rules are already general; only the set of requests is narrow. Drive one more call through `CatalogServer` or `ApiServer`, raise `EXPECTED_RECORDS` by however many records it emits, and the existing rules apply to whatever it produced. That count is exact because it is the only thing that notices a request quietly ceasing to emit. Run it with `just test-audit-corpus`, which needs the local Postgres from the [Initial setup](#initial-setup). Keep every test in that file on a current-thread runtime: capture is thread-local, so `flavor = "multi_thread"` would capture nothing.
 
 ## Debugging complex issues and prototyping using our examples
 
@@ -313,13 +238,13 @@ Lakekeeper reserves the `ext_*` table-name prefix for downstream extensions
 that need to store their own state in the catalog database. The convention is
 an operational contract between upstream and any extension:
 
-| Rule | What it means |
-|---|---|
-| Reserved prefix | Upstream core migrations **never** create tables matching `ext_*`. Extensions own that namespace. The integration test `test_core_does_not_create_ext_objects` enforces this. |
-| FK direction | Extension tables FK *into* upstream tables. Upstream never FKs into `ext_*`. |
-| CASCADE required | Every FK from an `ext_*` table to an upstream table should be `ON DELETE CASCADE` or `ON DELETE SET NULL`. Enforce in the extension crate's own CI — upstream cannot inspect downstream migration sets. |
+| Rule                     | What it means                                                                                                                                                                                                                                            |
+|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Reserved prefix          | Upstream core migrations **never** create tables matching `ext_*`. Extensions own that namespace. The integration test `test_core_does_not_create_ext_objects` enforces this.                                                                            |
+| FK direction             | Extension tables FK *into* upstream tables. Upstream never FKs into `ext_*`.                                                                                                                                                                             |
+| CASCADE required         | Every FK from an `ext_*` table to an upstream table should be `ON DELETE CASCADE` or `ON DELETE SET NULL`. Enforce in the extension crate's own CI — upstream cannot inspect downstream migration sets.                                                  |
 | Scope of allowed objects | `ext_*` may name tables and objects owned by those tables (indexes, sequences). Triggers, functions, indexes, or views attached to upstream-owned objects are not permitted under the prefix — they would survive extension removal and could brick OSS. |
-| Tracker tables | Each registered extension migration source uses its own SQLx tracker, named `ext_<name>_sqlx_migrations`. Core's `_sqlx_migrations` is untouched. |
+| Tracker tables           | Each registered extension migration source uses its own SQLx tracker, named `ext_<name>_sqlx_migrations`. Core's `_sqlx_migrations` is untouched.                                                                                                        |
 
 #### Registering extension migrations
 
@@ -502,12 +427,13 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 1. Bump the model version by **renaming the latest folder** — e.g. `git mv authz/openfga/v4.7 authz/openfga/v4.8`. Do **not** create a new folder alongside the old one. For a **backward-compatible** change (adding a type, relation, or action; no rewrite of existing tuples) the rename is all you need: existing stores re-migrate to the new model id on startup and their tuples keep authorizing the same actions. This holds **whether or not the previous version was already released** — a released store simply re-migrates to the new id. The **only** exception is a change that rewrites/migrates existing tuples: that one gets a brand-new folder while the old folder is kept for the migration chain (see `v4.0`, which introduced `lakekeeper_table` / `lakekeeper_view` and migrated tuples). Rule of thumb: backward-compatible ⇒ rename the folder; tuple migration ⇒ add a new folder.
 1. Edit the relevant component(s) under `authz/openfga/<version>/components/*.fga` (e.g. add `define can_undrop: modify` to `view.fga`), then regenerate and validate:
 
-   ```bash
-   just update-openfga   # fga model transform <latest>/fga.mod > <latest>/schema.json
-   just test-openfga     # runs the <latest>/store.fga.yaml assertions
-   ```
+    ```bash
+    just update-openfga   # fga model transform <latest>/fga.mod > <latest>/schema.json
+    just test-openfga     # runs the <latest>/store.fga.yaml assertions
+    ```
 
-   (Requires the `fga` CLI — download from the [OpenFGA repo](https://github.com/openfga/cli/releases/).)
+    (Requires the `fga` CLI — download from the [OpenFGA repo](https://github.com/openfga/cli/releases/).)
+
 1. In `crates/authz-openfga/src/migration.rs` bump `ACTIVE_MODEL_VERSION` to the new version. For backward-compatible changes, repoint the current `add_model_*_current` call (schema-path `include_str!` + version). For tuple-migrating changes, add another `add_model` call carrying the migration fn.
 1. Record the change under the new version heading in `authz/openfga/README.md`.
 

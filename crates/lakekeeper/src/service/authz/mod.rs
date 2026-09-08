@@ -265,6 +265,53 @@ where
     fn action_descriptor(&self) -> ActionDescriptor;
 }
 
+/// The `action_name` of the assume-role check in [`crate::service::authn`], which builds its
+/// [`ActionDescriptor`] by hand because the action has no enum of its own.
+pub const ACTION_NAME_ASSUME_ROLE: &str = "assume_role";
+
+/// The `action_name` of the grant-application event in
+/// [`crate::api::management::v1::grant`].
+pub const ACTION_NAME_APPLY_GRANTS: &str = "apply_grants";
+
+// The `action_name`s of the management-endpoint actions in
+// [`crate::service::events::context`], each an `APIEventActions` impl on a request type
+// rather than a `CatalogAction` enum.
+pub const ACTION_NAME_SEARCH_USERS: &str = "search_users";
+pub const ACTION_NAME_LIST_PROJECTS: &str = "list_projects";
+pub const ACTION_NAME_SEARCH_TABULARS: &str = "search_tabulars";
+pub const ACTION_NAME_INTROSPECT_PERMISSIONS: &str = "introspect_permissions";
+pub const ACTION_NAME_GET_TASK_DETAILS: &str = "get_task_details";
+pub const ACTION_NAME_LIST_TASKS: &str = "list_tasks";
+pub const ACTION_NAME_CONTROL_TASKS: &str = "control_tasks";
+pub const ACTION_NAME_SCHEDULE_TASK: &str = "schedule_task";
+
+/// The `action_name`s registered here as reaching the audit log from a hand-written
+/// [`ActionDescriptor`] rather than from a `strum`-derived enum.
+///
+/// `action_name` reaches the log as a string VALUE, so renaming one breaks consumers. The
+/// committed manifest (`src/service/events/backends/audit/action_names.json`) is what makes
+/// such a rename visible to the audit-format bump check, and for a derived enum the compiler
+/// supplies the names. A literal supplies nothing, so it is listed here to get into the
+/// manifest.
+///
+/// Registered, not *every*: nothing enforces this list. A new hand-written descriptor that is
+/// not added here compiles and every test stays green, while its name stays outside the
+/// manifest and a rename of it passes the bump check in silence. That is a known limit, not a
+/// guarantee — prefer an enum deriving `strum_macros::VariantNames`, which needs no entry at
+/// all. `grep -rn 'action_name("' crates/lakekeeper/src` finds anything missing.
+pub const LITERAL_ACTION_NAMES: &[&str] = &[
+    ACTION_NAME_ASSUME_ROLE,
+    ACTION_NAME_APPLY_GRANTS,
+    ACTION_NAME_SEARCH_USERS,
+    ACTION_NAME_LIST_PROJECTS,
+    ACTION_NAME_SEARCH_TABULARS,
+    ACTION_NAME_INTROSPECT_PERMISSIONS,
+    ACTION_NAME_GET_TASK_DETAILS,
+    ACTION_NAME_LIST_TASKS,
+    ACTION_NAME_CONTROL_TASKS,
+    ACTION_NAME_SCHEDULE_TASK,
+];
+
 #[derive(Clone, Debug)]
 pub enum ContextValue {
     /// A set of key-value pairs (e.g. properties, `updated_properties`).
@@ -351,6 +398,8 @@ impl ActionDescriptor {
     Serialize,
     Deserialize,
     VariantArray,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperUserAction))]
@@ -383,6 +432,7 @@ impl CatalogAction for CatalogUserAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -454,6 +504,7 @@ impl CatalogAction for CatalogServerAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
@@ -593,7 +644,15 @@ pub enum SourceSystemTarget {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
@@ -681,6 +740,7 @@ impl CatalogAction for CatalogRoleAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
@@ -872,6 +932,7 @@ impl CatalogAction for CatalogWarehouseAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
@@ -1176,6 +1237,7 @@ impl CatalogAction for CatalogNamespaceAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
@@ -1329,6 +1391,7 @@ impl CatalogAction for CatalogTableAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
@@ -1449,6 +1512,7 @@ impl CatalogAction for CatalogViewAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperGenericTableAction))]
@@ -1500,7 +1564,15 @@ impl CatalogAction for CatalogGenericTableAction {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTagAction))]

@@ -15,20 +15,33 @@
 //! The rules apply to any record, but only ever see records something emitted — so
 //! coverage is exactly the request sequences exercised here, and that set starts small.
 //! Widening it is the point: drive another call through `CatalogServer` and the existing
-//! rules apply to whatever it produces. Not yet reached: views, table commits, the plural
-//! `actions`/`entities` form, per-decision `id`/`for-principal`/`determined_by`, the
-//! operational family, and anything needing a real authorizer or an authenticated actor
-//! (`AllowAllAuthorizer` and `random_request_metadata()` reach neither).
+//! rules apply to whatever it produces. Not yet reached, cheapest to add first: views and
+//! table commits; the plural `actions`/`entities` form, since every call here checks one
+//! action against one entity; per-decision `id`/`for-principal`/`determined_by`, which
+//! need a batch-style check; the operational family, which grant changes emit; and a real
+//! authorizer with an authenticated actor (`AllowAllAuthorizer` and
+//! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way
+//! in, because CI already provisions it.
 //!
-//! Do not add a second `#[sqlx::test]` here. Capture is thread-local and works because
-//! `sqlx::test` polls on one current-thread runtime shared across the binary; a second
-//! test contends for it and silently captures a subset.
+//! Keep every test here on a current-thread runtime. Capture is thread-local:
+//! `set_default` binds the subscriber to the calling thread, and the detached
+//! `tokio::spawn` that dispatches audit events has to be polled on that thread to be seen.
+//! A second `#[sqlx::test]` is fine — `sqlx_core::rt::test_block_on` builds a fresh
+//! `Builder::new_current_thread()` runtime per invocation and cargo runs each test on its
+//! own thread, so there is nothing shared to contend for. What breaks capture is
+//! `flavor = "multi_thread"`, which lets the dispatch task run on a worker thread that has
+//! no default subscriber. `EXPECTED_RECORDS` is what catches that: capture would go to
+//! zero, or to some subset, and a count has to be met where "did anything arrive" does not.
 //!
-//! Adding a case is cheap: drive another call through `CatalogServer` or `ApiServer` before
-//! the sleep, and the existing rules apply to whatever it emits. A good case is one that
-//! reaches a code path no other case here reaches — a new assertion is worth less than a
-//! new record shape, because the rules are already general and it is the inputs that are
-//! narrow.
+//! Adding a case is cheap, and it is two steps: drive another call through `CatalogServer`
+//! or `ApiServer` before the wait, and raise `EXPECTED_RECORDS` by however many records it
+//! emits. The existing rules then apply to whatever it produced. Run it on its own with
+//! `just test-audit-corpus`, which needs the local Postgres from the initial setup — the
+//! count is checked there in seconds, so there is no reason to learn about it from CI.
+//!
+//! A good case is one that reaches a code path no other case here reaches — a new assertion
+//! is worth less than a new record shape, because the rules are already general and it is
+//! the inputs that are narrow.
 //!
 //! If you are here because you changed the audit log format, see the audit log section of
 //! `docs/docs/developer-guide.md`: extending this file is part of that change.
@@ -50,6 +63,33 @@ use lakekeeper::{
 use lakekeeper_integration_tests::{
     SetupTestCatalog, create_table_request, memory_io_profile, random_request_metadata,
 };
+
+/// How many audit records the request sequence in the test below emits.
+///
+/// **Adding or removing a call means updating this number**, and nothing but a failing test
+/// will tell you.
+///
+/// What this cannot do: prove that no *further* record arrives. After the count is reached
+/// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
+/// later than that is invisible to it. So the constant is a reliable floor and only a
+/// best-effort ceiling.
+const EXPECTED_RECORDS: usize = 7;
+
+/// How long to wait for [`EXPECTED_RECORDS`] before failing.
+///
+/// Generous on purpose: it is reached only when the test is already failing, so a large
+/// value costs nothing on a green run and buys tolerance on a loaded machine.
+const CAPTURE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How often to re-read while waiting. Short, because each poll is a cheap buffer read and
+/// the `await` is what lets the detached dispatch tasks run at all.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// How long to keep watching after the expected count arrives, to notice an extra record.
+///
+/// A warning, not a failure: an extra record is not a contract violation — it is checked by
+/// the same rules as the others — it just means [`EXPECTED_RECORDS`] is stale.
+const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_millis(250);
 use sqlx::PgPool;
 
 #[derive(Clone, Default)]
@@ -223,20 +263,81 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // The dispatch is fire-and-forget, so give the runtime a chance to poll those tasks.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait for the expected number rather than for a fixed interval. See EXPECTED_RECORDS.
+    let deadline = std::time::Instant::now() + CAPTURE_DEADLINE;
+    let mut records = audit_records(&logs);
+    while records.len() < EXPECTED_RECORDS && std::time::Instant::now() < deadline {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        records = audit_records(&logs);
+    }
 
-    let records = audit_records(&logs);
     assert!(
-        !records.is_empty(),
-        "captured no audit records at all. Either the listener is not registered on this \
-         context, or the detached dispatch task was never polled — an empty corpus must not \
-         read as a pass."
+        records.len() >= EXPECTED_RECORDS,
+        "expected {EXPECTED_RECORDS} audit records from this request sequence, captured \
+         {} within {CAPTURE_DEADLINE:?}.\n\n\
+         If you ADDED a call above, or one you added emits more than you thought: raise \
+         EXPECTED_RECORDS to match. If you REMOVED a call: lower it. The constant is the \
+         only thing that notices a request silently stopping emitting, so it has to be \
+         maintained by hand — see its doc comment.\n\n\
+         If you changed neither, this is the real failure the constant exists to catch: \
+         something that used to emit an audit record no longer does. Capture can also \
+         fail wholesale — a listener not registered on this context, or a runtime that \
+         is not current-thread (see this file's header).\n\n\
+         What did arrive:\n{}",
+        records.len(),
+        describe(&records),
     );
+
+    // Everything expected is here. Keep watching briefly: an extra record means the count
+    // above is stale, and it is better to hear about it than to have it pass unmentioned.
+    tokio::time::sleep(SETTLE_WINDOW).await;
+    let settled = audit_records(&logs);
+    if settled.len() > EXPECTED_RECORDS {
+        eprintln!(
+            "\n!! audit corpus: WARNING — {} record(s) arrived, EXPECTED_RECORDS says \
+             {EXPECTED_RECORDS}. The extra ones are checked below, so nothing is wrong with \
+             the contract, but the constant is stale: raise it to {}. Extras that arrive \
+             later than {SETTLE_WINDOW:?} are not detected at all, so treat this as a \
+             lower bound.\n{}\n",
+            settled.len(),
+            settled.len(),
+            describe(&settled),
+        );
+    }
+    let records = settled;
 
     for (index, record) in records.iter().enumerate() {
         contract::assert_satisfies(record, &format!("record {index}"));
     }
 
     eprintln!("audit corpus: {} record(s) checked", records.len());
+}
+
+/// One line per record, enough to tell which call produced it. For failure messages: a raw
+/// dump of seven full records buries the one thing the reader needs, which is what is missing.
+fn describe(records: &[serde_json::Value]) -> String {
+    records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let field = |name: &str| {
+                record
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("-")
+                    .to_string()
+            };
+            let action = record
+                .get("action")
+                .and_then(|action| action.get("action_name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-");
+            format!(
+                "  {index}: action={action} decision={} operation={}",
+                field("decision"),
+                field("operation"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

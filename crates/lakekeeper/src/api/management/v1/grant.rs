@@ -65,16 +65,16 @@ use crate::{
         WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
-            ActionDescriptor, AuthZCannotSeeTag, AuthZCannotUseWarehouseId, AuthZError,
-            AuthZGenericTableOps, AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps,
-            AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden, AuthZTagOps, AuthZViewOps,
-            AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp, GrantResource,
-            GrantRow, GrantSpec, GrantTarget, PrivilegeDescriptor, RequireTagActionError,
-            ResourceType, RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
-            UserOrRoleId,
+            ACTION_NAME_APPLY_GRANTS, ActionDescriptor, AuthZCannotSeeTag,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps, AuthZGrantActionForbidden,
+            AuthZGrantOps, AuthZProjectOps, AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden,
+            AuthZTagOps, AuthZViewOps, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
+            CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp,
+            GrantResource, GrantRow, GrantSpec, GrantTarget, PrivilegeDescriptor,
+            RequireTagActionError, ResourceType, RoleAssignee as AuthzRoleAssignee,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -1077,7 +1077,7 @@ impl APIEventActions for ApplyGrants {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("apply_grants")
+                .action_name(ACTION_NAME_APPLY_GRANTS)
                 .context_list(ActionContextKey::Principals, self.principals.clone())
                 .context_list(ActionContextKey::Privileges, self.privileges.clone())
                 .context_string(ActionContextKey::Writes, self.writes.to_string())

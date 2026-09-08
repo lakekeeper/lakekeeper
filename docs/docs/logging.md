@@ -129,7 +129,6 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 
 **Principal references.** Where a principal is named as a *target* rather than as the caller — `authorizations[].for-principal`, and `context.principal` on grant events — it is a single-key object: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`.
 
-
 **Context fields** {#audit-context-fields}
 
 The `context` object on an authorization event is a flat string-to-string map that a request handler adds to when there is something worth recording that is not an action or an entity. Only the keys relevant to that request appear; the object is omitted entirely when there are none.
@@ -191,7 +190,6 @@ Each action is a structured object containing the operation name and optional co
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
 
 Commit actions carry two further context fields when the commit names them: `target-refs`, the branch or tag references the commit targets, and `update-kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
-
 
 Which context fields appear depends on the action. A field is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false.
 
@@ -290,6 +288,7 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
   "timestamp": "2026-02-15T14:20:50.758690Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "action": {
     "action_name": "create_warehouse",
     "name": "demo"
@@ -333,6 +332,7 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
   "timestamp": "2026-02-15T14:21:10.123456Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "action": {
     "action_name": "drop"
   },
@@ -389,6 +389,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "timestamp": "2026-04-07T17:58:34.358975Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "action": {
     "action_name": "introspect_permissions"
   },
@@ -528,6 +529,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -554,6 +556,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -580,6 +583,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -607,6 +611,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -648,6 +653,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "timestamp": "2026-03-07T10:00:00.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -671,6 +677,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "timestamp": "2026-03-07T10:00:01.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -704,6 +711,7 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
   "timestamp": "2026-03-07T11:30:00.000000Z",
   "level": "INFO",
   "event_source": "audit",
+  "audit_format": "1.0",
   "operation": "cached_role_provider",
   "actor": {
     "actor_type": "principal",

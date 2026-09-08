@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use valuable::{Valuable, Value, Visit};
@@ -139,10 +142,20 @@ const FIXTURE_WAREHOUSE_ID: &str = "019684ff-0000-7000-8000-000000000001";
 const FIXTURE_TABLE_ID: &str = "019684ff-0000-7000-8000-000000000002";
 const FIXTURE_NAMESPACE_ID: &str = "019684ff-0000-7000-8000-000000000003";
 
+/// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
+/// derived from [`AUDIT_FORMAT`].
+fn fixture_dir() -> std::path::PathBuf {
+    let major = AUDIT_FORMAT
+        .split('.')
+        .next()
+        .expect("AUDIT_FORMAT is MAJOR.MINOR, asserted at compile time");
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "src/service/events/backends/audit/fixtures/v{major}"
+    ))
+}
+
 fn fixture_path(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/service/events/backends/audit/fixtures/v1")
-        .join(format!("{name}.json"))
+    fixture_dir().join(format!("{name}.json"))
 }
 
 /// Assert that `emitted` still matches the committed fixture, and classify any
@@ -167,11 +180,19 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "cannot read the committed audit fixture {}: {e}\n\n\
-             If this fixture is new, generate it with `just update-audit-fixtures`. \
-             If it was moved or deleted, restore it: it is the record of what \
-             audit_format {AUDIT_FORMAT} puts on the wire, and without it nothing \
-             detects a change to the audit log format.",
-            path.display()
+             If you just bumped the MAJOR half of AUDIT_FORMAT (now {AUDIT_FORMAT}), \
+             this is expected and the fix is one command: the fixture directory is \
+             named for the major version, so `git mv` the previous one to \
+             `fixtures/v{}` and regenerate with `just update-audit-fixtures`. Move it \
+             rather than copying — the old format is unreproducible once the code \
+             emits the new one, so a directory left behind can never be regenerated \
+             or kept passing, and the bump checker rejects two directories anyway.\n\n\
+             Otherwise: if this fixture is new, generate it with \
+             `just update-audit-fixtures`. If it was moved or deleted, restore it — it \
+             is the record of what audit_format {AUDIT_FORMAT} puts on the wire, and \
+             without it nothing detects a change to the audit log format.",
+            path.display(),
+            AUDIT_FORMAT.split('.').next().unwrap_or("?"),
         )
     });
     let committed: serde_json::Value = serde_json::from_str(&committed)
@@ -208,8 +229,18 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
              `decision`, `actor_type` and the rest reach the log as string VALUES), \
              BREAKS CONSUMERS: bump the MAJOR half of AUDIT_FORMAT (now \
              {AUDIT_FORMAT}) and regenerate with `just update-audit-fixtures`. A \
-             changed test INPUT does not: regenerate and leave AUDIT_FORMAT alone — \
-             bumping for that is rejected by `just check-audit-format-bump`.\n\n\
+             changed test INPUT does not: regenerate and leave AUDIT_FORMAT alone.\n\n\
+             Decide which of the two this is. `just check-audit-format-bump` cannot: \
+             it compares shapes, so it reports the changed value and defers, and it \
+             passes either way.\n\n\
+             On a MAJOR bump the fixture directory is RENAMED, because it is named \
+             for the major version it describes: `git mv` it to the next major and \
+             regenerate. No code change — `fixture_dir` derives the name from \
+             AUDIT_FORMAT, so bumping the constant is what moves the tests. Do not \
+             keep the old directory alongside the new one: a fixture is what the \
+             CURRENT code emits, so once the code emits the new format the old one \
+             can never be regenerated or kept passing. The bump checker requires \
+             exactly one directory and compares across the rename.\n\n\
              See the audit log section of docs/docs/developer-guide.md."
         );
     }
@@ -486,6 +517,43 @@ fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
 /// repository root; `crate::api::endpoints` uses the same technique for the
 /// committed `OpenAPI` specs.
 const LOGGING_DOC: &str = include_str!("../../../../../../../docs/docs/logging.md");
+
+/// Every complete audit record shown in `docs/docs/logging.md` declares the CURRENT
+/// `AUDIT_FORMAT`.
+#[test]
+fn every_audit_record_example_in_the_docs_declares_the_current_format() {
+    let expected = format!("\"audit_format\": \"{AUDIT_FORMAT}\"");
+    let mut checked = 0;
+
+    for block in LOGGING_DOC.split("```json").skip(1) {
+        let Some(block) = block.split("```").next() else {
+            continue;
+        };
+        // Complete records only. The page also shows field-level fragments — an `actor`
+        // object, an `action` object — which are not records and must not grow a version.
+        if !block.contains("\"event_source\": \"audit\"") {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            block.contains(&expected),
+            "an audit record example in docs/docs/logging.md does not declare \
+             {expected}. Every audit record carries the field, and the same page says so, \
+             so an example without it teaches a consumer the wrong shape. If AUDIT_FORMAT \
+             was just bumped, update the example records — nothing regenerates them.\n\n{block}"
+        );
+    }
+
+    // A floor, for the same reason the fixture comparison has one: if the block detection
+    // stops matching — the page switches to `json5` fences, say — every assertion above is
+    // skipped and this test passes while checking nothing.
+    assert!(
+        checked >= 10,
+        "expected at least 10 complete audit record examples in docs/docs/logging.md, \
+         found {checked}. Either the examples were removed, or the ```json fence \
+         detection above no longer matches them and this test is now asserting nothing."
+    );
+}
 
 #[test]
 fn every_emitted_audit_field_is_documented() {
@@ -1366,5 +1434,311 @@ fn contract_rejects_a_definitive_denial_that_claims_allowed() {
             "a definitive denial carries an `authorizations` entry with `allowed: true`. The \
              emitter cannot produce that, so either the record is wrong or this rule is"
         ]
+    );
+}
+
+// ── Action-name manifest ────────────────────────────────────────────────────
+//
+// `action_name` reaches the log as a string VALUE, and the fixture comparison
+// above compares keys and types — so a renamed action is a breaking change that
+// nothing above can see. The committed manifest closes that: it records the names
+// the action enums derive, plus the hand-written ones registered in
+// `LITERAL_ACTION_NAMES`, so a rename becomes a diff in the manifest that review
+// and `just check-audit-format-bump` both read.
+//
+// Not every name the server can emit. An authorizer crate's own actions are
+// outside it by design, and a hand-written descriptor is in it only because
+// somebody listed it — see `LITERAL_ACTION_NAMES` for that limit.
+//
+// To regenerate after a deliberate change: `just update-audit-fixtures`.
+
+fn action_names_manifest_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/service/events/backends/audit/action_names.json")
+}
+
+/// Reduce a list of action enums to one `(type name, derived action names, variant count)`
+/// per enum.
+macro_rules! action_name_enums {
+    ($($action:ty),+ $(,)?) => {
+        vec![$((
+            stringify!($action),
+            <$action as strum::VariantNames>::VARIANTS,
+            <$action as strum::EnumCount>::COUNT,
+        )),+]
+    };
+}
+
+/// Every in-repo enum whose [`CatalogAction::action_descriptor`] passes
+/// `action_name(self.into())`, i.e. whose variant names reach the audit log verbatim.
+///
+/// Written out by hand because Rust cannot enumerate the types implementing a trait.
+/// An action enum missing from this list emits names that no test and no bump check
+/// ever sees. `grep -rn "impl CatalogAction for" crates/` is the cross-check. The
+/// `*ActionKind` companions do not implement the trait at all. The authz-openfga
+/// `*Relation` types do, and their names *do* reach the log — they are out of scope
+/// because they are that authorizer's wire vocabulary, not this crate's, and an
+/// out-of-tree authorizer's are equally unreachable from here.
+///
+/// [`CatalogAction::action_descriptor`]: crate::service::authz::CatalogAction::action_descriptor
+fn derived_action_name_enums() -> Vec<(&'static str, &'static [&'static str], usize)> {
+    use crate::service::authz::{
+        CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+        CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogUserAction,
+        CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
+    };
+
+    action_name_enums!(
+        CatalogGenericTableAction,
+        CatalogNamespaceAction,
+        CatalogProjectAction,
+        CatalogRoleAction,
+        CatalogServerAction,
+        CatalogTableAction,
+        CatalogTagAction,
+        CatalogUserAction,
+        CatalogViewAction,
+        CatalogWarehouseAction,
+        InstanceAdminAction,
+    )
+}
+
+/// The manifest as the compiler sees it: what the committed file must contain.
+fn derived_action_names_manifest() -> serde_json::Value {
+    let enums: std::collections::BTreeMap<String, Vec<String>> = derived_action_name_enums()
+        .into_iter()
+        .map(|(name, variants, _)| {
+            let mut names: Vec<String> = variants.iter().map(|n| (*n).to_string()).collect();
+            names.sort();
+            (name.to_string(), names)
+        })
+        .collect();
+
+    let mut literals: Vec<String> = crate::service::authz::LITERAL_ACTION_NAMES
+        .iter()
+        .map(|n| (*n).to_string())
+        .collect();
+    literals.sort();
+
+    serde_json::json!({ "enums": enums, "literals": literals })
+}
+
+/// Flatten a manifest to `(enum or "literals", name)` pairs so the two revisions of it
+/// can be compared per owner: a name surviving under a *different* enum is still a break
+/// for the family that lost it.
+fn manifest_entries(manifest: &serde_json::Value) -> BTreeSet<(String, String)> {
+    let mut entries = BTreeSet::new();
+
+    let mut collect = |owner: &str, value: Option<&serde_json::Value>| {
+        for name in value
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = name.as_str() {
+                entries.insert((owner.to_string(), name.to_string()));
+            }
+        }
+    };
+
+    if let Some(enums) = manifest.get("enums").and_then(serde_json::Value::as_object) {
+        for (owner, names) in enums {
+            collect(owner, Some(names));
+        }
+    }
+    collect("literals", manifest.get("literals"));
+
+    entries
+}
+
+fn describe_entries(entries: &BTreeSet<(String, String)>) -> String {
+    if entries.is_empty() {
+        return "(none)".to_string();
+    }
+    entries
+        .iter()
+        .map(|(owner, name)| format!("{owner}::{name}"))
+        .collect::<Vec<_>>()
+        .join("\n  ")
+}
+
+/// The committed manifest is the only record of the `action_name` VALUES the audit log
+/// emits. Generated here from the derives, so it cannot drift from the code silently.
+#[test]
+fn fixture_action_names_manifest_matches_the_derived_names() {
+    let derived = derived_action_names_manifest();
+    let path = action_names_manifest_path();
+
+    if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
+        std::fs::create_dir_all(path.parent().expect("manifest path has a parent"))
+            .expect("creating the manifest directory");
+        let mut json =
+            serde_json::to_string_pretty(&derived).expect("the action-name manifest serialises");
+        json.push('\n');
+        std::fs::write(&path, json).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+        return;
+    }
+
+    let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read the committed action-name manifest {}: {e}\n\n\
+             Generate it with `just update-audit-fixtures`. It is the record of the \
+             `action_name` values audit_format {AUDIT_FORMAT} puts on the wire, and \
+             without it nothing detects a renamed action.",
+            path.display()
+        )
+    });
+    let committed: serde_json::Value = serde_json::from_str(&committed)
+        .unwrap_or_else(|e| panic!("manifest {} is not valid JSON: {e}", path.display()));
+
+    if committed == derived {
+        return;
+    }
+
+    let committed_entries = manifest_entries(&committed);
+    let derived_entries = manifest_entries(&derived);
+    let disappeared = describe_entries(
+        &committed_entries
+            .difference(&derived_entries)
+            .cloned()
+            .collect(),
+    );
+    let added = describe_entries(
+        &derived_entries
+            .difference(&committed_entries)
+            .cloned()
+            .collect(),
+    );
+
+    panic!(
+        "the committed action-name manifest {path} no longer matches the names the action \
+         enums derive.\n\n\
+         DISAPPEARED — a name the audit log used to emit and now cannot. `action_name` \
+         reaches the log as a string VALUE, so every consumer matching on it BREAKS: bump \
+         the MAJOR half of AUDIT_FORMAT (now {AUDIT_FORMAT}).\n  {disappeared}\n\n\
+         ADDED — a name only new records carry. Existing consumers keep working, so this is \
+         additive: leave AUDIT_FORMAT alone.\n  {added}\n\n\
+         Regenerate with `just update-audit-fixtures`.\n\n\
+         A whole enum listed under DISAPPEARED, or an action you know is emitted showing \
+         under neither, means the enum list in `derived_action_name_enums` in this file is \
+         out of date: a new action enum must be added to that list, or the names it emits \
+         are invisible to the bump checker.\n\n\
+         See the audit log section of docs/docs/developer-guide.md.",
+        path = path.display(),
+    );
+}
+
+/// [`strum::VariantNames`] and [`strum::EnumCount`] are separate derives on the same
+/// enum. If the first ever lists fewer names than the enum has variants, the manifest
+/// shrinks quietly and the missing names stop being watched.
+#[test]
+fn every_action_enum_variant_has_a_derived_name() {
+    for (enum_name, variants, count) in derived_action_name_enums() {
+        assert_eq!(
+            variants.len(),
+            count,
+            "`{enum_name}` has {count} variants but derives {} action names: {variants:?}. \
+             Every variant can reach the audit log, so a name missing here is a value the \
+             manifest never records.",
+            variants.len()
+        );
+    }
+}
+
+/// Action names are consumed as literals in dashboards and alerting rules, so their lexical
+/// shape is part of the wire format: underscore-joined runs of lowercase letters and digits,
+/// nothing else.
+///
+/// What this catches is a change to how the names are *spelled*, which is a silent break —
+/// every one of these values would change at once, and no shape comparison would see it
+/// because `action_name` is a value. Dropping `#[strum(serialize_all = "snake_case")]` from
+/// an enum gives `ReadData`; switching it to `kebab-case` gives `read-data`; a hand-written
+/// `#[strum(serialize = "...")]` can give anything at all.
+///
+/// What it cannot catch is a mis-split acronym. `read_a_c_l` where the variant says `ReadACL`
+/// is itself perfectly well-formed `snake_case`, and no lexical rule can tell it from a real
+/// name whose segments happen to be short. That failure is prevented upstream instead: the
+/// names come from `heck` by way of `strum`, which produces `read_acl`.
+#[test]
+fn every_action_name_is_a_lower_snake_case_identifier() {
+    let manifest = derived_action_names_manifest();
+    let mut malformed = Vec::new();
+
+    for (owner, name) in manifest_entries(&manifest) {
+        // Split on `_` and require every segment to be a non-empty run of lowercase
+        // alphanumerics. Checking the characters alone is not enough: it accepts a leading
+        // or trailing underscore and a run of them, so `a__b_` reads as well-formed.
+        let segments_ok = name.split('_').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+        let starts_with_letter = name.starts_with(|c: char| c.is_ascii_lowercase());
+        if !(segments_ok && starts_with_letter) {
+            malformed.push(format!("{owner}::{name}"));
+        }
+    }
+
+    assert!(
+        malformed.is_empty(),
+        "these action names are not `lower_snake_case`:\n  {}\n\n\
+         The shape is one or more runs of `[a-z0-9]` joined by single underscores, starting \
+         with a letter — no leading, trailing or doubled underscore, no capitals, no dashes. \
+         An action enum that lost its `#[strum(serialize_all = \"snake_case\")]`, or gained a \
+         different case style, or carries a hand-written `#[strum(serialize = \"...\")]` that \
+         does not follow house style, lands here. Each of those renames a value consumers \
+         match on, so it is a MAJOR change, not a spelling preference.",
+        malformed.join("\n  ")
+    );
+}
+
+/// A hand-written `ActionDescriptor` has no derive behind it, so its name only reaches
+/// the manifest through [`LITERAL_ACTION_NAMES`].
+///
+/// [`LITERAL_ACTION_NAMES`]: crate::service::authz::LITERAL_ACTION_NAMES
+#[test]
+fn every_literal_action_name_is_in_the_manifest() {
+    let manifest = derived_action_names_manifest();
+    let recorded = manifest_entries(&manifest);
+
+    for name in crate::service::authz::LITERAL_ACTION_NAMES {
+        assert!(
+            recorded.contains(&("literals".to_string(), (*name).to_string())),
+            "`{name}` is in LITERAL_ACTION_NAMES but not in the manifest's `literals`. \
+             Nothing else records it, so a rename would be invisible to the bump checker."
+        );
+    }
+}
+
+/// The manifest is generated from [`strum::VariantNames`], but what a consumer reads is
+/// what `IntoStaticStr` puts on the wire. Two derives, one string — pin them to each
+/// other, for a variant that carries data and for a unit variant.
+#[test]
+fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
+    use crate::service::authz::CatalogTableAction;
+
+    let variants = <CatalogTableAction as strum::VariantNames>::VARIANTS;
+
+    let carries_data = CatalogTableAction::Drop {
+        force: true,
+        purge: true,
+    };
+    let on_the_wire = <&'static str>::from(&carries_data);
+    assert_eq!(on_the_wire, "drop");
+    assert!(
+        variants.contains(&on_the_wire),
+        "`CatalogTableAction::Drop` reaches the wire as `{on_the_wire}`, which is not among \
+         the derived names {variants:?} the manifest is built from. The manifest would then \
+         record a name no record carries, and miss the one they do."
+    );
+
+    let unit = CatalogTableAction::ReadData;
+    let on_the_wire = <&'static str>::from(&unit);
+    assert_eq!(on_the_wire, "read_data");
+    assert!(
+        variants.contains(&on_the_wire),
+        "`CatalogTableAction::ReadData` reaches the wire as `{on_the_wire}`, which is not \
+         among the derived names {variants:?} the manifest is built from."
     );
 }

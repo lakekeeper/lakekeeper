@@ -25,6 +25,9 @@ use crate::{
         TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
+            ACTION_NAME_CONTROL_TASKS, ACTION_NAME_GET_TASK_DETAILS,
+            ACTION_NAME_INTROSPECT_PERMISSIONS, ACTION_NAME_LIST_PROJECTS, ACTION_NAME_LIST_TASKS,
+            ACTION_NAME_SCHEDULE_TASK, ACTION_NAME_SEARCH_TABULARS, ACTION_NAME_SEARCH_USERS,
             ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
             CatalogViewAction, UserOrRoleId,
         },
@@ -708,7 +711,7 @@ impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("search_users")
+                .action_name(ACTION_NAME_SEARCH_USERS)
                 .build(),
         ]
     }
@@ -720,7 +723,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("list_projects")
+                .action_name(ACTION_NAME_LIST_PROJECTS)
                 .build(),
         ]
     }
@@ -732,7 +735,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("search_tabulars")
+                .action_name(ACTION_NAME_SEARCH_TABULARS)
                 .build(),
         ]
     }
@@ -744,7 +747,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("introspect_permissions")
+                .action_name(ACTION_NAME_INTROSPECT_PERMISSIONS)
                 .build(),
         ]
     }
@@ -756,7 +759,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("get_task_details")
+                .action_name(ACTION_NAME_GET_TASK_DETAILS)
                 .build(),
         ]
     }
@@ -766,7 +769,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("list_tasks")
+                .action_name(ACTION_NAME_LIST_TASKS)
                 .build(),
         ]
     }
@@ -776,7 +779,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("control_tasks")
+                .action_name(ACTION_NAME_CONTROL_TASKS)
                 .build(),
         ]
     }
@@ -786,7 +789,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("schedule_task")
+                .action_name(ACTION_NAME_SCHEDULE_TASK)
                 .build(),
         ]
     }

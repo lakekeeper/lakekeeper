@@ -16,7 +16,6 @@ Read version:  python3 .github/scripts/check-audit-format-bump.py --print-versio
 from __future__ import annotations
 
 import json
-import pathlib
 import re
 import subprocess
 import sys
@@ -167,7 +166,8 @@ def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
     A fixture that was added describes a previously untested scenario; one renamed or
     deleted took its evidence with it. Hence `unknown`: "no difference found" only means
     something if everything was compared. Positive findings are still trusted — a breaking
-    difference in a pair that did match is real whatever happened to the others.
+    or additive difference in a pair that DID match is real whatever happened to the
+    others — so only a `none` verdict is ever downgraded to `unknown`.
     """
     compared = sorted(set(base) & set(head))
     verdict = "none"
@@ -176,60 +176,89 @@ def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
             return "breaking"
         if head[name] - base[name]:
             verdict = "additive"
-    # "No change" is a claim, and it needs everything that existed before to have been
-    # compared. A fixture that lost its name took its evidence with it, and zero
+    # "No change" is a claim, and only that claim needs everything that existed before to
+    # have been compared: a fixture that lost its name took its evidence with it, and zero
     # comparisons is not a clean bill of health.
-    if set(base) - set(head) or (verdict == "none" and not compared):
+    #
+    # An `additive` finding is NOT downgraded, for the same reason `breaking` returns early
+    # above: the added field was seen in a pair that matched, and a fixture renamed
+    # elsewhere does not unsee it. Downgrading it was actively harmful — `unknown` is
+    # permissive for every bump, so adding a field AND renaming a fixture in the same
+    # change passed with no bump at all, where the addition alone required a MINOR.
+    if verdict == "none" and (set(base) - set(head) or not compared):
         return "unknown"
     return verdict
 
 
-ACTION_FILE = "crates/lakekeeper/src/service/authz/mod.rs"
-ACTION_ENUM_RE = re.compile(r"pub enum (Catalog[A-Za-z]+Action)\s*\{", re.M)
+# ── action names ────────────────────────────────────────────────────────────────
+
+ACTION_MANIFEST = f"{AUDIT_DIR}/action_names.json"
 
 
-def action_names(rev: str) -> set[str]:
-    """Every `action_name` the in-repo catalog actions can emit at `rev`.
+def action_manifest(rev: str) -> dict | None:
+    """The committed action-name manifest at `rev`, or None when the file is not there.
 
-    `action_name` reaches the log as a VALUE, not a key, so `shape` is blind to it and no
-    fixture pins a real one. Renaming a variant renames what every consumer switches on.
+    `action_name` reaches the log as a string VALUE, not a key, so `shape` is blind to it
+    and no fixture pins a real one: renaming a variant renames what every consumer
+    switches on, invisibly. The manifest closes that. It is written by a Rust test from
+    the derived `strum` names — the same names `IntoStaticStr` puts on the wire — and
+    committed, which is what makes it readable at two revisions from here.
 
-    Parsed from the enum declarations rather than from a type, because most of these enums
-    carry data and so cannot be enumerated by `strum`. The `--self-test` cross-checks the
-    result against the committed `OpenAPI` document, which is generated from these same
-    types and is itself CI-enforced, so a parser that drifts is caught rather than trusted.
+    Absent and broken are kept apart deliberately. `git show` fails identically for "no
+    such path at that revision" and for "no such revision" or a truncated clone, and
+    reading the second as the first turns this entire check off without printing a word —
+    exactly the failure class the manifest exists to close. So existence is probed with
+    `git ls-tree`, which (see `fixture_dirs_at`) exits 0 with empty output when the path
+    is not there, and every other git failure is left to propagate.
 
-    In-repo actions only. `CatalogAction` is a public trait with a blanket
-    `APIEventActions` impl, so an authorizer crate — `authz-openfga` here, others
-    out-of-tree — contributes names this cannot see.
+    None is the normal answer for any revision older than the manifest itself, including
+    this branch's merge base. It means "cannot compare", never "every name was lost".
+
+    The boundary is derived-from-an-enum, not in-repo. An authorizer crate's actions —
+    `authz-openfga` here, others out-of-tree — are outside the manifest, and so is any
+    hand-written descriptor nobody registered in `LITERAL_ACTION_NAMES`, wherever it
+    lives. Renaming one of those passes this check in silence.
     """
-    try:
-        source = _git("show", f"{rev}:{ACTION_FILE}")
-    except subprocess.CalledProcessError:
-        return set()
-    out: set[str] = set()
-    for match in ACTION_ENUM_RE.finditer(source):
-        body, depth, i = [], 1, match.end()
-        while i < len(source) and depth:
-            if source[i] == "{":
-                depth += 1
-            elif source[i] == "}":
-                depth -= 1
-                if not depth:
-                    break
-            body.append(source[i])
-            i += 1
-        depth = 0
-        for line in "".join(body).split("\n"):
-            line = re.sub(r"//.*", "", line).strip()
-            if not line:
-                continue
-            variant = re.match(r"^([A-Z][A-Za-z0-9]*)\s*[\{\(,]?", line)
-            if variant and not depth:
-                name = variant.group(1)
-                out.add(re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower())
-            depth += line.count("{") + line.count("(") - line.count("}") - line.count(")")
-    return out
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", ACTION_MANIFEST)
+    if not listing.strip():
+        return None
+    return json.loads(_git("show", f"{rev}:{ACTION_MANIFEST}"))
+
+
+def manifest_owners(manifest: dict) -> dict[str, list[str]]:
+    """The manifest flattened to one mapping of OWNER -> names it can emit.
+
+    `literals` — names written as string constants rather than derived from an enum — is
+    one more owner, so it is compared by the same rule as the enums.
+    """
+    owners = dict(manifest.get("enums", {}))
+    owners["literals"] = manifest.get("literals", [])
+    return owners
+
+
+def lost_action_names(base: dict, head: dict) -> dict[str, list[str]]:
+    """The names each owner stopped being able to emit, keyed by owner. Only losses.
+
+    Compared PER OWNER, never over the union of every name, and that is the whole point.
+    The names overlap heavily — `get_metadata` is emitted by six different enums and
+    `read_grants` by eight — so a set difference over the flattened union cannot see one
+    enum rename its own name. Rename `CatalogTableAction::GetMetadata` to `FetchMetadata`
+    and the union still contains `get_metadata`, contributed by the five other enums: the
+    difference is EMPTY while every consumer switching on the table events' `action_name`
+    breaks. Keying by owner reports that loss.
+
+    Additions are not losses. A new owner, or a new name under an existing one, leaves the
+    format unchanged — `action_name` is still a string and consumers ignore values they do
+    not know — and bumping for every added action would move the version constantly while
+    telling consumers nothing.
+    """
+    head_owners = manifest_owners(head)
+    lost: dict[str, list[str]] = {}
+    for owner, base_names in manifest_owners(base).items():
+        gone = set(base_names) - set(head_owners.get(owner, ()))
+        if gone:
+            lost[owner] = sorted(gone)
+    return lost
 
 
 def content(record: object) -> object:
@@ -395,7 +424,19 @@ def run(base_ref: str, head_ref: str = "HEAD") -> int:
             f"::error::expected exactly one audit fixture directory under "
             f"{AUDIT_DIR}/fixtures/, found {len(head_dirs)}: {head_dirs}. This checker "
             f"cannot compare anything without one, so fix the layout rather than "
-            f"trusting a pass here."
+            f"trusting a pass here.\n"
+            f"::notice::If you added a directory for a new major version: RENAME the one "
+            f"that is there, do not add a second. The directory is named for the major "
+            f"version its fixtures describe, so a major bump renames it — `git mv` "
+            f"fixtures/vN fixtures/vN+1 and regenerate the contents. There is no code "
+            f"change: the audit tests derive the directory from AUDIT_FORMAT, so bumping "
+            f"the constant is what points them at the new one. This checker compares "
+            f"across the rename by file name and reports it as `vN -> vN+1`. What does not "
+            f"work is KEEPING the old directory: a fixture is generated by emitting an "
+            f"event with the CURRENT code and recording the result, so once the code emits "
+            f"the new format the old one is unreproducible — the old directory could never "
+            f"be regenerated or kept passing, and would rot into a file nothing verifies. "
+            f"See the audit log section of docs/docs/developer-guide.md."
         )
         return 1
     head_prefix = head_dirs[0]
@@ -412,9 +453,13 @@ def run(base_ref: str, head_ref: str = "HEAD") -> int:
     if shape_kind == "none" and values_changed(base_records, head_records, compared):
         shape_kind = "values"
     short = lambda d: d.rstrip("/").rsplit("/", 1)[-1]
+    # What the fixtures alone say, reported as the statistic it is. It is NOT the verdict:
+    # the action check below can still override it, and a line reading `=> none` above a
+    # failure for a breaking change teaches a reader to distrust the whole log.
     print(
         f"Fixtures:   {short(base_prefix)} -> {short(head_prefix)}, {len(compared)} "
-        f"compared ({len(base_shapes)} before, {len(head_shapes)} after) => {shape_kind}"
+        f"compared ({len(base_shapes)} before, {len(head_shapes)} after), "
+        f"shapes say {shape_kind}"
     )
 
     # `action_name` is a wire VALUE, so the fixture shapes above cannot see it. Only names
@@ -422,19 +467,48 @@ def run(base_ref: str, head_ref: str = "HEAD") -> int:
     # while a new action leaves the format itself unchanged — `action_name` is still a
     # string, and consumers ignore values they do not know. Bumping for every added action
     # would make the version move constantly and tell consumers nothing.
-    lost_actions = sorted(action_names(merge_base) - action_names(head_ref))
-    if lost_actions:
-        print(f"Actions:    {len(lost_actions)} name(s) no longer emitted: {lost_actions}")
-        shape_kind = "breaking"
+    base_manifest, head_manifest = action_manifest(merge_base), action_manifest(head_ref)
+    if base_manifest is None or head_manifest is None:
+        # Said out loud on purpose: a skipped check that prints nothing is
+        # indistinguishable from a check that ran and found nothing.
+        absent = ", ".join(
+            rev
+            for rev, manifest in ((merge_base, base_manifest), (head_ref, head_manifest))
+            if manifest is None
+        )
+        print(
+            f"Actions:    SKIPPED — {ACTION_MANIFEST} is absent at {absent}, so there is "
+            f"nothing to compare. A renamed or removed action name is NOT checked in this "
+            f"run; check by hand."
+        )
+    else:
+        lost = lost_action_names(base_manifest, head_manifest)
+        for owner, names in sorted(lost.items()):
+            print(f"Actions:    {owner} no longer emits {', '.join(names)}")
+        if lost:
+            # A string value consumers switch on is gone. That breaks them whatever the
+            # fixtures showed, so it decides the verdict.
+            shape_kind = "breaking"
+        else:
+            total = sum(len(names) for names in manifest_owners(base_manifest).values())
+            print(f"Actions:    {total} name(s) compared, none lost")
 
     ok, message = decide(shape_kind, bump_kind)
+    # One final line, after every input has had its say, stating the verdict that was
+    # actually decided.
+    print(f"Verdict:    format {shape_kind}, version {bump_kind}")
+    # `values` and `unknown` are the two verdicts that hand the question to a reviewer,
+    # and they were the quietest line in the log. `::warning::` puts them in the checks
+    # UI. Exit codes are unchanged — a deferral is still a pass. `introduced` keeps the
+    # plain OK line: it is a statement of fact, not something to go and look at.
+    deferred = bump_kind != "introduced" and shape_kind in ("values", "unknown")
     if ok:
-        print(f"OK: {message}")
+        print(f"::warning::{message}" if deferred else f"OK: {message}")
         return 0
     print(f"::error::{message}")
-    print(
-        "\nSee the audit log section of docs/docs/developer-guide.md.", file=sys.stderr
-    )
+    # stdout, like the `::error::` line it belongs to. Split across the two streams they
+    # interleave by buffering, and the pointer surfaced above the report it points at.
+    print("\nSee the audit log section of docs/docs/developer-guide.md.")
     return 1
 
 
@@ -501,21 +575,81 @@ def self_test() -> int:
         False,
     )
 
-    # The action-name parser reads Rust source with a regex, which is only defensible while
-    # something independent agrees with it. The committed `OpenAPI` document is generated
-    # from the same types by `utoipa` and is itself CI-enforced, so it is that independent
-    # check. Skipped when run outside a checkout.
-    spec = pathlib.Path("docs/docs/api/management-open-api.yaml")
-    if spec.is_file():
-        names = action_names("HEAD")
-        check("action names were found at all", len(names) > 20, True)
-        document = spec.read_text(encoding="utf-8")
-        absent = [
-            name
-            for name in sorted(names)
-            if not re.search(rf"^\s*- {re.escape(name)}\s*$", document, re.M)
-        ]
-        check("every parsed action name appears in the OpenAPI document", absent, [])
+    # Action names, compared per owner. These are pure dict comparisons on purpose: the git
+    # lookups live in `action_manifest`, so the comparison stays testable without a repo.
+    #
+    # THE regression. `get_metadata` is emitted by six enums, so renaming ONE of them is
+    # invisible to any comparison over the flattened union of all the names: the union
+    # still contains `get_metadata` from the other five. This is the real case that got
+    # through — `CatalogTableAction::GetMetadata` renamed to `FetchMetadata`, the wire
+    # value for every table event changed, CI green. Reintroduce a flattened comparison
+    # and this check is the one that fails.
+    masking_base = {
+        "enums": {
+            "CatalogTableAction": ["get_metadata", "drop"],
+            "CatalogViewAction": ["get_metadata"],
+        },
+        "literals": [],
+    }
+    masking_head = {
+        "enums": {
+            "CatalogTableAction": ["fetch_metadata", "drop"],
+            "CatalogViewAction": ["get_metadata"],
+        },
+        "literals": [],
+    }
+    check(
+        "a rename is a loss even while another enum still emits that name",
+        lost_action_names(masking_base, masking_head),
+        {"CatalogTableAction": ["get_metadata"]},
+    )
+    check(
+        "the flattened union is what cannot see it",
+        set(sum(manifest_owners(masking_base).values(), []))
+        - set(sum(manifest_owners(masking_head).values(), [])),
+        set(),
+    )
+    check(
+        "an added name is not a loss",
+        lost_action_names(
+            {"enums": {"A": ["x"]}, "literals": []},
+            {"enums": {"A": ["x", "y"]}, "literals": []},
+        ),
+        {},
+    )
+    check(
+        "an added enum is not a loss",
+        lost_action_names(
+            {"enums": {"A": ["x"]}, "literals": []},
+            {"enums": {"A": ["x"], "B": ["z"]}, "literals": []},
+        ),
+        {},
+    )
+    check(
+        "an enum removed entirely loses every one of its names",
+        lost_action_names(
+            {"enums": {"A": ["x"], "B": ["y", "z"]}, "literals": []},
+            {"enums": {"A": ["x"]}, "literals": []},
+        ),
+        {"B": ["y", "z"]},
+    )
+    check(
+        "a lost literal action name is reported",
+        lost_action_names(
+            {"enums": {"A": ["x"]}, "literals": ["assume_role"]},
+            {"enums": {"A": ["x"]}, "literals": []},
+        ),
+        {"literals": ["assume_role"]},
+    )
+    identical = {
+        "enums": {"A": ["x", "y"], "B": ["y"]},
+        "literals": ["assume_role"],
+    }
+    check(
+        "identical manifests lose nothing",
+        lost_action_names(identical, dict(identical)),
+        {},
+    )
 
     # Bumping both halves at once, and other malformed bumps.
     check("major resets minor", classify_bump((1, 4), (2, 1))[1] is not None, True)
@@ -579,13 +713,25 @@ def self_test() -> int:
         ),
         "breaking",
     )
+    # This asserted `unknown` — the downgrade — and that was wrong, not conservative.
+    # `unknown` is permissive for every bump, so a change that added a field AND renamed a
+    # fixture passed with no bump at all, while the addition on its own demanded a MINOR.
+    # The addition was seen in a pair that matched; a rename elsewhere does not unsee it.
     check(
-        "additive alongside a rename defers",
+        "additive alongside a rename is still additive",
         classify_shape(
             {"f": shape({"a": 1}), "g": shape(a)},
             {"f": shape({"a": 1, "b": 2}), "h": shape(a)},
         ),
-        "unknown",
+        "additive",
+    )
+    check(
+        "additive alongside a rename and a deletion is still additive",
+        classify_shape(
+            {"f": shape({"a": 1}), "g": shape(a), "gone": shape(a)},
+            {"f": shape({"a": 1, "b": 2}), "h": shape(a)},
+        ),
+        "additive",
     )
     # `unknown` defers rather than guessing, in either direction.
     for bump in ("none", "minor", "major"):

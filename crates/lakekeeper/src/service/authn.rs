@@ -565,7 +565,7 @@ pub(crate) async fn auth_middleware_fn<
 
         let check_result = if let Some(role_id) = role_id {
             use crate::service::{
-                authz::{ActionDescriptor, CatalogAction},
+                authz::{ACTION_NAME_ASSUME_ROLE, ActionDescriptor, CatalogAction},
                 events::APIEventContext,
             };
 
@@ -574,7 +574,7 @@ pub(crate) async fn auth_middleware_fn<
             impl CatalogAction for AssumeRoleAction {
                 fn action_descriptor(&self) -> ActionDescriptor {
                     ActionDescriptor::builder()
-                        .action_name("assume_role")
+                        .action_name(ACTION_NAME_ASSUME_ROLE)
                         .build()
                 }
             }

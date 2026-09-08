@@ -330,7 +330,7 @@ jobs:
 
       - name: Migrate database
         run: |
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           sqlx database create
@@ -341,7 +341,7 @@ jobs:
       - name: Setup vault
         run: |
           export VAULT_ADDR=http://localhost:8200
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt update && sudo apt install gpg wget
           wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
           gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
@@ -559,18 +559,21 @@ jobs:
             MAJOR_CHANGED=false
           fi
 
+          # A changed fixture is not a changed format: a fixture
+          # gets renamed, or its inputs made more realistic, without anything reaching a
+          # consumer differently.
           if [ -n "$(git diff --name-only "${MERGE_BASE}" HEAD -- "${AUDIT_DIR}/fixtures/")" ]; then
             FIXTURES_CHANGED=true
           else
             FIXTURES_CHANGED=false
           fi
 
-          if [ "${VERSION_CHANGED}" = false ] && [ "${FIXTURES_CHANGED}" = false ]; then
-            echo "Audit log format untouched — nothing to call out."
+          if [ "${VERSION_CHANGED}" = false ]; then
+            echo "AUDIT_FORMAT unchanged ('${HEAD_VERSION}') — nothing to call out. Fixtures changed: ${FIXTURES_CHANGED}."
             exit 0
           fi
 
-          echo "Audit log format change detected. Declared version: '${BASE_VERSION}' -> '${HEAD_VERSION}' (changed: ${VERSION_CHANGED}); fixtures changed: ${FIXTURES_CHANGED}."
+          echo "Audit log format change detected. Declared version: '${BASE_VERSION}' -> '${HEAD_VERSION}'; fixtures changed: ${FIXTURES_CHANGED}."
 
           # A "## Release notes" section with something under it. The heading on its own
           # is not a release note, so an empty section must not satisfy the requirement.
