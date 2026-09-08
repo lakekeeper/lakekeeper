@@ -321,6 +321,7 @@ mod rename_tabular {
             warehouse_id: WarehouseId,
             table_id: TableId,
             source_namespace_id: NamespaceId,
+            destination_namespace_id: NamespaceId,
             from: (&str, &str),
             to: (&str, &str),
         ) {
@@ -333,6 +334,7 @@ mod rename_tabular {
                 warehouse_id,
                 table_id,
                 source_namespace_id,
+                destination_namespace_id,
                 &TableIdent::new(ns(from.0), from.1.to_string()),
                 &TableIdent::new(ns(to.0), to.1.to_string()),
                 t.transaction(),
@@ -588,6 +590,7 @@ mod rename_tabular {
                 warehouse_id,
                 table_id,
                 before,
+                after,
                 ("before", "tbl"),
                 ("after", "tbl"),
             )

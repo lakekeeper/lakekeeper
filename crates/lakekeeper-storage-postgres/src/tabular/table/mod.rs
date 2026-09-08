@@ -1548,6 +1548,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            table.namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1591,7 +1592,10 @@ pub mod tests {
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &new_namespace, None).await;
+        let new_namespace_id =
+            initialize_namespace(state.clone(), warehouse_id, &new_namespace, None)
+                .await
+                .namespace_id();
 
         let new_table_ident = TableIdent {
             namespace: new_namespace.clone(),
@@ -1603,6 +1607,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            new_namespace_id,
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1653,12 +1658,16 @@ pub mod tests {
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let elsewhere = NamespaceIdent::from_vec(vec!["elsewhere".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &elsewhere, None).await;
+        let elsewhere_id = initialize_namespace(state.clone(), warehouse_id, &elsewhere, None)
+            .await
+            .namespace_id();
         // The loser's destination must exist, or the pre-existing "destination namespace
         // must exist" predicate would reject the call for the wrong reason and the
         // assertion below would hold with or without the namespace guard.
         let third = NamespaceIdent::from_vec(vec!["third".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &third, None).await;
+        let third_id = initialize_namespace(state.clone(), warehouse_id, &third, None)
+            .await
+            .namespace_id();
 
         // The move that wins the race.
         let moved_ident = TableIdent {
@@ -1670,6 +1679,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            elsewhere_id,
             &table.table_ident,
             &moved_ident,
             &mut transaction,
@@ -1685,6 +1695,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            third_id,
             &table.table_ident,
             &TableIdent {
                 namespace: third.clone(),
@@ -1705,6 +1716,7 @@ pub mod tests {
         let rename_err = rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             table.namespace_id,
             &table.table_ident,
             &TableIdent {
@@ -1738,6 +1750,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            table.namespace_id,
             &table.table_ident,
             &TableIdent {
                 namespace: table.table_ident.namespace.clone(),
@@ -1755,6 +1768,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            table.namespace_id,
             &table.table_ident,
             &TableIdent {
                 namespace: table.table_ident.namespace.clone(),
@@ -1771,6 +1785,194 @@ pub mod tests {
         transaction.rollback().await.unwrap();
     }
 
+    /// A destination namespace id that no longer bears the destination name must be
+    /// refused, in both branches.
+    ///
+    /// This is the shape the caller's namespace cache produces. The destination ident is
+    /// resolved to an id before the transaction, from a per-process `ident -> id` map with
+    /// no cross-replica invalidation, so a replica that did not serve a namespace move
+    /// keeps answering with the namespace that used to hold the name. Passing that id and
+    /// that name down here is then a contradiction, and this is the last place that can
+    /// see it: the caller's authorizer re-parenting is derived from the same pair, and a
+    /// tabular moved into a namespace nothing was checked against inherits grants nobody
+    /// granted.
+    ///
+    /// Set up by actually vacating the name and giving it to another namespace, because the
+    /// two failures below are different code paths: a stale id that happens to equal the
+    /// source lands in the in-place branch, where nothing would otherwise notice that the
+    /// caller asked for a *move*, and any other stale id lands in the cross-namespace one.
+    #[sqlx::test]
+    async fn test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // The namespace that will lose the name. The table lives in it, so once it is
+        // renamed, a stale resolution of `after` yields the table's own namespace.
+        let vacating = NamespaceIdent::from_vec(vec!["after".to_string()]).unwrap();
+        let vacating_id = initialize_namespace(state.clone(), warehouse_id, &vacating, None)
+            .await
+            .namespace_id();
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(vacating.clone()),
+            None,
+            Some("tbl".to_string()),
+        )
+        .await;
+
+        let renamed_to = NamespaceIdent::from_vec(vec!["before".to_string()]).unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        crate::namespace::move_namespace(
+            warehouse_id,
+            vacating_id,
+            &renamed_to,
+            false,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // A different namespace takes the freed name. This is the one a fresh resolution of
+        // `after` would return, and the only namespace the tabular may legitimately land in.
+        let taker_id = initialize_namespace(state.clone(), warehouse_id, &vacating, None)
+            .await
+            .namespace_id();
+        assert_ne!(taker_id, vacating_id);
+
+        let source_ident = TableIdent {
+            namespace: renamed_to.clone(),
+            name: table.table_ident.name.clone(),
+        };
+        let destination_ident = TableIdent {
+            namespace: vacating.clone(),
+            name: "moved".to_string(),
+        };
+
+        // Stale id equal to the source: without the destination-name guard this renames the
+        // tabular where it stands instead of moving it, and reports success.
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            vacating_id,
+            vacating_id,
+            &source_ident,
+            &destination_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_)),
+            "unexpected error: {rename_err:?}"
+        );
+        transaction.rollback().await.unwrap();
+
+        // Stale id pointing at some third namespace: the destination name names `taker_id`,
+        // so neither namespace may receive the tabular.
+        let third = NamespaceIdent::from_vec(vec!["third".to_string()]).unwrap();
+        let third_id = initialize_namespace(state.clone(), warehouse_id, &third, None)
+            .await
+            .namespace_id();
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            vacating_id,
+            third_id,
+            &source_ident,
+            &destination_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(rename_err, RenameTabularError::TabularNotFound(_)),
+            "unexpected error: {rename_err:?}"
+        );
+        transaction.rollback().await.unwrap();
+
+        // The tabular has not moved, and the same rename with the id a fresh resolution
+        // would return goes through — so the two refusals above are about the stale id, not
+        // about the rename being impossible.
+        let mut transaction = pool.begin().await.unwrap();
+        let renamed = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            vacating_id,
+            taker_id,
+            &source_ident,
+            &destination_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(renamed.namespace_id(), taker_id);
+    }
+
+    /// A namespace difference that is only a difference of case is not a move.
+    ///
+    /// Namespace names are matched under a case-insensitive collation, so `a.t -> A.t2`
+    /// names one namespace. Deciding that by comparing the two idents would call it a move:
+    /// the tabular would take the re-parenting branch, and its denormalized namespace name
+    /// would be rewritten to the caller's spelling, leaving the `tabular` row disagreeing
+    /// with the `namespace` row it points at — which `create_tabular` never does, since it
+    /// copies the name from that row. Comparing the two ids instead is also what the
+    /// caller's authorizer re-parenting compares, so the two cannot drift.
+    #[sqlx::test]
+    async fn test_case_only_namespace_difference_renames_in_place(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["case_ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace.clone()),
+            None,
+            Some("tbl".to_string()),
+        )
+        .await;
+
+        let shouted = NamespaceIdent::from_vec(vec!["CASE_NS".to_string()]).unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        let renamed = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            namespace_id,
+            namespace_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: shouted,
+                name: "renamed".to_string(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(renamed.namespace_id(), namespace_id);
+        assert_eq!(
+            renamed.tabular_ident().namespace,
+            namespace,
+            "the stored namespace name must stay the namespace's own spelling"
+        );
+    }
+
+    /// The destination id is random because the namespace was never created: an id no row
+    /// carries is what the caller would have to pass for a namespace that does not exist.
     #[sqlx::test]
     async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -1790,6 +1992,7 @@ pub mod tests {
             warehouse_id,
             table.table_id.into(),
             table.namespace_id,
+            NamespaceId::new_random(),
             &table.table_ident,
             &new_table_ident,
             &mut transaction,
@@ -1825,6 +2028,7 @@ pub mod tests {
             warehouse_id,
             source.table_id.into(),
             source.namespace_id,
+            source.namespace_id,
             &source.table_ident,
             &occupant.table_ident,
             &mut transaction,
@@ -1847,7 +2051,10 @@ pub mod tests {
         let source = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
-        initialize_namespace(state.clone(), warehouse_id, &new_namespace, None).await;
+        let new_namespace_id =
+            initialize_namespace(state.clone(), warehouse_id, &new_namespace, None)
+                .await
+                .namespace_id();
         let occupant = initialize_table(
             warehouse_id,
             state.clone(),
@@ -1863,6 +2070,7 @@ pub mod tests {
             warehouse_id,
             source.table_id.into(),
             source.namespace_id,
+            new_namespace_id,
             &source.table_ident,
             &occupant.table_ident,
             &mut transaction,
@@ -1911,6 +2119,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             source.table_id.into(),
+            source.namespace_id,
             source.namespace_id,
             &source.table_ident,
             &dropped.table_ident,
@@ -2369,6 +2578,7 @@ pub mod tests {
         rename_tabular(
             warehouse_id,
             table.table_id.into(),
+            table.namespace_id,
             table.namespace_id,
             &table.table_ident,
             &new_table_ident,

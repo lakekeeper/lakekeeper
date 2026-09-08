@@ -16,7 +16,7 @@ use crate::{
         },
     },
     service::{
-        AuthZViewInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        AuthZViewInfo as _, CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result,
         SecretStore, State, TabularId, TabularListFlags, Transaction, ViewInfo,
         authz::{
@@ -109,13 +109,15 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         warehouse_id,
         source_id,
         source_namespace_id,
+        destination_namespace_id,
         &source,
         &destination,
         t.transaction(),
     )
     .await?;
-    // The statement resolves the destination by name; authorization ran against an id
-    // resolved before the transaction. They must be the same namespace.
+    // The statement pins the destination to the id passed above, so this holds by
+    // construction. Kept as the invariant it asserts: nothing may land the tabular in a
+    // namespace the request was not authorized against.
     ensure_authorized_destination(destination_namespace_id, renamed.namespace_id())?;
     state
         .v1_state
@@ -168,7 +170,17 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
 ) -> Result<AuthorizeRenameViewResult, AuthZError> {
     let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone(),),
-        C::get_namespace(warehouse_id, &destination.namespace, state.clone(),),
+        // The destination is read uncached: it is the one resolution here with no version
+        // anchor to detect staleness against, and a stale `ident -> id` entry is not
+        // invalidated across replicas, so it would outlive the request, fail every retry,
+        // and have authorization evaluated against a namespace that is not the destination.
+        // `rename_tabular` pins the destination by id regardless.
+        C::get_namespace_cache_aware(
+            warehouse_id,
+            &destination.namespace,
+            CachePolicy::Skip,
+            state.clone(),
+        ),
         C::get_namespace(warehouse_id, &source.namespace, state.clone(),),
         C::get_view_info(
             warehouse_id,

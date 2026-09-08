@@ -642,6 +642,7 @@ where
         warehouse_id: WarehouseId,
         source_id: TabularId,
         source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

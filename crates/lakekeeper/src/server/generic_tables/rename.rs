@@ -17,9 +17,10 @@ use crate::{
         },
     },
     service::{
-        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo, LoadGenericTableError,
-        NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, TabularId, Transaction,
+        CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo,
+        LoadGenericTableError, NamespaceHierarchy, ResolvedWarehouse, SecretStore, State,
+        TabularId, Transaction,
         authz::{
             AuthZCannotSeeGenericTable, AuthZError, AuthZGenericTableOps, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
@@ -104,13 +105,15 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         warehouse_id,
         TabularId::GenericTable(source_id),
         source_namespace_id,
+        destination_namespace_id,
         &source,
         &destination,
         t.transaction(),
     )
     .await?;
-    // The statement resolves the destination by name; authorization ran against an id
-    // resolved before the transaction. They must be the same namespace.
+    // The statement pins the destination to the id passed above, so this holds by
+    // construction. Kept as the invariant it asserts: nothing may land the tabular in a
+    // namespace the request was not authorized against.
     ensure_authorized_destination(destination_namespace_id, renamed.namespace_id())?;
 
     // Claims the key in the same transaction as the rename, so a committed key
@@ -153,7 +156,17 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
 {
     let (warehouse, destination_namespace, source_namespace) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-        C::get_namespace(warehouse_id, &destination.namespace, catalog_state.clone()),
+        // The destination is read uncached: it is the one resolution here with no version
+        // anchor to detect staleness against, and a stale `ident -> id` entry is not
+        // invalidated across replicas, so it would outlive the request, fail every retry,
+        // and have authorization evaluated against a namespace that is not the destination.
+        // `rename_tabular` pins the destination by id regardless.
+        C::get_namespace_cache_aware(
+            warehouse_id,
+            &destination.namespace,
+            CachePolicy::Skip,
+            catalog_state.clone(),
+        ),
         C::get_namespace(warehouse_id, &source.namespace, catalog_state.clone()),
     );
 

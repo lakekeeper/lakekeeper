@@ -16,7 +16,7 @@ use crate::{
         },
     },
     service::{
-        AuthZTableInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        AuthZTableInfo as _, CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, State,
         TableInfo, TabularId, TabularListFlags, Transaction,
         authz::{
@@ -107,13 +107,15 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         warehouse_id,
         source_table_id,
         source_namespace_id,
+        destination_namespace_id,
         &source,
         &destination,
         t.transaction(),
     )
     .await?;
-    // The statement resolves the destination by name; authorization ran against an id
-    // resolved before the transaction. They must be the same namespace.
+    // The statement pins the destination to the id passed above, so this holds by
+    // construction. Kept as the invariant it asserts: nothing may land the tabular in a
+    // namespace the request was not authorized against.
     ensure_authorized_destination(destination_namespace_id, renamed.namespace_id())?;
 
     state
@@ -162,7 +164,17 @@ async fn authorize_rename_table<C: CatalogStore, A: Authorizer + Clone>(
 ) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError> {
     let (warehouse, destination_namespace, source_namespace, source_table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-        C::get_namespace(warehouse_id, &destination.namespace, catalog_state.clone(),),
+        // The destination is read uncached: it is the one resolution here with no version
+        // anchor to detect staleness against, and a stale `ident -> id` entry is not
+        // invalidated across replicas, so it would outlive the request, fail every retry,
+        // and have authorization evaluated against a namespace that is not the destination.
+        // `rename_tabular` pins the destination by id regardless.
+        C::get_namespace_cache_aware(
+            warehouse_id,
+            &destination.namespace,
+            CachePolicy::Skip,
+            catalog_state.clone(),
+        ),
         C::get_namespace(warehouse_id, &source.namespace, catalog_state.clone(),),
         C::get_table_info(
             warehouse_id,

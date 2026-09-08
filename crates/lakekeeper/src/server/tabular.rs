@@ -58,17 +58,16 @@ pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
 /// Fail a rename whose row landed in a different namespace than authorization was
 /// evaluated against.
 ///
-/// The destination namespace is resolved twice: once before the transaction, to authorize
-/// the create-in-destination action and to decide whether this rename re-parents anything,
-/// and once inside the statement, by name, to write the new `namespace_id`. The first
-/// resolution is cache-first and can serve a per-process entry up to its TTL old, with no
-/// cross-replica invalidation — so a namespace rename or move elsewhere can make the two
-/// disagree. Then authorization was checked against one namespace while the row moved into
-/// another, and the authorizer would be re-pointed at the wrong one — or, when the stale id
-/// happens to equal the source, not re-pointed at all.
+/// A backstop, not the defence. The destination namespace is resolved once, before the
+/// transaction, and `rename_tabular` pins the row to that id rather than resolving the
+/// destination name a second time — so this holds by construction and should never fire.
+/// It stays because the alternative is silent: were the statement to resolve the
+/// destination itself again, authorization would have been checked against one namespace
+/// while the row moved into another, and the authorizer would be re-pointed at the wrong
+/// one — or, when the two happen to coincide with the source, not re-pointed at all.
+/// Nothing about that reaches the caller or shows up in an assignment listing.
 ///
-/// Called before the commit, so returning here rolls the rename back. Retrying resolves the
-/// destination afresh.
+/// Called before the commit, so returning here rolls the rename back.
 pub(crate) fn ensure_authorized_destination(
     authorized: NamespaceId,
     committed: NamespaceId,
