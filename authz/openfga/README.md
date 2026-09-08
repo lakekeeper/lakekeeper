@@ -4,14 +4,16 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.9`
+## `v4.10`
 
 ```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds namespace moves and governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+Adds namespace moves, governance tags, and revoke authority. No tuple rewrites. Existing tuples authorize the same model actions; what changed is which relation the server asks on a revoke — `pass_grants` no longer confers revoking. See below.
+
+Supersedes `v4.9`, which reached no release. `v4.9` carried the namespace-move and governance-tag additions; `v4.10` adds revoke authority on top. Because the model is selected by version, a store already provisioned with `v4.9` from a `main` build must see a higher version to pick up the new relations — hence the bump rather than an in-place edit. `v4.9` is no longer registered; stores on it migrate straight to `v4.10`.
 
 ### Namespace moves
 
@@ -23,6 +25,18 @@ Adds namespace moves and governance tags. Backwards-compatible: existing tuples 
 `warehouse`:
 
 - Add `can_accept_moved_namespace` (from `manage_grants and create`) — same gate for moves targeting the warehouse root.
+
+### Revoke authority
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- Add `can_revoke_describe`, `can_revoke_select`, `can_revoke_modify` (and `can_revoke_create` where the level has it), each from `manage_grants`. These are the privileges `pass_grants` can delegate; the rest are already `manage_grants`-only to grant, so both directions keep sharing one relation.
+
+A privilege name this version does not publish has no revoke action either: an unknown privilege is refused in both directions. A name never declared has no tuple to remove. A tuple left by a privilege an *older* version declared is unreachable through the API in any case — it is absent from listings too — and is removed in OpenFGA directly.
+
+**Behaviour change.** `pass_grants` now delegates in one direction only: a holder may hand out a privilege they hold, but no longer take one back — including one they granted themselves. Revoking requires `manage_grants`. This applies to both the `/grants` diff and the older `/permissions/{type}/{id}/assignments` deletes. Existing tuples are unchanged; a principal holding `pass_grants` without `manage_grants` loses the ability to remove other principals' grants, which they had in `v4.7` and earlier. `pass_grants` is directly assignable at every level and never inherits — unlike `manage_grants`, which does — so the loss is confined to the objects where `pass_grants` was granted directly, not to their subtrees. Restoring it means granting `manage_grants`, which is strictly broader: it also confers granting privileges the holder does not hold, ownership transfer, and administration of the subtree below.
+
+The point is delegation depth: every grant is now one hop from someone holding `manage_grants`, so there is no chain of delegated grants to unwind when access is withdrawn — which is what makes storing no grantor on a grant safe.
 
 ### Governance tags
 

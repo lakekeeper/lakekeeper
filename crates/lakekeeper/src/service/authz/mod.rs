@@ -11,7 +11,7 @@ use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
     CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
-    SecretStore, State, TableId, TagDefinition, TagDefinitionId, ViewId, WarehouseId,
+    SecretStore, State, TableId, TabularId, TagDefinition, TagDefinitionId, ViewId, WarehouseId,
     health::HealthExt,
 };
 use crate::{
@@ -2418,9 +2418,11 @@ where
     /// [`Self::detach_namespace_parent`] removed.
     ///
     /// Its failure cannot be reported to the caller — the move already happened — so it is
-    /// logged and left to reconciliation. That is the trade this ordering buys: every
-    /// failure mode leaves the authorizer *missing* an edge, never holding an extra one, so
-    /// a namespace can lose inherited access but never silently keep or gain it. Missing
+    /// logged and left to reconciliation. That is the trade this ordering buys: a failed
+    /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
+    /// namespace loses inherited access rather than silently keeping or gaining it. The one
+    /// exception is a commit whose outcome is unknown, where the caller's compensation
+    /// re-attaches a parent the namespace has actually left. Missing
     /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
     /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
     ///
@@ -2480,6 +2482,70 @@ where
         &self,
         _warehouse_id: WarehouseId,
         _generic_table_id: GenericTableId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that removes a tabular's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
+    ///
+    /// Paired with [`Self::attach_tabular_parent`] to re-point a table, view or generic
+    /// table during a rename that crosses namespaces. Not called for a rename within one
+    /// namespace — the hierarchy is unchanged there — nor for a no-op.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the tabular is never reachable from two
+    /// namespaces at once — see [`Self::attach_tabular_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
+    ///
+    /// Called with the catalog's write transaction open, so an implementation must not read
+    /// or write the catalog: checking out a second connection under an open transaction
+    /// exhausts the pool and deadlocks.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn detach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _tabular_id: TabularId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a tabular's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a namespace the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* namespace that
+    /// [`Self::detach_tabular_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the rename already happened — so it
+    /// is logged and left to reconciliation. That is the trade this ordering buys: a failed
+    /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
+    /// table loses inherited access rather than silently keeping access granted on the
+    /// namespace it was moved out of. The one exception is a commit whose outcome is
+    /// unknown — the connection dies after Postgres committed but before the ack — where
+    /// the caller's compensation re-attaches a namespace the tabular has actually left.
+    /// Missing edges are also what
+    /// `lakekeeper openfga reconcile` repairs in its **default** additive mode; removing a
+    /// surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _tabular_id: TabularId,
+        _parent: NamespaceId,
     ) -> Result<()> {
         Ok(())
     }
@@ -3303,6 +3369,11 @@ pub mod tests {
         /// Which grant directions this authorizer has authority over. Empty by default,
         /// which answers every grant-authority question with the trait's deny.
         grant_ops: &'static [GrantOp],
+        /// Namespaces to report from [`Authorizer::managed_role_provider_ids`]. Empty
+        /// by default, matching every real OSS authorizer; a test sets it to exercise
+        /// the non-empty path, which OSS otherwise cannot reach (no role providers
+        /// ship here, so the production set is always empty).
+        managed_role_providers: HashSet<RoleProviderId>,
     }
 
     impl Default for HidingAuthorizer {
@@ -3321,7 +3392,19 @@ pub mod tests {
                 server_id: ServerId::new_random(),
                 bootstrap: &[],
                 grant_ops: &[],
+                managed_role_providers: HashSet::new(),
             }
+        }
+
+        /// Report `providers` as provider-managed, so a test can exercise the
+        /// non-empty deny-set that no OSS authorizer produces on its own.
+        #[must_use]
+        pub fn with_managed_role_providers(
+            mut self,
+            providers: impl IntoIterator<Item = RoleProviderId>,
+        ) -> Self {
+            self.managed_role_providers = providers.into_iter().collect();
+            self
         }
 
         /// Give this authorizer authority over `ops` and nothing else, so a test can tell
@@ -3446,6 +3529,10 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn managed_role_provider_ids(&self) -> &HashSet<RoleProviderId> {
+            &self.managed_role_providers
         }
 
         fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {

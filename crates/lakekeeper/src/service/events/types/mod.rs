@@ -1,6 +1,7 @@
 pub mod authorization;
 pub mod generic_table;
 pub mod grant;
+pub mod idempotency;
 pub mod namespace;
 pub mod project;
 pub mod role;
@@ -15,6 +16,7 @@ pub mod warehouse;
 pub use authorization::*;
 pub use generic_table::*;
 pub use grant::*;
+pub use idempotency::*;
 pub use namespace::*;
 pub use project::*;
 pub use role::*;

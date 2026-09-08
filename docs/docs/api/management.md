@@ -1,6 +1,7 @@
 ---
 hide:
   - toc
+description: "Interactive OpenAPI reference for the Lakekeeper Management API: projects, warehouses, users, roles and permissions."
 ---
 <style>
 /*

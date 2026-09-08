@@ -271,6 +271,11 @@ pub struct CatalogCreateRoleRequest<'a> {
 #[derive(Debug, typed_builder::TypedBuilder)]
 pub struct CatalogCreateWarehouseRequest {
     pub warehouse_name: String,
+    /// ID to create the warehouse under. `None` leaves the choice to the
+    /// backend's own default. The management API always supplies one so the ID
+    /// is known before the insert; direct callers may omit it.
+    #[builder(default)]
+    pub warehouse_id: Option<WarehouseId>,
     pub storage_profile: StorageProfile,
     #[builder(default)]
     pub storage_secret_id: Option<SecretId>,
@@ -394,11 +399,16 @@ where
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
     /// Delete a warehouse.
+    ///
+    /// Returns the storage secret the deleted warehouse referenced, if any, so the
+    /// caller can clean it up. It must come from the row this call actually
+    /// deleted: read outside the transaction it could name a credential a
+    /// concurrent rotation has already replaced.
     async fn delete_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError>;
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError>;
 
     /// Rename a warehouse.
     async fn rename_warehouse_impl<'a>(
@@ -584,6 +594,26 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError>;
 
+    /// Rewrite any namespace path prefix that disagrees with its parent row's spelling, and
+    /// report how many rows were changed.
+    ///
+    /// Maintenance, not part of any request path: run from the post-migration hooks. A namespace's
+    /// path prefix references its parent, so it must carry the parent's stored spelling. Both write
+    /// paths now guarantee that (see `lock_parent_namespace`), but rows written before that fix can
+    /// disagree — and such a row, plus its whole subtree, can never be served from the namespace
+    /// cache, because `is_parent_ident` compares the prefix byte-wise and the reload re-inserts the
+    /// same bytes and fails identically.
+    ///
+    /// Implementations must be idempotent and safe to retry. The caller gates this on the migration
+    /// the repair is pinned to having just been applied, so it normally runs once per upgrade — but
+    /// `migrate --force-idempotent-post-migration-hooks` re-runs it on demand to recover from an
+    /// earlier failure, and re-pinning it to a later migration re-runs it for a newly found hole.
+    /// Both rely on repeat runs being harmless, and on what needs repairing being derived from the
+    /// data rather than from a stored marker.
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError>;
+
     // ---------------- Tabular Management ----------------
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,
@@ -631,6 +661,8 @@ where
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -1008,6 +1040,18 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
+
+    /// Every role each of `role_ids` is nested inside, transitively.
+    ///
+    /// Must return an entry for **every** id it was given: a role nested in
+    /// nothing maps to an empty vec rather than being absent. A short result is
+    /// treated as a backend error, because an omitted role cannot be told apart
+    /// from one with no ancestors, and reading it as none silently unscopes
+    /// every policy written against a parent role.
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,

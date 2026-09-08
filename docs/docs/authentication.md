@@ -1,3 +1,7 @@
+---
+description: "Secure Lakekeeper with OpenID Connect, OAuth 2 or Kubernetes service accounts, and map identity provider tokens to catalog users and roles."
+---
+
 # Authentication
 
 Authentication is crucial for securing access to Lakekeeper. By enabling authentication, you ensure that only authorized users can access and interact with your data. Lakekeeper supports authentication via any OpenID (or OAuth 2) capable identity provider as well as authentication for Kubernetes service accounts, allowing you to integrate with your existing identity providers.
@@ -10,7 +14,7 @@ Lakekeeper does not issue API-Keys or Client-Credentials itself. Instead, it rel
 
 Lakekeeper can be configured to integrate with all common identity providers. For best performance, tokens are validated locally against the server keys (`jwks_uri`). This requires all incoming tokens to be JWT tokens. If you require support for opaque tokens, please upvote the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/620).
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token. Multiple audiences can be provided as a comma-separated list, and a token is accepted if its `aud` claim contains any one of them (OR). We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
+If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token. Multiple audiences can be provided as a comma-separated list, and a token is accepted if its `aud` claim contains any one of them (OR). We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper. Where the IdP is shared by several organizations, the audience alone does not identify your tenant; add [required-claim rules](./configuration.md#required-claims) (e.g. on an `organizations` claim) to restrict which of the IdP's tokens Lakekeeper admits.
 
 Users are automatically added to Lakekeeper after successful Authentication (user provides a valid token with the correct issuer and audience). If a User does not yet exist in Lakekeeper's Database, the provided JWT token is parsed. The following fields are parsed:
 
@@ -48,7 +52,7 @@ The lifetime of this token is specified in the corresponding application in your
 
 We are creating two Client: The first client with a "public" profile for the Lakekeeper API & UI and the second client for a machine client (e.g. Spark). Repeat step 2 for each machine client that is needed.
 
-##### Client 1: Lakekeeper
+#### Client 1: Lakekeeper
 
 1. Create a new "Client":
     - **Client Type**: choose "OpenID Connect"
@@ -77,7 +81,7 @@ LAKEKEEPER__UI__OPENID_CLIENT_ID="lakekeeper" (ID of Client 1)
 # LAKEKEEPER__UI__OPENID_SCOPE="lakekeeper" (Name of the created scope, not required if scope was added as default)
 ```
 
-##### Client 2: Machine User
+#### Client 2: Machine User
 
 Repeat this process for each query engine / machine user that is required:
 
@@ -151,7 +155,7 @@ If Authorization is enabled, the client will throw an error as no permissions ha
 
 We are creating three App-Registrations: The first for Lakekeeper itself, the second for the Lakekeeper UI the third for a machine client (e.g. Spark) to access Lakekeeper. Repeat step 3 for each machine client that is needed. While App-Registrations can also be shared, the recommended setup we propose here offers more flexibility and better security.
 
-##### App 1: Lakekeeper UI Application
+#### App 1: Lakekeeper UI Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper-UI`
@@ -186,7 +190,7 @@ Alternatively, the following snippets will setup the resources mentioned above:
   }
   ```
 
-##### App 2: Lakekeeper Application
+#### App 2: Lakekeeper Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
@@ -313,7 +317,7 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
 
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
-##### App 3: Machine User
+#### App 3: Machine User
 
 Repeat this process for each query engine / machine user that is required:
 
@@ -433,7 +437,7 @@ If you're using Google Cloud Platform, please advocate for proper OAuth standard
 
 Due to these OAuth2 limitations in Google Identity Platform, we cannot recommend it for production deployments. Nevertheless, if you wish to proceed, here's how:
 
-##### Google Auth Platform Project: Lakekeeper Application
+#### Google Auth Platform Project: Lakekeeper Application
 
 Create a new GCP Project - each Project serves a single application as part of the "Google Auth Platform". When the new project is created, create the new internal Lakekeeper Application:
 
@@ -445,7 +449,7 @@ Create a new GCP Project - each Project serves a single application as part of t
     - **Contact Information / Email address**: Email Addresses of Lakekeeper Admins or Team Email Address
 1. After the Branding is created, select "Data access" in the left menu, and add the following non-sensitive scopes: `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
 
-##### Client 1: Lakekeeper UI
+#### Client 1: Lakekeeper UI
 
 1. After the app is created, click in the left menu on "Clients" in the "Google Auth Platform" service
 1. Click on "+Create credentials"
@@ -471,6 +475,8 @@ For scenarios where you need to authenticate tokens from multiple identity provi
 When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
 
 ### Configuration
+
+Each provider can additionally restrict which of its tokens are accepted with [required-claim rules](./configuration.md#required-claims) — for example to admit only members of one organization from an identity provider that serves many.
 
 Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI`, which remains the primary provider (`idp_id = "oidc"`).
 

@@ -1,3 +1,7 @@
+---
+description: "Extend Lakekeeper in Rust: swap backends and implement traits and hooks for authorization, secret storage, event publishing and custom endpoints."
+---
+
 # Customize
 
 Customizability is one of the core features that sets Lakekeeper apart from other Iceberg REST Catalog implementations. Almost every part of the server is a Rust trait or an injectable hook, so you can replace a backend or extend behaviour — for example to grant access to tables via your company's data-governance solution, persist secrets in a vault you already operate, react to every table change, expose custom endpoints, or publish events to your messaging system.

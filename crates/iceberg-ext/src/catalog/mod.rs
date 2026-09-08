@@ -11,7 +11,7 @@ pub mod rest {
     pub use catalog_config::CatalogConfig;
 
     mod s3_signer;
-    pub use s3_signer::{S3SignRequest, S3SignResponse};
+    pub use s3_signer::{RemoteSigningConfig, S3SignRequest, S3SignResponse};
 
     mod view_update;
     pub use view_update::ViewUpdate;

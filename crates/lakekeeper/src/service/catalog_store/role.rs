@@ -22,6 +22,7 @@ use crate::{
             },
         },
         define_transparent_error,
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
         identifier::role::ArcRoleIdent,
         impl_error_stack_methods, impl_from_with_detail,
     },
@@ -355,7 +356,11 @@ define_transparent_error! {
 // Raised when a customer-facing role-management endpoint is invoked against a
 // catalog-managed system role (e.g. `workspace_admin`, `workspace_user`).
 // System roles are seeded per project and are not modifiable via the API —
-// they only change when the catalog itself reseeds them.
+// they only change when the catalog itself reseeds them. Two distinct
+// semantics live here: the role's own spec (name/description/deletion) is
+// fully immutable through the API, while the role's *membership* is instead
+// provisioned exclusively by instance admins — reachable through the API, but
+// gated rather than closed off entirely.
 
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
 #[error(
@@ -379,6 +384,82 @@ impl From<SystemRoleImmutable> for ErrorModel {
             .message(err.to_string())
             .stack(err.stack)
             .build()
+    }
+}
+
+// Raised on a membership write (`POST /role/{id}/members`, `DELETE
+// /role/{id}/members/{type}/{id}`) against a catalog-managed system role when the
+// caller is not an instance admin. System-role membership is provisioning, not
+// self-service: it must not be reachable by anyone merely holding
+// `ManageRoleAssignments` on the role, since the role itself confers that
+// permission to its own members.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Membership of `system` roles is provisioned by instance admins; this caller is not an instance admin."
+)]
+pub struct SystemRoleMembershipRequiresInstanceAdmin {
+    pub stack: Vec<String>,
+}
+impl SystemRoleMembershipRequiresInstanceAdmin {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleMembershipRequiresInstanceAdmin);
+impl From<SystemRoleMembershipRequiresInstanceAdmin> for ErrorModel {
+    fn from(err: SystemRoleMembershipRequiresInstanceAdmin) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleMembershipRequiresInstanceAdmin")
+            .code(StatusCode::FORBIDDEN.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for SystemRoleMembershipRequiresInstanceAdmin {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised when an instance admin's `POST /role/{id}/members` would add a role
+// (rather than a user) as a member of a system role. System roles hold users
+// directly; nesting another role into one is not supported. Removing a
+// role-type member stays permitted, as a cleanup path.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("`system` roles cannot contain other roles as members.")]
+pub struct SystemRoleMemberRolesNotSupported {
+    pub stack: Vec<String>,
+}
+impl SystemRoleMemberRolesNotSupported {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleMemberRolesNotSupported);
+impl From<SystemRoleMemberRolesNotSupported> for ErrorModel {
+    fn from(err: SystemRoleMemberRolesNotSupported) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleMemberRolesNotSupported")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for SystemRoleMemberRolesNotSupported {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
     }
 }
 

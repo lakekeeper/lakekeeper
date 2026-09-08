@@ -102,6 +102,31 @@ pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
     /// within a project and may not contain "/"
     pub warehouse_name: String,
+    /// Request a specific warehouse ID - optional.
+    /// If not provided, a new warehouse ID will be generated (recommended).
+    /// Warehouse IDs are unique across the whole Lakekeeper instance, not just
+    /// within a project. If you do provide one, prefer a UUIDv7, so that IDs
+    /// sort by creation time.
+    // Why v7: the standard random-vs-time-ordered B-tree argument. A random id
+    // scatters inserts across the whole index, so pages split down the middle and
+    // the index ends up fragmented, larger, and read from disk at random;
+    // published Postgres benchmarks put v4 inserts several times slower than v7
+    // at scale, with a measurably bigger index. A time-ordered id keeps inserts
+    // at the growing edge, so pages fill densely.
+    //
+    // It reaches `warehouse_id` transitively: this column leads the primary key
+    // of most catalog tables, so it decides where a warehouse's whole subtree of
+    // rows lands. Loading tables into a freshly created warehouse is the case
+    // that benefits — with a time-ordered warehouse id those inserts extend the
+    // end of each index instead of splitting pages in its middle.
+    //
+    // Kept out of the doc comment above deliberately: that text ships into the
+    // committed OpenAPI spec, and the primary-key layout is not something the
+    // public API should promise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<uuid::Uuid>))]
+    pub warehouse_id: Option<WarehouseId>,
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
@@ -444,6 +469,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<CreateWarehouseResponse> {
         let CreateWarehouseRequest {
             warehouse_name,
+            warehouse_id,
             project_id,
             mut storage_profile,
             storage_credential,
@@ -455,6 +481,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(project_id)?;
         let format_version_policy =
             validate_format_version_policy(allowed_format_versions, default_format_version)?;
+        // Generated here rather than left to the database default so that the ID
+        // is known before the insert, and so that an omitted `warehouse-id`
+        // yields the same UUIDv7 we recommend to callers who supply one.
+        let warehouse_id = warehouse_id.unwrap_or_else(WarehouseId::new_random);
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -529,36 +559,137 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let resolved_warehouse = C::create_warehouse(
-            project_id,
-            CatalogCreateWarehouseRequest::builder()
-                .warehouse_name(warehouse_name)
-                .storage_profile(storage_profile)
-                .storage_secret_id(secret_id)
-                .delete_profile(delete_profile)
-                .format_version_policy(format_version_policy)
-                .managed_by(managed_by)
-                .build(),
-            transaction.transaction(),
-        )
-        .await?;
-        authorizer
-            .create_warehouse(
-                request_metadata,
-                resolved_warehouse.warehouse_id,
+        // The secret is stored outside the transaction, so a rollback does not
+        // remove it. Everything up to the commit runs as one unit so that any
+        // failure — an id or name conflict, the authorizer, the commit itself —
+        // can delete the secret before returning, instead of leaving a credential
+        // behind that nothing references and no API can reach.
+        //
+        // The transaction stays owned out here rather than being moved into the
+        // block, so it can be settled explicitly below before the secret store is
+        // touched: cleanup talks to an external service (Vault, for one backend),
+        // and a write-pool connection must not be held across that call.
+        // Gates the authz compensation below. Strictly "the write succeeded": a
+        // failing `create_warehouse` may have failed *because* the id already
+        // carries relations, and deleting then would strip the rightful holder's
+        // grants. Its tuple write is atomic, so there is no partial case to undo.
+        let mut authz_relations_written = false;
+        let staged: Result<(_, _)> = async {
+            let resolved_warehouse = C::create_warehouse(
                 project_id,
+                CatalogCreateWarehouseRequest::builder()
+                    .warehouse_name(warehouse_name)
+                    .warehouse_id(Some(warehouse_id))
+                    .storage_profile(storage_profile)
+                    .storage_secret_id(secret_id)
+                    .delete_profile(delete_profile)
+                    .format_version_policy(format_version_policy)
+                    .managed_by(managed_by)
+                    .build(),
+                transaction.transaction(),
+            )
+            .await?;
+            authorizer
+                .create_warehouse(
+                    request_metadata,
+                    resolved_warehouse.warehouse_id,
+                    project_id,
+                )
+                .await?;
+            authz_relations_written = true;
+
+            let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                &authorizer,
+                request_metadata,
+                &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
+                transaction.transaction(),
             )
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<C, A>(
-            &authorizer,
-            request_metadata,
-            &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
-            transaction.transaction(),
-        )
-        .await?;
+            Ok((resolved_warehouse, bootstrap_grants))
+        }
+        .await;
 
-        transaction.commit().await?;
+        // Settle the transaction before any cleanup: on success commit, otherwise
+        // roll back and release the connection. A rollback that fails is logged
+        // and discarded — the create error is what the caller needs, and the
+        // transaction is abandoned either way. A commit that fails has already
+        // ended the transaction, so there is nothing left to roll back, but its
+        // secret still needs cleaning up, which is why both funnel into one arm.
+        let settled = match staged {
+            Ok(staged) => transaction.commit().await.map(|()| staged),
+            Err(create_error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            ?e,
+                            "Failed to roll back after a failed warehouse creation: {}",
+                            e.error
+                        );
+                    })
+                    .ok();
+                Err(create_error)
+            }
+        };
+
+        let (resolved_warehouse, bootstrap_grants) = match settled {
+            Ok(settled) => settled,
+            Err(create_error) => {
+                // Relations written for a warehouse that then failed to commit
+                // would outlive it, and `create_warehouse` refuses an id that
+                // still carries any — so leaving them behind makes this id
+                // permanently unusable, including for the caller's own retry.
+                if authz_relations_written {
+                    authorizer
+                        .delete_warehouse(request_metadata, warehouse_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %warehouse_id,
+                                "Failed to remove the authorization relations of a warehouse that \
+                                 was not created; the id cannot be used again until they are \
+                                 cleared: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
+                // Best-effort, and the creation error is what the caller gets: a
+                // failure to clean up leaves the credential orphaned exactly as
+                // before, which must not mask why the create failed.
+                if let Some(secret_id) = secret_id {
+                    context
+                        .v1_state
+                        .secrets
+                        .delete_secret(&secret_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %secret_id,
+                                "Failed to delete the storage secret of a warehouse that was not \
+                                 created; it is now orphaned in the secret store: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
+                return Err(create_error);
+            }
+        };
+
+        // Drop any entry this replica still holds for the id before the create
+        // event repopulates it. Every other warehouse write invalidates; create
+        // could skip it while ids were always fresh, because there was nothing to
+        // displace. A caller-supplied id can name a warehouse this replica cached
+        // before it was deleted, and `warehouse_cache_insert` refuses to overwrite
+        // a higher `version` — a recreated warehouse starts back at 0, so without
+        // this the replica would keep serving the previous warehouse's project and
+        // storage profile under an id that now belongs to a different one.
+        warehouse_cache_invalidate(resolved_warehouse.warehouse_id).await;
 
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
@@ -584,6 +715,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // thing it predicts if it is literally the same type.
         let CreateWarehouseRequest {
             warehouse_name,
+            warehouse_id,
             project_id,
             mut storage_profile,
             storage_credential,
@@ -643,8 +775,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // warehouse into existence already owned by a control plane.
         report.push(managed_by_check(managed_by, request_metadata));
 
-        // The project listing serves both the name-availability and the
-        // location-overlap check; fetch it once, alongside the storage probes.
+        // The project listing serves the name-availability, id-availability and
+        // location-overlap checks; fetch it once, alongside the storage probes.
         let listing = C::list_warehouses(
             project_id,
             Some(WarehouseStatus::active_and_inactive().to_vec()),
@@ -677,12 +809,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     ValidationCheckName::LocationExclusive,
                     "Could not list the warehouses in this project.",
                 );
+                report.skip(
+                    ValidationCheckName::WarehouseIdAvailable,
+                    "Could not list the warehouses in this project.",
+                );
                 report.extend(probe_checks);
                 return Ok(report.build().into());
             }
         };
 
         report.push(warehouse_name_check(&warehouse_name, &warehouses));
+        report.push(warehouse_id_check(warehouse_id, &warehouses));
         report.push(if normalized {
             location_overlap_check(&storage_profile, &warehouses)
         } else {
@@ -731,6 +868,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         report.push(ValidationCheck::skipped(
             ValidationCheckName::WarehouseNameValid,
             "Updating storage does not change the warehouse name.",
+        ));
+        report.push(ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "Updating storage does not change the warehouse id.",
         ));
         report.push(ValidationCheck::skipped(
             ValidationCheckName::LocationExclusive,
@@ -1103,7 +1244,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        // The secret comes from the row the delete removed, inside this
+        // transaction, so it cannot name a credential a concurrent rotation
+        // replaced between an earlier read and the delete.
+        let storage_secret_id =
+            C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         transaction.commit().await?;
         warehouse_cache_invalidate(warehouse_id).await;
 
@@ -1119,6 +1264,33 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 );
             })
             .ok();
+
+        // The warehouse that owned this credential no longer exists, so nothing
+        // can reach it again through the API — left in place it is an
+        // indefinitely retained credential for storage Lakekeeper no longer
+        // serves. Post-commit and best-effort, like the authz cleanup above:
+        // deleting inside the transaction would destroy the credential of a
+        // warehouse that still exists if the commit then failed, and failing the
+        // request afterwards would report a delete that did happen as an error.
+        // A failure here leaves the credential exactly as orphaned as before,
+        // and says so in the log.
+        if let Some(secret_id) = storage_secret_id {
+            context
+                .v1_state
+                .secrets
+                .delete_secret(&secret_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        %secret_id,
+                        "Failed to delete the storage secret of deleted warehouse {warehouse_id}; \
+                         it is now orphaned in the secret store: {}",
+                        e.error
+                    );
+                })
+                .ok();
+        }
 
         event_ctx.emit_warehouse_deleted();
 
@@ -2272,6 +2444,44 @@ fn warehouse_name_check(
     ValidationCheck::passed(ValidationCheckName::WarehouseNameValid, elapsed_ms(started))
 }
 
+/// Check that a requested warehouse id is not already used in this project.
+///
+/// Only the caller's own project is examined, so this cannot confirm the id is
+/// free instance-wide — deliberately: the dry run must not become a cheap oracle
+/// for which ids exist in projects the caller cannot see. A collision outside
+/// the project surfaces as a conflict on the real create.
+fn warehouse_id_check(
+    warehouse_id: Option<WarehouseId>,
+    warehouses: &[Arc<ResolvedWarehouse>],
+) -> ValidationCheck {
+    let started = Instant::now();
+    let Some(warehouse_id) = warehouse_id else {
+        return ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "No warehouse id was requested; the server will assign one.",
+        );
+    };
+    if warehouses.iter().any(|w| w.warehouse_id == warehouse_id) {
+        return ValidationCheck::failed(
+            ValidationCheckName::WarehouseIdAvailable,
+            elapsed_ms(started),
+            warehouse_id_taken_error(warehouse_id),
+        );
+    }
+    ValidationCheck::passed(
+        ValidationCheckName::WarehouseIdAvailable,
+        elapsed_ms(started),
+    )
+}
+
+fn warehouse_id_taken_error(warehouse_id: WarehouseId) -> ErrorModel {
+    ErrorModel::bad_request(
+        format!("A warehouse with id `{warehouse_id}` already exists."),
+        "WarehouseIdAlreadyTaken",
+        None,
+    )
+}
+
 /// Check that no other warehouse in the project already occupies this location.
 fn location_overlap_check(
     storage_profile: &StorageProfile,
@@ -2364,6 +2574,10 @@ async fn stored_profile_report(
     report.skip(ValidationCheckName::ProfileCompatible, compatibility_reason);
     report.skip(
         ValidationCheckName::WarehouseNameValid,
+        "The warehouse already exists.",
+    );
+    report.skip(
+        ValidationCheckName::WarehouseIdAvailable,
         "The warehouse already exists.",
     );
     report.skip(

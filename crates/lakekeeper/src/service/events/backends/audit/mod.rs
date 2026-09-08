@@ -10,7 +10,7 @@ use crate::{
         authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
         events::{
             Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
-            GrantsChangedEvent, context::EntityDescriptor,
+            GrantsChangedEvent, IdempotentReplayEvent, context::EntityDescriptor,
         },
     },
 };
@@ -325,6 +325,20 @@ fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
 }
 
+/// The request's `Idempotency-Key`, or `None` when the caller sent none — which
+/// `valuable` renders as JSON `null`.
+///
+/// On every authorization record, not only the replay one: a replay is matched
+/// on the key alone, so without the key on both sides a retry can be tied to the
+/// request that did the work only by content and timing — which fails in exactly
+/// the cases that matter, where the retry named a different target or different
+/// flags.
+fn idempotency_key_value(request_metadata: &RequestMetadata) -> Option<String> {
+    request_metadata
+        .idempotency_key()
+        .map(|key| key.as_uuid().to_string())
+}
+
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -339,6 +353,15 @@ impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        // Recorded verbatim and unverified: the field says the caller claimed an
+        // emergency override and why, not that one was granted. Passed as a bare
+        // `Option` rather than through `valuable`, so that `None` records nothing
+        // and the key is absent from ordinary events instead of adding a `null`
+        // to every authorization check. Unlike `user_agent`, absent and null
+        // would mean the same thing here, so the null buys nothing.
+        let break_glass = event.request_metadata.break_glass_reason();
+        let idempotency_key = idempotency_key_value(&event.request_metadata);
+        let idempotency_key = idempotency_key.as_deref();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -347,9 +370,11 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -362,10 +387,12 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -420,6 +447,15 @@ impl EventListener for AuditEventListener {
     ) -> anyhow::Result<()> {
         let authorizations = AuthorizationsList(&event.authorizations);
         let user_agent = user_agent_value(&event.request_metadata);
+        // Recorded verbatim and unverified: the field says the caller claimed an
+        // emergency override and why, not that one was granted. Passed as a bare
+        // `Option` rather than through `valuable`, so that `None` records nothing
+        // and the key is absent from ordinary events instead of adding a `null`
+        // to every authorization check. Unlike `user_agent`, absent and null
+        // would mean the same thing here, so the null buys nothing.
+        let break_glass = event.request_metadata.break_glass_reason();
+        let idempotency_key = idempotency_key_value(&event.request_metadata);
+        let idempotency_key = idempotency_key.as_deref();
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -428,7 +464,9 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
@@ -441,13 +479,45 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
                     user_agent = tracing::field::valuable(&user_agent),
+                    break_glass = break_glass,
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    idempotency_key = tracing::field::valuable(&idempotency_key),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
             );
         }
+        Ok(())
+    }
+
+    /// A retry answered from an idempotency record.
+    ///
+    /// Carries `action` and `entity` in the same shape as the two authorization
+    /// records above, so one query over the audit stream sees the original
+    /// request and every replay of it. It deliberately carries no `decision`:
+    /// no authorization ran, because the mutation had already happened and
+    /// there was nothing left to permit. `operation` and `outcome` are the
+    /// positive markers that say so.
+    ///
+    /// No `context`: no handler records extra context before the idempotency
+    /// check, so unlike the arms above there is nothing to render.
+    async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
+        let user_agent = user_agent_value(&event.request_metadata);
+        let idempotency_key = event.idempotency_key.as_uuid().to_string();
+        audit_log!(
+            &*event.actions,
+            &*event.entities,
+            {
+                actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                privilege_source = event.request_metadata.privilege_source().as_str(),
+                user_agent = tracing::field::valuable(&user_agent),
+                operation = "idempotent_replay",
+                idempotency_key = idempotency_key.as_str(),
+                outcome = "replayed",
+            },
+            "Idempotent replay served"
+        );
         Ok(())
     }
 }
@@ -670,6 +740,10 @@ impl Mappable for AuditPrincipal<'_> {
 /// This is the counterpart to the authz-focused `audit_log!` macro. Use it
 /// whenever there is no `decision = "allowed"|"denied"` to emit — e.g. for
 /// role resolution, user lookup, or token enrichment.
+///
+/// The exception is a record that must carry `action`/`entity`, which this
+/// macro cannot express: use `audit_log!` and mark the record with
+/// `operation`/`outcome` instead, as `idempotent_replay_served` does.
 ///
 /// # Examples
 /// ```rust,ignore

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
 use lakekeeper::{
     MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
@@ -292,6 +293,126 @@ async fn test_load_generic_table_credentials_with_engine_rejects_missing_view(po
         result.is_err(),
         "with engine, nonexistent view in referenced_by should fail: {result:?}"
     );
+}
+
+// ---- Chain depth limit ----
+
+/// Pins the shipped default of `LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`.
+/// Asserted against the live config below so a changed default fails loudly
+/// here rather than as a puzzling boundary failure.
+const MAX_CHAIN_DEPTH: usize = 10;
+
+fn chain_idents(len: usize) -> Vec<TableIdent> {
+    (0..len)
+        .map(|i| table_ident("ns", &format!("chain_view_{i}")))
+        .collect()
+}
+
+async fn create_chain_views<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    len: usize,
+) {
+    for i in 0..len {
+        create_invoker_view(ctx, wh, &format!("chain_view_{i}")).await;
+    }
+}
+
+#[sqlx::test]
+async fn test_load_generic_table_credentials_referenced_by_at_limit_succeeds(pool: PgPool) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH).await;
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH)),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
+    );
+}
+
+#[sqlx::test]
+async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected(pool: PgPool) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH + 1).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH + 1)),
+        request_with_engine(),
+    )
+    .await
+    .expect_err("a chain one over the limit is rejected");
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+}
+
+/// Untrusted-engine counterpart: the cap is a property of the request at this
+/// call site too, not a consequence of engine trust.
+#[sqlx::test]
+async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected_without_trusted_engine(
+    pool: PgPool,
+) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH + 1)),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("rejected even though the chain would be ignored");
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
 }
 
 // ---- Hiding tests (global) ----

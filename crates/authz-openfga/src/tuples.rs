@@ -15,7 +15,7 @@
 use lakekeeper::{
     ProjectId, WarehouseId,
     service::{
-        Actor, GenericTableId, NamespaceId, RoleId, TableId, TagDefinitionId, ViewId,
+        Actor, GenericTableId, NamespaceId, RoleId, TableId, TabularId, TagDefinitionId, ViewId,
         authz::NamespaceParent,
     },
 };
@@ -223,6 +223,24 @@ pub(crate) fn ownership_tuples_for_view(
         ViewRelation::Ownership.to_string(),
         (warehouse, view).to_openfga(),
     )]
+}
+
+/// Hierarchy tuples for any tabular: `namespace ↔ table | view | generic_table`.
+///
+/// Dispatches to the per-type helper rather than rebuilding the edge, so a re-parent
+/// cannot drift from what `create_*` wrote.
+pub(crate) fn hierarchy_tuples_for_tabular(
+    warehouse: WarehouseId,
+    tabular: TabularId,
+    parent_namespace: NamespaceId,
+) -> Vec<TupleKey> {
+    match tabular {
+        TabularId::Table(table) => hierarchy_tuples_for_table(warehouse, table, parent_namespace),
+        TabularId::View(view) => hierarchy_tuples_for_view(warehouse, view, parent_namespace),
+        TabularId::GenericTable(generic_table) => {
+            hierarchy_tuples_for_generic_table(warehouse, generic_table, parent_namespace)
+        }
+    }
 }
 
 /// Hierarchy tuples for a role: `project -[project]-> role`.
@@ -527,6 +545,81 @@ mod tests {
             .into_iter()
             .collect::<HashSet<_>>()
         );
+    }
+
+    /// The tabular dispatcher must be exactly the per-type helper, for every variant.
+    ///
+    /// `detach_tabular_parent` deletes what this returns and `attach_tabular_parent` writes
+    /// it, so a dispatcher that reached for the wrong variant's helper would delete tuples
+    /// that do not exist (silently, since the delete is idempotent) and leave the real
+    /// parent edge live — the exact stale-inheritance bug the hooks exist to prevent.
+    #[test]
+    fn tabular_hierarchy_dispatch_matches_the_per_type_helpers() {
+        let warehouse = fixed_warehouse_id();
+        let parent = fixed_namespace_id();
+        let table = fixed_table_id();
+        let view = fixed_view_id();
+        let generic = GenericTableId::new(uuid_of('9'));
+
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::Table(table),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_table(warehouse, table, parent)),
+        );
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::View(view),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_view(warehouse, view, parent)),
+        );
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::GenericTable(generic),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_generic_table(
+                warehouse, generic, parent
+            )),
+        );
+    }
+
+    /// The three variants must not collapse onto one another.
+    ///
+    /// The equality test above would still pass if two of the per-type helpers emitted the
+    /// same object type — say a future edit gave views the `lakekeeper_table` prefix — and
+    /// then a view rename would delete a table's parent edge.
+    #[test]
+    fn tabular_hierarchy_variants_are_distinct() {
+        let warehouse = fixed_warehouse_id();
+        let parent = fixed_namespace_id();
+        let id = uuid_of('4');
+
+        let table = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::Table(TableId::new(id)),
+            parent,
+        ));
+        let view = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::View(ViewId::new(id)),
+            parent,
+        ));
+        let generic = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::GenericTable(GenericTableId::new(id)),
+            parent,
+        ));
+
+        // Same uuid, same parent, same warehouse — only the type prefix differs.
+        assert_ne!(table, view);
+        assert_ne!(table, generic);
+        assert_ne!(view, generic);
     }
 
     /// A rename leaves the parent unchanged, so writes and deletes are identical — which is

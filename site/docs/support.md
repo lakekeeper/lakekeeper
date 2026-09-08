@@ -1,3 +1,7 @@
+---
+description: "Get help with Lakekeeper through the community Discord and GitHub, or through commercial support from the maintainers at Vakamo."
+---
+
 # Community
 
 <div class="grid cards" markdown>

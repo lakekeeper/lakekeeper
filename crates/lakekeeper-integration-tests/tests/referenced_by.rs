@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper::{
     MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
     api::{
@@ -9,7 +11,10 @@ use lakekeeper::{
             types::{Prefix, ReferencingView},
             v1::{
                 NamespaceParameters, TableParameters, ViewParameters,
-                tables::{DataAccessMode, LoadTableRequest, TablesService as _},
+                tables::{
+                    DataAccess, DataAccessMode, LoadTableCredentialsRequest, LoadTableRequest,
+                    TablesService as _,
+                },
                 views::{LoadViewRequest, ViewService as _},
             },
         },
@@ -889,5 +894,357 @@ async fn test_chain_fails_when_user_loses_entry_point_access(pool: PgPool) {
     assert!(
         result.is_err(),
         "should fail when user_a can't access view1"
+    );
+}
+
+// ---- Chain depth limit ----
+
+/// Pins the shipped default of `LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`.
+/// Asserted against the live config by `assert_default_cap` so a changed default
+/// fails loudly here rather than as a puzzling boundary failure.
+const MAX_CHAIN_DEPTH: usize = 10;
+
+/// These tests pin the absolute boundary (10 accepted, 11 rejected), so they are
+/// only meaningful at the shipped default.
+fn assert_default_cap() {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+}
+
+fn chain(len: usize) -> Vec<ReferencingView> {
+    referenced_by(
+        &(0..len)
+            .map(|i| table_ident("ns", &format!("chain_view_{i}")))
+            .collect::<Vec<_>>(),
+    )
+}
+
+async fn create_chain_views<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    len: usize,
+) {
+    for i in 0..len {
+        create_invoker_view(ctx, wh, &format!("chain_view_{i}")).await;
+    }
+}
+
+fn assert_referenced_by_depth_exceeded(err: &IcebergErrorResponse) {
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+}
+
+#[sqlx::test]
+async fn test_load_table_referenced_by_at_limit_succeeds(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH).await;
+
+    let result = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH)))
+            .build(),
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
+    );
+}
+
+#[sqlx::test]
+async fn test_load_table_referenced_by_over_limit_rejected(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH + 1).await;
+
+    let err = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH + 1)))
+            .build(),
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .expect_err("a chain one over the limit is rejected");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+/// The cap is a property of the request, not of engine trust: without a trusted
+/// engine the chain would be ignored entirely, and it is still rejected. This
+/// pins the placement decision — the check runs on the raw supplied list, before
+/// the trusted-engine filter.
+#[sqlx::test]
+async fn test_load_table_referenced_by_over_limit_rejected_without_trusted_engine(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH + 1)))
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("rejected even though the chain would be ignored");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+#[sqlx::test]
+async fn test_load_table_credentials_referenced_by_at_limit_succeeds(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH).await;
+
+    let result = Server::load_table_credentials(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableCredentialsRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH)))
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
+    );
+}
+
+#[sqlx::test]
+async fn test_load_table_credentials_referenced_by_over_limit_rejected(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH + 1).await;
+
+    let err = Server::load_table_credentials(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableCredentialsRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH + 1)))
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .expect_err("a chain one over the limit is rejected");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+#[sqlx::test]
+async fn test_load_view_referenced_by_over_limit_rejected(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "inner_view").await;
+    // Create the chain views too, so the request is rejected for its depth
+    // rather than for naming views that do not exist.
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH + 1).await;
+
+    let err = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "inner_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(chain(MAX_CHAIN_DEPTH + 1)),
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .expect_err("a chain one over the limit is rejected");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+/// `loadCredentials` counterpart of the untrusted-engine case: the cap must be a
+/// property of the request at *this* call site too, not only on `loadTable`.
+#[sqlx::test]
+async fn test_load_table_credentials_referenced_by_over_limit_rejected_without_trusted_engine(
+    pool: PgPool,
+) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table_credentials(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableCredentialsRequest::builder()
+            .referenced_by(Some(chain(MAX_CHAIN_DEPTH + 1)))
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("rejected even though the chain would be ignored");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+/// `loadView` counterpart of the untrusted-engine case.
+#[sqlx::test]
+async fn test_load_view_referenced_by_over_limit_rejected_without_trusted_engine(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "inner_view").await;
+
+    let err = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "inner_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(chain(MAX_CHAIN_DEPTH + 1)),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("rejected even though the chain would be ignored");
+
+    assert_referenced_by_depth_exceeded(&err);
+}
+
+/// `loadView` is otherwise the only path with an over-limit but no at-limit test,
+/// so a too-small hardcoded bound at that call site would go unnoticed.
+#[sqlx::test]
+async fn test_load_view_referenced_by_at_limit_succeeds(pool: PgPool) {
+    assert_default_cap();
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "inner_view").await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH).await;
+
+    let result = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "inner_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(chain(MAX_CHAIN_DEPTH)),
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
     );
 }

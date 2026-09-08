@@ -27,6 +27,7 @@ pub(crate) use load_by_location::*;
 pub(crate) use protection::set_tabular_protected;
 use sqlx::FromRow;
 use uuid::Uuid;
+use xxhash_rust::xxh3::Xxh3Default;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
@@ -285,7 +286,7 @@ where
                 t.fs_protocol,
                 w.version as warehouse_version,
                 n.version as namespace_version
-            FROM tabular t 
+            FROM tabular t
             INNER JOIN q ON t.warehouse_id = $1 AND t.tabular_id = q.id AND t.typ = q.typ
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
@@ -519,6 +520,61 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) location: &'a Location,
 }
 
+/// Advisory-lock keys covering `location` and every path above it inside its
+/// bucket, given the partial locations from [`get_partial_fs_locations`].
+///
+/// Two locations collide only when one is a path prefix of the other, and in that
+/// case the shorter one's full path is among the longer one's prefixes -- so
+/// locking a location together with its prefixes makes any two colliding creates
+/// share a key and serialize. Without that they do not: the check is a read, and
+/// two transactions can both pass it and both commit, leaving one tabular's data
+/// inside another's location. Nothing else prevents this; no index on
+/// `fs_location` is unique.
+///
+/// The bare authority is left out, and no collision needs it: a location is
+/// admitted only as a strict sublocation of the warehouse's base location, and that
+/// base names at least a bucket, so no tabular sits at a bare authority and the
+/// authority is the ancestor of none of them. Including it would instead give every
+/// create in a bucket one key in common and serialize them all. Locations that
+/// share only a bucket do not block each other, ones that share a directory do.
+///
+/// Sorted and deduplicated so two transactions holding overlapping sets acquire
+/// them in the same order and cannot deadlock. `xxh3` because the value has to be
+/// the same in every replica and across versions; a collision only makes two
+/// unrelated creates wait for each other.
+fn location_lock_keys(warehouse_id: Uuid, partial_locations: &[String]) -> Vec<i64> {
+    let mut keys: Vec<i64> = partial_locations
+        .iter()
+        .filter(|location| location.contains('/'))
+        .map(|location| {
+            let mut hasher = Xxh3Default::new();
+            hasher.update(warehouse_id.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(location.as_bytes());
+            i64::from_ne_bytes(hasher.digest().to_ne_bytes())
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// The value the `fs_location` column holds for `location`.
+///
+/// No writer produces a trailing slash today: the create paths normalize through
+/// `determine_tabular_location`, and iceberg's own metadata types trim a location
+/// on their way in (`TableMetadata::try_normalize`,
+/// `ViewMetadataBuilder::set_location`). So this changes nothing at runtime -- it
+/// is here because `Location` still permits one, and the column's two comparisons
+/// fail differently if one arrives: a slash on the stored side leaves the row
+/// unequal to every trimmed candidate, hiding the ancestor match, and a slash on
+/// the probe side shifts the descendant range to `["X//", "X/0")`, which nothing
+/// falls in. Enforced for stored values by
+/// `tabular_fs_location_no_trailing_slash`.
+pub(crate) fn fs_location_of(location: &Location) -> &str {
+    location.authority_and_path().trim_end_matches('/')
+}
+
 pub(crate) fn get_partial_fs_locations(
     location: &Location,
 ) -> Result<Vec<String>, InternalParseLocationError> {
@@ -528,7 +584,7 @@ pub(crate) fn get_partial_fs_locations(
         // Keep only the last part of the location
         .map(|l| {
             let location = Location::from_str(l)?;
-            Ok(location.authority_and_path().to_string())
+            Ok(fs_location_of(&location).to_string())
         })
         .collect()
 }
@@ -543,12 +599,14 @@ impl From<FromTabularRowError> for CreateTabularError {
 }
 
 /// Errors with `LocationAlreadyTaken` if any other tabular in `warehouse_id`
-/// occupies `location` (or a path that this location would shadow).
+/// occupies `location`, sits under it, or contains it.
 ///
-/// Shared between `create_tabular` (where it backstops the table-level unique
-/// constraint on `(warehouse_id, name, namespace_id)` for location uniqueness)
-/// and `view::commit_existing_view` (where there is no analogous constraint
-/// because commits don't go through INSERT).
+/// This check is on its own: no index on `fs_location` is unique, so nothing at
+/// the schema level backstops it. It is also an unlocked read, so two concurrent
+/// creates can both pass it and both commit.
+///
+/// Runs on create and on every view commit -- a view can move to a new location,
+/// where a table's `SetLocation` to a different value is refused.
 pub(crate) async fn ensure_location_available(
     warehouse_id: Uuid,
     self_tabular_id: Uuid,
@@ -556,14 +614,61 @@ pub(crate) async fn ensure_location_available(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(), CreateTabularError> {
     let partial_locations = get_partial_fs_locations(location)?;
-    let fs_location = location.authority_and_path();
+
+    // Held until this transaction ends, so a concurrent create at a colliding
+    // location waits here and then sees the committed row below instead of passing
+    // the same check against the same absent row.
+    let lock_keys = location_lock_keys(warehouse_id, &partial_locations);
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(key) FROM unnest($1::bigint[]) AS key",
+        &lock_keys
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error locking the location for a conflict check")
+    })?;
+
+    // A trailing slash on either side hides a match: it would make the descendant
+    // range `["X//", "X/0")`, which no stored location can fall in since empty
+    // path segments are rejected, and it would leave a stored ancestor unequal to
+    // every entry of `$2`. Both sides go through `fs_location_of` so neither can
+    // carry one -- `$2` via `get_partial_fs_locations`.
+    let fs_location = fs_location_of(location);
     let taken = sqlx::query_scalar!(
-        r#"SELECT EXISTS (
-               SELECT 1
-               FROM tabular ta
-               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
-               ) AND tabular_id != $3
+        // Two `EXISTS` rather than one over an `OR`, which is the same predicate:
+        // the planner does not build a `BitmapOr` in a generic plan, and this
+        // statement is prepared and reused, so the `OR` form degraded to a
+        // sequential scan of every tabular in the warehouse once a connection had
+        // executed it enough times to switch. Split, both branches index-scan
+        // under a generic plan as well as a custom one.
+        //
+        // `~>=~` and `~<~` compare bytes, ignoring collation, so the descendant
+        // half is the range `[$4 || '/', $4 || '0')` -- '0' being the byte after
+        // '/'. Every location under `$4` falls in it and nothing else does, and
+        // it is what the `text_pattern_ops` index from 20260830000000 serves.
+        //
+        // Byte comparison also reads `$4` literally, where `LIKE` read it as a
+        // pattern: a location containing `\` escaped the character after it and
+        // hid a real collision, and one containing `%` or `_` matched unrelated
+        // siblings.
+        //
+        // The first branch covers exact duplicates: `$2` carries the location
+        // and its parents, so equality is enough.
+        r#"SELECT (
+               EXISTS (
+                   SELECT 1 FROM tabular ta
+                   WHERE ta.warehouse_id = $1 AND ta.fs_location = ANY($2)
+                     AND ta.tabular_id != $3
+               )
+               OR EXISTS (
+                   SELECT 1 FROM tabular ta
+                   WHERE ta.warehouse_id = $1
+                     AND ta.fs_location ~>=~ ($4 || '/')
+                     AND ta.fs_location ~<~ ($4 || '0')
+                     AND ta.tabular_id != $3
+               )
            ) as "exists!""#,
         warehouse_id,
         &partial_locations,
@@ -595,7 +700,7 @@ pub(crate) async fn create_tabular(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, CreateTabularError> {
     let fs_protocol = location.scheme();
-    let fs_location = location.authority_and_path();
+    let fs_location = fs_location_of(location);
 
     // Check location availability before the INSERT so a collision raises
     // `LocationAlreadyTaken` cleanly instead of inserting a row we'll have to
@@ -1274,24 +1379,30 @@ fn rename_tabular_error(
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
+///
+/// Both namespaces are given by id, as the caller resolved and authorized them, and both
+/// are enforced here: the tabular must still be in `source_namespace_id` under its source
+/// name, and it is moved into `destination_namespace_id` rather than into whichever
+/// namespace happens to bear the destination name at write time.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
     warehouse_id: WarehouseId,
     source_id: TabularId,
+    source_namespace_id: NamespaceId,
+    destination_namespace_id: NamespaceId,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, RenameTabularError> {
     let TableIdent {
-        namespace: source_namespace,
-        name: source_name,
+        name: source_name, ..
     } = source;
     let TableIdent {
         namespace: dest_namespace,
         name: dest_name,
     } = destination;
 
-    let row = if source_namespace == dest_namespace {
+    let row = if source_namespace_id == destination_namespace_id {
         sqlx::query_as!(
             TabularRowWithProperties,
             r#"
@@ -1303,6 +1414,11 @@ pub(crate) async fn rename_tabular(
                     AND typ = $3
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND deleted_at IS NULL
+                    -- The tabular must still be the one the caller resolved: same namespace,
+                    -- same name. Locating it by id alone would let a rename that lost a race
+                    -- act on whatever the winner left behind.
+                    AND namespace_id = $5
+                    AND name = $6
                 FOR UPDATE
             ),
             locked_source_namespace AS ( -- source namespace of the tabular
@@ -1310,6 +1426,7 @@ pub(crate) async fn rename_tabular(
                 FROM namespace n
                 JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
                 WHERE n.warehouse_id = $4
+                    AND n.namespace_name = $7
                 FOR UPDATE
             ),
             warehouse_check AS (
@@ -1390,6 +1507,9 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             *warehouse_id,
+            *source_namespace_id,
+            &**source_name,
+            &**dest_namespace,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1398,7 +1518,8 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "The source tabular could not be found.",
+                "The source tabular could not be found under the given namespace and name, \
+                 or the destination namespace no longer bears the name given for it.",
             )
         })?
     } else {
@@ -1414,12 +1535,18 @@ pub(crate) async fn rename_tabular(
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND name = $6
                     AND deleted_at IS NULL
+                    -- The tabular must still be in the namespace the caller resolved. This
+                    -- is what the authorizer's re-parenting rests on: it detaches that
+                    -- namespace, which is only correct while it is still the real parent.
+                    -- A rename that lost a race must fail, not follow the tabular into the
+                    -- namespace the winner moved it to.
+                    AND namespace_id = $7
                 FOR UPDATE
             ),
             locked_namespace AS ( -- target namespace
-                SELECT namespace_id
+                SELECT namespace_id, namespace_name
                 FROM namespace
-                WHERE warehouse_id = $2 AND namespace_name = $3
+                WHERE warehouse_id = $2 AND namespace_id = $8 AND namespace_name = $3
                 FOR UPDATE
             ),
             locked_source_namespace AS ( -- source namespace of the tabular
@@ -1435,7 +1562,7 @@ pub(crate) async fn rename_tabular(
             ),
             updated AS (
                 UPDATE tabular t
-                SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
+                SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = ln.namespace_name
                 FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
                     WHERE t.tabular_id = lt.tabular_id
                     AND t.warehouse_id = $2
@@ -1508,6 +1635,8 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             &**source_name,
+            *source_namespace_id,
+            *destination_namespace_id,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1516,7 +1645,8 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "Either the source tabular or the destination namespace could not be found.",
+                "Either the destination namespace under the name given for it, or the \
+                 source tabular under the given namespace and name, could not be found.",
             )
         })?
     };
@@ -1572,7 +1702,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         TabularRowWithDeletion,
         r#"WITH locked_tabulars AS (
             SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name, t.typ
-            FROM tabular t 
+            FROM tabular t
             JOIN namespace n ON t.namespace_id = n.namespace_id
             WHERE n.warehouse_id = $2
                 AND t.warehouse_id = $2
@@ -1744,7 +1874,7 @@ pub(crate) async fn mark_tabular_as_deleted(
             RETURNING tabular.tabular_id
         ),
         result_tabulars AS (
-            SELECT 
+            SELECT
                 lt.tabular_id,
                 lt.namespace_id,
                 lt.name as tabular_name,
@@ -1850,14 +1980,14 @@ pub(crate) async fn drop_tabular(
         deleted AS (
             DELETE FROM tabular
             WHERE tabular_id IN (
-                SELECT tabular_id FROM locked_tabular 
+                SELECT tabular_id FROM locked_tabular
                 WHERE ((NOT protected) OR $4)
                 AND ($5::text IS NULL OR metadata_location = $5)
             )
             AND warehouse_id = $1
             RETURNING tabular_id
         )
-        SELECT 
+        SELECT
             lt.protected as "protected!",
             lt.metadata_location,
             lt.fs_protocol,
@@ -1959,6 +2089,333 @@ mod tests {
     use crate::{
         CatalogState, namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
     };
+
+    /// Creates a tabular at `location`, returning its id.
+    async fn plant_tabular(
+        pool: &sqlx::PgPool,
+        warehouse_id: Uuid,
+        namespace_id: Uuid,
+        location: &str,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let location = Location::from_str(location).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("s3://metadata-bucket/{id}/v1.json")).unwrap();
+        let name = format!("t_{id}");
+
+        let mut transaction = pool.begin().await.unwrap();
+        create_tabular(
+            CreateTabular {
+                id,
+                name: &name,
+                namespace_id,
+                warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        id
+    }
+
+    /// A create holds locks that a colliding create cannot take, so the two cannot
+    /// run their checks against the same absent row.
+    ///
+    /// The check is a read and no index on `fs_location` is unique, so without this
+    /// both transactions pass and both commit -- one tabular's data ends up inside
+    /// the other's location, and purging either then destroys the other's files.
+    ///
+    /// Asserted on the locks rather than on two racing creates, because a create
+    /// that is correctly blocked never returns: the second transaction would have to
+    /// be woken by committing the first, and then it sees the committed row and is
+    /// refused for a reason that has nothing to do with locking. The keys come from
+    /// `location_lock_keys` itself, so narrowing what it covers -- dropping the path
+    /// prefixes, say -- shows up here as an overlap that is no longer there.
+    ///
+    /// A parent and a location under it are different values, so a unique index
+    /// expresses neither pair; only the prefix keys make them collide. The second
+    /// pair sits directly under the bucket, as shallow as a tabular can be, and is
+    /// the pair a key set that dropped one segment too many would miss.
+    #[sqlx::test]
+    async fn a_create_locks_out_a_colliding_one(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        for (name, parent, child) in [
+            ("deep", "s3://bkt/race/parent", "s3://bkt/race/parent/child"),
+            ("shallow", "s3://bkt/shallow", "s3://bkt/shallow/child"),
+        ] {
+            let parent = Location::from_str(parent).unwrap();
+            let child = Location::from_str(child).unwrap();
+
+            // Creates `parent` and stays open, so its locks are still held and the row
+            // it wrote is not visible to anyone else.
+            let mut first = pool.begin().await.unwrap();
+            create_tabular(
+                CreateTabular {
+                    id: Uuid::now_v7(),
+                    name,
+                    namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: None,
+                    location: &parent,
+                },
+                &mut first,
+            )
+            .await
+            .expect("the uncontended create was refused");
+
+            // What a create of `child` would have to take, on another connection.
+            let child_keys =
+                location_lock_keys(*warehouse_id, &get_partial_fs_locations(&child).unwrap());
+            assert!(!child_keys.is_empty(), "{child} produced no lock keys");
+
+            let mut acquired = 0;
+            let mut contender = pool.begin().await.unwrap();
+            for key in &child_keys {
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+                    .bind(key)
+                    .fetch_one(&mut *contender)
+                    .await
+                    .unwrap();
+                if free {
+                    acquired += 1;
+                }
+            }
+            contender.rollback().await.unwrap();
+            first.commit().await.unwrap();
+
+            assert_ne!(
+                acquired,
+                child_keys.len(),
+                "a create at {child} could take every lock the create of {parent} holds, \
+                 so both would pass the check and both commit"
+            );
+        }
+    }
+
+    /// A location arriving with a trailing slash is stored without one, so the
+    /// collision check finds it like any other.
+    ///
+    /// Stored verbatim, `bkt/dir/` is never equal to a candidate in `$2`, because
+    /// those are trimmed -- so the equality half, which is the half that finds an
+    /// ancestor, misses it and a tabular can be created at `bkt/dir/child`. That is
+    /// what this asserts is no longer possible. The range half is unaffected: it
+    /// still catches an exact duplicate at `bkt/dir`, since `bkt/dir/` falls inside
+    /// `["bkt/dir/", "bkt/dir0")`.
+    #[sqlx::test]
+    async fn a_trailing_slash_does_not_hide_a_location(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        let id = plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bkt/dir/").await;
+
+        let stored: String =
+            sqlx::query_scalar("SELECT fs_location FROM tabular WHERE tabular_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, "bkt/dir", "the trailing slash reached the column");
+
+        let child = Location::from_str("s3://bkt/dir/child").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        let result =
+            ensure_location_available(*warehouse_id, Uuid::now_v7(), &child, &mut transaction)
+                .await;
+        transaction.rollback().await.unwrap();
+        assert!(
+            result.is_err(),
+            "a tabular could be created inside s3://bkt/dir/"
+        );
+
+        // The constraint is what keeps the column that way, whatever a future writer
+        // forgets to trim.
+        let mut transaction = pool.begin().await.unwrap();
+        let err = sqlx::query("UPDATE tabular SET fs_location = 'bkt/dir/' WHERE tabular_id = $1")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .expect_err("a trailing slash was accepted into the column");
+        assert!(
+            err.to_string()
+                .contains("tabular_fs_location_no_trailing_slash"),
+            "rejected, but not by the constraint: {err}"
+        );
+    }
+
+    /// `ensure_location_available` refuses a location that duplicates another
+    /// tabular's, sits under it, or contains it.
+    ///
+    /// Driven through the function against real rows, so the trim applied to the
+    /// location before the query runs is covered as well -- `s3://bkt/nested/parent/`
+    /// is only found without it if the range is built from the trimmed form.
+    ///
+    /// The `taken` cases are the load-bearing half: missing a collision lets two
+    /// tabulars write into one prefix. The rest guard the other direction, where a
+    /// location is refused that merely resembles an occupied one -- which is what a
+    /// pattern match did, reading `\`, `%` and `_` as metacharacters.
+    #[sqlx::test]
+    async fn ensure_location_available_finds_collisions_reading_locations_literally(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        // A second project, since a warehouse name is unique within one.
+        let other_project = lakekeeper::service::ProjectId::from(Uuid::now_v7());
+        let (_, other_warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        // Only the child of `w\dir` is planted, never `w\dir` itself: probing the
+        // parent is the one direction the `= ANY($2)` half cannot answer, because
+        // `$2` carries a location's parents and not its children.
+        //
+        // `near-miss` and `wildcard` hold the rows a pattern built from `\` or `_`
+        // would wrongly reach, and they sit under prefixes of their own. Under
+        // `backslash` they would mask the case above -- a pattern match finds
+        // `wdir/t` there and reports a collision, which is the right answer for the
+        // wrong reason.
+        for location in [
+            r"s3://bkt/backslash/w\dir/t",
+            r"s3://bkt/near-miss/wdir/t",
+            "s3://bkt/wildcard/undXr/t",
+            "s3://bkt/nested/parent/child",
+            "s3://bkt/exact/tbl",
+            // Siblings straddling the range's own boundary: `/` is 0x2F, so `a0`
+            // (0x30) is the first byte outside `["a/", "a0")` and `ab` is further
+            // out. Neither sits under `a`, and an off-by-one endpoint says they do.
+            "s3://bkt/boundary/a0",
+            "s3://bkt/boundary/ab",
+        ] {
+            plant_tabular(&pool, *warehouse_id, namespace_id, location).await;
+        }
+        let occupied_id =
+            plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bkt/self/occupied").await;
+        let moved_up_id =
+            plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bkt/moveup/sub").await;
+
+        let cases = [
+            (
+                r"s3://bkt/backslash/w\dir",
+                true,
+                r"contains a stored location holding a `\`, where a pattern reached the escaped spelling instead",
+            ),
+            (
+                r"s3://bkt/backslash/w\dir/t/deeper",
+                true,
+                "sits under a stored location",
+            ),
+            ("s3://bkt/exact/tbl", true, "exact duplicate"),
+            (
+                "s3://bkt/nested/parent/",
+                true,
+                "contains a stored location, and the trailing slash must not shift the range",
+            ),
+            (
+                r"s3://bkt/near-miss/w\dir",
+                false,
+                r"`\` must not escape the `d` and reach the stored `wdir`",
+            ),
+            (
+                "s3://bkt/wildcard/und_r",
+                false,
+                "`_` must not match the `X` in the stored `undXr`",
+            ),
+            (
+                "s3://bkt/nested/parent-sibling",
+                false,
+                "shares a prefix with an occupied location but no path segment",
+            ),
+            ("s3://bkt/unoccupied/x", false, "nothing near it"),
+            (
+                "s3://bkt/boundary/a",
+                false,
+                "`a0` and `ab` sort past the range's upper endpoint, so neither is under it",
+            ),
+        ];
+
+        // Collected rather than asserted in the loop, so a break shows every case it
+        // affects instead of only the first.
+        let mut wrong = Vec::new();
+        for (candidate, expect_taken, why) in cases {
+            let location = Location::from_str(candidate).unwrap();
+            let mut transaction = pool.begin().await.unwrap();
+            let taken = ensure_location_available(
+                *warehouse_id,
+                Uuid::now_v7(),
+                &location,
+                &mut transaction,
+            )
+            .await
+            .is_err();
+            transaction.rollback().await.unwrap();
+
+            if taken != expect_taken {
+                let direction = if expect_taken {
+                    "missed a collision"
+                } else {
+                    "refused a free location"
+                };
+                wrong.push(format!("{candidate}: {direction} -- it {why}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+        // A tabular does not collide with itself -- a view commit re-checks the
+        // location it already occupies.
+        let location = Location::from_str("s3://bkt/self/occupied").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        ensure_location_available(*warehouse_id, occupied_id, &location, &mut transaction)
+            .await
+            .expect("a tabular's own location is available to it");
+
+        // Locations are scoped to a warehouse.
+        ensure_location_available(
+            *other_warehouse_id,
+            Uuid::now_v7(),
+            &location,
+            &mut transaction,
+        )
+        .await
+        .expect("an occupied location in another warehouse does not collide");
+
+        // Both again against the descendant half, which the two probes above cannot
+        // reach: `s3://bkt/self/occupied` has nothing under it, so they only ever
+        // exercise the equality half. A view moving up to a location that contains
+        // only its own row has to find itself excluded there too, and a probe from
+        // another warehouse has to not see this row at all.
+        let parent = Location::from_str("s3://bkt/moveup").unwrap();
+        ensure_location_available(*warehouse_id, moved_up_id, &parent, &mut transaction)
+            .await
+            .expect("a tabular moving up to its own parent collides with itself");
+        ensure_location_available(
+            *other_warehouse_id,
+            Uuid::now_v7(),
+            &parent,
+            &mut transaction,
+        )
+        .await
+        .expect("a location whose only descendant is in another warehouse does not collide");
+        transaction.rollback().await.unwrap();
+    }
 
     pub(super) async fn setup_test_tabular(pool: &sqlx::PgPool, protected: bool) -> TableInfo {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

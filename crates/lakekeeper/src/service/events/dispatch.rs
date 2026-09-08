@@ -289,6 +289,10 @@ impl EventDispatcher {
         dispatch_event!(self, authorization_succeeded, event);
     }
 
+    pub(crate) async fn idempotent_replay_served(&self, event: types::IdempotentReplayEvent) {
+        dispatch_event!(self, idempotent_replay_served, event);
+    }
+
     // ===== Role Events =====
 
     pub(crate) async fn role_created(&self, event: types::CreateRoleEvent) {
@@ -647,6 +651,20 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn authorization_succeeded(
         &self,
         _event: types::authorization::AuthorizationSucceededEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked when a request carrying an `Idempotency-Key` was answered from a
+    /// stored record instead of being executed.
+    ///
+    /// An audit hook, not a change feed: nothing changed, and the original
+    /// request already announced whatever it did. A listener that forwards state
+    /// downstream must leave this at its default or consumers will process the
+    /// same mutation twice.
+    async fn idempotent_replay_served(
+        &self,
+        _event: types::IdempotentReplayEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

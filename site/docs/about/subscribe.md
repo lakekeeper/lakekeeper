@@ -1,3 +1,7 @@
+---
+description: "Subscribe to Lakekeeper release announcements and hear about new features, breaking changes and upgrade notes as they ship."
+---
+
 # Stay Updated
 
 Want to hear about new Lakekeeper releases? Subscribe below and we'll email you when a notable release ships — new features, breaking changes, and upgrade notes worth knowing about.

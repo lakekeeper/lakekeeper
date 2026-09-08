@@ -32,6 +32,16 @@ const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
 pub const X_PROJECT_ID_HEADER: &str = "x-project-id";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 
+/// Request header by which a caller explicitly marks a request as an emergency
+/// override attempt. Captured only: it is recorded on [`RequestMetadata`] and
+/// offered to the [`Authorizer`](crate::service::authz::Authorizer), which
+/// decides whether it means anything at all. The built-in authorizers ignore
+/// it, so on its own the header changes no decision. Any value that is non-empty
+/// after trimming sets the flag and is retained, truncated, as the caller's stated
+/// reason for the audit record — send a ticket reference, e.g.
+/// `x-break-glass: INC-1234 undoing lockout forbid`.
+pub const X_BREAK_GLASS_HEADER: &str = "x-break-glass";
+
 pub const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
 pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
@@ -39,6 +49,7 @@ pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
 pub const X_PROJECT_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_PROJECT_ID_HEADER);
 pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUEST_ID_HEADER);
+pub const X_BREAK_GLASS_HEADER_NAME: HeaderName = HeaderName::from_static(X_BREAK_GLASS_HEADER);
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
@@ -51,6 +62,17 @@ const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 #[derive(Debug, Clone)]
 pub struct UserAgent(String);
 
+/// Truncate `value` to at most `max_len` bytes without splitting a UTF-8 code
+/// point — a partial character would not survive JSON encoding.
+#[cfg(any(feature = "router", test))]
+fn truncate_at_char_boundary(value: &str, max_len: usize) -> &str {
+    let mut end = value.len().min(max_len);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 impl UserAgent {
     /// Longest header value retained. The header is caller-controlled and is
     /// recorded on every audit event, so it is bounded at capture.
@@ -59,13 +81,7 @@ impl UserAgent {
 
     #[cfg(any(feature = "router", test))]
     pub(crate) fn parse(user_agent: &str) -> Self {
-        let mut end = user_agent.len().min(Self::MAX_LEN);
-        // Header values are visible ASCII in practice, but never split a code
-        // point — a partial character would not survive JSON encoding.
-        while !user_agent.is_char_boundary(end) {
-            end -= 1;
-        }
-        Self(user_agent[..end].to_string())
+        Self(truncate_at_char_boundary(user_agent, Self::MAX_LEN).to_string())
     }
 
     /// The header value, truncated at capture to a bounded length.
@@ -128,6 +144,11 @@ pub struct RequestMetadata {
     engines: MatchedEngines,
     idempotency_key: Option<IdempotencyKey>,
     is_instance_admin: bool,
+    /// The reason the caller stated in [`X_BREAK_GLASS_HEADER`]: `Some` iff the
+    /// header was sent and held something after trimming, truncated to a bounded
+    /// length. Captured as sent, save for undecodable bytes; whether an emergency
+    /// override is permitted, and for what, is the authorizer's business.
+    break_glass: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +244,21 @@ impl RequestMetadata {
         self.is_instance_admin
     }
 
+    /// Whether the caller sent [`X_BREAK_GLASS_HEADER`] with a value that was
+    /// non-empty after trimming.
+    #[must_use]
+    pub fn break_glass_requested(&self) -> bool {
+        self.break_glass.is_some()
+    }
+
+    /// The reason the caller stated when marking the request as an emergency
+    /// override, for audit records. `Some("true")` is a caller who sent the bare
+    /// conventional value rather than a reason.
+    #[must_use]
+    pub fn break_glass_reason(&self) -> Option<&str> {
+        self.break_glass.as_deref()
+    }
+
     /// Set the matched trusted engines for this request.
     pub fn set_engines(&mut self, engines: MatchedEngines) -> &mut Self {
         self.engines = engines;
@@ -308,6 +344,7 @@ impl RequestMetadata {
             admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
+            break_glass: None,
         }
     }
 
@@ -373,6 +410,7 @@ impl RequestMetadata {
             admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
+            break_glass: None,
         }
     }
 
@@ -389,6 +427,29 @@ impl RequestMetadata {
     ) -> &mut Self {
         self.idempotency_key = Some(key);
         self
+    }
+
+    /// Set the stated reason, as if [`X_BREAK_GLASS_HEADER`] had been sent with
+    /// this value. Lets tests exercise an authorizer's handling of the flag
+    /// without going through header parsing.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_break_glass(&mut self, reason: Option<String>) -> &mut Self {
+        self.break_glass = reason;
+        self
+    }
+
+    /// The project the request itself names, before any default is applied.
+    ///
+    /// [`Self::preferred_project_id`] answers "which project should this request read", folding
+    /// in the configured default. This answers the narrower question "did the caller say which
+    /// project" — which is what an authorizer needs to tell a caller who named the wrong
+    /// project apart from one who named none and got the default.
+    ///
+    /// The two cannot be told apart from `preferred_project_id` alone: a request naming the
+    /// default project and a request naming nothing return the same value.
+    #[must_use]
+    pub fn requested_project_id(&self) -> Option<&ArcProjectId> {
+        self.project_id.as_ref()
     }
 
     #[must_use]
@@ -625,6 +686,7 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
             admission_roles: b.admission_roles,
             idempotency_key: None,
             is_instance_admin: b.is_instance_admin,
+            break_glass: None,
         }
     }
 }
@@ -687,6 +749,8 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .and_then(|hv| hv.to_str().ok())
         .map(UserAgent::parse);
 
+    let break_glass = break_glass_from_headers(&headers);
+
     let idempotency_key = if CONFIG.idempotency.enabled {
         match IdempotencyKey::from_headers(&headers) {
             Ok(key) => key,
@@ -710,6 +774,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         engines: MatchedEngines::default(),
         idempotency_key,
         is_instance_admin: false,
+        break_glass,
     });
     next.run(request).await
 }
@@ -728,6 +793,25 @@ pub fn determine_forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Extract the break-glass justification from [`X_BREAK_GLASS_HEADER`], if
+/// any non-empty value was sent. Bounded to the same length as the
+/// `User-Agent` capture, for the same reason: caller-controlled and recorded
+/// on every audit event.
+#[cfg(any(feature = "router", test))]
+fn break_glass_from_headers(headers: &HeaderMap) -> Option<String> {
+    // Read as bytes, not `to_str`: that accepts only visible ASCII, so a reason
+    // carrying an umlaut or a dash the sender's keyboard produced would drop the
+    // whole claim — flag included — and the event would not record that an override
+    // was requested at all. Losing the evidence is worse than mangling one
+    // character, so undecodable bytes are replaced rather than rejected.
+    let value = String::from_utf8_lossy(headers.get(X_BREAK_GLASS_HEADER)?.as_bytes());
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(truncate_at_char_boundary(value, UserAgent::MAX_LEN).to_string())
 }
 
 pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
@@ -821,6 +905,35 @@ mod test {
         ] {
             assert_eq!(UserAgent::parse(raw).as_str(), raw);
         }
+    }
+
+    /// The two project accessors answer different questions, and the difference is the
+    /// whole reason the narrower one exists: a request that names no project still has a
+    /// preferred one when a default is configured, and a consumer that cannot tell those
+    /// apart cannot report "you named the wrong project" without also rejecting callers who
+    /// named nothing at all.
+    #[test]
+    fn a_requested_project_is_distinct_from_a_preferred_one() {
+        let named = ProjectId::from(uuid::Uuid::from_u128(1));
+        let mut with_header = RequestMetadata::new_unauthenticated();
+        with_header.with_project_id(named.clone());
+        assert_eq!(
+            with_header.requested_project_id().map(AsRef::as_ref),
+            Some(&named)
+        );
+        assert_eq!(with_header.preferred_project_id().as_deref(), Some(&named));
+
+        let without_header = RequestMetadata::new_unauthenticated();
+        assert_eq!(
+            without_header.requested_project_id(),
+            None,
+            "a request that names no project must say so, whatever the default is"
+        );
+        assert_eq!(
+            without_header.preferred_project_id(),
+            DEFAULT_PROJECT_ID.clone(),
+            "while the preferred project still falls back to the configured default"
+        );
     }
 
     /// The header is caller-controlled and lands on every audit record, so its
@@ -1180,6 +1293,77 @@ mod test {
             result,
             Some("https://example.com/api/lakekeeper".to_string())
         );
+    }
+
+    #[test]
+    fn break_glass_header_nonempty_value_activates_and_is_retained() {
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static("true"));
+        assert_eq!(break_glass_from_headers(&headers).as_deref(), Some("true"));
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_static("INC-1234 undoing lockout forbid"),
+        );
+        assert_eq!(
+            break_glass_from_headers(&headers).as_deref(),
+            Some("INC-1234 undoing lockout forbid")
+        );
+    }
+
+    #[test]
+    fn break_glass_header_absent_or_empty_is_inactive() {
+        let headers = HeaderMap::new();
+        assert!(break_glass_from_headers(&headers).is_none());
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static(""));
+        assert!(break_glass_from_headers(&headers).is_none());
+    }
+
+    /// A reason is free-form prose an operator types under pressure, so it routinely
+    /// carries a non-ASCII character. `HeaderValue::to_str` accepts only visible
+    /// ASCII, and rejecting on that basis would discard the claim itself, not just
+    /// the wording — leaving no record that an override was requested.
+    #[test]
+    fn break_glass_reason_survives_non_ascii_and_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes("INC-1234 Störfall behoben".as_bytes()).unwrap(),
+        );
+        assert_eq!(
+            break_glass_from_headers(&headers).as_deref(),
+            Some("INC-1234 Störfall behoben")
+        );
+
+        // Whitespace-only is no reason at all, and must not set the flag.
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static("   "));
+        assert!(break_glass_from_headers(&headers).is_none());
+
+        // Undecodable bytes are replaced, never dropped: the claim still records.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes(&[b'I', b'N', b'C', 0xFF]).unwrap(),
+        );
+        assert!(break_glass_from_headers(&headers).is_some_and(|reason| reason.starts_with("INC")));
+    }
+
+    #[test]
+    fn break_glass_reason_is_bounded() {
+        let long = "x".repeat(10_000);
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_str(&long).unwrap());
+        let reason = break_glass_from_headers(&headers).unwrap();
+        assert!(reason.len() < long.len());
+        assert_eq!(reason.len(), UserAgent::MAX_LEN);
+    }
+
+    #[test]
+    fn break_glass_default_inactive_on_test_metadata() {
+        let metadata = RequestMetadata::new_unauthenticated();
+        assert!(!metadata.break_glass_requested());
+        assert!(metadata.break_glass_reason().is_none());
     }
 
     #[test]

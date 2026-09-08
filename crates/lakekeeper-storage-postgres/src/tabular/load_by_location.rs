@@ -26,7 +26,7 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
     list_flags: lakekeeper::service::TabularListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<ViewOrTableInfo>, GetTabularInfoByLocationError> {
-    let fs_location = location.authority_and_path();
+    let fs_location = super::fs_location_of(location);
     let partial_locations = get_partial_fs_locations(location)?;
 
     tracing::trace!(

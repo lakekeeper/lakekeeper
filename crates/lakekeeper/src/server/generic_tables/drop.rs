@@ -44,22 +44,9 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     let authorizer = &state.v1_state.authz;
 
-    // ------------------- IDEMPOTENCY CHECK -------------------
+    // ------------------- AUDIT CONTEXT -------------------
+    // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
-    if let Some(ref key) = idempotency_key {
-        let check = C::check_idempotency_key(
-            warehouse_id,
-            key,
-            EndpointFlat::GenericTableV1DropGenericTable,
-            state.v1_state.catalog.clone(),
-        )
-        .await?;
-        if check.is_replay() {
-            return Ok(());
-        }
-    }
-
-    // ------------------- AUTHZ -------------------
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
     let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
@@ -69,6 +56,22 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         CatalogGenericTableAction::Drop,
     );
 
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    if let Some(ref key) = idempotency_key {
+        let check = C::check_idempotency_key(
+            warehouse_id,
+            key,
+            EndpointFlat::GenericTableV1DropGenericTable,
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
+        if check.is_replay() {
+            event_ctx.emit_idempotent_replay(*key);
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ -------------------
     let (event_ctx, (warehouse, _ns_hierarchy, info)) = event_ctx.emit_authz(
         super::load_and_authorize_generic_table_operation::<C, A>(
             authorizer,

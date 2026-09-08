@@ -64,5 +64,6 @@
       ]
     }
   ],
+  "idempotency_key": null,
   "decision": "denied"
 }

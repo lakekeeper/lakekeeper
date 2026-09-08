@@ -4,18 +4,25 @@ use std::{
 };
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
+use iceberg::{NamespaceIdent, TableIdent};
 use valuable::{Valuable, Value, Visit};
 
 use super::{contract::contract_fields, *};
 use crate::{
+    WarehouseId,
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
-        authz::{ActionDescriptor, DeterminingFactor, PolicyEffect},
+        authn::UserId,
+        authz::{
+            ActionDescriptor, CatalogAction as _, CatalogTableAction, DeterminingFactor,
+            PolicyEffect,
+        },
         events::context::{
             ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
             FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-            FIELD_NAME_WAREHOUSE_ID,
+            FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
         },
+        idempotency::IdempotencyKey,
     },
 };
 
@@ -454,6 +461,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_rich_action_context",
     "grant_created",
     "grant_revoked",
+    "idempotent_replay",
 ];
 
 fn read_fixture(name: &str) -> serde_json::Value {
@@ -961,6 +969,39 @@ fn fixture_authz_failed_with_context() {
 /// `audit_log!` — a different shape entirely, with `operation` / `outcome` /
 /// `context` and no `entity` or `decision`.
 ///
+/// The replay family, which is neither authorization nor operational: it carries the
+/// authorization family's `action` / `entity` / `privilege_source` and the operational
+/// family's `operation` / `outcome`, and deliberately no `decision` — no authorization ran.
+///
+/// Pinned because a consumer that switched on the presence of `entity` to mean "this record
+/// has a decision" is wrong about this family, and nothing else in the committed set shows
+/// the combination.
+#[test]
+fn fixture_idempotent_replay() {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let entities = UserProvidedTable {
+        warehouse_id: crate::service::WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+        table: TableIdent {
+            namespace: NamespaceIdent::new("sales".to_string()),
+            name: "orders".to_string(),
+        }
+        .into(),
+    }
+    .event_entities();
+
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.idempotent_replay_served(IdempotentReplayEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(entities),
+            actions: Arc::new(vec![fixture_drop_action()]),
+            idempotency_key: IdempotencyKey::parse("019684ff-0000-7000-8000-000000000004")
+                .expect("fixed test key"),
+        })
+    });
+
+    assert_matches_fixture("idempotent_replay", &contract_fields(record));
+}
+
 /// One `grants_changed` event emits one record per grant triple, revocations
 /// first, so this covers both operations in the order a consumer sees them.
 #[test]
@@ -1741,4 +1782,204 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
         "`CatalogTableAction::ReadData` reaches the wire as `{on_the_wire}`, which is not \
          among the derived names {variants:?} the manifest is built from."
     );
+}
+/// Built from the production types rather than by hand: the record's claim is
+/// that it matches what a real drop reports, which a hand-rolled descriptor
+/// cannot demonstrate.
+fn replay_event(warehouse_id: WarehouseId, actor: Actor) -> IdempotentReplayEvent {
+    let request_metadata = RequestMetadataTestBuilder::builder()
+        .actor(actor)
+        .user_agent(UserAgent::parse("Apache-Spark/3.5.1"))
+        .build();
+    let entities = UserProvidedTable {
+        warehouse_id,
+        table: TableIdent {
+            namespace: NamespaceIdent::new("sales".to_string()),
+            name: "orders".to_string(),
+        }
+        .into(),
+    }
+    .event_entities();
+
+    IdempotentReplayEvent {
+        request_metadata: Arc::new(request_metadata),
+        entities: Arc::new(entities),
+        actions: Arc::new(vec![
+            CatalogTableAction::Drop {
+                force: true,
+                purge: true,
+            }
+            .action_descriptor(),
+        ]),
+        idempotency_key: IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000001")
+            .expect("a valid uuid"),
+    }
+}
+
+/// A replay has to be attributable — who, which action with which flags, and
+/// against which target — and it must not claim an authorization decision,
+/// because none was made.
+#[test]
+fn a_replay_records_the_actor_action_and_target_but_no_decision() {
+    let warehouse_id = WarehouseId::new_random();
+    let event = replay_event(
+        warehouse_id,
+        Actor::Principal(UserId::try_from("oidc~alice").expect("a valid user id")),
+    );
+
+    let event = emit_and_capture_one(|| AuditEventListener.idempotent_replay_served(event));
+
+    assert_eq!(
+        event.get("operation").and_then(serde_json::Value::as_str),
+        Some("idempotent_replay"),
+    );
+    assert_eq!(
+        event.get("outcome").and_then(serde_json::Value::as_str),
+        Some("replayed"),
+    );
+    assert_eq!(
+        event
+            .get("idempotency_key")
+            .and_then(serde_json::Value::as_str),
+        Some("0198f2c0-0000-7000-8000-000000000001"),
+        "the record that served the request has to be identifiable"
+    );
+
+    // Who. Without this the record says a drop was replayed but not by whom,
+    // which is the question the event exists to answer.
+    assert_eq!(
+        event
+            .pointer("/actor/principal")
+            .and_then(serde_json::Value::as_str),
+        Some("oidc~alice"),
+    );
+    assert_eq!(
+        event
+            .get("privilege_source")
+            .and_then(serde_json::Value::as_str),
+        Some("authorizer"),
+    );
+    assert_eq!(
+        event.get("user_agent").and_then(serde_json::Value::as_str),
+        Some("Apache-Spark/3.5.1"),
+    );
+
+    // What, including the flags: a purging force drop must not be recorded as
+    // a plain one.
+    assert_eq!(
+        event
+            .pointer("/action/action_name")
+            .and_then(serde_json::Value::as_str),
+        Some("drop"),
+    );
+    assert_eq!(
+        event
+            .pointer("/action/force")
+            .and_then(serde_json::Value::as_str),
+        Some("true"),
+    );
+    assert_eq!(
+        event
+            .pointer("/action/purge")
+            .and_then(serde_json::Value::as_str),
+        Some("true"),
+    );
+
+    // Against what, as the caller named it.
+    assert_eq!(
+        event
+            .pointer("/entity/entity_type")
+            .and_then(serde_json::Value::as_str),
+        Some("table"),
+    );
+    assert_eq!(
+        event
+            .pointer("/entity/warehouse-id")
+            .and_then(serde_json::Value::as_str),
+        Some(warehouse_id.to_string().as_str()),
+    );
+    assert_eq!(
+        event
+            .pointer("/entity/namespace")
+            .and_then(serde_json::Value::as_str),
+        Some("sales"),
+    );
+    assert_eq!(
+        event
+            .pointer("/entity/table")
+            .and_then(serde_json::Value::as_str),
+        Some("orders"),
+        "the target is the name the caller sent, since a replay resolves nothing"
+    );
+
+    assert_eq!(
+        event.get("decision"),
+        None,
+        "no authorization ran, so the record must not imply one"
+    );
+}
+
+/// The key is on every audit record, not only the replay one: it is what ties
+/// a retry to the request that did the work. Where an endpoint authorizes
+/// before detecting the replay, the original carries the key too, so the pair
+/// is the only sign of a retry — neither record marks itself as one.
+#[test]
+fn an_authorization_record_carries_the_idempotency_key() {
+    let key = IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000002").expect("valid");
+    let mut metadata = RequestMetadataTestBuilder::builder().build();
+    metadata.with_idempotency_key(key);
+
+    let event = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+    });
+
+    assert_eq!(
+        event
+            .get("idempotency_key")
+            .and_then(serde_json::Value::as_str),
+        Some("0198f2c0-0000-7000-8000-000000000002"),
+    );
+
+    // Absent must be distinguishable from "not recorded", as for `user_agent`.
+    let without = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(succeeded_event(
+            RequestMetadataTestBuilder::builder().build(),
+        ))
+    });
+    assert_eq!(
+        without.get("idempotency_key"),
+        Some(&serde_json::Value::Null)
+    );
+}
+
+/// A caller claiming an emergency override has to be visible in the audit
+/// log even when no authorizer acts on the claim — the built-in authorizers
+/// ignore the header, so this event is the only record that it was sent.
+#[test]
+fn an_audit_event_records_the_break_glass_reason() {
+    let mut metadata = RequestMetadataTestBuilder::builder().build();
+    metadata.with_break_glass(Some("INC-1234 undoing lockout forbid".to_string()));
+
+    let event = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+    });
+
+    assert_eq!(
+        event.get("break_glass").and_then(serde_json::Value::as_str),
+        Some("INC-1234 undoing lockout forbid"),
+    );
+}
+
+/// Nearly every request claims nothing, and an absent key says exactly what
+/// a null would, so the field is omitted rather than padding every
+/// authorization event in the catalog with `"break_glass": null`.
+#[test]
+fn an_audit_event_without_a_break_glass_claim_omits_the_field() {
+    let metadata = RequestMetadataTestBuilder::builder().build();
+
+    let event = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
+    });
+
+    assert_eq!(event.get("break_glass"), None);
 }

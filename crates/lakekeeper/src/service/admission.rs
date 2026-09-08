@@ -15,7 +15,7 @@
 //!
 //! Keeping it separate means a gate can return the right HTTP semantics (a
 //! denial is not an authentication failure, and "permission service
-//! unreachable" is not a `401`), runs *after* the instance-admin break-glass is
+//! unreachable" is not a `401`), runs *after* instance-admin status is
 //! resolved, and sees the full [`RequestMetadata`].
 //!
 //! Gates are composed as a list ([`AdmissionGates`]) and evaluated in

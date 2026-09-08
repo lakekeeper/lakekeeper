@@ -528,6 +528,7 @@ impl OneLakeProfile {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
                 credentials_expiration_ms: None,
+                remote_signing: None,
             });
         }
 

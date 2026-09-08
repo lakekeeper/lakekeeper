@@ -45,5 +45,6 @@
       "allowed": false
     }
   ],
+  "idempotency_key": null,
   "decision": "denied"
 }

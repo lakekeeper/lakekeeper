@@ -15,13 +15,15 @@
 //! The rules apply to any record, but only ever see records something emitted — so
 //! coverage is exactly the request sequences exercised here, and that set starts small.
 //! Widening it is the point: drive another call through `CatalogServer` and the existing
-//! rules apply to whatever it produces. Not yet reached, cheapest to add first: views and
-//! table commits; the plural `actions`/`entities` form, since every call here checks one
-//! action against one entity; per-decision `id`/`for-principal`/`determined_by`, which
-//! need a batch-style check; the operational family, which grant changes emit; and a real
-//! authorizer with an authenticated actor (`AllowAllAuthorizer` and
-//! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way
-//! in, because CI already provisions it.
+//! rules apply to whatever it produces. Reached today: the authorization family in both its
+//! allowed and denied form, and the `idempotent_replay` family — which carries `action` and
+//! `entity` but no `decision`, so it is the one record here that a consumer keying on
+//! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
+//! the plural `actions`/`entities` form, since every call here checks one action against one
+//! entity; per-decision `id`/`for-principal`/`determined_by`, which need a batch-style check;
+//! the operational family, which grant changes emit; and a real authorizer with an
+//! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
+//! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
 //!
 //! Keep every test here on a current-thread runtime. Capture is thread-local:
 //! `set_default` binds the subscriber to the calling thread, and the detached
@@ -58,6 +60,7 @@ use lakekeeper::{
     service::{
         authz::AllowAllAuthorizer,
         events::backends::audit::{AuditEventListener, contract},
+        idempotency::IdempotencyKey,
     },
 };
 use lakekeeper_integration_tests::{
@@ -73,7 +76,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 7;
+const EXPECTED_RECORDS: usize = 10;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -189,6 +192,60 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         random_request_metadata(),
     )
     .await;
+
+    // A table created, then dropped twice under one Idempotency-Key. Three things this
+    // reaches that nothing else here does: an authorization record with a POPULATED
+    // `idempotency_key` (every other record in this corpus, and every committed fixture, has
+    // it null), and the `idempotent_replay` family, which carries `action` and `entity` but
+    // no `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
+    // call emits the replay record alone.
+    // A key is globally unique, not per endpoint: reusing one across two operations is
+    // rejected with `IdempotencyKeyReused`, so the create and the drop get their own.
+    let new_key = || {
+        IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string())
+            .expect("a v7 uuid is a valid idempotency key")
+    };
+    let keyed_metadata = |key| {
+        let mut metadata = random_request_metadata();
+        metadata.with_idempotency_key(key);
+        metadata
+    };
+    let drop_key = new_key();
+    let replayed_table = || lakekeeper::api::iceberg::v1::TableParameters {
+        prefix: Some(warehouse.clone().into()),
+        table: iceberg::TableIdent::new(namespace.clone(), "replayed_table".to_string()),
+    };
+    let drop_params = || lakekeeper::api::iceberg::v1::DropParams {
+        purge_requested: true,
+        force: false,
+    };
+
+    let replayed_created = CatalogServer::create_table(
+        namespace_params.clone(),
+        create_table_request(Some("replayed_table".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        keyed_metadata(new_key()),
+    )
+    .await;
+
+    if replayed_created.is_ok() {
+        let _ = CatalogServer::drop_table(
+            replayed_table(),
+            drop_params(),
+            ctx.clone(),
+            keyed_metadata(drop_key),
+        )
+        .await;
+
+        let _ = CatalogServer::drop_table(
+            replayed_table(),
+            drop_params(),
+            ctx.clone(),
+            keyed_metadata(drop_key),
+        )
+        .await;
+    }
 
     // Loading it reaches `get_metadata` on an entity that carries a table id and location,
     // rather than only a namespace.

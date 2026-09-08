@@ -29,5 +29,6 @@
       "allowed": true
     }
   ],
+  "idempotency_key": null,
   "decision": "allowed"
 }

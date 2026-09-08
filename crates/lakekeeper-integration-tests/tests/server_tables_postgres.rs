@@ -13,8 +13,8 @@ use iceberg::{
     },
 };
 use iceberg_ext::catalog::rest::{
-    CommitTableRequest, CommitTransactionRequest, CreateNamespaceResponse, CreateTableRequest,
-    LoadTableResult, RenameTableRequest,
+    CommitTableRequest, CommitTransactionRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+    CreateTableRequest, LoadTableResult, RenameTableRequest,
 };
 use itertools::Itertools;
 use lakekeeper::{
@@ -42,14 +42,15 @@ use lakekeeper::{
         tables::{CommitContext, commit_tables_with_authz},
     },
     service::{
-        CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularListFlags, UserId,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
+        TableId, TabularListFlags, Transaction as _, UserId,
         authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table as create_table_helper, create_table_request as create_request,
-    create_view, drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile,
-    setup_simple, tabular_test_multi_warehouse_setup,
+    assert_advertises_client_planning, create_ns, create_table as create_table_helper,
+    create_table_request as create_request, create_view, drop_table as drop_table_helper,
+    impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
@@ -777,6 +778,27 @@ async fn test_default_format_version_is_v2(pg_pool: PgPool) {
     .unwrap();
 
     assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+}
+
+/// `createTable` returns a `LoadTableResult`, so it carries the same advertisement
+/// `loadTable` does.
+#[sqlx::test]
+async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let table = CatalogServer::create_table(
+        ns_params,
+        create_table_request_with_format("planning_advertised", None),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_advertises_client_planning(table.config.as_ref(), "createTable");
 }
 
 #[sqlx::test]
@@ -2449,6 +2471,130 @@ async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
     assert_eq!(err.error.r#type, "AlreadyExistsException");
 }
 
+/// A rename must land in the namespace that bears the destination name *now*, not in the
+/// one a stale cache entry says bears it.
+///
+/// Namespace idents resolve through a per-process `ident -> id` map with no cross-replica
+/// invalidation, so a replica that did not serve a namespace move keeps answering with the
+/// namespace that used to hold the name. That is manufactured here by moving `after` away
+/// and letting a different namespace take the name, both written straight to the catalog as
+/// another replica's writes would arrive — the endpoint emits the events this process's
+/// cache listens to, the storage layer does not.
+///
+/// What this pins is the endpoint's side: the destination has to be read uncached, or the
+/// request authorizes the namespace that used to hold the name and hands its id down, and
+/// the write — which requires that id to still bear the name — refuses a rename the catalog
+/// can perfectly well perform. The write's side of the contract, that a destination id is
+/// used as given rather than re-resolved from the name, cannot be reached from here once the
+/// read is fresh; `test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails`
+/// covers it directly.
+#[sqlx::test]
+async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+
+    create_ns(ctx.clone(), prefix.clone(), "source_ns".to_string()).await;
+    create_ns(ctx.clone(), prefix.clone(), "after".to_string()).await;
+    create_table_helper(ctx.clone(), prefix.clone(), "source_ns", "tbl", false)
+        .await
+        .unwrap();
+
+    let after = NamespaceIdent::new("after".to_string());
+    let vacating_id =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+
+    // Another replica's writes: the storage layer emits no events, so this process's cache
+    // keeps mapping `after` to the namespace that has since been renamed away.
+    let mut t =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::move_namespace(
+        warehouse_id,
+        vacating_id,
+        &NamespaceIdent::new("elsewhere".to_string()),
+        false,
+        t.transaction(),
+    )
+    .await
+    .unwrap();
+    let taker_id = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: after.clone(),
+            properties: None,
+        },
+        t.transaction(),
+    )
+    .await
+    .unwrap()
+    .namespace_id();
+    t.commit().await.unwrap();
+    assert_ne!(taker_id, vacating_id);
+
+    // The premise of the test. Were the cached mapping to be repaired by something else, the
+    // rename below would pass without exercising anything.
+    let cached =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+    assert_eq!(
+        cached, vacating_id,
+        "the cached `after` mapping must still be the stale one for this test to mean anything"
+    );
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: NamespaceIdent::new("source_ns".to_string()),
+                name: "tbl".to_string(),
+            },
+            destination: TableIdent {
+                namespace: after.clone(),
+                name: "tbl".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("`after` names a namespace that exists; the rename must not fail on a stale id");
+
+    let moved = PostgresBackend::get_table_info(
+        warehouse_id,
+        TableIdent {
+            namespace: after,
+            name: "tbl".to_string(),
+        },
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("the table must be findable under its new name");
+    assert_eq!(
+        moved.namespace_id, taker_id,
+        "the table must land in the namespace that bears `after` now, not the stale one"
+    );
+}
+
 /// A soft-deleted table does not hold its name — `createTable` reuses it, so
 /// `renameTable` must too.
 #[sqlx::test]
@@ -2528,6 +2674,39 @@ async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool)
     )
     .await
     .expect("the renamed table must be loadable under the reused name");
+}
+
+#[sqlx::test]
+async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pool).await;
+
+    // Register reuses an existing table's metadata file; overwrite lets it attach
+    // to a live name without a drop first.
+    let source = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("planning_register".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let registered = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("planning_register".to_string())
+            .metadata_location(source.metadata_location.unwrap())
+            .overwrite(true)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("registering over the same name must succeed");
+
+    assert_advertises_client_planning(registered.config.as_ref(), "registerTable");
 }
 
 #[sqlx::test]
@@ -2943,10 +3122,11 @@ async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool)
 
 /// `data-access` on register is only observable against a storage profile that
 /// actually vends. The memory profile the rest of this file uses ignores it and
-/// returns an empty config, so these live against MinIO.
+/// returns an empty config, so these live against a real S3-compatible store.
 mod register_data_access {
-    /// Named so nextest's default profile filters it out; CI runs it with MinIO up.
-    pub mod minio_integration_tests {
+    /// Named so nextest's default profile filters it out; CI runs it against the
+    /// store configured via `LAKEKEEPER_TEST__S3_*`.
+    pub mod s3_compat_integration_tests {
         use lakekeeper::api::iceberg::v1::DataAccessMode;
         use lakekeeper_integration_tests::s3_compatible_profile;
 

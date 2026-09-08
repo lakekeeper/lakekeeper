@@ -320,12 +320,18 @@ pub struct CatalogActionsBatchCheckResponse {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CatalogActionsBatchCheckResult {
+    /// Echoes the `id` of the corresponding request item. Absent when the
+    /// request item carried none — match by position instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Whether the checked identity may perform the operation.
     pub allowed: bool,
-    /// Policies/rules that determined this decision. Internal-only: carried
-    /// to the audit event, never serialised into the API response.
-    #[serde(skip)]
+    /// What determined this decision: the policies that matched, each with its
+    /// identifier, optional name and source, or a system-authority override.
+    ///
+    /// Absent when the configured authorizer produces no per-decision
+    /// diagnostics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub determined_by: Vec<DeterminingFactor>,
 }
 
@@ -2039,7 +2045,11 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
 
 #[cfg(test)]
 mod tests {
-    use super::UserOrRole;
+    use super::{
+        AuthorizationDecision, AuthzTaskJoinSet, CatalogActionsBatchCheckResult, DeterminingFactor,
+        MustUse, UserOrRole, collect_authz_results,
+    };
+    use crate::service::authz::PolicyEffect;
 
     /// `UserOrRole` is externally tagged, so exactly one key is a user *or* a role.
     /// Serde is the only thing enforcing that: the published schema makes both properties
@@ -2056,5 +2066,114 @@ mod tests {
             "naming both a user and a role must be rejected"
         );
         assert!(serde_json::from_str::<UserOrRole>("{}").is_err());
+    }
+
+    /// The response wire shape of `determined-by`: a tagged union, one entry
+    /// per factor, so a generated client can dispatch on `type`.
+    #[test]
+    fn a_result_serialises_the_factors_that_decided_it() {
+        let result = CatalogActionsBatchCheckResult {
+            id: Some("check-1".to_string()),
+            allowed: true,
+            determined_by: vec![
+                DeterminingFactor::Policy {
+                    policy_id: "policy0".to_string(),
+                    name: Some("allow-marketing-read".to_string()),
+                    effect: PolicyEffect::Permit,
+                    source: Some("warehouse".to_string()),
+                },
+                DeterminingFactor::SystemAuthority {
+                    source: Some("instance-admin".to_string()),
+                    reason: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&result).expect("the result must serialise");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "check-1",
+                "allowed": true,
+                "determined-by": [
+                    {
+                        "type": "policy",
+                        "policy-id": "policy0",
+                        "name": "allow-marketing-read",
+                        "effect": "permit",
+                        "source": "warehouse",
+                    },
+                    {
+                        "type": "system-authority",
+                        "source": "instance-admin",
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<CatalogActionsBatchCheckResult>(json)
+                .expect("the response must round-trip"),
+            result
+        );
+    }
+
+    /// Authorizers that produce no per-decision diagnostics (`allow-all`,
+    /// OpenFGA) must leave the response exactly as it was before the field
+    /// existed.
+    #[test]
+    fn determined_by_is_absent_when_no_factor_was_reported() {
+        let result = CatalogActionsBatchCheckResult {
+            id: None,
+            allowed: false,
+            determined_by: Vec::new(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&result).expect("the result must serialise"),
+            serde_json::json!({"allowed": false})
+        );
+    }
+
+    /// Each decision's factors land on the result slot the decision belongs to.
+    #[tokio::test]
+    async fn results_carry_the_factors_of_their_own_decision() {
+        let factor = DeterminingFactor::Policy {
+            policy_id: "policy0".to_string(),
+            name: Some("allow-marketing-read".to_string()),
+            effect: PolicyEffect::Permit,
+            source: None,
+        };
+        let mut tasks: AuthzTaskJoinSet = tokio::task::JoinSet::new();
+        let spawned = factor.clone();
+        tasks.spawn(async move {
+            Ok((
+                vec![1_usize, 0_usize],
+                MustUse::from(vec![
+                    AuthorizationDecision::new(true, vec![spawned]),
+                    AuthorizationDecision::deny(),
+                ]),
+            ))
+        });
+        let mut results = vec![
+            CatalogActionsBatchCheckResult {
+                id: None,
+                allowed: true,
+                determined_by: Vec::new(),
+            },
+            CatalogActionsBatchCheckResult {
+                id: None,
+                allowed: true,
+                determined_by: Vec::new(),
+            },
+        ];
+
+        collect_authz_results(&mut tasks, &mut results)
+            .await
+            .expect("collecting the decisions must succeed");
+
+        assert!(results[1].allowed);
+        assert_eq!(results[1].determined_by, vec![factor]);
+        assert!(!results[0].allowed);
+        assert!(results[0].determined_by.is_empty());
     }
 }

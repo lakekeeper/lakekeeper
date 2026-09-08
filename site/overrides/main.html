@@ -1,5 +1,26 @@
 {% extends "base.html" %}
 
+<!--
+  Page <title>. Overrides mkdocs-material's default `{{ page.title }} - {{
+  config.site_name }}`, which produced keyword-free titles ("Concepts -
+  Lakekeeper Docs") and a duplicated brand on the home page ("Lakekeeper -
+  Lakekeeper Docs"). Titles are the single strongest on-page ranking signal,
+  so every page carries the category term people actually search for.
+
+  Any page can opt out with `htmltitle:` in its YAML front matter.
+-->
+{% block htmltitle %}
+  {% if page and page.meta and page.meta.htmltitle %}
+    <title>{{ page.meta.htmltitle }}</title>
+  {% elif page and page.is_homepage %}
+    <title>Lakekeeper — Apache Iceberg REST Catalog written in Rust</title>
+  {% elif page and page.title %}
+    <title>{{ page.title | striptags }} - Lakekeeper Iceberg Catalog</title>
+  {% else %}
+    <title>{{ config.site_name }}</title>
+  {% endif %}
+{% endblock %}
+
 <!-- Custom front matter -->
 {% block extrahead %}
 
@@ -8,18 +29,160 @@
 page.is_homepage %} {% set title = config.site_name ~ " - " ~ page.title |
 striptags %} {% endif %}
 
+{% set description = page.meta.description if page and page.meta and page.meta.description else config.site_description %}
+
 <!-- The image needs to have an absolute URL -->
-{% set image = config.site_url ~ 'assets/images/illustrations/banner.png' %}
+{% set image = config.site_url ~ 'assets/img/og-banner.png' %}
+
+{#
+  Indexing policy for the versioned docs. The docs publish one tree per version
+  — `docs/latest/`, `docs/0.13.x/`, ... `docs/nightly/` — where `latest` is a
+  byte-identical copy of the newest numbered release. Only one copy of a page
+  may enter the index, so everything outside `docs/latest/` is `noindex,follow`
+  (dropped from the index, links still crawled).
+
+  This must stay a meta tag rather than a `Disallow:` in robots.txt — a
+  disallowed page is never fetched, so Google never *sees* the noindex and the
+  duplicate can linger in the index indefinitely.
+
+  `overrides/sitemap.xml` and `dev/seo_check.py` apply the same rule; keep the
+  three in sync.
+#}
+{% set page_url = page.url if page and page.url else "" %}
+{% set is_canonical_page = not page_url.startswith("docs/") or page_url.startswith("docs/latest/") %}
+{% if not is_canonical_page %}
+<meta name="robots" content="noindex,follow" />
+{% endif %}
 
 <!-- Open graph meta tags -->
-<meta property="og:type" content="website" />
+<meta property="og:type" content="{{ 'website' if page and page.is_homepage else 'article' }}" />
+<meta property="og:site_name" content="Lakekeeper" />
+<meta property="og:locale" content="en_US" />
 <meta property="og:title" content="{{ title }}" />
-<meta property="og:description" content="{{ config.site_description }}" />
+<meta property="og:description" content="{{ description }}" />
 <meta property="og:url" content="{{ page.canonical_url }}" />
 <meta property="og:image" content="{{ image }}" />
 <meta property="og:image:type" content="image/png" />
-<meta property="og:image:width" content="1080" />
-<meta property="og:image:height" content="568" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Lakekeeper — Apache Iceberg REST Catalog" />
+
+<!-- Twitter / X card. Without these the link unfurls as a bare URL. -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="{{ title }}" />
+<meta name="twitter:description" content="{{ description }}" />
+<meta name="twitter:image" content="{{ image }}" />
+
+{#
+  Structured data. Feeds Google's entity graph (and the retrieval layer behind
+  AI answers) an explicit statement of what Lakekeeper *is*, rather than
+  leaving it to be inferred from prose. Skipped on non-canonical copies so the
+  same TechArticle isn't asserted at every version of a page.
+
+  Every interpolated value goes through `tojson`, which emits the surrounding
+  quotes itself — a stray `"` or newline in a description would otherwise
+  produce a JSON-LD block that silently fails to parse, and a malformed block
+  is worse than none.
+#}
+{% if page and page.is_homepage %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://lakekeeper.io/#organization",
+      "name": "Lakekeeper",
+      "url": "https://lakekeeper.io/",
+      "logo": {{ (config.site_url ~ "assets/logos/LAKEKEEPER_IMAGE_TEXT.svg") | tojson }},
+      "sameAs": [
+        "https://github.com/lakekeeper/lakekeeper",
+        "https://discord.gg/jkAGG8p93B"
+      ]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": {{ (config.site_url ~ "#software") | tojson }},
+      "name": "Lakekeeper",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "Apache Iceberg REST Catalog",
+      "operatingSystem": "Linux, macOS, Windows",
+      "description": {{ config.site_description | tojson }},
+      "url": {{ config.site_url | tojson }},
+      "downloadUrl": "https://github.com/lakekeeper/lakekeeper/releases",
+      "programmingLanguage": "Rust",
+      "license": "https://www.apache.org/licenses/LICENSE-2.0",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "author": { "@id": "https://lakekeeper.io/#organization" }
+    }
+  ]
+}
+</script>
+{% elif page and is_canonical_page %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": {{ (page.title | striptags) | tojson }},
+  "description": {{ description | tojson }},
+  "url": {{ page.canonical_url | tojson }},
+  "inLanguage": "en",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Lakekeeper Docs",
+    "url": {{ config.site_url | tojson }}
+  },
+  "about": {
+    "@type": "SoftwareApplication",
+    "name": "Lakekeeper",
+    "applicationCategory": "DeveloperApplication"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Lakekeeper",
+    "url": "https://lakekeeper.io/"
+  }
+}
+</script>
+{#
+  Breadcrumbs. The trail comes from `hooks/breadcrumbs.py`, which includes an
+  ancestor only when a real page backs it — this site has no landing page at
+  `/docs/`, `/docs/latest/` or `/about/`, and pointing `item` at a 404 is worse
+  than omitting the level. Every entry below therefore resolves.
+#}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": {{ config.site_url | tojson }}
+    }{% for crumb in page.meta.breadcrumbs %},
+    {
+      "@type": "ListItem",
+      "position": {{ loop.index + 1 }},
+      "name": {{ crumb.name | tojson }},
+      "item": {{ (config.site_url ~ crumb.url) | tojson }}
+    }{% endfor %},
+    {
+      "@type": "ListItem",
+      "position": {{ (page.meta.breadcrumbs | length) + 2 }},
+      "name": {{ (page.title | striptags) | tojson }},
+      "item": {{ page.canonical_url | tojson }}
+    }
+  ]
+}
+</script>
+{% endif %}
+
 
 <!-- GoatCounter analytics — privacy-friendly, cookieless. Loads on every page
      (home.html inherits this block via super()). Localhost/file:// are ignored

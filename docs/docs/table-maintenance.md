@@ -1,3 +1,7 @@
+---
+description: "How Lakekeeper maintains Iceberg tables: metadata file cleanup, delete-after-commit behaviour and retention of previous metadata versions."
+---
+
 # Table Maintenance
 
 ## Metadata File Cleanup
@@ -8,7 +12,7 @@ For example: if `write.metadata.previous-versions-max=20`, Lakekeeper retains 21
 
 Link to [Expire Snapshots](#expire-snapshots)
 
-## Expire Snapshots <span class="lkp"></span> {#expire-snapshots}
+## Expire Snapshots { #expire-snapshots .lkp }
 
 Lakekeeper automatically expires old table snapshots based on configurable age and retention policies. This helps manage storage costs and performance by removing outdated snapshot metadata and associated data files.
 
@@ -55,7 +59,7 @@ For production workloads, we recommend running expire snapshots workers in dedic
 
 Expire snapshots tasks are intelligently scheduled immediately after table commits when needed, eliminating the overhead of cron-based polling. This ensures timely cleanup while maintaining optimal performance.
 
-## Remove Orphan Files <span class="lkp"></span> {#remove-orphan-files}
+## Remove Orphan Files { #remove-orphan-files .lkp }
 
 Lakekeeper can detect and remove orphan files — files in a table's storage location that are no longer referenced by any snapshot, manifest, statistics file, or metadata log entry. Orphans typically come from failed writes (optimistic-concurrency conflicts) or incomplete maintenance jobs.
 
