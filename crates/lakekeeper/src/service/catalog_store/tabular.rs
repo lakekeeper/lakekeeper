@@ -1610,9 +1610,27 @@ where
         Self::search_tabular_impl(warehouse_id, search_term, catalog_state).await
     }
 
+    /// Rename a tabular, optionally into a different namespace.
+    ///
+    /// Both namespaces are the ones the caller resolved and authorized, and both are
+    /// enforced by the implementation.
+    ///
+    /// `source_namespace_id` locates the tabular together with its id and source name, so a
+    /// rename that lost a race against a concurrent one fails instead of acting on whatever
+    /// the winner left behind. The authorizer's re-parenting depends on this: it detaches
+    /// the caller's source namespace, which is only correct while that is still the
+    /// tabular's real parent.
+    ///
+    /// `destination_namespace_id` is where the tabular lands. Resolving the destination
+    /// ident a second time at write time would let it land in a namespace the request was
+    /// never authorized against, whenever the caller's resolution and the write disagree
+    /// about which namespace bears that name. The destination ident is still required to
+    /// name that id, so a destination renamed away under the request fails.
     async fn rename_tabular(
         warehouse_id: WarehouseId,
         source_id: impl Into<TabularId> + Send,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source_ident: &TableIdent,
         destination_ident: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -1620,6 +1638,8 @@ where
         Self::rename_tabular_impl(
             warehouse_id,
             source_id.into(),
+            source_namespace_id,
+            destination_namespace_id,
             source_ident,
             destination_ident,
             transaction,

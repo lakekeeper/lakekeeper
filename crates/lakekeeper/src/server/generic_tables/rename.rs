@@ -1,7 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use http::StatusCode;
-
 use crate::{
     WarehouseId,
     api::{
@@ -10,11 +8,19 @@ use crate::{
         iceberg::v1::{ApiContext, ErrorModel, Prefix, Result, TableIdent},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tables::validate_table_or_view_ident},
+    server::{
+        require_warehouse_id,
+        tables::validate_table_or_view_ident,
+        tabular::{
+            claim_rename_idempotency_key, commit_rename_with_reparent,
+            ensure_authorized_destination,
+        },
+    },
     service::{
-        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo, LoadGenericTableError,
-        NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, TabularId, Transaction,
+        CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo,
+        LoadGenericTableError, NamespaceHierarchy, ResolvedWarehouse, SecretStore, State,
+        TabularId, Transaction,
         authz::{
             AuthZCannotSeeGenericTable, AuthZError, AuthZGenericTableOps, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
@@ -22,7 +28,6 @@ use crate::{
             refresh_warehouse_and_namespace_if_needed,
         },
         events::{APIEventContext, context::ResolvedGenericTable},
-        idempotency::IdempotencyInfo,
     },
 };
 
@@ -76,6 +81,8 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         event_ctx.emit_authz(authz_result)?;
 
     let source_id = source_info.generic_table_id;
+    let source_namespace_id = source_info.namespace_id;
+    let destination_namespace_id = destination_namespace.namespace_id();
     let event_ctx = event_ctx.resolve(ResolvedGenericTable {
         warehouse: warehouse.clone(),
         generic_table: Arc::new(source_info),
@@ -87,37 +94,44 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
     }
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    C::rename_tabular(
+    let renamed = C::rename_tabular(
         warehouse_id,
         TabularId::GenericTable(source_id),
+        source_namespace_id,
+        destination_namespace_id,
         &source,
         &destination,
         t.transaction(),
     )
     .await?;
+    // The statement pins the destination to the id passed above, so this holds by
+    // construction. Kept as the invariant it asserts: nothing may land the tabular in a
+    // namespace the request was not authorized against.
+    ensure_authorized_destination(destination_namespace_id, renamed.namespace_id())?;
 
-    if let Some(ref key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::GenericTableV1RenameGenericTable)
-                .http_status(StatusCode::NO_CONTENT)
-                .build(),
-            t.transaction(),
-        )
-        .await?
-    {
-        t.rollback()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!("Rollback failed after idempotency conflict: {e}");
-            })
-            .ok();
-        return Err(ErrorModel::request_in_progress().into());
-    }
+    // Claims the key in the same transaction as the rename, so a committed key
+    // always implies a committed rename.
+    let t = claim_rename_idempotency_key::<C>(
+        t,
+        warehouse_id,
+        idempotency_key,
+        EndpointFlat::GenericTableV1RenameGenericTable,
+    )
+    .await?;
 
-    t.commit().await?;
+    // ------------------- AUTHZ HIERARCHY -------------------
+    // Consumes the transaction: a rename across namespaces has to move the tabular's
+    // parent edge, and the ordering around the commit is what keeps that fail-closed.
+    commit_rename_with_reparent::<C, A>(
+        t,
+        authorizer,
+        event_ctx.request_metadata(),
+        warehouse_id,
+        TabularId::GenericTable(source_id),
+        source_namespace_id,
+        destination_namespace_id,
+    )
+    .await?;
 
     event_ctx.emit_generic_table_renamed_async(destination_namespace.namespace, Arc::new(request));
 
@@ -135,7 +149,17 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
 {
     let (warehouse, destination_namespace, source_namespace) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
-        C::get_namespace(warehouse_id, &destination.namespace, catalog_state.clone()),
+        // The destination is read uncached: it is the one resolution here with no version
+        // anchor to detect staleness against, and a stale `ident -> id` entry is not
+        // invalidated across replicas, so it would outlive the request, fail every retry,
+        // and have authorization evaluated against a namespace that is not the destination.
+        // `rename_tabular` pins the destination by id regardless.
+        C::get_namespace_cache_aware(
+            warehouse_id,
+            &destination.namespace,
+            CachePolicy::Skip,
+            catalog_state.clone(),
+        ),
         C::get_namespace(warehouse_id, &source.namespace, catalog_state.clone()),
     );
 

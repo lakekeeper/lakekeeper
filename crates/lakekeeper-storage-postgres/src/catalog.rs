@@ -228,11 +228,22 @@ impl CatalogStore for super::PostgresBackend {
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, RenameTabularError> {
-        rename_tabular(warehouse_id, source_id, source, destination, transaction).await
+        rename_tabular(
+            warehouse_id,
+            source_id,
+            source_namespace_id,
+            destination_namespace_id,
+            source,
+            destination,
+            transaction,
+        )
+        .await
     }
 
     async fn drop_tabular_impl<'a>(

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH moved AS (\n                UPDATE namespace\n                SET namespace_name = $3\n                WHERE warehouse_id = $1 AND namespace_id = $2\n                RETURNING namespace_id, namespace_name\n            )\n            UPDATE tabular t\n            SET tabular_namespace_name = m.namespace_name\n            FROM moved m\n            WHERE t.warehouse_id = $1 AND t.namespace_id = m.namespace_id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6f0e9f13cf46a0dfb01c5ece60ac438bd8116de09b1eab64bb037e5fa91cddfd"
+}

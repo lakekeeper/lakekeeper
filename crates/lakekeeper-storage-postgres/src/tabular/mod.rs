@@ -285,7 +285,7 @@ where
                 t.fs_protocol,
                 w.version as warehouse_version,
                 n.version as namespace_version
-            FROM tabular t 
+            FROM tabular t
             INNER JOIN q ON t.warehouse_id = $1 AND t.tabular_id = q.id AND t.typ = q.typ
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
@@ -1267,24 +1267,30 @@ fn rename_tabular_error(
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
+///
+/// Both namespaces are given by id, as the caller resolved and authorized them, and both
+/// are enforced here: the tabular must still be in `source_namespace_id` under its source
+/// name, and it is moved into `destination_namespace_id` rather than into whichever
+/// namespace happens to bear the destination name at write time.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
     warehouse_id: WarehouseId,
     source_id: TabularId,
+    source_namespace_id: NamespaceId,
+    destination_namespace_id: NamespaceId,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, RenameTabularError> {
     let TableIdent {
-        namespace: source_namespace,
-        name: source_name,
+        name: source_name, ..
     } = source;
     let TableIdent {
         namespace: dest_namespace,
         name: dest_name,
     } = destination;
 
-    let row = if source_namespace == dest_namespace {
+    let row = if source_namespace_id == destination_namespace_id {
         sqlx::query_as!(
             TabularRowWithProperties,
             r#"
@@ -1296,6 +1302,11 @@ pub(crate) async fn rename_tabular(
                     AND typ = $3
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND deleted_at IS NULL
+                    -- The tabular must still be the one the caller resolved: same namespace,
+                    -- same name. Locating it by id alone would let a rename that lost a race
+                    -- act on whatever the winner left behind.
+                    AND namespace_id = $5
+                    AND name = $6
                 FOR UPDATE
             ),
             locked_source_namespace AS ( -- source namespace of the tabular
@@ -1303,6 +1314,7 @@ pub(crate) async fn rename_tabular(
                 FROM namespace n
                 JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
                 WHERE n.warehouse_id = $4
+                    AND n.namespace_name = $7
                 FOR UPDATE
             ),
             warehouse_check AS (
@@ -1383,6 +1395,9 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             *warehouse_id,
+            *source_namespace_id,
+            &**source_name,
+            &**dest_namespace,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1391,7 +1406,8 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "The source tabular could not be found.",
+                "The source tabular could not be found under the given namespace and name, \
+                 or the destination namespace no longer bears the name given for it.",
             )
         })?
     } else {
@@ -1407,12 +1423,18 @@ pub(crate) async fn rename_tabular(
                     AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND name = $6
                     AND deleted_at IS NULL
+                    -- The tabular must still be in the namespace the caller resolved. This
+                    -- is what the authorizer's re-parenting rests on: it detaches that
+                    -- namespace, which is only correct while it is still the real parent.
+                    -- A rename that lost a race must fail, not follow the tabular into the
+                    -- namespace the winner moved it to.
+                    AND namespace_id = $7
                 FOR UPDATE
             ),
             locked_namespace AS ( -- target namespace
-                SELECT namespace_id
+                SELECT namespace_id, namespace_name
                 FROM namespace
-                WHERE warehouse_id = $2 AND namespace_name = $3
+                WHERE warehouse_id = $2 AND namespace_id = $8 AND namespace_name = $3
                 FOR UPDATE
             ),
             locked_source_namespace AS ( -- source namespace of the tabular
@@ -1428,7 +1450,7 @@ pub(crate) async fn rename_tabular(
             ),
             updated AS (
                 UPDATE tabular t
-                SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
+                SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = ln.namespace_name
                 FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
                     WHERE t.tabular_id = lt.tabular_id
                     AND t.warehouse_id = $2
@@ -1501,6 +1523,8 @@ pub(crate) async fn rename_tabular(
             *source_id,
             TabularType::from(source_id) as _,
             &**source_name,
+            *source_namespace_id,
+            *destination_namespace_id,
         )
         .fetch_one(&mut **transaction)
         .await
@@ -1509,7 +1533,8 @@ pub(crate) async fn rename_tabular(
                 e,
                 warehouse_id,
                 source_id,
-                "Either the source tabular or the destination namespace could not be found.",
+                "Either the destination namespace under the name given for it, or the \
+                 source tabular under the given namespace and name, could not be found.",
             )
         })?
     };
@@ -1565,7 +1590,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         TabularRowWithDeletion,
         r#"WITH locked_tabulars AS (
             SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name, t.typ
-            FROM tabular t 
+            FROM tabular t
             JOIN namespace n ON t.namespace_id = n.namespace_id
             WHERE n.warehouse_id = $2
                 AND t.warehouse_id = $2
@@ -1737,7 +1762,7 @@ pub(crate) async fn mark_tabular_as_deleted(
             RETURNING tabular.tabular_id
         ),
         result_tabulars AS (
-            SELECT 
+            SELECT
                 lt.tabular_id,
                 lt.namespace_id,
                 lt.name as tabular_name,
@@ -1843,14 +1868,14 @@ pub(crate) async fn drop_tabular(
         deleted AS (
             DELETE FROM tabular
             WHERE tabular_id IN (
-                SELECT tabular_id FROM locked_tabular 
+                SELECT tabular_id FROM locked_tabular
                 WHERE ((NOT protected) OR $4)
                 AND ($5::text IS NULL OR metadata_location = $5)
             )
             AND warehouse_id = $1
             RETURNING tabular_id
         )
-        SELECT 
+        SELECT
             lt.protected as "protected!",
             lt.metadata_location,
             lt.fs_protocol,
