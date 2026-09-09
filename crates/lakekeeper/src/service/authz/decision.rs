@@ -72,13 +72,31 @@ impl From<bool> for AuthorizationDecision {
 
 /// A single factor that contributed to an authorization decision.
 ///
-/// Discriminated by `type`: `policy` names a policy the authorizer matched,
-/// `system-authority` records that a built-in authority tier decided the
-/// request. Further kinds may be added, so treat an unrecognised `type` as an
-/// opaque factor rather than an error.
-// Enum-tagged so new producers (restriction-profile matched rules, native
-// OSS-authorizer diagnostics) add a variant without breaking consumers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, valuable::Valuable)]
+/// Discriminated by `type` in the management API, and by a single-key wrapper in the audit
+/// log: `policy` / `Policy` names a policy the authorizer matched, `system-authority` /
+/// `SystemAuthority` records that a built-in authority tier decided the request. Further
+/// kinds may be added, so treat an unrecognised one as an opaque factor rather than an error.
+///
+/// Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
+/// diagnostics) add a variant without breaking existing consumers.
+///
+/// The two renderings differ, deliberately. The `serde` attributes below govern the
+/// management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
+/// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
+/// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
+/// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
+/// never an absent field. See "Optional fields" in the audit-log section of
+/// `docs/docs/developer-guide.md`.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    valuable::Valuable,
+    strum_macros::VariantNames,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum DeterminingFactor {
@@ -125,7 +143,18 @@ pub enum DeterminingFactor {
 }
 
 /// Whether a determining policy permits or forbids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, valuable::Valuable)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    valuable::Valuable,
+    strum_macros::VariantArray,
+    strum_macros::VariantNames,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyEffect {

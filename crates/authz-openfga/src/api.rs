@@ -302,6 +302,34 @@ struct GetTagAssignmentsResponse {
     assignments: Vec<TagAssignment>,
 }
 
+/// The `action_name` values the assignment endpoints emit.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+// The shared `Update` prefix is not redundant naming: each variant's wire value is the
+// full `update_<resource>_assignments` string a consumer matches on, so trimming the
+// prefix would rename nine audit log values.
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum AssignmentAction {
+    UpdateTagAssignments,
+    UpdateServerAssignments,
+    UpdateProjectAssignments,
+    UpdateWarehouseAssignments,
+    UpdateNamespaceAssignments,
+    UpdateTableAssignments,
+    UpdateViewAssignments,
+    UpdateGenericTableAssignments,
+    UpdateRoleAssignments,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -315,7 +343,7 @@ impl APIEventActions for UpdateTagAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_tag_assignments")
+                .action_name(AssignmentAction::UpdateTagAssignments.into())
                 .build(),
         ]
     }
@@ -334,7 +362,7 @@ impl APIEventActions for UpdateServerAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_server_assignments")
+                .action_name(AssignmentAction::UpdateServerAssignments.into())
                 .build(),
         ]
     }
@@ -353,7 +381,7 @@ impl APIEventActions for UpdateProjectAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_project_assignments")
+                .action_name(AssignmentAction::UpdateProjectAssignments.into())
                 .build(),
         ]
     }
@@ -372,7 +400,7 @@ impl APIEventActions for UpdateWarehouseAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_warehouse_assignments")
+                .action_name(AssignmentAction::UpdateWarehouseAssignments.into())
                 .build(),
         ]
     }
@@ -391,7 +419,7 @@ impl APIEventActions for UpdateNamespaceAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_namespace_assignments")
+                .action_name(AssignmentAction::UpdateNamespaceAssignments.into())
                 .build(),
         ]
     }
@@ -410,7 +438,7 @@ impl APIEventActions for UpdateTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_table_assignments")
+                .action_name(AssignmentAction::UpdateTableAssignments.into())
                 .build(),
         ]
     }
@@ -429,7 +457,7 @@ impl APIEventActions for UpdateViewAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_view_assignments")
+                .action_name(AssignmentAction::UpdateViewAssignments.into())
                 .build(),
         ]
     }
@@ -448,7 +476,7 @@ impl APIEventActions for UpdateGenericTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_generic_table_assignments")
+                .action_name(AssignmentAction::UpdateGenericTableAssignments.into())
                 .build(),
         ]
     }
@@ -467,7 +495,7 @@ impl APIEventActions for UpdateRoleAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_role_assignments")
+                .action_name(AssignmentAction::UpdateRoleAssignments.into())
                 .build(),
         ]
     }

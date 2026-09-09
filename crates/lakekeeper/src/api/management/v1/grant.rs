@@ -78,7 +78,7 @@ use crate::{
         },
         events::{
             APIEventContext, GrantsChangedEvent,
-            context::{APIEventActions, IntrospectPermissions},
+            context::{APIEventActions, ActionContextKey, IntrospectPermissions, ManagementAction},
         },
     },
 };
@@ -1083,11 +1083,11 @@ impl APIEventActions for ApplyGrants {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("apply_grants")
-                .context_list("principals", self.principals.clone())
-                .context_list("privileges", self.privileges.clone())
-                .context_string("writes", self.writes.to_string())
-                .context_string("deletes", self.deletes.to_string())
+                .action_name(ManagementAction::ApplyGrants.into())
+                .context_list(ActionContextKey::Principals, self.principals.clone())
+                .context_list(ActionContextKey::Privileges, self.privileges.clone())
+                .context_string(ActionContextKey::Writes, self.writes.to_string())
+                .context_string(ActionContextKey::Deletes, self.deletes.to_string())
                 .build(),
         ]
     }
@@ -2782,7 +2782,7 @@ mod tests {
         let context: std::collections::HashMap<&str, String> = action
             .context
             .iter()
-            .map(|(key, value)| (*key, value.to_string()))
+            .map(|(key, value)| (key.as_str(), value.to_string()))
             .collect();
         assert_eq!(
             context["principals"],

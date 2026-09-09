@@ -76,6 +76,33 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
+# Compares the committed fixtures either side of the merge base, so it needs a base.
+# Check that an audit log format change carries the right AUDIT_FORMAT bump
+check-audit-format-bump base="origin/main":
+    python3 .github/scripts/check-audit-format-bump.py {{base}}
+
+# Drives real requests through the service layer and checks every audit record against the
+# format contract. Needs the local Postgres from the initial setup (see the developer guide).
+# Run it after adding a call: EXPECTED_RECORDS in that file is maintained by hand, and this is
+# where a stale count shows up — in seconds, rather than from CI.
+# Run the audit log corpus test on its own
+test-audit-corpus:
+    cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
+
+# Two passes: the first writes, the second verifies (the writing pass returns before it
+# compares). The first is filtered to the writers; the second runs the whole module, so it
+# also reports the work a regeneration creates — a new field `docs/docs/logging.md` does not
+# document, an orphan fixture, a contract rule the new records break.
+# Review the diff — it is exactly what consumers will see.
+# Regenerate the committed audit log fixtures and the wire-value manifests after a deliberate format change
+update-audit-fixtures:
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
+      service::events::backends::audit::tests::fixture_
+    cargo test -p lakekeeper --lib service::events::backends::audit::tests
+    # Each crate owns the audit values it contributes, so each regenerates its own manifest.
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
+    cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
