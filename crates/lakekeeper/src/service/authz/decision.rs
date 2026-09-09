@@ -85,7 +85,7 @@ impl From<bool> for AuthorizationDecision {
 /// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
 /// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
 /// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
-/// never an absent key. See "Optional fields" in the audit-log section of
+/// never an absent field. See "Optional fields" in the audit-log section of
 /// `docs/docs/developer-guide.md`.
 #[derive(
     Clone,
@@ -153,6 +153,7 @@ pub enum DeterminingFactor {
     Deserialize,
     valuable::Valuable,
     strum_macros::VariantArray,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]

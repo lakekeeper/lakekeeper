@@ -64,6 +64,10 @@ Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` str
 
 **MAJOR** is bumped when an existing field is renamed, retyped, or structurally moved — including a scalar becoming an object, an object becoming an array, or a key changing case or separator. Every major bump is called out in the release notes.
 
+**Values, as well as keys, are open.** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `decision`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, the `determined_by` factor kinds and their `effect`, and the kinds inside an action's `update-kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
+
+That promise covers the values Lakekeeper itself emits. `operation` and `outcome` on operational records are deliberately open to other components: the macro that emits them accepts any value, so an authorizer or an enterprise build names its own, and those are governed by whoever ships them rather than by `audit_format`. `ldap_resolve_roles` below is one such value.
+
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 
 ##### Not covered by `audit_format`
@@ -133,7 +137,7 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 
 | Field          | Type   | Description                                                                                       |
 |----------------|--------|---------------------------------------------------------------------------------------------------|
-| `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed-role"`, or `"lakekeeper-internal"`. Always present.        |
+| `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed-role"`, or `"lakekeeper-internal"`. Always present. Open, like the other value sets — see [Format version and stability](#audit-format). |
 | `principal`    | String | The authenticated principal. Present for `principal` and `assumed-role`.                           |
 | `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed-role`. |
 
@@ -155,7 +159,7 @@ New keys may be added at any minor version, so consumers must not assume this li
 
 **Entity Format:**
 
-Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined).
+Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
 
 Which of the following fields appear depends on the entity type and on what the request supplied — a field is omitted rather than emitted empty. Every value is a string.
 
@@ -487,7 +491,7 @@ These are the confirmed counterpart to the `apply_grants` authorization event. T
 |----------------|-----------------------------------------------------------------------------|
 | `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`                   |
 | `privilege`    | The privilege name, verbatim from the authorizer's vocabulary                |
-| `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition` |
+| `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition`. Open, like the other value sets — see [Format version and stability](#audit-format) |
 | `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |
 | `warehouse_id` | The containing warehouse, for warehouse-scoped resources only               |
 
@@ -506,7 +510,7 @@ So a `grant_created` event with no matching `grant_revoked` does **not** imply t
 
 That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
 
-**Idempotent replays (`operation = "idempotent_replay"`):**
+**Idempotent replays (`operation` = `idempotent_replay`):**
 
 Emitted when a request carrying an `Idempotency-Key` was answered from the stored record instead of being executed. `outcome` is always `replayed`.
 

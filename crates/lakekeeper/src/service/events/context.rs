@@ -25,9 +25,6 @@ use crate::{
         TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
-            ACTION_NAME_CONTROL_TASKS, ACTION_NAME_GET_TASK_DETAILS,
-            ACTION_NAME_INTROSPECT_PERMISSIONS, ACTION_NAME_LIST_PROJECTS, ACTION_NAME_LIST_TASKS,
-            ACTION_NAME_SCHEDULE_TASK, ACTION_NAME_SEARCH_TABULARS, ACTION_NAME_SEARCH_USERS,
             ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
             CatalogViewAction, UserOrRoleId,
         },
@@ -42,10 +39,10 @@ use crate::{
     },
 };
 
-/// A key that can appear on an `entity` object in an audit record.
+/// A field that can appear on an `entity` object in an audit record.
 ///
-/// A closed set, so the audit log's key space is enumerable: `VARIANTS` drives the tests
-/// that require every key to be documented, and the
+/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
+/// that require every field to be documented, and the
 /// wildcard-free match in `as_str` means a new variant cannot be added without choosing
 /// its wire name in the one place that decides wire names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
@@ -102,7 +99,7 @@ impl EntityField {
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed key set.
+// keep compiling unchanged while the type system gains a closed field set.
 pub const FIELD_NAME_SERVER_ID: EntityField = EntityField::ServerId;
 pub const FIELD_NAME_PROJECT_ID: EntityField = EntityField::ProjectId;
 pub const FIELD_NAME_WAREHOUSE_ID: EntityField = EntityField::WarehouseId;
@@ -124,8 +121,8 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 
 /// The `entity_type` of an audit record's `entity` object.
 ///
-/// A closed set, so the audit log's key space is enumerable: `VARIANTS` drives the tests
-/// that require every key to be documented, and the
+/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
+/// that require every field to be documented, and the
 /// wildcard-free match in `as_str` means a new variant cannot be added without choosing
 /// its wire name in the one place that decides wire names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
@@ -170,7 +167,7 @@ impl EntityType {
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed key set.
+// keep compiling unchanged while the type system gains a closed field set.
 pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
 pub const ENTITY_TYPE_PROJECT: EntityType = EntityType::Project;
 pub const ENTITY_TYPE_WAREHOUSE: EntityType = EntityType::Warehouse;
@@ -183,11 +180,11 @@ pub const ENTITY_TYPE_USER: EntityType = EntityType::User;
 pub const ENTITY_TYPE_GENERIC_TABLE: EntityType = EntityType::GenericTable;
 pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 
-/// A key that can appear in an `action` object's context in an audit record.
+/// A field that can appear in an `action` object's context in an audit record.
 ///
-/// A closed set, for the same reason as [`EntityField`]: it makes the audit log's key
-/// space enumerable, so the tests can require every key to be documented and covered,
-/// and the wildcard-free match below makes a new key a build failure rather than an
+/// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
+/// space enumerable, so the tests can require every field to be documented and covered,
+/// and the wildcard-free match below makes a new field a build failure rather than an
 /// undocumented field in the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
@@ -706,13 +703,55 @@ impl_user_provided_entity!(
 );
 
 // ── Action types ────────────────────────────────────────────────────────────
+
+/// Actions named per endpoint rather than per resource permission, for the handlers that
+/// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ManagementAction {
+    SearchUsers,
+    ListProjects,
+    SearchTabulars,
+    IntrospectPermissions,
+    GetTaskDetails,
+    ListTasks,
+    ControlTasks,
+    ScheduleTask,
+    ApplyGrants,
+}
+
+/// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
+/// enum rather than a literal.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AuthnAction {
+    AssumeRole,
+}
 #[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
 impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_SEARCH_USERS)
+                .action_name(ManagementAction::SearchUsers.into())
                 .build(),
         ]
     }
@@ -724,7 +763,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_LIST_PROJECTS)
+                .action_name(ManagementAction::ListProjects.into())
                 .build(),
         ]
     }
@@ -736,7 +775,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_SEARCH_TABULARS)
+                .action_name(ManagementAction::SearchTabulars.into())
                 .build(),
         ]
     }
@@ -748,7 +787,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_INTROSPECT_PERMISSIONS)
+                .action_name(ManagementAction::IntrospectPermissions.into())
                 .build(),
         ]
     }
@@ -760,7 +799,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_GET_TASK_DETAILS)
+                .action_name(ManagementAction::GetTaskDetails.into())
                 .build(),
         ]
     }
@@ -770,7 +809,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_LIST_TASKS)
+                .action_name(ManagementAction::ListTasks.into())
                 .build(),
         ]
     }
@@ -780,7 +819,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_CONTROL_TASKS)
+                .action_name(ManagementAction::ControlTasks.into())
                 .build(),
         ]
     }
@@ -790,7 +829,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ACTION_NAME_SCHEDULE_TASK)
+                .action_name(ManagementAction::ScheduleTask.into())
                 .build(),
         ]
     }

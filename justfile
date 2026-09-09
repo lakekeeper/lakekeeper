@@ -94,11 +94,14 @@ test-audit-corpus:
 # also reports the work a regeneration creates — a new field `docs/docs/logging.md` does not
 # document, an orphan fixture, a contract rule the new records break.
 # Review the diff — it is exactly what consumers will see.
-# Regenerate the committed audit log fixtures and the action-name manifest after a deliberate format change
+# Regenerate the committed audit log fixtures and the wire-value manifests after a deliberate format change
 update-audit-fixtures:
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_
     cargo test -p lakekeeper --lib service::events::backends::audit::tests
+    # Each crate owns the audit values it contributes, so each regenerates its own manifest.
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
+    cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml

@@ -20,10 +20,10 @@ use crate::{
 ///
 /// **MAJOR** is bumped when an existing field is renamed, retyped, or structurally
 /// moved — including a scalar becoming an object, an object becoming an array, or a
-/// key changing case or separator.
+/// field changing case or separator.
 ///
 /// **MINOR** is bumped when a field is added and nothing existing changes.
-/// Consumers must ignore unknown keys.
+/// Consumers must ignore unknown fields.
 ///
 /// Consumers must split on `'.'` and compare each half as an **integer**. Do not
 /// compare the string lexically: `"1.10"` sorts *before* `"1.9"`.
@@ -69,6 +69,73 @@ const _: () = assert!(
     is_major_minor(AUDIT_FORMAT),
     "AUDIT_FORMAT must be `MAJOR.MINOR`, e.g. \"1.0\""
 );
+
+/// The `actor_type` value on every audit record.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ActorType {
+    Anonymous,
+    Principal,
+    AssumedRole,
+    LakekeeperInternal,
+}
+
+/// The `decision` value on an authorization record.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum Decision {
+    Allowed,
+    Denied,
+}
+
+/// The `operation` value on the operational records this crate emits.
+///
+/// This does not close the `operation` space. [`audit_operation`] is exported and takes any
+/// expression, so a crate outside this repository names its own operations and is
+/// responsible for its own vocabulary — see the audit log section of
+/// `docs/docs/developer-guide.md`. What the enum does is bring Lakekeeper's own operations
+/// under the same rename check as everything else it emits.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AuditOperation {
+    GrantCreated,
+    GrantRevoked,
+    IdempotentReplay,
+}
+
+/// The `outcome` value on the operational records this crate emits. Open to other crates in
+/// the same way [`AuditOperation`] is.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AuditOutcome {
+    Success,
+    Replayed,
+}
+
+macro_rules! wire_value_as_str {
+    ($($t:ty),+ $(,)?) => {$(
+        impl $t {
+            /// The value as it reaches the wire.
+            ///
+            /// Spelled out rather than `.into()` at the call site: the emission sites are
+            /// `tracing` macro fields, where the target type is not known and inference for
+            /// `Into` fails.
+            #[must_use]
+            pub fn as_str(self) -> &'static str {
+                self.into()
+            }
+        }
+    )+};
+}
+wire_value_as_str!(ActorType, Decision, AuditOperation, AuditOutcome);
 
 /// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
 /// `Listable` for it without an orphan-rule violation. Borrowed because the
@@ -213,7 +280,7 @@ impl Valuable for GrantContextValue<'_> {
             Value::String(self.resource.resource_type().as_str()),
         );
         // Identifies the exact resource. Server grants name no id — the resource type
-        // is the whole identity — so the key is omitted rather than emitted empty.
+        // is the whole identity — so the field is omitted rather than emitted empty.
         let resource_id = grant_resource_id(self.resource);
         if let Some(id) = resource_id.as_deref() {
             visit.visit_entry(Value::String("resource_id"), Value::String(id));
@@ -319,7 +386,7 @@ macro_rules! audit_log {
 /// are the authenticated facts on the same event.
 ///
 /// A top-level `tracing` field, so it is always recorded: `None` becomes `null`, never an
-/// absent key. See "Optional fields" in the audit-log section of
+/// absent field. See "Optional fields" in the audit-log section of
 /// `docs/docs/developer-guide.md`.
 fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
@@ -356,7 +423,7 @@ impl EventListener for AuditEventListener {
         // Recorded verbatim and unverified: the field says the caller claimed an
         // emergency override and why, not that one was granted. Passed as a bare
         // `Option` rather than through `valuable`, so that `None` records nothing
-        // and the key is absent from ordinary events instead of adding a `null`
+        // and the field is absent from ordinary events instead of adding a `null`
         // to every authorization check. Unlike `user_agent`, absent and null
         // would mean the same thing here, so the null buys nothing.
         let break_glass = event.request_metadata.break_glass_reason();
@@ -375,7 +442,7 @@ impl EventListener for AuditEventListener {
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = "denied",
+                    decision = Decision::Denied.as_str(),
                 },
                 "Authorization failed event"
             );
@@ -393,7 +460,7 @@ impl EventListener for AuditEventListener {
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = "denied",
+                    decision = Decision::Denied.as_str(),
                 },
                 "Authorization failed event"
             );
@@ -414,9 +481,9 @@ impl EventListener for AuditEventListener {
         // optimisation, while the audit trail is answered per grant.
         for spec in &event.removed {
             audit_operation!(
-                operation = "grant_revoked",
+                operation = AuditOperation::GrantRevoked.as_str(),
                 actor = actor,
-                outcome = "success",
+                outcome = AuditOutcome::Success.as_str(),
                 context = GrantContextValue {
                     principal: &spec.principal,
                     privilege: &spec.privilege,
@@ -427,9 +494,9 @@ impl EventListener for AuditEventListener {
         }
         for spec in &event.created {
             audit_operation!(
-                operation = "grant_created",
+                operation = AuditOperation::GrantCreated.as_str(),
                 actor = actor,
-                outcome = "success",
+                outcome = AuditOutcome::Success.as_str(),
                 context = GrantContextValue {
                     principal: &spec.principal,
                     privilege: &spec.privilege,
@@ -450,7 +517,7 @@ impl EventListener for AuditEventListener {
         // Recorded verbatim and unverified: the field says the caller claimed an
         // emergency override and why, not that one was granted. Passed as a bare
         // `Option` rather than through `valuable`, so that `None` records nothing
-        // and the key is absent from ordinary events instead of adding a `null`
+        // and the field is absent from ordinary events instead of adding a `null`
         // to every authorization check. Unlike `user_agent`, absent and null
         // would mean the same thing here, so the null buys nothing.
         let break_glass = event.request_metadata.break_glass_reason();
@@ -467,7 +534,7 @@ impl EventListener for AuditEventListener {
                     break_glass = break_glass,
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = "allowed",
+                    decision = Decision::Allowed.as_str(),
                 },
                 "Authorization succeeded event"
             );
@@ -483,7 +550,7 @@ impl EventListener for AuditEventListener {
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = "allowed",
+                    decision = Decision::Allowed.as_str(),
                 },
                 "Authorization succeeded event"
             );
@@ -512,9 +579,9 @@ impl EventListener for AuditEventListener {
                 actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                 privilege_source = event.request_metadata.privilege_source().as_str(),
                 user_agent = tracing::field::valuable(&user_agent),
-                operation = "idempotent_replay",
+                operation = AuditOperation::IdempotentReplay.as_str(),
                 idempotency_key = idempotency_key.as_str(),
-                outcome = "replayed",
+                outcome = AuditOutcome::Replayed.as_str(),
             },
             "Idempotent replay served"
         );
@@ -625,11 +692,17 @@ impl Valuable for Actor {
     fn visit(&self, visit: &mut dyn Visit) {
         match self {
             Actor::Anonymous => {
-                visit.visit_entry(Value::String("actor_type"), Value::String("anonymous"));
+                visit.visit_entry(
+                    Value::String("actor_type"),
+                    Value::String(ActorType::Anonymous.as_str()),
+                );
             }
             Actor::Principal(user_id) => {
                 let user_id = user_id.to_string();
-                visit.visit_entry(Value::String("actor_type"), Value::String("principal"));
+                visit.visit_entry(
+                    Value::String("actor_type"),
+                    Value::String(ActorType::Principal.as_str()),
+                );
                 visit.visit_entry(Value::String("principal"), Value::String(&user_id));
             }
             Actor::Role {
@@ -642,7 +715,10 @@ impl Valuable for Actor {
                     provider_id: assumed_role.provider_id().to_string(),
                     source_id: assumed_role.source_id().to_string(),
                 };
-                visit.visit_entry(Value::String("actor_type"), Value::String("assumed-role"));
+                visit.visit_entry(
+                    Value::String("actor_type"),
+                    Value::String(ActorType::AssumedRole.as_str()),
+                );
                 visit.visit_entry(Value::String("principal"), Value::String(&principal));
                 visit.visit_entry(Value::String("assumed_role"), role_value.as_value());
             }
@@ -671,7 +747,7 @@ impl Valuable for InternalActor {
             InternalActor::LakekeeperInternal => {
                 visit.visit_entry(
                     Value::String("actor_type"),
-                    Value::String("lakekeeper-internal"),
+                    Value::String(ActorType::LakekeeperInternal.as_str()),
                 );
             }
             InternalActor::External(actor) => actor.visit(visit),
@@ -711,7 +787,10 @@ impl Valuable for AuditPrincipal<'_> {
     }
 
     fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(Value::String("actor_type"), Value::String("principal"));
+        visit.visit_entry(
+            Value::String("actor_type"),
+            Value::String(ActorType::Principal.as_str()),
+        );
         let principal = self.0.to_string();
         visit.visit_entry(Value::String("principal"), Value::String(&principal));
     }
@@ -784,7 +863,7 @@ macro_rules! audit_operation {
             actor = $crate::tracing::field::valuable(&$actor),
             outcome = $outcome,
             // `context` is optional; the `$(...)?` group emits the field only when the
-            // caller passed one, which is what keeps the key absent rather than null.
+            // caller passed one, which is what keeps the field absent rather than null.
             $(context = $crate::tracing::field::valuable(&$ctx),)?
         }, $msg)
     };
@@ -869,7 +948,7 @@ pub mod contract {
     ///
     /// `retain` rather than `remove`: with `serde_json`'s `preserve_order` feature (which
     /// this workspace enables) a `Map` is index-backed and `remove` is a *swap*-remove,
-    /// which would shuffle the surviving keys. Order is worth keeping — a fixture that
+    /// which would shuffle the surviving fields. Order is worth keeping — a fixture that
     /// reads in wire order is a fixture a reviewer can check against a real log line.
     #[must_use]
     pub fn contract_fields(mut record: serde_json::Value) -> serde_json::Value {
@@ -1066,6 +1145,130 @@ pub mod contract {
         }
 
         out
+    }
+
+    // ── wire-value manifests ────────────────────────────────────────────────────
+    //
+    // A record's FIELDS are pinned by the committed fixtures: a field that moves changes the
+    // shape, and the shape comparison sees it. Its VALUES are not — `action_name`,
+    // `entity_type`, `decision` and the rest are strings, so renaming one leaves the shape
+    // identical while breaking every consumer that switches on it. A manifest closes that:
+    // each crate commits the values its types can emit, and the bump checker diffs the
+    // committed file across the merge base.
+    //
+    // The helpers are public because the vocabulary is not all in this crate. `CatalogAction`
+    // is a public trait with a blanket `APIEventActions` impl, so an authorizer — the
+    // in-repo OpenFGA one, or one out of tree — contributes names Lakekeeper cannot
+    // enumerate. Such a crate owns its own manifest and verifies it with the same rule, by
+    // calling these; see `crates/authz-openfga/src/relations.rs` for the worked
+    // example.
+
+    /// A wire-value manifest flattened to `(field, owner, value)` triples.
+    ///
+    /// The manifest is `{ "<wire field>": { "<owning type>": ["<value>", ...] } }`. Keyed by
+    /// owner and not just by field because verbs are shared.
+    #[must_use]
+    pub fn manifest_entries(manifest: &serde_json::Value) -> BTreeSet<(String, String, String)> {
+        let mut entries = BTreeSet::new();
+        let Some(fields) = manifest.as_object() else {
+            return entries;
+        };
+        for (field, owners) in fields {
+            let Some(owners) = owners.as_object() else {
+                continue;
+            };
+            for (owner, values) in owners {
+                for value in values.as_array().into_iter().flatten() {
+                    if let Some(value) = value.as_str() {
+                        entries.insert((field.clone(), owner.clone(), value.to_string()));
+                    }
+                }
+            }
+        }
+        entries
+    }
+
+    fn describe_entries(entries: &BTreeSet<(String, String, String)>) -> String {
+        if entries.is_empty() {
+            return "  (none)".to_string();
+        }
+        entries
+            .iter()
+            .map(|(field, owner, value)| format!("  {field}: {owner} -> {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Assert the manifest committed at `path` still records exactly what `derived` says the
+    /// types can emit, writing it instead when `LAKEKEEPER_UPDATE_AUDIT_FIXTURES` is set.
+    ///
+    /// `whose` names the crate in the failure message, since more than one calls this.
+    ///
+    /// # Panics
+    ///
+    /// If the committed manifest and the derived one disagree, or the file cannot be read or
+    /// written. That is the point: this is for use in tests.
+    pub fn assert_wire_values_manifest(
+        path: &std::path::Path,
+        whose: &str,
+        derived: &serde_json::Value,
+    ) {
+        if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("creating the manifest directory");
+            }
+            let mut json = serde_json::to_string_pretty(derived).expect("a manifest serialises");
+            json.push('\n');
+            std::fs::write(path, json)
+                .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+            return;
+        }
+
+        let committed = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the committed wire-value manifest {}: {e}\n\n\
+                 If it is new, generate it with `just update-audit-fixtures`. Without it \
+                 nothing detects a renamed or removed audit log value from {whose}.",
+                path.display()
+            )
+        });
+        let committed: serde_json::Value = serde_json::from_str(&committed)
+            .unwrap_or_else(|e| panic!("manifest {} is not valid JSON: {e}", path.display()));
+
+        let committed_entries = manifest_entries(&committed);
+        let derived_entries = manifest_entries(derived);
+        if committed_entries == derived_entries {
+            return;
+        }
+
+        let disappeared = describe_entries(
+            &committed_entries
+                .difference(&derived_entries)
+                .cloned()
+                .collect(),
+        );
+        let added = describe_entries(
+            &derived_entries
+                .difference(&committed_entries)
+                .cloned()
+                .collect(),
+        );
+        panic!(
+            "the committed wire-value manifest {} no longer matches what {whose} derives.\n\n\
+             DISAPPEARED — a value the audit log used to emit and now cannot. These reach the \
+             log as string VALUES, so every consumer matching on one BREAKS: bump the MAJOR \
+             half of AUDIT_FORMAT.\n{disappeared}\n\n\
+             ADDED — a value only new records carry. Consumers are told to treat an \
+             unrecognised value as opaque, so this is not a format change: leave \
+             AUDIT_FORMAT alone.\n{added}\n\n\
+             Regenerate with `just update-audit-fixtures`.\n\n\
+             A whole owner listed under DISAPPEARED, or a value you know is emitted showing \
+             under neither, means the type list that builds this manifest is out of date — a \
+             new enum has to be added to it, or the values it emits stay invisible to the \
+             bump checker.\n\n\
+             See the audit log section of docs/docs/developer-guide.md.",
+            path.display()
+        );
     }
 
     /// Assert `record` satisfies the contract, naming every rule it breaks.

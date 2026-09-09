@@ -1,10 +1,8 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
+use iceberg_ext::catalog::TableUpdateKind;
 use valuable::{Valuable, Value, Visit};
 
 use super::{contract::contract_fields, *};
@@ -139,8 +137,8 @@ fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededE
 // change to the audit format.
 //
 // Every value below is fixed. Random ids or a clock would make each run differ,
-// and at most one `extra_context` key is used per fixture: `extra_context` is a
-// `HashMap`, so two or more keys render in an unstable order and the fixtures
+// and at most one `extra_context` field is used per fixture: `extra_context` is a
+// `HashMap`, so two or more entries render in an unstable order and the fixtures
 // would fail at random.
 //
 // To regenerate after a deliberate change: `just update-audit-fixtures`.
@@ -207,7 +205,7 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
 
     // A fixture of `{}` satisfies the subset check below unconditionally, so an
     // emptied or truncated file would switch the breaking-change check off while
-    // leaving a green test. Floor the key count.
+    // leaving a green test. Floor the field count.
     assert!(
         committed
             .as_object()
@@ -217,10 +215,10 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
         path.display()
     );
 
-    // Is every key the fixture records still present, with the same type and
+    // Is every field the fixture records still present, with the same type and
     // value? `CompareMode::Inclusive` walks the right-hand value and requires the
     // left to contain it, so with the fixture on the right this asserts
-    // "fixture is a subset of emitted": extra keys in `emitted` pass.
+    // "fixture is a subset of emitted": extra fields in `emitted` pass.
     //
     // Do not re-derive that direction from assert-json-diff's own documentation,
     // which describes `Inclusive` the other way round; the behaviour above is
@@ -253,7 +251,7 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     }
 
     // Reaching here means nothing recorded in the fixture moved, so the only way
-    // to differ is a key present in `emitted` and absent from the fixture: a
+    // to differ is a field present in `emitted` and absent from the fixture: a
     // purely additive change, which existing consumers can ignore.
     if let Err(difference) =
         assert_json_matches_no_panic(emitted, &committed, Config::new(CompareMode::Strict))
@@ -287,7 +285,7 @@ fn inclusive_comparison_requires_the_right_hand_side_to_be_contained_in_the_left
     let superset = serde_json::json!({ "kept": 1, "extra": 2 });
     let inclusive = || Config::new(CompareMode::Inclusive);
 
-    // Extra keys on the LEFT are allowed. This is the case the fixture check relies
+    // Extra fields on the LEFT are allowed. This is the case the fixture check relies
     // on: `assert_json_matches!(&emitted, &fixture, Inclusive)` must tolerate an
     // emitted record that has gained a field.
     assert!(
@@ -297,7 +295,7 @@ fn inclusive_comparison_requires_the_right_hand_side_to_be_contained_in_the_left
          field as a removed one."
     );
 
-    // Extra keys on the RIGHT are a failure. This is what makes a removed field a
+    // Extra fields on the RIGHT are a failure. This is what makes a removed field a
     // breaking change rather than an additive one.
     assert!(
         assert_json_matches_no_panic(&subset, &superset, inclusive()).is_err(),
@@ -369,7 +367,7 @@ fn fixture_warehouse_entity() -> EntityDescriptor {
 }
 
 /// The simplest per-decision entry: no id, no `for-principal`, no
-/// `determined_by`. Pins which keys are omitted rather than emitted as null.
+/// `determined_by`. Pins which fields are omitted rather than emitted as null.
 fn fixture_plain_authorization() -> Authorization {
     Authorization {
         id: None,
@@ -392,7 +390,7 @@ fn fixture_denied_authorization() -> Authorization {
     }
 }
 
-/// A fully-populated entry, so the fixtures pin the optional keys in their
+/// A fully-populated entry, so the fixtures pin the optional fields in their
 /// present form as well as their absent one, and both `DeterminingFactor`
 /// variants including its own `None` fields.
 fn fixture_detailed_authorization() -> Authorization {
@@ -472,20 +470,20 @@ fn read_fixture(name: &str) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("fixture {} is not valid JSON: {e}", path.display()))
 }
 
-/// Action context keys whose value is a client-supplied map. Their keys are user
+/// Action context fields whose value is a client-supplied map. Their keys are user
 /// data — `docs/docs/logging.md` documents them as "arbitrary [...] not part of the
 /// audit format" — so the walk below records the container and stops there, rather
 /// than demanding that a customer's table property be documented as a format field.
 ///
 /// The authorization and operational `context` objects are deliberately *not* listed.
-/// Their keys are string literals at call sites in this repository, so requiring each
+/// Their fields are string literals at call sites in this repository, so requiring each
 /// to be documented is exactly the point.
 const FREE_FORM_CONTAINERS: &[&str] = &[
     ActionContextKey::Properties.as_str(),
     ActionContextKey::UpdatedProperties.as_str(),
 ];
 
-/// Collect every JSON object key in `value`, at any depth, except inside the
+/// Collect every JSON object field in `value`, at any depth, except inside the
 /// free-form containers above.
 fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
@@ -512,11 +510,11 @@ fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
 /// Driven off the committed fixtures, so it covers what is actually emitted rather
 /// than what some type declares. Add a field and this fails, naming it.
 ///
-/// Coverage is therefore bounded by the fixtures: a key emitted only by a code path
+/// Coverage is therefore bounded by the fixtures: a field emitted only by a code path
 /// no fixture exercises is invisible here. Widening the fixture set widens this
 /// check too, which is the main reason to add one.
 ///
-/// Keys are matched as `` `key` `` — a field table entry or inline mention, not a
+/// Fields are matched as `` `name` `` — a field table entry or inline mention, not a
 /// bare appearance inside a JSON example, since an example is not a description.
 /// The consumer-facing audit log reference, embedded at COMPILE time: if
 /// `logging.md` is deleted or moved, this line fails the build with "couldn't read
@@ -581,7 +579,7 @@ fn every_emitted_audit_field_is_documented() {
     for name in FIXTURE_NAMES {
         collect_keys(&read_fixture(name), &mut keys);
     }
-    // The subscriber-owned keys are stripped before a fixture is written, so the walk above
+    // The subscriber-owned fields are stripped before a fixture is written, so the walk above
     // never sees them. They are still on the wire, and `logging.md` restates the list —
     // this makes the Rust constant the one that decides what that list says.
     keys.extend(
@@ -696,15 +694,27 @@ fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
     let tags: Vec<&'static str> = factor_tags
         .into_iter()
         .chain(
-            PolicyEffect::VARIANTS
+            <PolicyEffect as strum::VariantArray>::VARIANTS
                 .iter()
                 .copied()
                 .map(policy_effect_tag),
         )
         .chain(
-            Reason::VARIANTS
+            <Reason as strum::VariantArray>::VARIANTS
                 .iter()
                 .map(super::contract::failure_reason_tag),
+        )
+        .chain(<ActorType as strum::VariantNames>::VARIANTS.iter().copied())
+        .chain(<Decision as strum::VariantNames>::VARIANTS.iter().copied())
+        .chain(
+            <AuditOperation as strum::VariantNames>::VARIANTS
+                .iter()
+                .copied(),
+        )
+        .chain(
+            <AuditOutcome as strum::VariantNames>::VARIANTS
+                .iter()
+                .copied(),
         )
         .chain(
             PrivilegeSource::VARIANTS
@@ -719,28 +729,28 @@ fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
             LOGGING_DOC.contains(&format!("`{tag}`"))
                 || LOGGING_DOC.contains(&format!("`\"{tag}\"`")),
             "the audit log can emit `{tag}`, but docs/docs/logging.md does not mention \
-             it. A variant of one of these enums reaches the wire as a value, so it is \
-             part of the format: document what it means, and treat adding one as a \
-             minor change to the audit format."
+             it. A variant of one of these enums reaches the wire as a value, so a \
+             consumer will see it: document what it means. Adding a value is NOT a format \
+             change — the value sets are open and consumers are told to treat an \
+             unrecognised one as opaque — so leave AUDIT_FORMAT alone."
         );
     }
 }
 
-/// Every key the audit log can emit must be documented — checked against the type
+/// Every field the audit log can emit must be documented — checked against the type
 /// system, not against the fixtures.
 ///
 /// This is the one check here that is not sample-based. The fixture tests and the
-/// documentation test above can only see keys some fixture happens to emit, so a key
-/// on a path nobody wrote a fixture for is invisible to them. Comparing audit records
-/// from a running server against these fixtures found five such keys, two of them
-/// undocumented, which is what prompted closing the key spaces into enums.
+/// documentation test above can only see fields some fixture happens to emit, so a field
+/// on a path nobody wrote a fixture for is invisible to them. Driving the enums instead of
+/// the fixtures is what makes this one exhaustive.
 ///
-/// Because the sets below come from `VariantArray`, adding a key cannot escape this
+/// Because the sets below come from `VariantArray`, adding a field cannot escape this
 /// check: a new variant is either listed here or the build fails in `as_str`.
 ///
 /// Keys are required as a **table row** rather than a bare mention, so that an
 /// unrelated use of the same word elsewhere in the page cannot satisfy it — the
-/// action context key `source` and the `determined_by` field `source` are different
+/// action context field `source` and the `determined_by` field `source` are different
 /// things that happen to share a name.
 #[test]
 fn every_key_the_audit_log_can_emit_is_documented() {
@@ -748,9 +758,9 @@ fn every_key_the_audit_log_can_emit_is_documented() {
 
     let mut missing: Vec<String> = Vec::new();
 
-    // A row whose FIRST column is the key. Matching anywhere on the line is not
+    // A row whose FIRST column is the field. Matching anywhere on the line is not
     // enough: `| `Policy` | `source` |` in the determining-factor table would then
-    // satisfy a lookup for the unrelated action context key `source`.
+    // satisfy a lookup for the unrelated action context field `source`.
     let has_row = |key: &str| {
         let cell = format!("| `{key}`");
         LOGGING_DOC
@@ -824,7 +834,7 @@ fn the_fixture_directory_matches_the_declared_set() {
 }
 
 /// One action, one entity: `audit_log!` emits the singular `action` / `entity`
-/// keys. No `extra_context`, and an anonymous caller with no `User-Agent`, so
+/// fields. No `extra_context`, and an anonymous caller with no `User-Agent`, so
 /// this fixture is the one that pins the absent and null forms.
 #[test]
 fn fixture_authz_succeeded_single_action_single_entity() {
@@ -842,7 +852,7 @@ fn fixture_authz_succeeded_single_action_single_entity() {
 }
 
 /// Several actions and several entities: `audit_log!` switches to the plural
-/// `actions` / `entities` keys. Also carries `extra_context`, an action with its
+/// `actions` / `entities` fields. Also carries `extra_context`, an action with its
 /// own context, and a fully-populated per-decision entry.
 #[test]
 fn fixture_authz_succeeded_plural_actions_plural_entities() {
@@ -865,8 +875,8 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
     assert_matches_fixture("authz_succeeded_plural", &contract_fields(record));
 }
 
-/// One action, several entities: the singular `action` key with the plural
-/// `entities` key. This mixed arity is its own arm of `audit_log!`.
+/// One action, several entities: the singular `action` field with the plural
+/// `entities` field. This mixed arity is its own arm of `audit_log!`.
 #[test]
 fn fixture_authz_succeeded_single_action_plural_entities() {
     let record = emit_and_capture_one(|| {
@@ -886,7 +896,7 @@ fn fixture_authz_succeeded_single_action_plural_entities() {
 }
 
 /// Several actions, one entity: the remaining arm, plural `actions` with the
-/// singular `entity` key.
+/// singular `entity` field.
 #[test]
 fn fixture_authz_succeeded_plural_actions_single_entity() {
     let record = emit_and_capture_one(|| {
@@ -1041,7 +1051,7 @@ fn fixture_grants_changed_emits_one_record_per_triple() {
     assert_matches_fixture("grant_created", &contract_fields(created));
 }
 
-/// The envelope keys are deliberately outside the format contract, so no fixture
+/// The envelope fields are deliberately outside the format contract, so no fixture
 /// records them — which means nothing would notice if the subscriber stopped
 /// emitting them entirely. Assert the ones a consumer genuinely relies on.
 #[test]
@@ -1115,7 +1125,7 @@ fn the_capture_helper_omits_envelope_keys_production_omits() {
 /// the macro's own example is marked `ignore` so it is never compiled — so without
 /// this test the optional-context arm has no coverage at all, and a change to it
 /// would compile and ship unnoticed. Also pins that omitting the context omits the
-/// key rather than emitting it as null.
+/// field rather than emitting it as null.
 #[test]
 fn an_operational_audit_record_without_context_omits_the_context_key() {
     let user_id =
@@ -1255,7 +1265,7 @@ fn a_grant_context_carries_the_full_triple() {
 }
 
 /// A server grant has no id and no warehouse: the resource type is its whole
-/// identity. Those keys are omitted rather than emitted empty, so a consumer can
+/// identity. Those fields are omitted rather than emitted empty, so a consumer can
 /// tell "server-wide" from "an id we failed to record".
 #[test]
 fn a_server_grant_context_omits_the_id_and_warehouse() {
@@ -1273,7 +1283,7 @@ fn a_server_grant_context_omits_the_id_and_warehouse() {
     );
 }
 
-/// Records the top-level map keys an `Authorization` emits when visited.
+/// Records the top-level fields an `Authorization` emits when visited.
 #[derive(Default)]
 struct KeyCollector {
     keys: Vec<String>,
@@ -1378,8 +1388,8 @@ fn contract_rejects_an_entity_key_outside_the_enum() {
     );
 }
 
-/// Per-decision entries carry their own entity. The key check reads those too, so a bogus
-/// key cannot hide one level down.
+/// Per-decision entries carry their own entity. The field check reads those too, so a bogus
+/// field cannot hide one level down.
 #[test]
 fn contract_rejects_an_entity_key_inside_a_per_decision_entry() {
     let found = violations_after("authz_succeeded_single", |r| {
@@ -1478,58 +1488,59 @@ fn contract_rejects_a_definitive_denial_that_claims_allowed() {
     );
 }
 
-// ── Action-name manifest ────────────────────────────────────────────────────
+// ── Wire-value manifest ─────────────────────────────────────────────────────
 //
-// `action_name` reaches the log as a string VALUE, and the fixture comparison
-// above compares keys and types — so a renamed action is a breaking change that
-// nothing above can see. The committed manifest closes that: it records the names
-// the action enums derive, plus the hand-written ones registered in
-// `LITERAL_ACTION_NAMES`, so a rename becomes a diff in the manifest that review
-// and `just check-audit-format-bump` both read.
+// The fixtures above pin the record's KEYS. Its VALUES they do not: `action_name`,
+// `entity_type`, `decision` and the rest are strings, so renaming one leaves every shape
+// identical while breaking every consumer that switches on it — and a value no fixture
+// happens to carry changes nothing at all. The manifest closes that: every value the types
+// can emit is committed, and `just check-audit-format-bump` diffs the file across the merge
+// base and demands a MAJOR bump for anything that disappeared.
 //
-// Not every name the server can emit. An authorizer crate's own actions are
-// outside it by design, and a hand-written descriptor is in it only because
-// somebody listed it — see `LITERAL_ACTION_NAMES` for that limit.
+// Values only. A new KEY is a shape change the fixtures already catch.
 //
 // To regenerate after a deliberate change: `just update-audit-fixtures`.
 
-fn action_names_manifest_path() -> std::path::PathBuf {
+fn wire_values_manifest_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/service/events/backends/audit/action_names.json")
+        .join("src/service/events/backends/audit/wire_values.json")
 }
 
-/// Reduce a list of action enums to one `(type name, derived action names, variant count)`
-/// per enum.
-macro_rules! action_name_enums {
-    ($($action:ty),+ $(,)?) => {
+/// Reduce a list of enums to one `(type name, derived wire values, variant count)` per enum.
+macro_rules! variant_names_of {
+    ($($ty:ty),+ $(,)?) => {
         vec![$((
-            stringify!($action),
-            <$action as strum::VariantNames>::VARIANTS,
-            <$action as strum::EnumCount>::COUNT,
+            stringify!($ty),
+            <$ty as strum::VariantNames>::VARIANTS
+                .iter()
+                .map(|v| (*v).to_string())
+                .collect::<Vec<String>>(),
+            <$ty as strum::EnumCount>::COUNT,
         )),+]
     };
 }
 
-/// Every in-repo enum whose [`CatalogAction::action_descriptor`] passes
-/// `action_name(self.into())`, i.e. whose variant names reach the audit log verbatim.
+/// Every in-repo enum whose variant names reach the audit log verbatim as an `action_name`.
 ///
-/// Written out by hand because Rust cannot enumerate the types implementing a trait.
-/// An action enum missing from this list emits names that no test and no bump check
-/// ever sees. `grep -rn "impl CatalogAction for" crates/` is the cross-check. The
-/// `*ActionKind` companions do not implement the trait at all. The authz-openfga
-/// `*Relation` types do, and their names *do* reach the log — they are out of scope
-/// because they are that authorizer's wire vocabulary, not this crate's, and an
-/// out-of-tree authorizer's are equally unreachable from here.
-///
-/// [`CatalogAction::action_descriptor`]: crate::service::authz::CatalogAction::action_descriptor
-fn derived_action_name_enums() -> Vec<(&'static str, &'static [&'static str], usize)> {
-    use crate::service::authz::{
-        CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-        CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogUserAction,
-        CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
+/// Written out by hand because Rust cannot enumerate the types implementing a trait. An
+/// action enum missing from this list emits names that no test and no bump check ever sees;
+/// `grep -rn "impl CatalogAction for" crates/` is the cross-check. The `*ActionKind`
+/// companions do not implement the trait. The `authz-openfga` `*Relation` types do, and
+/// their names do reach the log — they are out of scope here because they are that
+/// authorizer's vocabulary rather than this crate's, and that crate commits its own manifest
+/// the same way; see `crates/authz-openfga/src/relations.rs`.
+fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
+    use crate::service::{
+        authz::{
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
+        },
+        events::context::{AuthnAction, ManagementAction},
     };
 
-    action_name_enums!(
+    variant_names_of!(
+        AuthnAction,
         CatalogGenericTableAction,
         CatalogNamespaceAction,
         CatalogProjectAction,
@@ -1541,192 +1552,198 @@ fn derived_action_name_enums() -> Vec<(&'static str, &'static [&'static str], us
         CatalogViewAction,
         CatalogWarehouseAction,
         InstanceAdminAction,
+        ManagementAction,
     )
 }
 
-/// The manifest as the compiler sees it: what the committed file must contain.
-fn derived_action_names_manifest() -> serde_json::Value {
-    let enums: std::collections::BTreeMap<String, Vec<String>> = derived_action_name_enums()
+fn owner_map(entries: Vec<(&'static str, Vec<String>)>) -> serde_json::Value {
+    let map: std::collections::BTreeMap<String, Vec<String>> = entries
         .into_iter()
-        .map(|(name, variants, _)| {
-            let mut names: Vec<String> = variants.iter().map(|n| (*n).to_string()).collect();
-            names.sort();
-            (name.to_string(), names)
+        .map(|(owner, mut values)| {
+            values.sort();
+            (owner.to_string(), values)
         })
         .collect();
-
-    let mut literals: Vec<String> = crate::service::authz::LITERAL_ACTION_NAMES
-        .iter()
-        .map(|n| (*n).to_string())
-        .collect();
-    literals.sort();
-
-    serde_json::json!({ "enums": enums, "literals": literals })
+    serde_json::to_value(map).expect("a manifest owner map serialises")
 }
 
-/// Flatten a manifest to `(enum or "literals", name)` pairs so the two revisions of it
-/// can be compared per owner: a name surviving under a *different* enum is still a break
-/// for the family that lost it.
-fn manifest_entries(manifest: &serde_json::Value) -> BTreeSet<(String, String)> {
-    let mut entries = BTreeSet::new();
+fn sorted_strings<T, I>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<String>,
+{
+    let mut values: Vec<String> = values.into_iter().map(Into::into).collect();
+    values.sort();
+    values
+}
 
-    let mut collect = |owner: &str, value: Option<&serde_json::Value>| {
-        for name in value
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(name) = name.as_str() {
-                entries.insert((owner.to_string(), name.to_string()));
-            }
-        }
+/// The manifest as the compiler sees it: what the committed file must contain.
+///
+/// One entry per wire field, and under it one entry per owning type. Each field's values come
+/// from whatever actually encodes the wire string, which differs by field: `action_name`,
+/// `decision`, `operation` and `outcome` are the `strum` name that `IntoStaticStr` emits;
+/// `entity_type` and `privilege_source` come from an `as_str`; and the `Valuable`-derived
+/// enums reach the wire as the Rust variant name, which is `VariantNames`.
+///
+/// Never from the tag helpers in this file, even though they return the same strings today.
+/// Those helpers are exhaustive `match`es returning literals, so renaming a variant forces
+/// the arm's left side to change while the literal compiles untouched — the manifest would
+/// then record a value no record carries and miss the one they do, silently.
+/// [`the_wire_tag_helpers_agree_with_the_variant_names`] is what keeps the two in step.
+fn derived_wire_values() -> serde_json::Value {
+    use strum::{VariantArray as _, VariantNames as _};
+
+    use crate::{
+        request_metadata::PrivilegeSource,
+        service::{
+            authz::{DeterminingFactor, PolicyEffect, ResourceType},
+            events::{AuthorizationFailureReason, context::EntityType},
+        },
     };
 
-    if let Some(enums) = manifest.get("enums").and_then(serde_json::Value::as_object) {
-        for (owner, names) in enums {
-            collect(owner, Some(names));
-        }
-    }
-    collect("literals", manifest.get("literals"));
+    let action_name = owner_map(
+        action_name_enums()
+            .into_iter()
+            .map(|(owner, values, _)| (owner, values))
+            .collect(),
+    );
 
-    entries
+    serde_json::json!({
+        "action_name": action_name,
+        "actor_type": owner_map(vec![(
+            "ActorType",
+            sorted_strings(<ActorType as strum::VariantNames>::VARIANTS.to_vec()),
+        )]),
+        "decision": owner_map(vec![("Decision", sorted_strings(Decision::VARIANTS.to_vec()))]),
+        "determined_by": owner_map(vec![(
+            "DeterminingFactor",
+            sorted_strings(DeterminingFactor::VARIANTS.to_vec()),
+        )]),
+        "effect": owner_map(vec![(
+            "PolicyEffect",
+            sorted_strings(<PolicyEffect as strum::VariantNames>::VARIANTS.to_vec()),
+        )]),
+        "entity_type": owner_map(vec![(
+            "EntityType",
+            sorted_strings(EntityType::VARIANTS.iter().map(|t| t.as_str())),
+        )]),
+        "failure_reason": owner_map(vec![(
+            "AuthorizationFailureReason",
+            sorted_strings(
+                <AuthorizationFailureReason as strum::VariantNames>::VARIANTS.to_vec(),
+            ),
+        )]),
+        "operation": owner_map(vec![(
+            "AuditOperation",
+            sorted_strings(AuditOperation::VARIANTS.to_vec()),
+        )]),
+        "outcome": owner_map(vec![(
+            "AuditOutcome",
+            sorted_strings(AuditOutcome::VARIANTS.to_vec()),
+        )]),
+        "resource_type": owner_map(vec![(
+            "ResourceType",
+            sorted_strings(
+                <ResourceType as strum::VariantArray>::VARIANTS
+                    .iter()
+                    .map(<&'static str>::from),
+            ),
+        )]),
+        // `update-kinds` is an action-context VALUE, not a field: the field is pinned by
+        // `ActionContextKey`, while the 23 kinds inside it are `TableUpdateKind`'s wire names
+        // and were covered by nothing.
+        "update_kinds": owner_map(vec![(
+            "TableUpdateKind",
+            sorted_strings(<TableUpdateKind as strum::VariantNames>::VARIANTS.to_vec()),
+        )]),
+        "privilege_source": owner_map(vec![(
+            "PrivilegeSource",
+            sorted_strings(PrivilegeSource::VARIANTS.iter().map(|s| s.as_str())),
+        )]),
+    })
 }
 
-fn describe_entries(entries: &BTreeSet<(String, String)>) -> String {
-    if entries.is_empty() {
-        return "(none)".to_string();
-    }
-    entries
-        .iter()
-        .map(|(owner, name)| format!("{owner}::{name}"))
-        .collect::<Vec<_>>()
-        .join("\n  ")
-}
-
-/// The committed manifest is the only record of the `action_name` VALUES the audit log
-/// emits. Generated here from the derives, so it cannot drift from the code silently.
 #[test]
-fn fixture_action_names_manifest_matches_the_derived_names() {
-    let derived = derived_action_names_manifest();
-    let path = action_names_manifest_path();
-
-    if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
-        std::fs::create_dir_all(path.parent().expect("manifest path has a parent"))
-            .expect("creating the manifest directory");
-        let mut json =
-            serde_json::to_string_pretty(&derived).expect("the action-name manifest serialises");
-        json.push('\n');
-        std::fs::write(&path, json).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
-        return;
-    }
-
-    let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read the committed action-name manifest {}: {e}\n\n\
-             Generate it with `just update-audit-fixtures`. It is the record of the \
-             `action_name` values audit_format {AUDIT_FORMAT} puts on the wire, and \
-             without it nothing detects a renamed action.",
-            path.display()
-        )
-    });
-    let committed: serde_json::Value = serde_json::from_str(&committed)
-        .unwrap_or_else(|e| panic!("manifest {} is not valid JSON: {e}", path.display()));
-
-    if committed == derived {
-        return;
-    }
-
-    let committed_entries = manifest_entries(&committed);
-    let derived_entries = manifest_entries(&derived);
-    let disappeared = describe_entries(
-        &committed_entries
-            .difference(&derived_entries)
-            .cloned()
-            .collect(),
-    );
-    let added = describe_entries(
-        &derived_entries
-            .difference(&committed_entries)
-            .cloned()
-            .collect(),
-    );
-
-    panic!(
-        "the committed action-name manifest {path} no longer matches the names the action \
-         enums derive.\n\n\
-         DISAPPEARED — a name the audit log used to emit and now cannot. `action_name` \
-         reaches the log as a string VALUE, so every consumer matching on it BREAKS: bump \
-         the MAJOR half of AUDIT_FORMAT (now {AUDIT_FORMAT}).\n  {disappeared}\n\n\
-         ADDED — a name only new records carry. Existing consumers keep working, so this is \
-         additive: leave AUDIT_FORMAT alone.\n  {added}\n\n\
-         Regenerate with `just update-audit-fixtures`.\n\n\
-         A whole enum listed under DISAPPEARED, or an action you know is emitted showing \
-         under neither, means the enum list in `derived_action_name_enums` in this file is \
-         out of date: a new action enum must be added to that list, or the names it emits \
-         are invisible to the bump checker.\n\n\
-         See the audit log section of docs/docs/developer-guide.md.",
-        path = path.display(),
+fn fixture_wire_values_manifest_matches_the_derived_values() {
+    super::contract::assert_wire_values_manifest(
+        &wire_values_manifest_path(),
+        "lakekeeper",
+        &derived_wire_values(),
     );
 }
 
-/// [`strum::VariantNames`] and [`strum::EnumCount`] are separate derives on the same
-/// enum. If the first ever lists fewer names than the enum has variants, the manifest
-/// shrinks quietly and the missing names stop being watched.
+/// `VariantNames` and `EnumCount` disagree only when a variant carries
+/// `#[strum(disabled)]`: the name list includes it, the count does not. So an inequality
+/// means the manifest is about to record a value the wire cannot actually carry — a
+/// disabled variant has no `IntoStaticStr` arm — and the manifest would then be asserting
+/// coverage of something that does not exist.
 #[test]
 fn every_action_enum_variant_has_a_derived_name() {
-    for (enum_name, variants, count) in derived_action_name_enums() {
+    for (enum_name, variants, count) in action_name_enums() {
         assert_eq!(
             variants.len(),
             count,
-            "`{enum_name}` has {count} variants but derives {} action names: {variants:?}. \
-             Every variant can reach the audit log, so a name missing here is a value the \
-             manifest never records.",
+            "`{enum_name}` derives {} action names but counts {count} variants: \
+             {variants:?}. They differ only for a `#[strum(disabled)]` variant, which has no \
+             wire name — so the manifest would record a value no record can carry.",
             variants.len()
         );
     }
 }
 
-/// Action names are consumed as literals in dashboards and alerting rules, so their lexical
-/// shape is part of the wire format: underscore-joined runs of lowercase letters and digits,
-/// nothing else.
+/// The five fields Lakekeeper names itself in `snake_case`, whose shape is part of the wire
+/// format: dashboards and alerting rules match these values as literals.
 ///
-/// What this catches is a change to how the names are *spelled*, which is a silent break —
-/// every one of these values would change at once, and no shape comparison would see it
-/// because `action_name` is a value. Dropping `#[strum(serialize_all = "snake_case")]` from
-/// an enum gives `ReadData`; switching it to `kebab-case` gives `read-data`; a hand-written
-/// `#[strum(serialize = "...")]` can give anything at all.
+/// Every other field is excluded for a stated reason, so the list accounts for all eleven.
+/// `entity_type`, `actor_type` and `resource_type` are kebab-case (`generic-table`,
+/// `assumed-role`), and `determined_by`, `effect` and `failure_reason` reach the wire as Rust
+/// variant names through `valuable`, which is `PascalCase`. Asserting one shape across all of
+/// them would either fail today or say nothing.
 ///
-/// What it cannot catch is a mis-split acronym. `read_a_c_l` where the variant says `ReadACL`
-/// is itself perfectly well-formed `snake_case`, and no lexical rule can tell it from a real
-/// name whose segments happen to be short. That failure is prevented upstream instead: the
-/// names come from `heck` by way of `strum`, which produces `read_acl`.
+/// What this catches is a change in how the names are SPELLED — an enum losing its
+/// `#[strum(serialize_all = "snake_case")]`, gaining a different case style, or carrying a
+/// hand-written `serialize` override that does not follow house style. Each renames a value
+/// consumers match on. What it cannot catch is a mis-split acronym: `read_a_c_l` is itself
+/// well-formed, and no lexical rule tells it from a real name with short segments. That is
+/// prevented upstream, by taking the names from `heck` through `strum` rather than from a
+/// hand-rolled splitter.
 #[test]
-fn every_action_name_is_a_lower_snake_case_identifier() {
-    let manifest = derived_action_names_manifest();
+fn the_values_lakekeeper_names_itself_are_lower_snake_case() {
+    const SNAKE_FIELDS: &[&str] = &[
+        "action_name",
+        "decision",
+        "operation",
+        "outcome",
+        "privilege_source",
+    ];
+
+    let manifest = derived_wire_values();
     let mut malformed = Vec::new();
 
-    for (owner, name) in manifest_entries(&manifest) {
+    for (field, owner, value) in super::contract::manifest_entries(&manifest) {
+        if !SNAKE_FIELDS.contains(&field.as_str()) {
+            continue;
+        }
         // Split on `_` and require every segment to be a non-empty run of lowercase
         // alphanumerics. Checking the characters alone is not enough: it accepts a leading
         // or trailing underscore and a run of them, so `a__b_` reads as well-formed.
-        let segments_ok = name.split('_').all(|segment| {
+        let segments_ok = value.split('_').all(|segment| {
             !segment.is_empty()
                 && segment
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         });
-        let starts_with_letter = name.starts_with(|c: char| c.is_ascii_lowercase());
-        if !(segments_ok && starts_with_letter) {
-            malformed.push(format!("{owner}::{name}"));
+        if !(segments_ok && value.starts_with(|c: char| c.is_ascii_lowercase())) {
+            malformed.push(format!("{field}: {owner} -> {value}"));
         }
     }
 
     assert!(
         malformed.is_empty(),
-        "these action names are not `lower_snake_case`:\n  {}\n\n\
+        "these wire values are not `lower_snake_case`:\n  {}\n\n\
          The shape is one or more runs of `[a-z0-9]` joined by single underscores, starting \
          with a letter — no leading, trailing or doubled underscore, no capitals, no dashes. \
-         An action enum that lost its `#[strum(serialize_all = \"snake_case\")]`, or gained a \
+         An enum that lost its `#[strum(serialize_all = \"snake_case\")]`, or gained a \
          different case style, or carries a hand-written `#[strum(serialize = \"...\")]` that \
          does not follow house style, lands here. Each of those renames a value consumers \
          match on, so it is a MAJOR change, not a spelling preference.",
@@ -1734,20 +1751,81 @@ fn every_action_name_is_a_lower_snake_case_identifier() {
     );
 }
 
-/// A hand-written `ActionDescriptor` has no derive behind it, so its name only reaches
-/// the manifest through [`LITERAL_ACTION_NAMES`].
-///
-/// [`LITERAL_ACTION_NAMES`]: crate::service::authz::LITERAL_ACTION_NAMES
+/// Every value the manifest records is one a record can actually carry: non-empty, and
+/// without whitespace, which would make it unusable as a literal in a query.
 #[test]
-fn every_literal_action_name_is_in_the_manifest() {
-    let manifest = derived_action_names_manifest();
-    let recorded = manifest_entries(&manifest);
-
-    for name in crate::service::authz::LITERAL_ACTION_NAMES {
+fn every_wire_value_is_usable_as_a_literal() {
+    for (field, owner, value) in super::contract::manifest_entries(&derived_wire_values()) {
         assert!(
-            recorded.contains(&("literals".to_string(), (*name).to_string())),
-            "`{name}` is in LITERAL_ACTION_NAMES but not in the manifest's `literals`. \
-             Nothing else records it, so a rename would be invisible to the bump checker."
+            !value.is_empty() && !value.chars().any(char::is_whitespace),
+            "`{field}` from `{owner}` derives {value:?}, which no consumer can match on."
+        );
+    }
+}
+
+/// The tag helpers return the same strings `valuable` puts on the wire.
+///
+/// They are exhaustive `match`es returning literals, which is a mirror, and a mirror can
+/// drift in exactly one direction the compiler permits: rename a variant and the arm's left
+/// side must change, while the literal on the right compiles untouched. The helper then
+/// reports a value no record carries. `valuable` emits the Rust variant name, and
+/// `VariantNames` is that same name, so comparing the two catches the drift.
+///
+/// The manifest is built from `VariantNames` rather than from the helpers for this reason.
+/// The helpers still drive the documentation test, so they have to stay honest too.
+#[test]
+fn the_wire_tag_helpers_agree_with_the_variant_names() {
+    use crate::service::events::AuthorizationFailureReason as Reason;
+
+    for (index, name) in <PolicyEffect as strum::VariantNames>::VARIANTS
+        .iter()
+        .enumerate()
+    {
+        let variant = <PolicyEffect as strum::VariantArray>::VARIANTS[index];
+        assert_eq!(
+            policy_effect_tag(variant),
+            *name,
+            "`policy_effect_tag` returns `{}` for the variant `valuable` emits as `{name}`. \
+             A variant was renamed and the literal in the match arm was not.",
+            policy_effect_tag(variant)
+        );
+    }
+
+    for (index, name) in <Reason as strum::VariantNames>::VARIANTS.iter().enumerate() {
+        let variant = &<Reason as strum::VariantArray>::VARIANTS[index];
+        assert_eq!(
+            super::contract::failure_reason_tag(variant),
+            *name,
+            "`failure_reason_tag` returns `{}` for the variant `valuable` emits as `{name}`. \
+             A variant was renamed and the literal in the match arm was not.",
+            super::contract::failure_reason_tag(variant)
+        );
+    }
+
+    for (index, name) in <DeterminingFactor as strum::VariantNames>::VARIANTS
+        .iter()
+        .enumerate()
+    {
+        // `DeterminingFactor` carries data, so there is no `VariantArray` to index; the tag
+        // helper is matched against the name positionally by constructing each variant.
+        let variant = match index {
+            0 => DeterminingFactor::Policy {
+                policy_id: String::new(),
+                name: None,
+                effect: PolicyEffect::Permit,
+                source: None,
+            },
+            _ => DeterminingFactor::SystemAuthority {
+                source: None,
+                reason: None,
+            },
+        };
+        assert_eq!(
+            determining_factor_tag(&variant),
+            *name,
+            "`determining_factor_tag` returns `{}` for the variant `valuable` emits as \
+             `{name}`. A variant was renamed and the literal in the match arm was not.",
+            determining_factor_tag(&variant)
         );
     }
 }
@@ -1783,6 +1861,7 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
          among the derived names {variants:?} the manifest is built from."
     );
 }
+
 /// Built from the production types rather than by hand: the record's claim is
 /// that it matches what a real drop reports, which a hand-rolled descriptor
 /// cannot demonstrate.
@@ -1970,7 +2049,7 @@ fn an_audit_event_records_the_break_glass_reason() {
     );
 }
 
-/// Nearly every request claims nothing, and an absent key says exactly what
+/// Nearly every request claims nothing, and an absent field says exactly what
 /// a null would, so the field is omitted rather than padding every
 /// authorization event in the catalog with `"break_glass": null`.
 #[test]

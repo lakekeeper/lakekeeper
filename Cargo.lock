@@ -3344,6 +3344,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "strum",
  "strum_macros",
  "thiserror 2.0.18",
  "tokio",

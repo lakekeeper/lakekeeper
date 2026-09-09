@@ -1,5 +1,8 @@
 {
-  "enums": {
+  "action_name": {
+    "AuthnAction": [
+      "assume_role"
+    ],
     "CatalogGenericTableAction": [
       "control_tasks",
       "drop",
@@ -142,18 +145,128 @@
     ],
     "InstanceAdminAction": [
       "set_warehouse_managed_by"
+    ],
+    "ManagementAction": [
+      "apply_grants",
+      "control_tasks",
+      "get_task_details",
+      "introspect_permissions",
+      "list_projects",
+      "list_tasks",
+      "schedule_task",
+      "search_tabulars",
+      "search_users"
     ]
   },
-  "literals": [
-    "apply_grants",
-    "assume_role",
-    "control_tasks",
-    "get_task_details",
-    "introspect_permissions",
-    "list_projects",
-    "list_tasks",
-    "schedule_task",
-    "search_tabulars",
-    "search_users"
-  ]
+  "actor_type": {
+    "ActorType": [
+      "anonymous",
+      "assumed-role",
+      "lakekeeper-internal",
+      "principal"
+    ]
+  },
+  "decision": {
+    "Decision": [
+      "allowed",
+      "denied"
+    ]
+  },
+  "determined_by": {
+    "DeterminingFactor": [
+      "Policy",
+      "SystemAuthority"
+    ]
+  },
+  "effect": {
+    "PolicyEffect": [
+      "Forbid",
+      "Permit"
+    ]
+  },
+  "entity_type": {
+    "EntityType": [
+      "generic-table",
+      "namespace",
+      "project",
+      "role",
+      "server",
+      "table",
+      "tag",
+      "task",
+      "unknown",
+      "user",
+      "view",
+      "warehouse"
+    ]
+  },
+  "failure_reason": {
+    "AuthorizationFailureReason": [
+      "ActionForbidden",
+      "CannotSeeResource",
+      "InternalAuthorizationError",
+      "InternalCatalogError",
+      "InvalidRequestData",
+      "ResourceNotFound"
+    ]
+  },
+  "operation": {
+    "AuditOperation": [
+      "grant_created",
+      "grant_revoked",
+      "idempotent_replay"
+    ]
+  },
+  "outcome": {
+    "AuditOutcome": [
+      "replayed",
+      "success"
+    ]
+  },
+  "resource_type": {
+    "ResourceType": [
+      "generic-table",
+      "namespace",
+      "project",
+      "server",
+      "table",
+      "tag-definition",
+      "view",
+      "warehouse"
+    ]
+  },
+  "update_kinds": {
+    "TableUpdateKind": [
+      "add-encryption-key",
+      "add-schema",
+      "add-snapshot",
+      "add-sort-order",
+      "add-spec",
+      "assign-uuid",
+      "remove-encryption-key",
+      "remove-partition-specs",
+      "remove-partition-statistics",
+      "remove-properties",
+      "remove-schemas",
+      "remove-snapshot-ref",
+      "remove-snapshots",
+      "remove-statistics",
+      "set-current-schema",
+      "set-default-sort-order",
+      "set-default-spec",
+      "set-location",
+      "set-partition-statistics",
+      "set-properties",
+      "set-snapshot-ref",
+      "set-statistics",
+      "upgrade-format-version"
+    ]
+  },
+  "privilege_source": {
+    "PrivilegeSource": [
+      "authorizer",
+      "instance_admin",
+      "internal"
+    ]
+  }
 }

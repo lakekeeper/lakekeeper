@@ -115,7 +115,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
     }
 }
 
-/// Every audit record captured so far, envelope keys stripped.
+/// Every audit record captured so far, envelope fields stripped.
 fn audit_records(logs: &CapturedLogs) -> Vec<serde_json::Value> {
     let bytes = logs.0.lock().expect("log buffer poisoned").clone();
     String::from_utf8(bytes)
@@ -277,7 +277,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     .await;
 
     // Property updates carry `updated-properties` and `removed-properties`, the two
-    // hyphenated action context keys.
+    // hyphenated action context fields.
     let _ = CatalogServer::update_namespace_properties(
         namespace_params.clone(),
         iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest {
@@ -292,7 +292,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // A drop with purge, which carries the `purge` context key.
+    // A drop with purge, which carries the `purge` context field.
     if created.is_ok() {
         let _ = CatalogServer::drop_table(
             lakekeeper::api::iceberg::v1::TableParameters {
