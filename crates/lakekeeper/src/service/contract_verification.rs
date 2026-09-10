@@ -6,7 +6,7 @@ use iceberg::{
     TableIdent, TableUpdate,
     spec::{TableMetadata, ViewMetadata},
 };
-use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
+use iceberg_ext::catalog::rest::{CreateTableRequest, CreateViewRequest, ErrorModel, ViewUpdate};
 
 use crate::service::TabularId;
 
@@ -42,6 +42,14 @@ use crate::service::TabularId;
 ///         }
 ///
 ///         async fn check_view_updates(&self, _view_updates: &[ViewUpdate], _current_metadata: &ViewMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
+///             Ok(ContractVerificationOutcome::Clear {})
+///         }
+///
+///         async fn check_create_table(&self, _request: &CreateTableRequest, _table_metadata: &TableMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
+///             Ok(ContractVerificationOutcome::Clear {})
+///         }
+///
+///         async fn check_create_view(&self, _request: &CreateViewRequest, _view_metadata: &ViewMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Clear {})
 ///         }
 ///
@@ -81,6 +89,28 @@ use crate::service::TabularId;
 ///         }
 ///
 ///         async fn check_view_updates(&self, _view_updates: &[ViewUpdate], _current_metadata: &ViewMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
+///             Ok(ContractVerificationOutcome::Violation {
+///                 error_model: ErrorModel::builder()
+///                     .code(409)
+///                     .message("Denied")
+///                     .r#type("ContractViolation".to_string())
+///                     .build()
+///                     .into(),
+///             })
+///         }
+///
+///         async fn check_create_table(&self, _request: &CreateTableRequest, _table_metadata: &TableMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
+///             Ok(ContractVerificationOutcome::Violation {
+///                 error_model: ErrorModel::builder()
+///                     .code(409)
+///                     .message("Denied")
+///                     .r#type("ContractViolation".to_string())
+///                     .build()
+///                     .into(),
+///             })
+///         }
+///
+///         async fn check_create_view(&self, _request: &CreateViewRequest, _view_metadata: &ViewMetadata) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Violation {
 ///                 error_model: ErrorModel::builder()
 ///                     .code(409)
@@ -132,6 +162,22 @@ pub trait ContractVerification: Debug {
         _view_updates: &[ViewUpdate],
         _current_metadata: &ViewMetadata,
     ) -> Result<ContractVerificationOutcome, ErrorModel>;
+
+    async fn check_create_table(
+        &self,
+        _request: &CreateTableRequest,
+        _table_metadata: &TableMetadata,
+    ) -> Result<ContractVerificationOutcome, ErrorModel> {
+        Ok(ContractVerificationOutcome::Clear {})
+    }
+
+    async fn check_create_view(
+        &self,
+        _request: &CreateViewRequest,
+        _view_metadata: &ViewMetadata,
+    ) -> Result<ContractVerificationOutcome, ErrorModel> {
+        Ok(ContractVerificationOutcome::Clear {})
+    }
 
     async fn check_drop(
         &self,
@@ -249,6 +295,58 @@ impl ContractVerification for ContractVerifiers {
                         "ContractVerifier '{}' blocked change on view '{}'",
                         checker.name(),
                         current_metadata.uuid()
+                    );
+                    return Ok(block_result);
+                }
+                Err(error) => {
+                    tracing::warn!("Checker {} failed", checker.name());
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(ContractVerificationOutcome::Clear {})
+    }
+
+    async fn check_create_table(
+        &self,
+        request: &CreateTableRequest,
+        table_metadata: &TableMetadata,
+    ) -> Result<ContractVerificationOutcome, ErrorModel> {
+        for checker in &self.checkers {
+            match checker.check_create_table(request, table_metadata).await {
+                Ok(ContractVerificationOutcome::Clear {}) => {}
+                Ok(block_result @ ContractVerificationOutcome::Violation { error_model: _ }) => {
+                    tracing::info!(
+                        "ContractVerifier '{}' blocked creation of table '{}'",
+                        checker.name(),
+                        table_metadata.uuid()
+                    );
+                    return Ok(block_result);
+                }
+                Err(error) => {
+                    tracing::warn!("Checker {} failed", checker.name());
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(ContractVerificationOutcome::Clear {})
+    }
+
+    async fn check_create_view(
+        &self,
+        request: &CreateViewRequest,
+        view_metadata: &ViewMetadata,
+    ) -> Result<ContractVerificationOutcome, ErrorModel> {
+        for checker in &self.checkers {
+            match checker.check_create_view(request, view_metadata).await {
+                Ok(ContractVerificationOutcome::Clear {}) => {}
+                Ok(block_result @ ContractVerificationOutcome::Violation { error_model: _ }) => {
+                    tracing::info!(
+                        "ContractVerifier '{}' blocked creation of view '{}'",
+                        checker.name(),
+                        view_metadata.uuid()
                     );
                     return Ok(block_result);
                 }
