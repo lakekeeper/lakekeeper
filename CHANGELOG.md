@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.4](https://github.com/lakekeeper/lakekeeper/compare/v0.13.3...v0.13.4) (2026-09-10)
+
+
+### Features
+
+* support AWS partitions in S3 policies ([#1928](https://github.com/lakekeeper/lakekeeper/issues/1928)) ([65ec54f](https://github.com/lakekeeper/lakekeeper/commit/65ec54f224c3609e9cac74eafe91f1ab1ddf3574))
+
+
+### Bug Fixes
+
+* **alloc:** allow clippy::unused_async on the non-Linux allocator stub ([#1998](https://github.com/lakekeeper/lakekeeper/issues/1998)) ([a647865](https://github.com/lakekeeper/lakekeeper/commit/a647865d04e515b584bb6a5f27bf6d2ccbcc0ce3))
+* **authz:** re-point a tabular's OpenFGA parent on cross-namespace rename ([#2013](https://github.com/lakekeeper/lakekeeper/issues/2013)) ([9b0c8dd](https://github.com/lakekeeper/lakekeeper/commit/9b0c8dd39d3ed5db02be021b38c8bc246ad96111))
+* **catalog:** return 409, not 404, when a rename target is taken ([#1955](https://github.com/lakekeeper/lakekeeper/issues/1955)) ([b986192](https://github.com/lakekeeper/lakekeeper/commit/b986192130b7e907e18e9dbc399f21b892b50d99))
+* limit connection lifetimes ([#1990](https://github.com/lakekeeper/lakekeeper/issues/1990)) ([#1993](https://github.com/lakekeeper/lakekeeper/issues/1993)) ([4bcdc1f](https://github.com/lakekeeper/lakekeeper/commit/4bcdc1fa330b6665b89a3903a240e8eb8ee12e20))
+
 ## [0.13.3](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.13.3) (2026-08-16)
 
 
