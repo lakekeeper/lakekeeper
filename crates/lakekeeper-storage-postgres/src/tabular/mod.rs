@@ -11,9 +11,9 @@ use lakekeeper::{
     CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     service::{
-        CatalogSearchTabularInfo, CatalogSearchTabularResponse, ClearTabularDeletedAtError,
-        ConcurrentUpdateError, CreateTabularError, DropTabularError, ExpirationTaskInfo,
-        GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
+        CatalogBackendError, CatalogSearchTabularInfo, CatalogSearchTabularResponse,
+        ClearTabularDeletedAtError, ConcurrentUpdateError, CreateTabularError, DropTabularError,
+        ExpirationTaskInfo, GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
         LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
@@ -1343,6 +1343,37 @@ impl From<FromTabularRowError> for RenameTabularError {
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
         }
     }
+}
+
+/// Rewrite `tabular.tabular_namespace_name` where it disagrees with the namespace row it points
+/// at, returning the number of rows changed.
+///
+/// The column is a denormalised copy of the containing namespace's path. It is matched under a
+/// case-insensitive collation, so a copy that differs only in case satisfies the foreign key and
+/// survives unnoticed.
+///
+/// Takes `namespace.namespace_name` as authoritative, so run this after the namespace paths
+/// themselves have been repaired.
+///
+/// Includes soft-deleted rows: an undropped tabular would otherwise bring the old spelling back.
+pub(crate) async fn repair_tabular_namespace_path_casing(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<u64, CatalogBackendError> {
+    Ok(sqlx::query!(
+        r#"
+        UPDATE tabular t
+        SET tabular_namespace_name = n.namespace_name
+        FROM namespace n
+        WHERE n.warehouse_id = t.warehouse_id
+            AND n.namespace_id = t.namespace_id
+            AND (t.tabular_namespace_name::text) COLLATE "C"
+                <> (n.namespace_name::text) COLLATE "C"
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?
+    .rows_affected())
 }
 
 /// Map a failed rename onto its error.
@@ -2890,5 +2921,63 @@ mod tests {
                 "a task in an unrelated queue must not be reported as a pending deletion"
             );
         }
+    }
+
+    /// A copy that differs from its namespace row only in case satisfies the foreign key, so the
+    /// repair has to find it byte-wise. Soft-deleted rows count: undropping one would otherwise
+    /// restore the old spelling.
+    #[sqlx::test]
+    async fn test_repair_tabular_namespace_path_casing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ident = iceberg_ext::NamespaceIdent::from_vec(vec!["Repair_NS".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &ident, None)
+            .await
+            .namespace_id();
+
+        let live = plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bucket/live").await;
+        let deleted =
+            plant_tabular(&pool, *warehouse_id, namespace_id, "s3://bucket/deleted").await;
+        sqlx::query("UPDATE tabular SET deleted_at = now() WHERE tabular_id = $1")
+            .bind(deleted)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let diverge = |id: Uuid| {
+            sqlx::query(
+                "UPDATE tabular SET tabular_namespace_name = ARRAY['repair_ns'] \
+                 WHERE tabular_id = $1",
+            )
+            .bind(id)
+            .execute(&pool)
+        };
+        diverge(live).await.unwrap();
+        diverge(deleted).await.unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        let repaired = repair_tabular_namespace_path_casing(&mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(repaired, 2);
+
+        for id in [live, deleted] {
+            let stored: Vec<String> = sqlx::query_scalar(
+                "SELECT tabular_namespace_name FROM tabular WHERE tabular_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(stored, vec!["Repair_NS".to_string()]);
+        }
+
+        let mut transaction = pool.begin().await.unwrap();
+        let repaired = repair_tabular_namespace_path_casing(&mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(repaired, 0, "the repair must be idempotent");
     }
 }

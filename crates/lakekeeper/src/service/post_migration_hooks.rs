@@ -6,8 +6,9 @@ use crate::{
     CONFIG,
     api::management::v1::tasks::{ListTasksRequest, TaskStatus},
     service::{
-        CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTaskOps, SystemRoleSeederCap,
-        SystemRoleSpec, Transaction, install_system_role_registry, registered_system_roles,
+        CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        SystemRoleSeederCap, SystemRoleSpec, Transaction, install_system_role_registry,
+        registered_system_roles,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskFilter,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
@@ -27,7 +28,8 @@ use crate::{
 /// from an earlier failure. A hook that cannot be re-run does not belong behind one of these flags.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostMigrationHookOptions {
-    /// Repair namespace path prefixes stored with the caller's casing instead of the parent's.
+    /// Repair stored namespace paths that carry the caller's casing instead of the referenced
+    /// row's: namespace path prefixes and `tabular`'s denormalised copy of its namespace path.
     /// Set when the migration the repair is pinned to was applied by this run — see
     /// `lakekeeper-storage-postgres`'s `NAMESPACE_PATH_CASING_REPAIR_AFTER`.
     pub repair_namespace_path_casing: bool,
@@ -84,17 +86,22 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
     Ok(())
 }
 
-/// Bring namespace path prefixes in line with their parent rows' spelling.
+/// Bring stored namespace paths in line with the row they reference.
 ///
-/// A namespace's path prefix references its parent, so it must carry the parent's stored spelling.
-/// `create_namespace` used to store the caller's spelling instead, which left the row — and its whole
-/// subtree — permanently unservable from the namespace cache. The write paths no longer allow it;
-/// this repairs rows that predate the fix.
+/// Two places hold a namespace path that is not the namespace's own name: a namespace's path prefix,
+/// which must carry its parent's stored spelling, and `tabular`'s denormalised copy of its
+/// containing namespace's path. `create_namespace` and `rename_tabular` used to store the caller's
+/// spelling instead. A wrong prefix leaves the namespace — and its whole subtree — permanently
+/// unservable from the namespace cache; a wrong tabular copy makes the tabular report a path that
+/// disagrees with the namespace it sits in. The write paths no longer allow either; this repairs
+/// rows that predate the fixes.
+///
+/// Namespaces are repaired first, so that the tabular copies adopt already corrected paths.
 ///
 /// Gated by the caller on the migration it is pinned to having just been applied, so it runs once per
 /// upgrade rather than on every startup. Still written to be idempotent and to derive what needs
 /// repairing from the data, because that is what makes re-pinning it to a later migration enough to
-/// re-run it if another write path is ever found to store a caller-cased prefix.
+/// re-run it if another write path is ever found to store a caller-cased path.
 async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyhow::Result<()> {
     let mut t = C::Transaction::begin_write(state)
         .await
@@ -102,6 +109,11 @@ async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyho
     let repaired = C::repair_namespace_path_casing(t.transaction())
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to repair namespace path prefix casing"))?;
+    let repaired_tabulars = C::repair_tabular_namespace_path_casing(t.transaction())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(e).context("Failed to repair tabular namespace path casing")
+        })?;
     t.commit()
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to commit namespace path casing repair"))?;
@@ -109,6 +121,12 @@ async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyho
         tracing::info!(
             "Post-migration hook: repaired the stored path of {repaired} namespace(s) whose prefix \
              casing disagreed with their parent"
+        );
+    }
+    if repaired_tabulars > 0 {
+        tracing::info!(
+            "Post-migration hook: repaired the stored namespace path of {repaired_tabulars} \
+             tabular(s) whose casing disagreed with their namespace"
         );
     }
     Ok(())

@@ -1971,6 +1971,71 @@ pub mod tests {
         );
     }
 
+    /// A move must store the destination namespace's own spelling, not the caller's. The
+    /// destination is matched under a case-insensitive collation, so the two can differ, and the
+    /// denormalised path would then disagree with the namespace row it points at.
+    #[sqlx::test]
+    async fn test_rename_across_namespaces_stores_the_namespace_spelling(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let source = NamespaceIdent::from_vec(vec!["source_ns".to_string()]).unwrap();
+        let source_id = initialize_namespace(state.clone(), warehouse_id, &source, None)
+            .await
+            .namespace_id();
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(source.clone()),
+            None,
+            Some("tbl".to_string()),
+        )
+        .await;
+
+        let destination = NamespaceIdent::from_vec(vec!["Dest_NS".to_string()]).unwrap();
+        let destination_id = initialize_namespace(state.clone(), warehouse_id, &destination, None)
+            .await
+            .namespace_id();
+        let spelled_by_caller = NamespaceIdent::from_vec(vec!["dest_ns".to_string()]).unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        let renamed = rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            source_id,
+            destination_id,
+            &table.table_ident,
+            &TableIdent {
+                namespace: spelled_by_caller,
+                name: "moved".to_string(),
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(renamed.namespace_id(), destination_id);
+        assert_eq!(
+            renamed.tabular_ident().namespace,
+            destination,
+            "the reported path must use the destination namespace's spelling"
+        );
+
+        let stored: Vec<String> =
+            sqlx::query_scalar("SELECT tabular_namespace_name FROM tabular WHERE tabular_id = $1")
+                .bind(*table.table_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored,
+            vec!["Dest_NS".to_string()],
+            "the stored path must match the namespace row it points at"
+        );
+    }
+
     /// The destination id is random because the namespace was never created: an id no row
     /// carries is what the caller would have to pass for a namespace that does not exist.
     #[sqlx::test]

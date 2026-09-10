@@ -1970,6 +1970,16 @@ where
         )?;
         Ok(tables)
     }
+
+    /// Repair denormalised tabular copies of namespace paths stored with the wrong casing,
+    /// returning the number of rows changed. See
+    /// [`CatalogStore::repair_tabular_namespace_path_casing_impl`]. Maintenance only — called from
+    /// the post-migration hooks, never from a request path.
+    async fn repair_tabular_namespace_path_casing(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<u64, CatalogBackendError> {
+        Self::repair_tabular_namespace_path_casing_impl(transaction).await
+    }
 }
 
 impl<T> CatalogTabularOps for T where T: CatalogStore {}

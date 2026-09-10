@@ -110,7 +110,8 @@ use crate::{
     tabular::{
         clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
         get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
-        mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
+        mark_tabular_as_deleted, rename_tabular, repair_tabular_namespace_path_casing,
+        search_tabular, set_tabular_protected,
         table::{commit_table_transaction, create_table},
         view::{commit_existing_view, create_view, load_view},
     },
@@ -1143,6 +1144,12 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<u64, CatalogBackendError> {
         repair_namespace_path_casing(transaction).await
+    }
+
+    async fn repair_tabular_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_tabular_namespace_path_casing(transaction).await
     }
 
     async fn set_warehouse_protected_impl(
