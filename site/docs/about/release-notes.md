@@ -16,6 +16,34 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.13.4 (2026-09-10)
+
+### Features
+
+- **GovCloud, China and ISO region support.** Vended-credential policies now carry the correct ARN partition (`aws-us-gov`, `aws-cn`, `aws-iso*`, `aws-eusc`), derived automatically from the region, endpoint or role ARN, so `AssumeRole` succeeds for buckets outside the commercial partition — nothing to configure (thanks @123digits) ([#1928](https://github.com/lakekeeper/lakekeeper/pull/1928)).
+
+### Bug Fixes
+
+- Fixed a permissions leak: a table, view or generic table renamed into another namespace kept inheriting grants from the namespace it left ([#2013](https://github.com/lakekeeper/lakekeeper/pull/2013)).
+- Renaming a table onto a name that is already taken now returns `409 Conflict` instead of `404 Not Found`, matching the Iceberg REST spec, and renaming onto a soft-deleted name succeeds — as create already did ([#1955](https://github.com/lakekeeper/lakekeeper/pull/1955)).
+- Fixed four independent causes of resident memory growing until restart: jemalloc now compiles with `thp:never`, the route table is no longer rebuilt per accepted connection, connections get TCP keepalive and a header-read timeout so vanished peers are dropped, and unmatched request paths no longer become permanent Prometheus series. Settled RSS fell 68% in testing ([#1990](https://github.com/lakekeeper/lakekeeper/pull/1990)).
+
+### Upgrade Notes
+
+- Deployments that renamed a table, view or generic table across namespaces should run `lakekeeper openfga reconcile --mode add-and-delete-drift` once after upgrading. The default `add-missing` mode cannot repair it — the stale permission edge is a surplus tuple, not a missing one.
+
+## v0.13.3 (2026-08-16)
+
+### Features
+
+- **Stable Kubernetes service-account identities.** `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username` derives a service account's user ID from `system:serviceaccount:<namespace>:<name>` instead of the token UID, so roles and instance admins can be pre-provisioned (e.g. via the Terraform provider) and survive a cluster rebuild. The default `uid` is unchanged ([#1899](https://github.com/lakekeeper/lakekeeper/pull/1899)).
+- **Provider-managed roles are protected from drift.** Roles owned by a configured role provider (LDAP, Entra, Okta, token) can no longer be created, updated, deleted, rebound or have their members changed through the management API, since the next provider sync would silently clobber those edits. Nothing changes without a role provider configured ([#1891](https://github.com/lakekeeper/lakekeeper/pull/1891)).
+
+### Bug Fixes
+
+- Fixed two denial-of-service advisories (RUSTSEC-2026-0194 and RUSTSEC-2026-0195) reachable through the S3 remote signer, which parses a client-supplied XML body; `quick-xml` is bumped to 0.41 ([#1885](https://github.com/lakekeeper/lakekeeper/pull/1885)).
+- Loading a table with `referenced-by` no longer runs a discarded authorization check on the target view, removing a wasted authorizer evaluation per request and a misleading `SelectView` entry from audit logs ([#1886](https://github.com/lakekeeper/lakekeeper/pull/1886)).
+
 ## v0.13.1 (2026-06-30)
 
 ### Bug Fixes
