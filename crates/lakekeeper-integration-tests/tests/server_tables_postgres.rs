@@ -13,8 +13,8 @@ use iceberg::{
     },
 };
 use iceberg_ext::catalog::rest::{
-    CommitTableRequest, CommitTransactionRequest, CreateNamespaceRequest, CreateNamespaceResponse,
-    CreateTableRequest, LoadTableResult, RenameTableRequest,
+    CommitTableRequest, CommitTransactionRequest, CreateNamespaceResponse, CreateTableRequest,
+    LoadTableResult, RenameTableRequest,
 };
 use itertools::Itertools;
 use lakekeeper::{
