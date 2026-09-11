@@ -2933,6 +2933,7 @@ components:
           const: "assert-view-uuid"
         uuid:
           type: string
+      type: object
     StorageCredential:
       type: object
       required:

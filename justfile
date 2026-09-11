@@ -53,6 +53,7 @@ update-rest-openapi:
     just add-return-protection-status-to-rest-openapi
     just add-namespace-delete-extension-to-rest-openapi
     just clarify-table-purge-default-rest-openapi
+    just fix-view-requirement-discriminator-rest-openapi
     # Remove multiple empty lines due to https://github.com/mikefarah/yq/issues/2074
     if [[ "$(uname)" == "Darwin" ]]; then \
       sed -i '' '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
@@ -116,3 +117,10 @@ add-namespace-delete-extension-to-rest-openapi:
 # Keep the Iceberg-standard default (false) on purgeRequested, but document Lakekeeper's actual behaviour: an omitted flag is treated as purge=true for managed tables (see crates/lakekeeper/src/api/iceberg/types.rs). Clarifies the doc mismatch reported in #1832 without diverging the schema from the standard.
 clarify-table-purge-default-rest-openapi:
     yq eval '(.paths."/v1/{prefix}/namespaces/{namespace}/tables/{table}".delete.parameters[] | select(.name == "purgeRequested")).description = "Whether the user requested to purge the underlying table data and metadata. Note: when omitted, Lakekeeper treats the drop as a purge for tables it manages, so the data is removed. This differs from the Iceberg REST default of false. See the Dropping Tables section of the Lakekeeper documentation."' -i docs/docs/api/rest-catalog-open-api.yaml
+
+# The Iceberg REST spec's AssertViewUUID schema (the sole ViewRequirement discriminator
+# mapping target) has no `type: object`, only `properties`/`required`. Codegen tools that
+# validate discriminator mappings (e.g. openapi-typescript) reject that as neither an
+# object schema nor an allOf array. Add the type back so generated clients resolve it.
+fix-view-requirement-discriminator-rest-openapi:
+    yq eval '.components.schemas.AssertViewUUID.type = "object"' -i docs/docs/api/rest-catalog-open-api.yaml
