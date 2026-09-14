@@ -149,7 +149,7 @@ def lance_opts(resp):
         props.update(resp.getConfig())
     opts = {ICEBERG_TO_LANCE[k]: v for k, v in props.items() if k in ICEBERG_TO_LANCE}
     if opts.get("aws_endpoint", "").startswith("http://"):
-        opts["allow_http"] = "true"        # MinIO/SeaweedFS over http
+        opts["allow_http"] = "true"        # MinIO/Silo over http
     return opts
 
 resp = client.genericTables().load("examples", "spark_lance_embeddings", True)

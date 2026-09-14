@@ -8,7 +8,7 @@ Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a l
 
 Currently, we support the following storages:
 
-- S3 (tested with AWS & Minio)
+- S3 (tested with AWS, Silo and SeaweedFS)
 - Azure Data Lake Storage Gen 2
 - OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
@@ -265,7 +265,7 @@ We support remote signing and vended-credentials with S3-compatible storages & A
 - **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 - **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
-Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
+Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Silo (a maintained MinIO fork), SeaweedFS and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
 
 When a client requests table configuration, Lakekeeper selects between remote signing and vended credentials based on the `X-Iceberg-Access-Delegation` header and storage profile settings:
 

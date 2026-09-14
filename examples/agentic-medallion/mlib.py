@@ -44,7 +44,7 @@ KEYCLOAK_DEVICE_AUTH_URL = os.environ.get(
     "KEYCLOAK_DEVICE_AUTH_URL", f"{KEYCLOAK_ISSUER}/protocol/openid-connect/auth/device"
 )
 
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://seaweedfs:8333")
+S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://silo:9000")
 WAREHOUSE_NAME = os.environ.get("WAREHOUSE_NAME", "medallion")
 
 # Local OSS models served by Ollama (see the `ml` compose profile).

@@ -1,6 +1,6 @@
 # Minimal
 
-Runs Lakekeeper without Authentication and Authorization (unprotected). The example contains Jupyter (with Spark), Trino and Starrocks as query engines, SeaweedFS as storage and Lakekeeper connected to a Postgres database. SeaweedFS runs with its IAM/STS service enabled so Lakekeeper can vend short-lived (STS) credentials to the query engines.
+Runs Lakekeeper without Authentication and Authorization (unprotected). The example contains Jupyter (with Spark), Trino and Starrocks as query engines, Silo (a maintained MinIO fork) as storage and Lakekeeper connected to a Postgres database. Silo serves the STS AssumeRole endpoint alongside the S3 API, so Lakekeeper can vend short-lived (STS) credentials to the query engines.
 
 To run the example run the following commands:
 

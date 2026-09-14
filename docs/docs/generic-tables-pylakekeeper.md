@@ -223,7 +223,7 @@ The `delta` format writes a Delta Lake table with [`deltalake`](https://pypi.org
         opts = {ICEBERG_TO_DELTA[k]: v for k, v in props.items() if k in ICEBERG_TO_DELTA}
         opts.setdefault("AWS_S3_ALLOW_UNSAFE_RENAME", "true")   # plain S3 has no atomic rename
         if opts.get("AWS_ENDPOINT_URL", "").startswith("http://"):
-            opts["AWS_ALLOW_HTTP"] = "true"                     # MinIO/SeaweedFS over http
+            opts["AWS_ALLOW_HTTP"] = "true"                     # MinIO/Silo over http
         return opts
 
     with Client(base_url="http://localhost:8181",
@@ -416,7 +416,7 @@ The `dataset` format catalogs unstructured data — raw files rather than a colu
             aws_secret_access_key=creds["s3.secret-access-key"],
             aws_session_token=creds.get("s3.session-token"),
             region_name=creds.get("s3.region") or creds.get("client.region"),
-            endpoint_url=creds.get("s3.endpoint"),  # None on real AWS; set for MinIO/SeaweedFS
+            endpoint_url=creds.get("s3.endpoint"),  # None on real AWS; set for MinIO/Silo
         )
 
         parsed = urlparse(t.location)          # s3://<bucket>/<key-prefix>
