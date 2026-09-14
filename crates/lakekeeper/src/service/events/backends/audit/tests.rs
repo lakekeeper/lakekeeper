@@ -185,13 +185,13 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "cannot read the committed audit fixture {}: {e}\n\n\
-             If you just bumped the MAJOR half of AUDIT_FORMAT (now {AUDIT_FORMAT}), \
-             this is expected and the fix is one command: the fixture directory is \
-             named for the major version, so `git mv` the previous one to \
-             `fixtures/v{}` and regenerate with `just update-audit-fixtures`. Move it \
-             rather than copying — the old format is unreproducible once the code \
-             emits the new one, so a directory left behind can never be regenerated \
-             or kept passing, and the bump checker rejects two directories anyway.\n\n\
+             If a `major` fragment just raised AUDIT_FORMAT to {AUDIT_FORMAT}, this is \
+             expected and the fix is one command: the fixture directory is named for \
+             the major version, and `just update-audit-fixtures` renames it to \
+             `fixtures/v{}` and regenerates the contents. It moves the directory rather \
+             than copying it — the old format is unreproducible once the code emits the \
+             new one, so a directory left behind can never be regenerated or kept \
+             passing, and `check-audit-format` rejects two directories anyway.\n\n\
              Otherwise: if this fixture is new, generate it with \
              `just update-audit-fixtures`. If it was moved or deleted, restore it — it \
              is the record of what audit_format {AUDIT_FORMAT} puts on the wire, and \
@@ -232,20 +232,20 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
              different VALUE.\n\n{difference}\n\n\
              A key moving, or a wire-enum value being renamed (`entity_type`, \
              `decision`, `actor_type` and the rest reach the log as string VALUES), \
-             BREAKS CONSUMERS: bump the MAJOR half of AUDIT_FORMAT (now \
-             {AUDIT_FORMAT}) and regenerate with `just update-audit-fixtures`. A \
-             changed test INPUT does not: regenerate and leave AUDIT_FORMAT alone.\n\n\
-             Decide which of the two this is. `just check-audit-format-bump` cannot: \
-             it compares shapes, so it reports the changed value and defers, and it \
+             BREAKS CONSUMERS: record it with a `major` fragment under \
+             audit-format/unreleased/ and run `just update-audit-fixtures`, which \
+             computes AUDIT_FORMAT (now {AUDIT_FORMAT}) from the fragments. A changed \
+             test INPUT does not: regenerate and write no fragment.\n\n\
+             Decide which of the two this is. `just check-audit-format` cannot: it \
+             compares shapes, so it reports the changed value and defers, and it \
              passes either way.\n\n\
-             On a MAJOR bump the fixture directory is RENAMED, because it is named \
-             for the major version it describes: `git mv` it to the next major and \
-             regenerate. No code change — `fixture_dir` derives the name from \
-             AUDIT_FORMAT, so bumping the constant is what moves the tests. Do not \
-             keep the old directory alongside the new one: a fixture is what the \
-             CURRENT code emits, so once the code emits the new format the old one \
-             can never be regenerated or kept passing. The bump checker requires \
-             exactly one directory and compares across the rename.\n\n\
+             You are not asked to pick a version number, and a `major` fragment also \
+             RENAMES the fixture directory, because it is named for the major version \
+             it describes. `just update-audit-fixtures` does both. Do not keep the old \
+             directory alongside the new one: a fixture is what the CURRENT code \
+             emits, so once the code emits the new format the old one can never be \
+             regenerated or kept passing. `check-audit-format` requires exactly one \
+             directory and compares across the rename.\n\n\
              See the audit log section of docs/docs/developer-guide.md."
         );
     }
@@ -259,8 +259,9 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
         panic!(
             "the audit log format gained a field: additive, so existing consumers \
              keep working.\n\n{difference}\n\n\
-             Bump the MINOR half of AUDIT_FORMAT (now {AUDIT_FORMAT}), regenerate \
-             with `just update-audit-fixtures`, and document the field in \
+             Record it with a `minor` fragment under audit-format/unreleased/, run \
+             `just update-audit-fixtures` — which computes AUDIT_FORMAT (now \
+             {AUDIT_FORMAT}) from the fragments — and document the field in \
              docs/docs/logging.md."
         );
     }
@@ -546,7 +547,7 @@ fn every_audit_record_example_in_the_docs_declares_the_current_format() {
             "an audit record example in docs/docs/logging.md does not declare \
              {expected}. Every audit record carries the field, and the same page says so, \
              so an example without it teaches a consumer the wrong shape. If AUDIT_FORMAT \
-             was just bumped, update the example records — nothing regenerates them.\n\n{block}"
+             just changed, update the example records — nothing regenerates them.\n\n{block}"
         );
     }
 
@@ -1494,8 +1495,8 @@ fn contract_rejects_a_definitive_denial_that_claims_allowed() {
 // `entity_type`, `decision` and the rest are strings, so renaming one leaves every shape
 // identical while breaking every consumer that switches on it — and a value no fixture
 // happens to carry changes nothing at all. The manifest closes that: every value the types
-// can emit is committed, and `just check-audit-format-bump` diffs the file across the merge
-// base and demands a MAJOR bump for anything that disappeared.
+// can emit is committed, and `just check-audit-format` diffs the file across the merge
+// base and demands a `major` fragment for anything that disappeared.
 //
 // Values only. A new KEY is a shape change the fixtures already catch.
 //
@@ -1523,7 +1524,7 @@ macro_rules! variant_names_of {
 /// Every in-repo enum whose variant names reach the audit log verbatim as an `action_name`.
 ///
 /// Written out by hand because Rust cannot enumerate the types implementing a trait. An
-/// action enum missing from this list emits names that no test and no bump check ever sees;
+/// action enum missing from this list emits names that no test and no format check ever sees;
 /// `grep -rn "impl CatalogAction for" crates/` is the cross-check. The `*ActionKind`
 /// companions do not implement the trait. The `authz-openfga` `*Relation` types do, and
 /// their names do reach the log — they are out of scope here because they are that

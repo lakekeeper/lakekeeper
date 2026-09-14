@@ -18,12 +18,22 @@ use crate::{
 /// Wire-format version of every `event_source = "audit"` record, emitted
 /// unconditionally as the `audit_format` field.
 ///
-/// **MAJOR** is bumped when an existing field is renamed, retyped, or structurally
-/// moved — including a scalar becoming an object, an object becoming an array, or a
-/// field changing case or separator.
+/// **Not edited by hand.** The value is derived from committed state — the version the
+/// last release shipped (`audit-format/released.json`), raised once by the highest level
+/// among the changes recorded since (`audit-format/unreleased/*.md`) — and written by
+/// `just update-audit-fixtures`. A release therefore raises it at most once however many
+/// changes it carries, and a major change absorbs every minor change in the same cycle.
 ///
-/// **MINOR** is bumped when a field is added and nothing existing changes.
+/// **MAJOR** covers a `major` change: an existing field renamed, retyped, or structurally
+/// moved — including a scalar becoming an object, an object becoming an array, or a field
+/// changing case or separator — or a wire value renamed.
+///
+/// **MINOR** covers a `minor` change: a field added and nothing existing changed.
 /// Consumers must ignore unknown fields.
+///
+/// The value describes a RELEASED build. On an unreleased build it names the version the
+/// next release will carry, which that build may not yet emit in full; `docs/docs/logging.md`
+/// states this to consumers.
 ///
 /// Consumers must split on `'.'` and compare each half as an **integer**. Do not
 /// compare the string lexically: `"1.10"` sorts *before* `"1.9"`.
@@ -1109,8 +1119,8 @@ pub mod contract {
         // which the audit log section of `docs/docs/developer-guide.md` lists as an open
         // issue for the next major version — would make `as_object` return `None` and
         // silently retire that rule. The re-encoding itself is loud (the fixture diff shows
-        // it); losing the rule with it would not be. So trip here, and make the bump
-        // re-teach the rule rather than drop it.
+        // it); losing the rule with it would not be. So trip here, and make whoever
+        // re-encodes it teach the rule again rather than drop it.
         let Some(tagged) = reason.as_object() else {
             out.push(format!(
                 "`failure_reason` is `{reason}`, not an object. The definitive-denial rule \
@@ -1153,7 +1163,7 @@ pub mod contract {
     // shape, and the shape comparison sees it. Its VALUES are not — `action_name`,
     // `entity_type`, `decision` and the rest are strings, so renaming one leaves the shape
     // identical while breaking every consumer that switches on it. A manifest closes that:
-    // each crate commits the values its types can emit, and the bump checker diffs the
+    // each crate commits the values its types can emit, and `check-audit-format` diffs the
     // committed file across the merge base.
     //
     // The helpers are public because the vocabulary is not all in this crate. `CatalogAction`
@@ -1256,16 +1266,16 @@ pub mod contract {
         panic!(
             "the committed wire-value manifest {} no longer matches what {whose} derives.\n\n\
              DISAPPEARED — a value the audit log used to emit and now cannot. These reach the \
-             log as string VALUES, so every consumer matching on one BREAKS: bump the MAJOR \
-             half of AUDIT_FORMAT.\n{disappeared}\n\n\
+             log as string VALUES, so every consumer matching on one BREAKS: record it with \
+             a `major` fragment under audit-format/unreleased/.\n{disappeared}\n\n\
              ADDED — a value only new records carry. Consumers are told to treat an \
-             unrecognised value as opaque, so this is not a format change: leave \
-             AUDIT_FORMAT alone.\n{added}\n\n\
+             unrecognised value as opaque, so this is not a format change and needs no \
+             fragment.\n{added}\n\n\
              Regenerate with `just update-audit-fixtures`.\n\n\
              A whole owner listed under DISAPPEARED, or a value you know is emitted showing \
              under neither, means the type list that builds this manifest is out of date — a \
-             new enum has to be added to it, or the values it emits stay invisible to the \
-             bump checker.\n\n\
+             new enum has to be added to it, or the values it emits stay invisible to \
+             `just check-audit-format`.\n\n\
              See the audit log section of docs/docs/developer-guide.md.",
             path.display()
         );

@@ -70,6 +70,19 @@ That promise covers the values Lakekeeper itself emits. `operation` and `outcome
 
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 
+##### Which release ships which version
+
+`audit_format` is a promise about **released** builds. A release raises it at most once however many changes it carries, and a major change absorbs every minor change made alongside it — so the number tells you how badly you are affected, not how many commits touched the log. What actually changed is listed in full in the release notes.
+
+On an unreleased build — `main`, a `rel-*` branch, or anything built from source between releases — `audit_format` names the version the *next* release will carry, and that build may not yet emit all of it. Two unreleased builds can therefore declare the same version while emitting different records. If you parse audit records, pin to a release.
+
+Patch releases never change the audit log format, so every `0.14.x` emits what `0.14.0` emitted.
+
+| Lakekeeper release | `audit_format` |
+| ------------------ | -------------- |
+| 0.14.0             | `1.0`          |
+| 0.13.x and earlier | not emitted    |
+
 ##### Not covered by `audit_format`
 
 The following keys are added by the log subscriber (`tracing-subscriber`), not by Lakekeeper's audit code, and are **not** covered by `audit_format`. Their presence, spelling, order and content can change with a dependency upgrade, with no version bump:

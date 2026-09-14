@@ -77,9 +77,19 @@ check-opa:
     cd authz/opa-bridge && regal lint policies/
 
 # Compares the committed fixtures either side of the merge base, so it needs a base.
-# Check that an audit log format change carries the right AUDIT_FORMAT bump
-check-audit-format-bump base="origin/main":
-    python3 .github/scripts/check-audit-format-bump.py {{base}}
+# Check that an audit log format change is recorded and that AUDIT_FORMAT is the version it implies
+check-audit-format base="origin/main":
+    python3 .github/scripts/check-audit-format.py {{base}}
+
+# Print the audit log block for the release notes. Mutates nothing — see .github/RELEASING.md.
+audit-format-release-notes:
+    @python3 .github/scripts/check-audit-format.py --release-notes
+
+# Refuses until every fragment's text is in this release's section of the release notes —
+# their prose exists nowhere else. Run `audit-format-release-notes` and paste it first.
+# Move the audit format baseline to the version this release ships and clear the fragments
+audit-format-release version:
+    python3 .github/scripts/check-audit-format.py --release {{version}}
 
 # Drives real requests through the service layer and checks every audit record against the
 # format contract. Needs the local Postgres from the initial setup (see the developer guide).
@@ -89,13 +99,21 @@ check-audit-format-bump base="origin/main":
 test-audit-corpus:
     cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
 
-# Two passes: the first writes, the second verifies (the writing pass returns before it
-# compares). The first is filtered to the writers; the second runs the whole module, so it
-# also reports the work a regeneration creates — a new field `docs/docs/logging.md` does not
-# document, an orphan fixture, a contract rule the new records break.
+# AUDIT_FORMAT first, because everything after it depends on the value: the fixture
+# directory is named for the major, so a fragment that raises it also renames the directory,
+# and regenerating before that would write goldens into the outgoing one. The version is
+# computed from audit-format/released.json and audit-format/unreleased/ — write a fragment,
+# never a version number.
+#
+# Then two passes over the fixtures: the first writes, the second verifies (the writing pass
+# returns before it compares). The first is filtered to the writers; the second runs the whole
+# module, so it also reports the work a regeneration creates — a new field
+# `docs/docs/logging.md` does not document, an orphan fixture, a contract rule the new records
+# break.
 # Review the diff — it is exactly what consumers will see.
-# Regenerate the committed audit log fixtures and the wire-value manifests after a deliberate format change
+# Recompute AUDIT_FORMAT, then regenerate the committed audit log fixtures and wire-value manifests
 update-audit-fixtures:
+    python3 .github/scripts/check-audit-format.py --write-version
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_
     cargo test -p lakekeeper --lib service::events::backends::audit::tests

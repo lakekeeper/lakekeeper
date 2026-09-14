@@ -6,6 +6,7 @@
 |------|------|----------------|
 | `CHANGELOG.md` | release-please index: PR-title **headlines** + PR links + SHAs. Headlines only — never hand-edited. | release-please (auto) |
 | `site/docs/about/release-notes.md` | Curated, **customer-facing** release notes — the published "Release Notes" page on the docs site. | summarised at release from PR descriptions |
+| `audit-format/` | The audit log format version: `released.json` (what the last release shipped) and `unreleased/*.md` (one fragment per change since). | `just audit-format-release` at release |
 | `.github/RELEASING.md` | This runbook. | maintainers |
 
 `CHANGELOG.md` is the *index* used to find a release's PRs; the customer-facing prose
@@ -50,10 +51,31 @@ NOTES=site/docs/about/release-notes.md
 3. **Add the `## $TAG (date)` section** at the top of `$NOTES` (newest first): group into
    Highlights / Features / Bug Fixes / Breaking Changes / Upgrade Notes; one line per
    item; link the PRs as `[#NNNN](https://github.com/lakekeeper/lakekeeper/pull/NNNN)`.
-4. **Commit `$NOTES` to `main`** (a normal commit; the site redeploys from it). Do **not**
+4. **Fold in the audit log format changes.** `AUDIT_FORMAT` is derived, so nothing needs
+   bumping here — but the fragments written since the last release have to reach the notes
+   before they are cleared. In this order:
+
+   ```bash
+   just audit-format-release-notes          # prints the block
+   #                                        # paste it into this release's section of $NOTES
+   just audit-format-release "$VERSION"     # moves the baseline, deletes the fragments
+   ```
+
+   The paste is not optional and the order is not a convention: the second command refuses
+   to run until every fragment's text appears in the `## v$VERSION` section of `$NOTES`,
+   and changes nothing when it refuses. A fragment's prose exists nowhere else, so clearing
+   it first would leave the version as the only record that anything changed — and a
+   version does not say what moved.
+
+   The second command also prints a row for the release table in `docs/docs/logging.md`
+   when the format moved. Add it. Forgetting the whole step is self-detecting rather than
+   silent: the baseline stays stale, so the next cycle computes the wrong required version
+   and every pull request fails the check.
+
+5. **Commit `$NOTES` to `main`** (a normal commit; the site redeploys from it). Do **not**
    edit it inside the release-please PR — release-please force-regenerates that branch on
    every push to `main` and would clobber the change.
-5. **Set the GitHub Release body** from the new section:
+6. **Set the GitHub Release body** from the new section:
 
    ```bash
    gh release edit "$TAG" --repo lakekeeper/lakekeeper \
@@ -69,7 +91,11 @@ sections. Link the (public) PRs as Markdown links. Credit external contributors 
 `(thanks @handle)`.
 
 Sections, in order: **Highlights · Features · Bug Fixes · Breaking Changes · Upgrade
-Notes**.
+Notes**. The assembled audit log block goes under **Upgrade Notes**, or under **Breaking
+Changes** when it carries a major change.
+
+Patch releases cut from `rel-*` never change the audit log format — CI rejects a change to
+it on those branches — so a patch's notes never carry an audit log block.
 
 ## What to leave out / collapse
 
