@@ -3,7 +3,7 @@
 `AUDIT_FORMAT` is not edited by hand and does not move once per pull request. It is
 derived:
 
-```
+```text
 AUDIT_FORMAT = released.json  raised once by  the highest level in unreleased/
 ```
 

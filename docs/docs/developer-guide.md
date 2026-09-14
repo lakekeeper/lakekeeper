@@ -99,7 +99,7 @@ Audit records — every line with `"event_source": "audit"` — carry a `MAJOR.M
 
 **You never pick that number.** It is derived from committed state:
 
-```
+```text
 AUDIT_FORMAT = audit-format/released.json  raised once by  the highest level in audit-format/unreleased/
 ```
 

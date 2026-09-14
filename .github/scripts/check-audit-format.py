@@ -261,18 +261,43 @@ def baseline_at(rev: str) -> tuple[int, int] | None:
     return parse_baseline(text, f"{BASELINE_PATH} at {rev}")
 
 
+def fragment_paths(paths, where: str) -> list[str]:
+    """The fragment paths among `paths`, rejecting any Markdown file below the top level.
+
+    Shared by both readers — the committed tree at a revision and the working tree — because
+    they have to agree and did not: `git ls-tree -r` descends into subdirectories and
+    `Path.glob("*.md")` does not. A fragment one level down therefore raised the version CI
+    demanded while the recipe that writes the version could not see it, and no rerun of that
+    recipe could clear the failure.
+
+    Nesting is an error rather than a quiet skip, which is the same choice `single_version`
+    and `read_manifest` make. A skipped fragment reads as "no fragment recorded" while its
+    author is looking at the file they just wrote, its prose never reaches the release notes,
+    and `do_release` leaves it behind to raise some later release's version instead.
+    """
+    markdown = [path for path in paths if path.endswith(".md")]
+    nested = sorted(path for path in markdown if "/" in path[len(FRAGMENT_DIR) :])
+    if nested:
+        raise SystemExit(
+            f"::error::{len(nested)} fragment(s) at {where} sit below {FRAGMENT_DIR}:\n  "
+            + "\n  ".join(nested)
+            + f"\n::notice::A fragment lives directly in {FRAGMENT_DIR}, one file per change. "
+            f"Move these up a level; the file name is free, so spend it on what changed."
+        )
+    return sorted(markdown)
+
+
 def fragments_at(rev: str) -> dict[str, str]:
     """The unreleased fragments at `rev`, as path -> level.
 
-    Only `*.md` directly under the fragment directory. `TEMPLATE.md` lives one level up for
-    this reason: a template that parsed as a fragment would add a permanent phantom change
-    to every release.
+    `TEMPLATE.md` lives one level ABOVE the fragment directory, so it is outside this listing
+    entirely: a template that parsed as a fragment would add a permanent phantom change to
+    every release.
     """
     listing = _git("ls-tree", "-r", "--name-only", rev, "--", FRAGMENT_DIR)
     return {
         path: parse_fragment(_git("show", f"{rev}:{path}"), f"{path} at {rev}")
-        for path in listing.splitlines()
-        if path.endswith(".md")
+        for path in fragment_paths(listing.splitlines(), rev)
     }
 
 
@@ -817,9 +842,14 @@ def worktree_baseline() -> tuple[int, int] | None:
 
 
 def worktree_fragments() -> dict[str, str]:
+    # `rglob`, not `glob`: the point is to SEE a nested fragment so `fragment_paths` can
+    # reject it. Globbing the top level only would hide it here while `git ls-tree -r` still
+    # found it in CI, which is the divergence this shares a function to prevent.
     return {
-        str(path): parse_fragment(path.read_text(), str(path))
-        for path in sorted(Path(FRAGMENT_DIR).glob("*.md"))
+        path: parse_fragment(Path(path).read_text(), path)
+        for path in fragment_paths(
+            [str(path) for path in Path(FRAGMENT_DIR).rglob("*.md")], "the working tree"
+        )
     }
 
 
@@ -1139,6 +1169,34 @@ def self_test() -> int:
     check("breaking demands a major fragment", REQUIRED_LEVEL["breaking"], "major")
     check("additive demands a minor fragment", REQUIRED_LEVEL["additive"], "minor")
     check("none demands no fragment", REQUIRED_LEVEL.get("none"), None)
+
+    # ── discovering fragments ───────────────────────────────────────────────────
+    #
+    # One function, used by the git reader and the working-tree reader alike. They used
+    # different rules — `git ls-tree -r` descends, `Path.glob("*.md")` does not — so a
+    # fragment one level down raised the version CI demanded while `--write-version` could
+    # not see it. Rerunning the recipe could not clear the failure.
+    def paths(listing):
+        try:
+            return fragment_paths(listing, "test")
+        except SystemExit as error:
+            return f"rejected: {error}"
+
+    TOP = FRAGMENT_DIR + "a.md"
+    DEEP = FRAGMENT_DIR + "authz/b.md"
+    check("a top-level fragment is found", paths([TOP]), [TOP])
+    check("non-markdown is ignored", paths([TOP, FRAGMENT_DIR + ".gitkeep"]), [TOP])
+    check("the result is sorted", paths([FRAGMENT_DIR + "b.md", TOP]), [TOP, FRAGMENT_DIR + "b.md"])
+    # Rejected, never skipped. A skipped fragment reads as "no fragment recorded" while its
+    # author is looking at the file they just wrote, and its prose never reaches the notes.
+    check("a nested fragment is REJECTED", str(paths([DEEP])).startswith("rejected"), True)
+    check("the offending path is named", DEEP in str(paths([DEEP])), True)
+    check(
+        "a nested fragment is rejected even beside a valid one",
+        str(paths([TOP, DEEP])).startswith("rejected"),
+        True,
+    )
+    check("nothing at all is not an error", paths([]), [])
 
     # ── clearing the fragments ──────────────────────────────────────────────────
     #
