@@ -545,6 +545,15 @@ impl RequestMetadata {
         &self.actor
     }
 
+    /// The request's actor, rendered for an audit event.
+    ///
+    /// The one way to put this request's actor on a record, so every record
+    /// raised while serving it agrees on who the caller is.
+    #[must_use]
+    pub fn audit_actor(&self) -> crate::service::events::backends::audit::AuditActor<'_> {
+        crate::service::events::backends::audit::AuditActor(&self.actor)
+    }
+
     #[must_use]
     pub fn authentication(&self) -> Option<&Authentication> {
         self.authentication.as_ref()

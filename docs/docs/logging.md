@@ -342,7 +342,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
 
 #### Operational Audit Events
 
-Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, and requests answered from an idempotency record. Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
+Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, admission decisions, and requests answered from an idempotency record. Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
 
 **Structure:**
 
@@ -384,6 +384,40 @@ So a `grant_created` event with no matching `grant_revoked` does **not** imply t
 **Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
 
 That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
+
+**Admission rejections (`operation = "admission_decided"`):**
+
+Emitted when an [admission gate](./configuration.md) refuses a request. Gates run after authentication and before any handler.
+
+`outcome` is one of:
+
+- `forbidden` — the gate denied the caller (`403`).
+- `unavailable` — the gate could not reach an upstream it needs, so it failed closed (`503`).
+
+This record names the principal. The error response does not, because responses are PII-free by contract. Without this record the log would say a request was refused, but never whose.
+
+| Context field | Description |
+|---------------|-------------|
+| `gate`        | Which gate decided. Useful when you run more than one |
+| `denied_by`   | The gate's rule that decided it. Absent if the gate has only one rule |
+| `status`      | `403` or `503` |
+| `error_type`  | The gate's error type, e.g. `ExternalEnforceForbidden` |
+| `error_id`    | The id the caller received in the response body. Use it to match a user's report to this record |
+| `request_id`  | The request this decision belongs to |
+
+This is the **only** record of a rejection. The generic [error-response log](#2-error-response-logs) is skipped for it, because that line would repeat the decision without the principal.
+
+A gate that fails closed also logs a `WARN` on the general stream, with `gate`, `error_type`, `error_id`, `request_id`, and `cause` (what failed, if the gate reported one). That line names no principal. `cause` appears nowhere else: not in the audit record, not in the response. Alert on the gate's metrics rather than on `ERROR` lines.
+
+Admitted requests produce no record here. The authorization events that follow show what the caller then did.
+
+**Admission role checks (`operation = "admission_enforce_check"`):**
+
+Emitted by the external-enforce gate when the control plane refuses one role but still admits the request. `outcome` is `role_withheld`. The request runs with fewer privileges, and nothing later in the request reports that. Context carries `gate`, `check`, `role` and `cache_ttl_secs`.
+
+There is one record per answer from the control plane, not one per request. The gate caches each answer, and requests served from that cache add no record. So every record is something the control plane actually said, and `cache_ttl_secs` tells you how long the requests after it may have relied on that answer. For the per-request rate, use `lakekeeper_admission_enforce_decisions_total`.
+
+`actor` has the same shape here as in `admission_decided`, including the assumed role. The two records join on it directly.
 
 **Idempotent replays (`operation = "idempotent_replay"`):**
 
@@ -652,6 +686,18 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome 
 
 # Stale cache fallbacks (role provider unreachable, last-known roles served)
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "stale_cache_fallback")'
+
+# Who was refused admission to this instance, and by which rule
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "admission_decided") | {actor: .actor.principal, outcome, rule: .context.denied_by}'
+
+# An admission gate failing closed (an upstream outage, not a denial)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "admission_decided" and .outcome == "unavailable")'
+
+# Resolve a user's reported error id to the decision behind it
+cat logs.json | jq -R 'fromjson? | select(.context.error_id == "<error-id>")'
+
+# Roles the control plane withheld, by principal
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "role_withheld") | {actor: .actor.principal, check: .context.check, role: .context.role}'
 ```
 
 ### 2. Error Response Logs
@@ -769,7 +815,7 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.a
 
 5. **Alerts**: Set up alerts for:
    - Multiple `decision=denied` events from the same principal
-   - High rates of `event_source=error_response` with 5xx codes
+   - High rates of `event_source=error_response` with 5xx codes. Admission rejections do not appear here: they are recorded once as an `admission_decided` audit event. Alert on `lakekeeper_admission_gate_duration_seconds{outcome="unavailable"}` instead, or on the `WARN` a failing-closed gate emits
    - Access to sensitive resources outside business hours
 
 ## Related Topics

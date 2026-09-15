@@ -599,6 +599,34 @@ impl Mappable for InternalActor {
 // Operational audit helpers
 // ============================================================================
 
+/// Borrowed actor value for **operational** audit events raised while serving a
+/// request.
+///
+/// Renders the request's resolved actor exactly as authorization audit events
+/// render it, assumed role included. Obtain one from
+/// [`RequestMetadata::audit_actor`](crate::api::RequestMetadata::audit_actor),
+/// and prefer it over [`AuditPrincipal`] wherever a `RequestMetadata` is in
+/// hand: for an assumed-role caller the two shapes differ, and records that
+/// disagree about the actor cannot be correlated into one request.
+#[derive(Debug)]
+pub struct AuditActor<'a>(pub(crate) &'a InternalActor);
+
+impl Valuable for AuditActor<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        self.0.visit(visit);
+    }
+}
+
+impl Mappable for AuditActor<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
 /// Borrowed actor value for **operational** audit events.
 ///
 /// Produces the same JSON shape as [`Actor::Principal`]:
