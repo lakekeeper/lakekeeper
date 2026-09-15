@@ -8,7 +8,7 @@
 #  2. S3 data plane — the warehouse S3 endpoint is signed into every request and
 #     vended to clients, so it must be ONE URL that resolves from BOTH the in-network
 #     kernel AND a host browser (so the LK UI can navigate dataset files). Neither
-#     seaweedfs:8333 (container-only) nor localhost:8333 (host-only) works for both;
+#     silo:9000 (container-only) nor localhost:9000 (host-only) works for both;
 #     the host LAN IP does. Compose can't know it, so this script detects + injects it.
 #
 # Usage:
@@ -51,7 +51,7 @@ if [[ -z "${HOST_IP:-}" ]]; then
   echo "ERROR: could not detect a host LAN IP. Set it explicitly: HOST_IP=<ip> ./up.sh" >&2
   exit 1
 fi
-export S3_ENDPOINT="http://${HOST_IP}:8333"
+export S3_ENDPOINT="http://${HOST_IP}:9000"
 
 # The S3 endpoint is baked into the warehouse at create time. If your host IP
 # changed since the last run, an existing warehouse still points at the old,
@@ -89,7 +89,7 @@ for _ in $(seq 1 30); do
 done
 if [ -z "$cors_ok" ] && command -v aws >/dev/null 2>&1; then
   echo " — applying from host"
-  AWS_ACCESS_KEY_ID=seaweedfs-root-user AWS_SECRET_ACCESS_KEY=seaweedfs-root-password \
+  AWS_ACCESS_KEY_ID=silo-root-user AWS_SECRET_ACCESS_KEY=silo-root-password \
   AWS_DEFAULT_REGION=local-01 aws --endpoint-url "${S3_ENDPOINT}" s3api put-bucket-cors \
     --bucket medallion --cors-configuration \
     '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","PUT","POST","DELETE","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag"]}]}' || true

@@ -7,61 +7,47 @@
 # is denied and physically cannot read the data.
 #
 # Every notebook runs INSIDE this network (the `workbench` JupyterLab service) so
-# vended credentials — which carry the internal `http://seaweedfs:8333` endpoint
+# vended credentials — which carry the internal `http://silo:9000` endpoint
 # — resolve, and the interactive device-code login reaches Keycloak.
 #
 #   docker compose --profile ml up -d --build   # full stack + JupyterLab + Ollama
 #   # then open http://localhost:8888 and run notebooks/ top to bottom
 services:
   # --- Object storage (S3 with STS) -----------------------------------------
-  # SeaweedFS in single-process `mini` mode (master+volume+filer+S3). STS is
-  # enabled via the IAM config so Lakekeeper can vend short-lived, prefix-scoped
-  # credentials — the mechanism this whole example hinges on.
-  seaweedfs:
-    image: chrislusf/seaweedfs:4.36
-    # AWS_* must match the iam.json identity or STS AssumeRole can't authenticate
-    # the caller (fails with an opaque "Unknown S3 error during write").
+  # Silo is a maintained fork of MinIO. It serves the S3 API and the STS
+  # AssumeRole endpoint from one process, so Lakekeeper can vend short-lived,
+  # prefix-scoped credentials - the mechanism this whole example hinges on.
+  # MINIO_API_CORS_ALLOW_ORIGIN opens CORS so a host browser (the LK UI navigating
+  # dataset files, or an in-browser query engine) can read objects with those
+  # vended credentials.
+  silo:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
     environment:
-      AWS_ACCESS_KEY_ID: seaweedfs-root-user
-      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
-    command:
-      - mini
-      - -dir=/data
-      - -bucket=medallion
-      - -s3.config=/etc/seaweedfs/iam.json
-      - -s3.iam.config=/etc/seaweedfs/iam.json
-    volumes:
-      - ./seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro
+      MINIO_ROOT_USER: silo-root-user
+      MINIO_ROOT_PASSWORD: silo-root-password
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8333/status"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 3s
       timeout: 10s
       retries: 10
       start_period: 15s
     ports:
-      - "8333:8333"   # S3 API (in-network clients use seaweedfs:8333)
+      - "9000:9000"   # S3 API (in-network clients use silo:9000)
+      - "9001:9001"   # Silo console
     networks: [medallion]
 
-  # One-shot: wildcard CORS on the `medallion` bucket so a host browser (the LK UI
-  # navigating dataset files, or an in-browser query engine) can read objects with
-  # vended credentials. CORS is volume metadata, so this re-runs on a fresh volume.
-  # NOTE: the `lakekeeper` identity in seaweedfs-iam.json carries the `Admin` action
-  # because `put-bucket-cors` is a bucket-config op SeaweedFS gates on Admin. That
-  # identity is the storage *administrator* credential Lakekeeper holds to vend STS —
-  # not a user; the per-principal scoping happens on the vended role, not here.
-  bucket-cors:
-    image: amazon/aws-cli:latest
+  # One-shot: Silo starts with no buckets, so create the one the warehouse uses.
+  create-bucket:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
     depends_on:
-      seaweedfs:
+      silo:
         condition: service_healthy
     restart: "no"
-    environment:
-      AWS_ACCESS_KEY_ID: seaweedfs-root-user
-      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
-      AWS_DEFAULT_REGION: local-01
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - "for i in $$(seq 1 30); do aws --endpoint-url http://seaweedfs:8333 s3api put-bucket-cors --bucket medallion --cors-configuration '{\"CORSRules\":[{\"AllowedOrigins\":[\"*\"],\"AllowedMethods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"AllowedHeaders\":[\"*\"],\"ExposeHeaders\":[\"ETag\"]}]}' && echo CORS-applied-to-medallion && exit 0; echo waiting for seaweedfs s3...; sleep 2; done; echo CORS-FAILED >&2; exit 1"
+      - "mc alias set local http://silo:9000 silo-root-user silo-root-password && mc mb --ignore-existing local/medallion"
     networks: [medallion]
 
   # --- Catalog metadata + authz backing stores -----------------------------
@@ -189,8 +175,10 @@ services:
         condition: service_completed_successfully
       keycloak:
         condition: service_healthy
-      seaweedfs:
+      silo:
         condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
     ports:
       - "8181:8181"
     networks: [medallion]
@@ -210,7 +198,7 @@ services:
 
   # --- Workbench: JupyterLab where every notebook runs -----------------------
   # All Python runs INSIDE the network here, so vended STS creds (which carry
-  # the internal `seaweedfs:8333` endpoint) resolve, and the device-code login
+  # the internal `silo:9000` endpoint) resolve, and the device-code login
   # reaches Keycloak in-network. Carries the heavy ML deps (torch/open_clip) for
   # the Silver/Gold pipeline and the CLIP retrieval agent, so it lives behind the
   # `ml` profile. JupyterLab on :8888.
@@ -234,7 +222,7 @@ services:
       # up.sh sets S3_ENDPOINT to the host LAN IP so the warehouse endpoint resolves
       # from BOTH the in-network kernel AND a host browser (LK UI data-file access).
       # Defaults to the in-network name for plain `docker compose up`.
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://seaweedfs:8333}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://silo:9000}
       OLLAMA_URL: http://ollama:11434
       WAREHOUSE_NAME: medallion
       # Swap models via env (see the README Requirements). Chat model is small by

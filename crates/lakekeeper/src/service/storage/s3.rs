@@ -2557,7 +2557,7 @@ pub(crate) mod test {
     }
 
     /// Tests against the S3-compatible store configured via `LAKEKEEPER_TEST__S3_*`
-    /// (MinIO in the Unittests workflow, SeaweedFS in the SeaweedFS workflow).
+    /// (Silo in the Unittests workflow, SeaweedFS in the SeaweedFS workflow).
     pub(crate) mod s3_compat_integration_tests {
         use std::sync::LazyLock;
 
