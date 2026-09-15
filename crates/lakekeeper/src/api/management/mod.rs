@@ -967,10 +967,6 @@ pub mod v1 {
     /// Listing your own grants needs no extra permission; any other principal requires
     /// the project-level grant-read permission.
     ///
-    /// A namespace-rooted call reads up to 5,000 namespaces and is refused beyond that,
-    /// naming the size it would have read. The warehouse-rooted form carries no such
-    /// bound.
-    ///
     /// **Availability depends on the configured authorizer.** This listing crosses every
     /// resource in the project, which an authorizer that stores permissions per resource
     /// cannot answer without reading its whole store. Those report
