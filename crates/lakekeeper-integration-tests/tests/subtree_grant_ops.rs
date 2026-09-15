@@ -2245,6 +2245,51 @@ async fn a_warehouse_listing_without_subtree_read_is_refused(pool: PgPool) {
     assert_eq!(err.error.r#type, "NoSuchWarehouseException");
 }
 
+/// Subtree grant-read stands on its own: it carries entry to the root it is held on, so
+/// a caller who administers grants without seeing the data reads the subtree. Matches
+/// what the revoke's bare ask already allows.
+#[sqlx::test]
+async fn subtree_read_without_namespace_visibility_lists(pool: PgPool) {
+    let (ctx, metadata, warehouse_id, parent, _child) = denying_tree(pool, &[]).await;
+    ctx.v1_state.authz.block_action(&format!(
+        "namespace:{:?}",
+        lakekeeper::service::authz::CatalogNamespaceAction::GetMetadata
+    ));
+
+    let page = DenyServer::list_namespace_subtree_grants(
+        warehouse_id,
+        parent,
+        ctx.clone(),
+        metadata,
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 2);
+}
+
+/// The same at the warehouse root: `ReadSubtreeGrants` carries entry without `use`.
+#[sqlx::test]
+async fn subtree_read_without_warehouse_visibility_lists(pool: PgPool) {
+    let (ctx, metadata, warehouse_id, _parent, _child) = denying_tree(pool, &[]).await;
+    ctx.v1_state.authz.block_action(&format!(
+        "warehouse:{:?}",
+        lakekeeper::service::authz::CatalogWarehouseAction::Use
+    ));
+
+    let page = DenyServer::list_warehouse_subtree_grants(
+        warehouse_id,
+        ctx.clone(),
+        metadata,
+        ListSubtreeGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 2);
+}
+
 /// A revoke asks `ReadSubtreeGrants` on the root before it reads anything. Without that
 /// gate the refusal itself answers whether the subtree holds a matching grant, and the
 /// scan runs for anyone able to name the root.

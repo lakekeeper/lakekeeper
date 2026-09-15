@@ -264,11 +264,15 @@ pub trait AuthzWarehouseOps: Authorizer {
                 is_allowed.then_some(warehouse).ok_or_else(|| {
                     AuthZWarehouseActionForbidden::new(user_provided_warehouse, &action).into()
                 })
-            } else if is_allowed && action == CatalogWarehouseAction::ReadGrants.into() {
-                // The grant-read action doubles as visibility: reading who holds
-                // access discloses more than existence, so a caller granted it is not
+            } else if is_allowed
+                && (action == CatalogWarehouseAction::ReadGrants.into()
+                    || action == CatalogWarehouseAction::ReadSubtreeGrants.into())
+            {
+                // The grant-read actions double as visibility: reading who holds
+                // access discloses more than existence, so a caller granted one is not
                 // masked. Without this, a principal holding only grant administration
-                // could apply grants but never read them back.
+                // could apply grants but never read them back, and the subtree revoke
+                // would succeed where its own listing is refused.
                 Ok(warehouse)
             } else {
                 return Err(cant_see_err);
