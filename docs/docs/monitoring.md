@@ -95,9 +95,11 @@ This contrasts with the Postgres connection: if Postgres becomes unreachable, th
 
 | Metric                                                                                          | Type      | Labels            | Description |
 |-------------------------------------------------------------------------------------------------|-----------|-------------------|-----|
-| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code>             | Histogram | `gate`, `outcome` | Time one gate took to decide, including time spent in the gate's own cache — the latency the request actually paid. `outcome`: `admitted`, `forbidden` (authoritative deny → `403`), `unavailable` (the gate failed closed — its upstream was unreachable, returned an unexpected status, or a precondition it needs was unmet → `503` with `Retry-After`) |
+| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code>             | Histogram | `gate`, `outcome` | Time one gate took to decide, including time spent in the gate's own cache. This is the latency the request paid. `outcome`: `admitted`, `skipped` (the gate does not govern this request), `forbidden` (denied, `403`), `unavailable` (the gate failed closed, `503` with `Retry-After`) |
 
-No series are reported unless at least one gate is configured. A gate that does not govern a request (e.g. one scoped to a different identity provider) still reports `admitted`, so in mixed-IdP fleets the `admitted` series includes near-zero-duration pass-throughs.
+No series are reported unless at least one gate is configured.
+
+A gate that does not govern a request reports `skipped`, not `admitted`. A gate scoped to one identity provider, for example, skips every request from another. So `admitted` counts only the requests a gate actually decided on. Watch both series: if a gate stops covering its principals, traffic moves from `admitted` to `skipped`.
 
 The [external enforce-endpoint gate](./admission.md) <span class="lkp"></span> adds one metric per call to your enforce endpoint:
 

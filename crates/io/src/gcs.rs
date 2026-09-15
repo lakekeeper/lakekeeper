@@ -19,7 +19,20 @@ use veil::Redact;
 
 use crate::InitializeClientError;
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+/// Bounds how long a single connect attempt may hang. Without this, reqwest falls
+/// back to the OS default, where a stalled TCP connect runs for tens of seconds
+/// before surfacing `ETIMEDOUT` (`os error 110`) and consumes the retry budget in
+/// one attempt.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build GCS HTTP client")
+});
 
 #[derive(Debug, Eq, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct GCSSettings {}
