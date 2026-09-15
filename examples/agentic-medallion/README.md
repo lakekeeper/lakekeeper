@@ -286,7 +286,6 @@ Dockerfile.ml           the workbench image (JupyterLab + torch/open_clip/pyiceb
 requirements-ml.txt     heavy deps (torch/open_clip/pyiceberg/lance/jupyterlab)
 requirements-spike.txt  light deps (pylakekeeper/lance/requests) installed on top
 keycloak/realm.json     realm: public `lakekeeper` client (device grant) + service accounts
-      Silo IAM + STS config (enables credential vending)
 mlib.py                 config + device-code login, service-account tokens, grant helpers
 icehelp.py              PyIceberg RestCatalog pointed at Lakekeeper (Bronze/Silver)
 gt.py                   generic-table helpers: raw image OBJECTS + Gold Lance dataset (vended creds)
