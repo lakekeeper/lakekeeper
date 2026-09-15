@@ -14,15 +14,24 @@ use super::{PostgresBackend, dbutils::DBErrorHandler as _};
 /// (task killed/aborted) and we take over.
 static CLEANUP_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 
-fn current_epoch_secs() -> u64 {
+/// Wall-clock seconds since the epoch, or `None` if the clock reads at or
+/// before it.
+///
+/// Never `0`, because that is [`CLEANUP_STARTED_AT`]'s idle sentinel. Folding a
+/// bad clock into it would make the claim below compare-exchange `0` for `0` —
+/// which succeeds for every caller at once, against a slot whose value never
+/// changes, so the claim would stop excluding anyone.
+fn current_epoch_secs() -> Option<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .ok()
+        .map(|d| d.as_secs())
+        .filter(|&secs| secs != 0)
 }
 
 /// Try to claim the cleanup slot. Returns the claimed timestamp if we won.
 fn try_claim_cleanup() -> Option<u64> {
-    let now = current_epoch_secs();
+    let now = current_epoch_secs()?;
     let prev = CLEANUP_STARTED_AT.load(Ordering::Relaxed);
     let timeout_secs = lakekeeper::CONFIG.idempotency.cleanup_timeout.as_secs();
     // Slot is free (0) or previous run timed out
@@ -89,19 +98,29 @@ impl PostgresBackend {
         if fastrand::f32() < 0.01 {
             let pool = state.write_pool();
             tokio::spawn(async move {
+                // Unreachable: `lifetime` and `grace_period` parse from ISO-8601
+                // with years and months refused, so each is at most `u32::MAX`
+                // weeks and their sum stays under chrono's i64-millisecond
+                // ceiling. Skipping this run is nonetheless the right failure —
+                // retention has no upper bound to violate, whereas a shorter
+                // substitute would delete records inside their advertised
+                // lifetime, and a retry that finds its record gone re-executes
+                // the mutation. Computed before the claim so it cannot leak the
+                // slot.
+                let max_age = lakekeeper::CONFIG.idempotency.total_retention();
+                let Ok(max_age) = chrono::Duration::from_std(max_age) else {
+                    tracing::error!(
+                        max_age_secs = max_age.as_secs(),
+                        "Idempotency retention exceeds the representable range; skipping cleanup"
+                    );
+                    return;
+                };
+
                 let Some(claimed_at) = try_claim_cleanup() else {
                     return; // Another cleanup is already running
                 };
 
-                let max_age = lakekeeper::CONFIG.idempotency.total_retention();
-                let cutoff = chrono::Utc::now()
-                    - chrono::Duration::from_std(max_age).unwrap_or_else(|_| {
-                        tracing::warn!(
-                            max_age_secs = max_age.as_secs(),
-                            "Failed to convert max_age to chrono::Duration, using 1 hour fallback"
-                        );
-                        chrono::Duration::hours(1)
-                    });
+                let cutoff = chrono::Utc::now() - max_age;
                 match sqlx::query!(
                     r#"
                     DELETE FROM ONLY idempotency_record
@@ -196,5 +215,42 @@ impl PostgresBackend {
         })?;
 
         Ok(result.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The claim protocol, end to end. Deliberately **one** test: it drives a
+    /// process-global static, and `cargo test` shares one process across a
+    /// crate's tests, so a second test touching the slot would race this one.
+    #[test]
+    fn the_cleanup_slot_admits_one_holder_until_released() {
+        CLEANUP_STARTED_AT.store(0, Ordering::Relaxed);
+
+        let claimed = try_claim_cleanup().expect("an idle slot is claimable");
+        assert_ne!(claimed, 0, "a claim must never store the idle sentinel");
+        assert!(
+            try_claim_cleanup().is_none(),
+            "a held slot must exclude a second claimant"
+        );
+
+        // Releasing someone else's claim is a no-op, so a run that overran its
+        // timeout cannot clear the claim that took over from it.
+        release_cleanup(claimed - 1);
+        assert!(
+            try_claim_cleanup().is_none(),
+            "the slot was released by a stale holder"
+        );
+
+        release_cleanup(claimed);
+        assert_eq!(CLEANUP_STARTED_AT.load(Ordering::Relaxed), 0);
+        assert!(
+            try_claim_cleanup().is_some(),
+            "a released slot is claimable again"
+        );
+
+        CLEANUP_STARTED_AT.store(0, Ordering::Relaxed);
     }
 }

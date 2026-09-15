@@ -13,8 +13,8 @@ use iceberg::{
     },
 };
 use iceberg_ext::catalog::rest::{
-    CommitTableRequest, CommitTransactionRequest, CreateNamespaceResponse, CreateTableRequest,
-    LoadTableResult, RenameTableRequest,
+    CommitTableRequest, CommitTransactionRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+    CreateTableRequest, LoadTableResult, RenameTableRequest,
 };
 use itertools::Itertools;
 use lakekeeper::{
@@ -42,7 +42,8 @@ use lakekeeper::{
         tables::{CommitContext, commit_tables_with_authz},
     },
     service::{
-        CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularListFlags, UserId,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
+        TableId, TabularListFlags, Transaction as _, UserId,
         authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
     },
 };
@@ -2468,6 +2469,130 @@ async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
 
     assert_eq!(err.error.code, StatusCode::CONFLICT);
     assert_eq!(err.error.r#type, "AlreadyExistsException");
+}
+
+/// A rename must land in the namespace that bears the destination name *now*, not in the
+/// one a stale cache entry says bears it.
+///
+/// Namespace idents resolve through a per-process `ident -> id` map with no cross-replica
+/// invalidation, so a replica that did not serve a namespace move keeps answering with the
+/// namespace that used to hold the name. That is manufactured here by moving `after` away
+/// and letting a different namespace take the name, both written straight to the catalog as
+/// another replica's writes would arrive — the endpoint emits the events this process's
+/// cache listens to, the storage layer does not.
+///
+/// What this pins is the endpoint's side: the destination has to be read uncached, or the
+/// request authorizes the namespace that used to hold the name and hands its id down, and
+/// the write — which requires that id to still bear the name — refuses a rename the catalog
+/// can perfectly well perform. The write's side of the contract, that a destination id is
+/// used as given rather than re-resolved from the name, cannot be reached from here once the
+/// read is fresh; `test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails`
+/// covers it directly.
+#[sqlx::test]
+async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+
+    create_ns(ctx.clone(), prefix.clone(), "source_ns".to_string()).await;
+    create_ns(ctx.clone(), prefix.clone(), "after".to_string()).await;
+    create_table_helper(ctx.clone(), prefix.clone(), "source_ns", "tbl", false)
+        .await
+        .unwrap();
+
+    let after = NamespaceIdent::new("after".to_string());
+    let vacating_id =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+
+    // Another replica's writes: the storage layer emits no events, so this process's cache
+    // keeps mapping `after` to the namespace that has since been renamed away.
+    let mut t =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::move_namespace(
+        warehouse_id,
+        vacating_id,
+        &NamespaceIdent::new("elsewhere".to_string()),
+        false,
+        t.transaction(),
+    )
+    .await
+    .unwrap();
+    let taker_id = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: after.clone(),
+            properties: None,
+        },
+        t.transaction(),
+    )
+    .await
+    .unwrap()
+    .namespace_id();
+    t.commit().await.unwrap();
+    assert_ne!(taker_id, vacating_id);
+
+    // The premise of the test. Were the cached mapping to be repaired by something else, the
+    // rename below would pass without exercising anything.
+    let cached =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+    assert_eq!(
+        cached, vacating_id,
+        "the cached `after` mapping must still be the stale one for this test to mean anything"
+    );
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: NamespaceIdent::new("source_ns".to_string()),
+                name: "tbl".to_string(),
+            },
+            destination: TableIdent {
+                namespace: after.clone(),
+                name: "tbl".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("`after` names a namespace that exists; the rename must not fail on a stale id");
+
+    let moved = PostgresBackend::get_table_info(
+        warehouse_id,
+        TableIdent {
+            namespace: after,
+            name: "tbl".to_string(),
+        },
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("the table must be findable under its new name");
+    assert_eq!(
+        moved.namespace_id, taker_id,
+        "the table must land in the namespace that bears `after` now, not the stale one"
+    );
 }
 
 /// A soft-deleted table does not hold its name — `createTable` reuses it, so

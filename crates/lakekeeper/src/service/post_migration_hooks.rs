@@ -6,14 +6,41 @@ use crate::{
     CONFIG,
     api::management::v1::tasks::{ListTasksRequest, TaskStatus},
     service::{
-        CatalogRoleOps, CatalogStore, CatalogTaskOps, SystemRoleSeederCap, SystemRoleSpec,
-        Transaction, install_system_role_registry, registered_system_roles,
+        CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        SystemRoleSeederCap, SystemRoleSpec, Transaction, install_system_role_registry,
+        registered_system_roles,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskFilter,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
     },
 };
+
+/// Which conditional post-migration hooks to run.
+///
+/// Hooks that must happen once per upgrade rather than on every startup cannot decide that for
+/// themselves — only the caller that ran the migrations knows what this run applied. It passes the
+/// answer here. Backend-specific knowledge (which migration version gates what) stays in the
+/// binary, so this stays generic over the catalog store.
+///
+/// Every gate on this struct must guard a hook that is **idempotent and safe to retry**, because
+/// `lakekeeper migrate --force-idempotent-post-migration-hooks` turns them all on at once to recover
+/// from an earlier failure. A hook that cannot be re-run does not belong behind one of these flags.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PostMigrationHookOptions {
+    /// Repair stored namespace paths that carry the caller's casing instead of the referenced
+    /// row's: namespace path prefixes and `tabular`'s denormalised copy of its namespace path.
+    /// Set when the migration the repair is pinned to was applied by this run — see
+    /// `lakekeeper-storage-postgres`'s `NAMESPACE_PATH_CASING_REPAIR_AFTER`.
+    pub repair_namespace_path_casing: bool,
+    /// Treat a failure of any gated hook above as fatal instead of logging it.
+    ///
+    /// Off for a normal migration: a transient failure should not block an upgrade, since these
+    /// hooks repair or backfill rather than gatekeep. On when an operator asked for the hooks
+    /// explicitly (`--force-idempotent-post-migration-hooks`), because someone who requested a
+    /// repair needs to be told it did not happen rather than having to find it in the logs.
+    pub fail_on_idempotent_hook_error: bool,
+}
 
 /// Runs post-migration housekeeping. `system_roles` is the spec set the
 /// binary wants installed in the registry for this process — pass an
@@ -24,6 +51,7 @@ use crate::{
 pub async fn run_post_migration_hooks<C: CatalogStore>(
     state: C::State,
     system_roles: Vec<SystemRoleSpec>,
+    options: PostMigrationHookOptions,
 ) -> anyhow::Result<()> {
     if let Err(rejected) = install_system_role_registry(system_roles) {
         // Already installed in this process. Surfaced by the installer's
@@ -34,11 +62,73 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // This is a non-critical hook, so we log the error but do not fail the migration.
         tracing::error!("Failed to initialize cron tasks in post-migration hook: {e:?}");
     }
+    if options.repair_namespace_path_casing
+        && let Err(e) = repair_namespace_path_casing::<C>(state.clone()).await
+    {
+        // Not fatal by default: the catalog serves correct results either way, only cache hit
+        // rate suffers, and a blip should not block an upgrade. But this hook is gated on the
+        // migration that introduced it, so it will not run again by itself once that migration
+        // is recorded — say how to retry it, or the drift is silently permanent.
+        let e = e.context(
+            "Namespace path prefix casing was not repaired. This hook is idempotent and safe to \
+             retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
+        );
+        if options.fail_on_idempotent_hook_error {
+            return Err(e);
+        }
+        tracing::error!("{e:?}");
+    }
     backfill_registered_system_roles::<C>(state)
         .await
         .with_context(
             || "Failed to backfill registered catalog-managed system roles in post-migration hook",
         )?;
+    Ok(())
+}
+
+/// Bring stored namespace paths in line with the row they reference.
+///
+/// Two places hold a namespace path that is not the namespace's own name: a namespace's path prefix,
+/// which must carry its parent's stored spelling, and `tabular`'s denormalised copy of its
+/// containing namespace's path. `create_namespace` and `rename_tabular` used to store the caller's
+/// spelling instead. A wrong prefix leaves the namespace — and its whole subtree — permanently
+/// unservable from the namespace cache; a wrong tabular copy makes the tabular report a path that
+/// disagrees with the namespace it sits in. The write paths no longer allow either; this repairs
+/// rows that predate the fixes.
+///
+/// Namespaces are repaired first, so that the tabular copies adopt already corrected paths.
+///
+/// Gated by the caller on the migration it is pinned to having just been applied, so it runs once per
+/// upgrade rather than on every startup. Still written to be idempotent and to derive what needs
+/// repairing from the data, because that is what makes re-pinning it to a later migration enough to
+/// re-run it if another write path is ever found to store a caller-cased path.
+async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyhow::Result<()> {
+    let mut t = C::Transaction::begin_write(state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to begin write transaction"))?;
+    let repaired = C::repair_namespace_path_casing(t.transaction())
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to repair namespace path prefix casing"))?;
+    let repaired_tabulars = C::repair_tabular_namespace_path_casing(t.transaction())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(e).context("Failed to repair tabular namespace path casing")
+        })?;
+    t.commit()
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Failed to commit namespace path casing repair"))?;
+    if repaired > 0 {
+        tracing::info!(
+            "Post-migration hook: repaired the stored path of {repaired} namespace(s) whose prefix \
+             casing disagreed with their parent"
+        );
+    }
+    if repaired_tabulars > 0 {
+        tracing::info!(
+            "Post-migration hook: repaired the stored namespace path of {repaired_tabulars} \
+             tabular(s) whose casing disagreed with their namespace"
+        );
+    }
     Ok(())
 }
 

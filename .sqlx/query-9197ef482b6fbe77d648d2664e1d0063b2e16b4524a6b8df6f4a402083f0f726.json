@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH locked_tabular AS (\n            SELECT tabular_id, protected, metadata_location, fs_location, fs_protocol\n            FROM tabular\n            WHERE tabular_id = $2\n                AND warehouse_id = $1\n                AND typ = $3\n                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)\n            FOR UPDATE\n        ),\n        deleted AS (\n            DELETE FROM tabular\n            WHERE tabular_id IN (\n                SELECT tabular_id FROM locked_tabular \n                WHERE ((NOT protected) OR $4)\n                AND ($5::text IS NULL OR metadata_location = $5)\n            )\n            AND warehouse_id = $1\n            RETURNING tabular_id\n        )\n        SELECT \n            lt.protected as \"protected!\",\n            lt.metadata_location,\n            lt.fs_protocol,\n            lt.fs_location,\n            (SELECT tabular_id FROM deleted) IS NOT NULL as \"was_deleted!\"\n        FROM locked_tabular lt",
+  "query": "WITH locked_tabular AS (\n            SELECT tabular_id, protected, metadata_location, fs_location, fs_protocol\n            FROM tabular\n            WHERE tabular_id = $2\n                AND warehouse_id = $1\n                AND typ = $3\n                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)\n            FOR UPDATE\n        ),\n        deleted AS (\n            DELETE FROM tabular\n            WHERE tabular_id IN (\n                SELECT tabular_id FROM locked_tabular\n                WHERE ((NOT protected) OR $4)\n                AND ($5::text IS NULL OR metadata_location = $5)\n            )\n            AND warehouse_id = $1\n            RETURNING tabular_id\n        )\n        SELECT\n            lt.protected as \"protected!\",\n            lt.metadata_location,\n            lt.fs_protocol,\n            lt.fs_location,\n            (SELECT tabular_id FROM deleted) IS NOT NULL as \"was_deleted!\"\n        FROM locked_tabular lt",
   "describe": {
     "columns": [
       {
@@ -82,5 +82,5 @@
       null
     ]
   },
-  "hash": "a02df0ff30895ec09168d38c713f34b0966fdd3290a8fee6ac26323cd311808a"
+  "hash": "9197ef482b6fbe77d648d2664e1d0063b2e16b4524a6b8df6f4a402083f0f726"
 }

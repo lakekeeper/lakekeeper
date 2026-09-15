@@ -88,7 +88,7 @@ use super::{
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
-        update_namespace_properties,
+        repair_namespace_path_casing, update_namespace_properties,
     },
     pagination::to_token_precision,
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
@@ -113,7 +113,8 @@ use crate::{
     tabular::{
         clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
         get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
-        mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
+        mark_tabular_as_deleted, rename_tabular, repair_tabular_namespace_path_casing,
+        search_tabular, set_tabular_protected,
         table::{commit_table_transaction, create_table},
         view::{commit_existing_view, create_view, load_view},
     },
@@ -256,11 +257,22 @@ impl CatalogStore for super::PostgresBackend {
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, RenameTabularError> {
-        rename_tabular(warehouse_id, source_id, source, destination, transaction).await
+        rename_tabular(
+            warehouse_id,
+            source_id,
+            source_namespace_id,
+            destination_namespace_id,
+            source,
+            destination,
+            transaction,
+        )
+        .await
     }
 
     async fn drop_tabular_impl<'a>(
@@ -1181,6 +1193,18 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
         move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
+    }
+
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_namespace_path_casing(transaction).await
+    }
+
+    async fn repair_tabular_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_tabular_namespace_path_casing(transaction).await
     }
 
     async fn set_warehouse_protected_impl(

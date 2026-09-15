@@ -448,7 +448,11 @@ async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<N
             current_namespace.namespace_ident(),
             parent_cached.namespace_ident(),
         ) {
-            tracing::debug!(
+            // `warn!`, not `debug!`: both write paths now guarantee the prefix matches, so this
+            // fires either after a parent rename (expected, self-healing) or because a write path
+            // regressed — and the latter is otherwise a silent doubling of every read for the
+            // affected subtree, with no metric to notice it by.
+            tracing::warn!(
                 "Detected parent ident mismatch for namespace {}: Parent namespace has name `{}`, which is not the parent. Invalidating Cache.",
                 current_namespace.namespace_ident(),
                 parent_cached.namespace_ident()
@@ -477,10 +481,14 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
     let child = child_ident.as_ref();
     let parent = found_parent_ident.as_ref();
 
-    // Both idents come from NAMESPACE_CACHE which only stores canonical case
-    // (requested_ident is stripped at insertion), so child_canonical[:-1] and
-    // parent_canonical are byte-identical by construction for any valid
-    // hierarchy. A mismatch here indicates stale cache state (e.g. rename).
+    // Both idents come from NAMESPACE_CACHE, which only ever stores canonical case
+    // (`requested_ident` is stripped at insertion). The stored prefix is byte-identical to the
+    // parent row's name because both write paths that place a namespace under a parent take the
+    // ancestor segments from the locked parent row rather than from the caller — see
+    // `lock_parent_namespace` in `lakekeeper-storage-postgres`. So a mismatch here means stale
+    // cache state: a renamed parent whose descendants still hold the old prefix. That is what this
+    // check exists to detect, and it is the *only* detector, because the version gate above passes
+    // a parent that the rename itself refreshed.
     let expected_parent = &child[..child.len().saturating_sub(1)];
     expected_parent == parent
 }
@@ -561,7 +569,8 @@ impl EventListener for NamespaceCacheEventListener {
         // *hit*, not a miss. Only then publish the new state.
         //
         // Moves are leaf-only, so no descendant entries can be holding a stale prefix —
-        // that assumption has to be revisited if recursive moves are added.
+        // that assumption has to be revisited if recursive moves are added. A move also writes a
+        // canonical destination prefix, so `is_parent_ident` cannot fire for the moved row itself.
         namespace_cache_invalidate_ident(warehouse_id, &previous_ident).await;
         namespace_cache_insert(namespace).await;
         Ok(())
@@ -966,6 +975,116 @@ mod tests {
             Some(new_ident),
             "the by-id entry must carry the new canonical path"
         );
+    }
+
+    /// `is_parent_ident` is the only detector of a descendant still holding a renamed parent's old
+    /// prefix — the version gate cannot see it, because the rename refreshes the parent entry. This
+    /// pins the mismatch branch, which nothing exercised before: the hierarchy test above only
+    /// covers the passing direction.
+    ///
+    /// It is also what made a caller-cased stored prefix so expensive: the row could never be
+    /// served from cache, and the reload re-inserted the same bytes and failed identically. Both
+    /// write paths now canonicalise the prefix, so this fires only for a genuine stale prefix.
+    #[tokio::test]
+    async fn namespace_cache_get_by_id_misses_when_child_prefix_disagrees_with_parent() {
+        let warehouse_id = WarehouseId::new_random();
+        let parent_id = NamespaceId::new_random();
+        let child_id = NamespaceId::new_random();
+
+        // Parent stored as `a/B`, child holding `a/b/c` — what a caller-cased create used to store.
+        namespace_cache_insert_multiple(vec![
+            test_namespace_with_parent(
+                test_namespace(
+                    parent_id,
+                    NamespaceIdent::from_vec(vec!["a".to_string(), "B".to_string()]).unwrap(),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                None,
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    child_id,
+                    NamespaceIdent::from_vec(vec![
+                        "a".to_string(),
+                        "b".to_string(),
+                        "c".to_string(),
+                    ])
+                    .unwrap(),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((parent_id, 0)),
+            ),
+        ])
+        .await;
+
+        assert!(
+            namespace_cache_get_by_id(child_id).await.is_none(),
+            "a child whose prefix does not byte-match its parent's ident must not be served"
+        );
+        assert!(
+            NAMESPACE_CACHE.get(&child_id).await.is_none(),
+            "the offending child entry is invalidated"
+        );
+        assert!(
+            NAMESPACE_CACHE.get(&parent_id).await.is_some(),
+            "the parent entry stays resident — only the child is invalidated"
+        );
+    }
+
+    /// The converse, at depth 3, so the walk crosses more than one parent link.
+    #[tokio::test]
+    async fn namespace_cache_get_by_id_hits_when_the_prefix_is_canonical() {
+        let warehouse_id = WarehouseId::new_random();
+        let grandparent_id = NamespaceId::new_random();
+        let parent_id = NamespaceId::new_random();
+        let child_id = NamespaceId::new_random();
+
+        let path = |parts: &[&str]| {
+            NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+        };
+
+        namespace_cache_insert_multiple(vec![
+            test_namespace_with_parent(
+                test_namespace(
+                    grandparent_id,
+                    path(&["a"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                None,
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    parent_id,
+                    path(&["a", "B"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((grandparent_id, 0)),
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    child_id,
+                    path(&["a", "B", "c"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((parent_id, 0)),
+            ),
+        ])
+        .await;
+
+        let hierarchy = namespace_cache_get_by_id(child_id)
+            .await
+            .expect("a canonical prefix chain must be served from cache");
+        assert_eq!(hierarchy.parents.len(), 2, "both ancestors were resolved");
     }
 
     /// A by-name lookup with non-canonical case primes **two** `IDENT_TO_ID_CACHE` keys: the

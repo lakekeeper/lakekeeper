@@ -4184,6 +4184,7 @@ dependencies = [
  "typed-builder 0.23.2",
  "url",
  "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]

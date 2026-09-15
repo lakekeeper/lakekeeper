@@ -416,7 +416,13 @@ fn build_new_metadata(
                 .into());
             }
             ViewUpdate::SetLocation { location } => {
-                if location != previous_location {
+                // Compared without trailing slashes, because that is the only
+                // difference the builder erases: `set_location` trims before
+                // storing, so `s3://b/v/` and `s3://b/v` become the same location.
+                // Comparing raw, a client that sends the location it already has
+                // with a slash reads as a move to itself -- and `delete_old_location`
+                // then purges the directory this commit just wrote its metadata into.
+                if location.trim_end_matches('/') != previous_location.trim_end_matches('/') {
                     delete_old_location = Some(DeleteLocation(before_location));
                 }
                 m.set_location(location)
@@ -710,5 +716,107 @@ mod test_check_protected_properties {
         let result =
             check_protected_properties(["trino.run-as-owner"].into_iter(), &protected, &matched);
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, str::FromStr as _};
+
+    use iceberg::{
+        NamespaceIdent,
+        spec::{
+            NestedField, PrimitiveType, Schema, SqlViewRepresentation, Type as IcebergType,
+            ViewFormatVersion, ViewMetadata, ViewMetadataBuilder, ViewRepresentation,
+            ViewRepresentations, ViewVersion,
+        },
+    };
+    use iceberg_ext::catalog::rest::{CommitViewRequest, ViewUpdate};
+    use lakekeeper_io::Location;
+
+    use super::build_new_metadata;
+
+    fn view_metadata(location: &str) -> ViewMetadata {
+        let schema = Schema::builder()
+            .with_schema_id(1)
+            .with_fields(vec![
+                NestedField::required(1, "id", IcebergType::Primitive(PrimitiveType::Int)).into(),
+            ])
+            .build()
+            .unwrap();
+        let representations = ViewRepresentations::builder()
+            .add_representation(ViewRepresentation::Sql(SqlViewRepresentation {
+                sql: "select 1".to_string(),
+                dialect: "ansi".to_string(),
+            }))
+            .build()
+            .unwrap();
+        let version = ViewVersion::builder()
+            .with_schema_id(1)
+            .with_timestamp_ms(0)
+            .with_default_namespace(NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap())
+            .with_representations(representations)
+            .build();
+
+        ViewMetadataBuilder::new(
+            location.to_string(),
+            schema,
+            version,
+            ViewFormatVersion::V1,
+            HashMap::new(),
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+        .metadata
+    }
+
+    fn set_location(location: &str) -> CommitViewRequest {
+        CommitViewRequest {
+            identifier: None,
+            requirements: None,
+            updates: vec![ViewUpdate::SetLocation {
+                location: location.to_string(),
+            }],
+        }
+    }
+
+    /// Committing a view's own location back with a trailing slash is not a move,
+    /// so the old location must not be scheduled for deletion.
+    ///
+    /// It is the same directory: `ViewMetadataBuilder::set_location` trims, so the
+    /// new location is byte-identical to the old one. Treating it as a move purges
+    /// the prefix the commit has just written its metadata into, which leaves the
+    /// view unloadable and its data gone.
+    #[test]
+    fn recommitting_the_same_location_with_a_slash_deletes_nothing() {
+        let before = Location::from_str("s3://bucket/view").unwrap();
+        let (metadata, delete_old) = build_new_metadata(
+            set_location("s3://bucket/view/"),
+            view_metadata("s3://bucket/view"),
+            &before,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.location(), "s3://bucket/view");
+        assert!(
+            delete_old.is_none(),
+            "a view's own location was scheduled for deletion"
+        );
+    }
+
+    /// A genuine relocation still schedules the old location for deletion.
+    #[test]
+    fn relocating_a_view_deletes_the_old_location() {
+        let before = Location::from_str("s3://bucket/view").unwrap();
+        let (metadata, delete_old) = build_new_metadata(
+            set_location("s3://bucket/elsewhere"),
+            view_metadata("s3://bucket/view"),
+            &before,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.location(), "s3://bucket/elsewhere");
+        assert!(delete_old.is_some(), "the vacated location was left behind");
     }
 }
