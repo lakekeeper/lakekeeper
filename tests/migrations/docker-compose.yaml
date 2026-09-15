@@ -88,7 +88,7 @@ services:
       iceberg_net:
 
   minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
@@ -106,7 +106,7 @@ services:
       - "9001:9001"
 
   createbuckets:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
     depends_on:
       minio:
         condition: service_healthy
