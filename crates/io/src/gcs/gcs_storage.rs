@@ -87,37 +87,40 @@ impl LakekeeperStorage for GcsStorage {
 
     // ToDo: Switch to BlobBatch delete once supported by rust SDK.
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
-        // Create futures for parallel deletion
-        let delete_futures: Vec<_> = paths
-            .iter()
-            .map(|path| {
-                let location = GcsLocation::try_from_str(path)?;
-                let client = self.client.clone();
+        // Validate every location first so an invalid path fails the batch while all
+        // objects are still present.
+        for path in paths {
+            GcsLocation::try_from_str(path)?;
+        }
 
-                let future = async move {
-                    let delete_request = DeleteObjectRequest {
-                        bucket: location.bucket_name().to_string(),
-                        object: location.object_name(),
-                        ..Default::default()
-                    };
+        // Futures stay lazy: `execute_with_parallelism` pulls them one at a time, so
+        // only `parallelism` of them exist at once. Collecting them all costs ~2 KiB
+        // per object, which reaches gigabytes for a table with millions of files.
+        let delete_futures = paths.iter().cloned().map(|path| {
+            let client = self.client.clone();
 
-                    let result = client
-                        .delete_object(&delete_request)
-                        .await
-                        .map_err(|e| parse_error(e, location.as_str()));
-
-                    // Convert 404 (not found) to success for idempotent behavior
-                    let result = delete_not_found_is_ok(result);
-
-                    Ok::<(GcsLocation, Option<IOError>), DeleteBatchError>((location, result.err()))
+            async move {
+                let location = GcsLocation::try_from_str(&path)?;
+                let delete_request = DeleteObjectRequest {
+                    bucket: location.bucket_name().to_string(),
+                    object: location.object_name(),
+                    ..Default::default()
                 };
 
-                Ok::<_, DeleteBatchError>(future)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                let result = client
+                    .delete_object(&delete_request)
+                    .await
+                    .map_err(|e| parse_error(e, location.as_str()));
+
+                // Convert 404 (not found) to success for idempotent behavior
+                let result = delete_not_found_is_ok(result);
+
+                Ok::<(GcsLocation, Option<IOError>), DeleteBatchError>((location, result.err()))
+            }
+        });
 
         let completed_batches = AtomicU64::new(0);
-        let total_batches = delete_futures.len();
+        let total_batches = paths.len();
 
         let delete_stream = execute_with_parallelism(delete_futures, 16).map(|result| {
             result
