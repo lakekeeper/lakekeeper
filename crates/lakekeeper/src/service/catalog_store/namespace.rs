@@ -1323,6 +1323,15 @@ where
     ) -> Result<MovedNamespace, CatalogMoveNamespaceError> {
         Self::move_namespace_impl(warehouse_id, namespace_id, destination, force, transaction).await
     }
+
+    /// Repair namespace path prefixes stored with the wrong casing, returning the number of rows
+    /// changed. See [`CatalogStore::repair_namespace_path_casing_impl`]. Maintenance only — called
+    /// from the post-migration hooks, never from a request path.
+    async fn repair_namespace_path_casing(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<u64, CatalogBackendError> {
+        Self::repair_namespace_path_casing_impl(transaction).await
+    }
 }
 
 impl<T> CatalogNamespaceOps for T where T: CatalogStore {}

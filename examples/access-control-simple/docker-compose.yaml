@@ -79,8 +79,10 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
-      seaweedfs:
+      silo:
         condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
     ports:
       - "8181:8181"
     networks:
@@ -153,25 +155,36 @@ services:
     networks:
       iceberg_net:
 
-  seaweedfs:
-    image: chrislusf/seaweedfs:4.36
-    # `mini` is SeaweedFS' single-process dev mode (master + volume + filer + S3).
-    # -bucket pre-creates the `examples` bucket, and the IAM config enables STS so
-    # Lakekeeper can vend short-lived credentials to query engines.
-    command:
-      - mini
-      - -dir=/data
-      - -bucket=examples
-      - -s3.config=/etc/seaweedfs/iam.json
-      - -s3.iam.config=/etc/seaweedfs/iam.json
+  silo:
+    # Silo is a maintained fork of MinIO. It serves the S3 API plus the STS
+    # AssumeRole endpoint from a single process, which is all Lakekeeper needs to
+    # vend short-lived credentials to the query engines - no IAM config required.
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: silo-root-user
+      MINIO_ROOT_PASSWORD: silo-root-password
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8333/status"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 15s
-    volumes:
-      - ./seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro
+    networks:
+      iceberg_net:
+
+  create-bucket:
+    # Silo starts with no buckets, so create the one the warehouse points at.
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    depends_on:
+      silo:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://silo:9000 silo-root-user silo-root-password &&
+        mc mb --ignore-existing local/examples
     networks:
       iceberg_net:
 

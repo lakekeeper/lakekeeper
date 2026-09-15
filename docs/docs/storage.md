@@ -8,7 +8,7 @@ Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a l
 
 Currently, we support the following storages:
 
-- S3 (tested with AWS & Minio)
+- S3 (tested with AWS, Silo and SeaweedFS)
 - Azure Data Lake Storage Gen 2
 - OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
@@ -265,7 +265,7 @@ We support remote signing and vended-credentials with S3-compatible storages & A
 - **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 - **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
-Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
+Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Silo (a maintained MinIO fork), SeaweedFS and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
 
 When a client requests table configuration, Lakekeeper selects between remote signing and vended credentials based on the `X-Iceberg-Access-Delegation` header and storage profile settings:
 
@@ -290,7 +290,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | Parameter                     | Type    | Required | Default                    | Description |
 |-------------------------------|---------|----------|----------------------------|-----|
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
-| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
+| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). For `flavor` `aws` without an explicit `endpoint`, a `us-gov-*`, `cn-*`, ISO or `eusc-de-*` region also selects the AWS partition of the vended-credential policy; otherwise the role ARN does. |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
 | `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
@@ -403,6 +403,25 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 ```
 
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
+
+##### AWS Partitions (GovCloud, China, ISO)
+
+Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are prefixed with `arn:aws-us-gov:` and `arn:aws-cn:` instead of `arn:aws:`. Lakekeeper builds the S3 ARNs of the downscoped policy it sends when vending credentials with the matching prefix, so there is nothing to configure beyond using ARNs of that partition for `sts-role-arn`, `assume-role-arn` and `aws-kms-key-arn`:
+
+```json
+{
+    "storage-profile": {
+        "type": "s3",
+        "bucket": "<name of the bucket>",
+        "region": "us-gov-west-1",
+        "sts-enabled": true,
+        "flavor": "aws",
+        "sts-role-arn": "arn:aws-us-gov:iam::<aws account id>:role/LakekeeperWarehouseDevRole"
+    }
+}
+```
+
+A `us-gov-*` or `cn-*` region determines the partition, as do the ISO regions (`us-iso-*`, `us-isob-*`, `us-isof-*`, `eu-isoe-*`) and the European Sovereign Cloud (`eusc-de-*`). This applies to profiles that let the AWS SDK resolve the endpoint from the region. For every other profile — an explicit `endpoint`, a commercial region, or a region of a partition newer than your Lakekeeper release — the partition of `sts-role-arn` or `assume-role-arn` is used, and `aws` if neither names an AWS partition. Storage profiles with a `flavor` other than `aws` always use `aws`.
 
 #### System Identities / Managed Identities
 

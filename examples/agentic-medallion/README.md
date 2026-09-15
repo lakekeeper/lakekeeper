@@ -143,7 +143,7 @@ interactive login reaches Keycloak.
 ```bash
 cd examples/agentic-medallion
 
-# 1. Bring up everything: Lakekeeper, Postgres, OpenFGA, Keycloak, SeaweedFS,
+# 1. Bring up everything: Lakekeeper, Postgres, OpenFGA, Keycloak, Silo,
 #    JupyterLab (workbench) and Ollama. The FIRST run builds the workbench image
 #    (torch/open_clip) — a few minutes. up.sh detects the browser/LAN host for you.
 ./up.sh                 # localhost — Docker Desktop / podman machine on your laptop
@@ -171,7 +171,7 @@ is at <http://localhost:8181>. (`up.sh` prints these URLs when it finishes.)
 >   the Lakekeeper UI can navigate the dataset files from your browser.
 >
 > Plain `docker compose --profile ml up -d --build` still works for the in-network
-> notebook flow (endpoint defaults to `seaweedfs:8333`), but the UI can't reach data
+> notebook flow (endpoint defaults to `silo:9000`), but the UI can't reach data
 > files and there's no interactive host override.
 
 ## Running the notebooks
@@ -286,7 +286,6 @@ Dockerfile.ml           the workbench image (JupyterLab + torch/open_clip/pyiceb
 requirements-ml.txt     heavy deps (torch/open_clip/pyiceberg/lance/jupyterlab)
 requirements-spike.txt  light deps (pylakekeeper/lance/requests) installed on top
 keycloak/realm.json     realm: public `lakekeeper` client (device grant) + service accounts
-seaweedfs-iam.json      SeaweedFS IAM + STS config (enables credential vending)
 mlib.py                 config + device-code login, service-account tokens, grant helpers
 icehelp.py              PyIceberg RestCatalog pointed at Lakekeeper (Bronze/Silver)
 gt.py                   generic-table helpers: raw image OBJECTS + Gold Lance dataset (vended creds)
