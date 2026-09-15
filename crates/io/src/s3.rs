@@ -63,7 +63,19 @@ static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
 });
 
 static RETRY_CONFIG: LazyLock<RetryConfig> = LazyLock::new(RetryConfig::adaptive);
-static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| TimeoutConfig::builder().build());
+/// Bounds how long a single connect attempt may hang. `TimeoutConfig` replaces the
+/// SDK default wherever it is set, so the connect timeout is spelled out here; an
+/// empty config leaves a stalled TCP connect running to the OS default and consumes
+/// the retry budget in one attempt. One explicit value across every auth branch also
+/// keeps them on a single connector pool, which is keyed by the (connect, read)
+/// timeout pair.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
+    TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+});
 static TIME_SOURCE: LazyLock<SharedTimeSource> = LazyLock::new(SharedTimeSource::default);
 static TOKIO_SLEEP: LazyLock<Arc<dyn sleep::AsyncSleep>> =
     LazyLock::new(|| Arc::new(TokioSleep::new()) as Arc<dyn sleep::AsyncSleep>);
