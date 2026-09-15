@@ -24,7 +24,7 @@ if [ -z "${HOST_IP:-}" ]; then
   fi
 fi
 [ -z "${HOST_IP:-}" ] && { echo "ERROR: could not detect a host LAN IP. Set HOST_IP=<ip> ./refresh-ip.sh" >&2; exit 1; }
-ENDPOINT="http://${HOST_IP}:8333"
+ENDPOINT="http://${HOST_IP}:9000"
 
 LK="http://localhost:8181"
 KC="http://localhost:30080/realms/iceberg/protocol/openid-connect/token"
@@ -53,7 +53,7 @@ BODY=$(cat <<JSON
   },
   "storage-credential": {
     "type": "s3", "credential-type": "access-key",
-    "access-key-id": "seaweedfs-root-user", "secret-access-key": "seaweedfs-root-password"
+    "access-key-id": "silo-root-user", "secret-access-key": "silo-root-password"
   }
 }
 JSON

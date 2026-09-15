@@ -1,6 +1,12 @@
 services:
   minio:
-    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
+    # Deliberately NOT pgsty/silo: this suite exercises the pre-CRC32 checksum
+    # behaviour that `legacy-md5-behavior` exists for, and only a MinIO build
+    # from before the CRC32 default reproduces it. Silo forked after that change,
+    # so it cannot stand in here. Pulled from quay.io because the minio namespace
+    # was removed from Docker Hub; this tag is the last one that still predates
+    # the checksum change.
+    image: quay.io/minio/minio:RELEASE.2024-10-29T16-01-48Z
 
   spark:
     environment:
