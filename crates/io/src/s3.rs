@@ -72,8 +72,11 @@ static RETRY_CONFIG: LazyLock<RetryConfig> = LazyLock::new(RetryConfig::adaptive
 /// timeout pair.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> =
-    LazyLock::new(|| TimeoutConfig::builder().connect_timeout(CONNECT_TIMEOUT).build());
+static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
+    TimeoutConfig::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+});
 static TIME_SOURCE: LazyLock<SharedTimeSource> = LazyLock::new(SharedTimeSource::default);
 static TOKIO_SLEEP: LazyLock<Arc<dyn sleep::AsyncSleep>> =
     LazyLock::new(|| Arc::new(TokioSleep::new()) as Arc<dyn sleep::AsyncSleep>);

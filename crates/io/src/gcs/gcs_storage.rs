@@ -36,6 +36,31 @@ const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
 /// resumable session is observable.
 const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 
+/// Deletes one object. Owned arguments keep the returned future free of borrows, so
+/// it satisfies the `'static` bound of [`execute_with_parallelism`] and the caller
+/// can build the futures lazily.
+async fn delete_one(
+    client: Client,
+    path: String,
+) -> Result<(GcsLocation, Option<IOError>), DeleteBatchError> {
+    let location = GcsLocation::try_from_str(&path)?;
+    let delete_request = DeleteObjectRequest {
+        bucket: location.bucket_name().to_string(),
+        object: location.object_name(),
+        ..Default::default()
+    };
+
+    let result = client
+        .delete_object(&delete_request)
+        .await
+        .map_err(|e| parse_error(e, location.as_str()));
+
+    // Convert 404 (not found) to success for idempotent behavior
+    let result = delete_not_found_is_ok(result);
+
+    Ok((location, result.err()))
+}
+
 #[derive(Clone)]
 pub struct GcsStorage {
     client: Client,
@@ -96,28 +121,14 @@ impl LakekeeperStorage for GcsStorage {
         // Futures stay lazy: `execute_with_parallelism` pulls them one at a time, so
         // only `parallelism` of them exist at once. Collecting them all costs ~2 KiB
         // per object, which reaches gigabytes for a table with millions of files.
-        let delete_futures = paths.iter().cloned().map(|path| {
-            let client = self.client.clone();
-
-            async move {
-                let location = GcsLocation::try_from_str(&path)?;
-                let delete_request = DeleteObjectRequest {
-                    bucket: location.bucket_name().to_string(),
-                    object: location.object_name(),
-                    ..Default::default()
-                };
-
-                let result = client
-                    .delete_object(&delete_request)
-                    .await
-                    .map_err(|e| parse_error(e, location.as_str()));
-
-                // Convert 404 (not found) to success for idempotent behavior
-                let result = delete_not_found_is_ok(result);
-
-                Ok::<(GcsLocation, Option<IOError>), DeleteBatchError>((location, result.err()))
-            }
-        });
+        // `cloned()` hands the closure an owned path, so each future borrows nothing
+        // and meets the `'static` bound of `execute_with_parallelism`. Clippy sees
+        // only that `delete_one` reads the path through a reference.
+        #[allow(clippy::redundant_iter_cloned)]
+        let delete_futures = paths
+            .iter()
+            .cloned()
+            .map(|path| delete_one(self.client.clone(), path));
 
         let completed_batches = AtomicU64::new(0);
         let total_batches = paths.len();
