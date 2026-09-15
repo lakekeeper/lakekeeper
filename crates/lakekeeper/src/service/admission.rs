@@ -31,6 +31,7 @@ use std::{
 
 use async_trait::async_trait;
 use axum_prometheus::metrics;
+#[cfg(feature = "router")]
 use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
 
@@ -210,6 +211,7 @@ impl AdmissionRejection {
     ///
     /// `skip_log` is set because [`AdmissionGates::admit`] has already recorded
     /// the decision, naming the principal the generic error-response line cannot.
+    #[cfg(feature = "router")]
     pub(crate) fn into_error(self) -> ErrorModel {
         ErrorModel::builder()
             .message(self.message.into_owned())
@@ -944,15 +946,19 @@ mod tests {
         );
         assert!(record["context"].get("cause").is_none(), "{record:#?}");
 
-        let rendered = futures::executor::block_on(
-            gates(vec![Arc::new(CausedGate)]).admit(AdmissionContext::new(&md, None)),
-        )
-        .expect_err("gate rejects")
-        .into_error();
-        assert_eq!(rendered.message, "admission could not be verified upstream");
-        assert!(rendered.source.is_none(), "{rendered:?}");
+        #[cfg(feature = "router")]
+        {
+            let rendered = futures::executor::block_on(
+                gates(vec![Arc::new(CausedGate)]).admit(AdmissionContext::new(&md, None)),
+            )
+            .expect_err("gate rejects")
+            .into_error();
+            assert_eq!(rendered.message, "admission could not be verified upstream");
+            assert!(rendered.source.is_none(), "{rendered:?}");
+        }
     }
 
+    #[cfg(feature = "router")]
     #[tokio::test]
     async fn a_rejection_suppresses_the_duplicate_error_log() {
         let md = RequestMetadata::new_unauthenticated();
