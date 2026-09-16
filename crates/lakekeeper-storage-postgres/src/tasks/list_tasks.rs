@@ -130,16 +130,14 @@ pub(crate) async fn list_tasks(
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let previous_page_token = page_token.clone();
-    let token = page_token.map(PaginateToken::try_from).transpose()?;
+    let token: Option<PaginateToken<Uuid>> = page_token.map(PaginateToken::try_from).transpose()?;
 
-    let (pagination_ts, pagination_task_id) = token // token_id is the last returned task_id.
+    // token_id is the last returned task_id.
+    let (pagination_ts, pagination_task_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
-        .map_or((None, None), |(ts, task_id)| (Some(ts), Some(task_id)));
+        .map(PaginateToken::v1_parts)
+        .transpose()?
+        .unzip();
 
     let queue_names_is_none = queue_names.is_none();
     let queue_names = queue_names

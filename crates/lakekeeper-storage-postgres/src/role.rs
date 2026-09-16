@@ -313,18 +313,15 @@ pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postg
         provider_ids,
     } = filter;
 
-    let token = page_token
+    let token: Option<PaginateToken<Uuid>> = page_token
         .as_option()
         .map(PaginateToken::try_from)
         .transpose()?;
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     let role_id_filter = role_ids.map(|ids| ids.iter().map(|r| **r).collect::<Vec<Uuid>>());

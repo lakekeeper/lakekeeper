@@ -1953,6 +1953,9 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
         .with_state(f.ctx.clone());
 
     let revoke = serde_json::to_string(&deletes(vec![entry("get_metadata", &f.alice)])).unwrap();
+    // The subtree revokes take a filter, not a diff, and both bodies reject unknown
+    // fields — so one body cannot stand in for the other.
+    let revoke_subtree = serde_json::json!({}).to_string();
     let mut visited = 0;
     for endpoint in ManagementV1Endpoint::iter().filter(|e| e.path().contains("/grants")) {
         let path = endpoint
@@ -1970,10 +1973,11 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
         } else {
             path
         };
-        let body = if endpoint.method() == http::Method::POST {
-            Body::from(revoke.clone())
-        } else {
-            Body::empty()
+        let is_subtree_revoke = path.ends_with("/grants/subtree/revoke");
+        let body = match (endpoint.method(), is_subtree_revoke) {
+            (http::Method::POST, true) => Body::from(revoke_subtree.clone()),
+            (http::Method::POST, false) => Body::from(revoke.clone()),
+            _ => Body::empty(),
         };
         let response = router
             .clone()
@@ -1988,9 +1992,10 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
             )
             .await
             .unwrap();
-        // An apply reports no delta, so it answers `204`; the listings and the
-        // vocabulary endpoints return a body.
-        let expected = if endpoint.method() == http::Method::POST {
+        // An apply reports no delta, so it answers `204`. Everything else returns a
+        // body: the listings, the vocabulary endpoints, and the subtree revokes, which
+        // report how much they removed and whether more remains.
+        let expected = if endpoint.method() == http::Method::POST && !is_subtree_revoke {
             StatusCode::NO_CONTENT
         } else {
             StatusCode::OK
@@ -2004,8 +2009,9 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
         visited += 1;
     }
     // Two per resource level across eight levels, plus one `grantable-privileges` each,
-    // plus the project-wide listing and the deployment vocabulary.
-    assert_eq!(visited, 26);
+    // plus the project-wide listing and the deployment vocabulary, plus a listing and a
+    // revoke for each of the two subtree roots.
+    assert_eq!(visited, 30);
 }
 
 /// The per-resource vocabulary answers "what may I grant *here*", which the

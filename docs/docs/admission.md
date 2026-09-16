@@ -38,7 +38,7 @@ On admit, each passing check contributes its role to the request's admission rol
 
 ## Monitoring
 
-Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > Admission Gate Metrics](./monitoring.md#admission-gate-metrics) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
+Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > External Enforce Gate](./monitoring.md#external-enforce-gate) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
 
 ## Configuration
 

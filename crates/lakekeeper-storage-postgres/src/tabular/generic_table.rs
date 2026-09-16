@@ -305,18 +305,16 @@ pub(crate) async fn list_generic_tables(
 ) -> Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError> {
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
 
+    // A bad token is the caller's mistake, so it keeps its `400` rather than being
+    // reported as an internal fault.
     let token = page_token
         .map(PaginateToken::<Uuid>::try_from)
-        .transpose()
-        .map_err(|e| ListGenericTablesError::from(CatalogBackendError::new_unexpected(e)))?;
+        .transpose()?;
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .map_or((None, None), |(ts, id)| (Some(*ts), Some(*id)));
 
     let rows = sqlx::query_as!(

@@ -39,6 +39,10 @@ type namespace
     define can_list_everything: describe
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_grant_manage_tags or can_change_ownership
+    # Reading every grant in the subtree is administration-grade: manage_grants is the
+    # relation whose reach is the subtree (it inherits via parent), so it is the floor.
+    define can_read_subtree_assignments: manage_grants
+    define can_revoke_subtree_assignments: manage_grants
     define can_set_protection: modify
     define can_manage_tags: manage_tags
     # GRANT Permissions
