@@ -23,7 +23,7 @@ use crate::service::TabularId;
 ///     use iceberg::spec::{TableMetadata, ViewMetadata};
 ///     use iceberg::{TableIdent, TableUpdate};
 ///     use lakekeeper::service::{TabularId, contract_verification::{ContractVerification, ContractVerificationOutcome}};
-///     use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
+///     use iceberg_ext::catalog::rest::{CreateTableRequest, CreateViewRequest, ErrorModel, ViewUpdate};
 ///
 ///     #[derive(Debug)]
 ///     pub struct AllowAllChecker;
