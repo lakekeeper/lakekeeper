@@ -86,7 +86,21 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 
 **`break_glass` records a claim, not a grant.** Any caller can send `x-break-glass`, and Lakekeeper's built-in authorizers ignore it — on its own the header changes no decision, so the field appearing does not mean the request received anything it would otherwise have been denied. What the request actually got is `decision` and `authorizations`; a pluggable Authorizer that does act on the header reports that in `determined_by` (see [Per-decision breakdown](#per-decision-breakdown-authorizations)). The value is free-form text supplied by the caller, so treat it as a stated reason to correlate against a ticket, never as an authenticated fact. Because it is trivial to send, the presence of `break_glass` on an unexpected principal is worth alerting on.
 
-**Ordering:** An authorization event records the *attempt*, and is dispatched to the audit log before the authorized operation issues its write. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. Audit consumers should treat authorization events as attempts rather than as confirmation that state changed.
+**Ordering:** An authorization event records the *attempt*, and is handed to the audit dispatcher before the authorized operation issues its write. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. Audit consumers should treat authorization events as attempts rather than as confirmation that state changed. Dispatch is asynchronous and best-effort — the event is handed to a background task, which may or may not have reached the sink by the time the write commits — so this is not a write-ahead log, and the absence of a later operational event is not proof that a change was rolled back.
+
+**What counts as a denial.** A request can be refused by the authorizer, or by a rule the authorizer has no say over. The two are recorded differently, and the dividing line is whether the refusal is a *deliberate decision about this action on this resource*:
+
+* **Deliberate refusals are denials.** A catalog-managed (`system`) or provider-managed role that cannot be modified, a reserved tag definition, a warehouse whose spec is locked — these are recorded as `decision: "denied"` with `failure_reason: ActionForbidden`, exactly like a missing permission. They are decided before the write is attempted, so the request produces one verdict, not an `"allowed"` record followed by a silent error. That some of them can never be satisfied by *any* caller does not change this: `ActionForbidden` says the action was not permitted, not that a grant was missing.
+* **Write failures are not denials.** A duplicate name, a tag definition still in use, a backend error — these happen *after* authorization has already succeeded. They leave the `"allowed"` record standing and are not logged a second time as an authorization outcome. Reconcile them against the operational event for the change, which will be absent.
+
+A write failure never appears as a denial. But `decision` alone is not a refusal filter: `"denied"` is stamped on *every* authorization-failed record, including the ones where no verdict was reached — a catalog or authorizer outage during the check surfaces as `decision: "denied"` with a `5xx`. To select actual refusals, filter on the reason as well:
+
+```
+select(.decision == "denied" and (.failure_reason | keys[0]) as $r
+       | $r == "ActionForbidden" or $r == "ResourceNotFound" or $r == "CannotSeeResource")
+```
+
+equivalently, `authorizations[].allowed == false`. Note also that a single request can produce both an `"allowed"` and a `"denied"` record when a rule can only be decided partway through the request, after the authorization event has already been emitted — the warehouse spec-lock guard does this — so count denials per request, not per record.
 
 **Actor Types:**
 
@@ -165,7 +179,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `for-principal` | Object  | Optional. The principal whose permission was evaluated, when different from the request actor. Shape: `{"user": "..."}` or `{"role": "..."}`. Absent means the request actor itself. |
 | `action`        | Object  | Same shape as the top-level `action` field.                                          |
 | `entity`        | Object  | Same shape as the top-level `entity` field.                                          |
-| `allowed`       | Boolean | The decision for *this* tuple. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
+| `allowed`       | Boolean | Whether this tuple was permitted. `false` means the request was definitively refused for this tuple — by the authorizer, or by a resource-identity guard the authorizer has no say over (see [What counts as a denial](#authorization-events)); `error.type` distinguishes the two, and a guard refusal carries no `determined_by`. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
 | `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `Permit` or `Forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
 
 **Top-level vs. per-entry semantics.** The top-level `actor` always reflects the *API caller* (the bearer token holder); `authorizations[].for-principal` reflects *whose permissions were checked*. For most calls these are the same and `for-principal` is omitted. For introspection endpoints like `GET /lakekeeper/v1/permissions/...?for-user=X` the actor is the caller while every entry's `for-principal` is `X` — both facts are recorded structurally on the same event, no `context.for-user` string needed.
@@ -387,7 +401,7 @@ That is deliberate: whether a grant was *already* held is not something every au
 
 **Admission rejections (`operation = "admission_decided"`):**
 
-Emitted when an [admission gate](./configuration.md) refuses a request. Gates run after authentication and before any handler.
+Emitted when an [admission gate](./admission.md) refuses a request. Gates run after authentication and before any handler.
 
 `outcome` is one of:
 

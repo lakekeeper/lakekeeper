@@ -640,7 +640,6 @@ define_transparent_error! {
         TagNameAlreadyExists,
         TagDefinitionIdNotFound,
         TagScopeNarrowed,
-        TagDefinitionReserved,
         InvalidTagDefinition,
         CatalogBackendError
     ]
@@ -672,6 +671,19 @@ impl From<TagDefinitionReserved> for ErrorModel {
             .message(err.to_string())
             .stack(err.stack)
             .build()
+    }
+}
+
+// Reached only once the authorizer has already allowed the action on a resolved
+// definition: the reserved namespace is the decision that refused it, so it is
+// recorded as an authorization failure. Mirrors `SystemRoleImmutable`.
+impl crate::service::events::AuthorizationFailureSource for TagDefinitionReserved {
+    fn to_failure_reason(&self) -> crate::service::events::AuthorizationFailureReason {
+        crate::service::events::AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
     }
 }
 
@@ -867,7 +879,6 @@ define_transparent_error! {
     variants: [
         TagDefinitionInUse,
         TagDefinitionIdNotFound,
-        TagDefinitionReserved,
         CatalogBackendError
     ]
 }

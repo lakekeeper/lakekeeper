@@ -1337,8 +1337,8 @@ async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
         .await
         .expect("first create succeeds");
     assert_eq!(
-        listener.settled_succeeded_count(1).await,
-        1,
+        listener.settled_counts(1, 0).await,
+        (1, 0),
         "the successful call must be audited exactly once"
     );
 
@@ -1347,15 +1347,10 @@ async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
         .expect_err("re-creating the same role must fail");
 
     assert_eq!(
-        listener.settled_succeeded_count(2).await,
-        2,
+        listener.settled_counts(2, 0).await,
+        (2, 0),
         "the second authorization attempt must be audited as a success even though \
          the write that followed it failed: {write_error:?}"
-    );
-    assert_eq!(
-        listener.failed_count(),
-        0,
-        "a failing write must not be logged as an authorization failure"
     );
 }
 
@@ -1396,14 +1391,171 @@ async fn test_update_role_audits_authz_before_failing_write(pool: PgPool) {
     .expect_err("renaming onto an existing name must fail");
 
     assert_eq!(
-        listener.settled_succeeded_count(1).await,
-        1,
+        listener.settled_counts(1, 0).await,
+        (1, 0),
         "the authorization attempt must be audited as a success even though the \
          write that followed it failed: {write_error:?}"
     );
+}
+
+/// An identity guard refuses a role the authorizer already allowed the action on.
+/// That refusal *is* the authorization outcome, so it must be audited as a denial
+/// — an `AuthorizationFailedEvent` and no success event — rather than an
+/// "allowed" record for a change that never happened.
+///
+/// Covers all three lifecycle endpoints: the guard lives in `check_role_action`,
+/// which they share, so each must produce the same single verdict. Counts are
+/// cumulative over one listener, so a stray success event from any step fails the
+/// next assertion too.
+///
+/// The two assertion kinds pin different things. The counts pin the *shape* — one
+/// verdict, no stray success — and catch the guard being evaluated after the emit
+/// rather than inside the check. The `failure_reasons` assertion pins the *label*:
+/// routed through the `DeleteRoleError`/`UpdateRoleError` wrappers these report
+/// `InternalCatalogError` ("no verdict was reached"), which is what a deliberate
+/// refusal must not say.
+#[sqlx::test]
+async fn test_system_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    // Every call below is refused, so one seeded role serves all three.
+    let role_id = seed_test_system_role(&ctx, project_id, "test_admin").await;
+
+    // Attach after setup so only the calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let delete_err = ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(delete_err.error.r#type, "SystemRoleImmutable");
     assert_eq!(
-        listener.failed_count(),
-        0,
-        "a failing write must not be logged as an authorization failure"
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "delete_role: the refusal is the authorization outcome — one denial, no success event"
+    );
+
+    let update_err = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleRequest {
+            name: "renamed".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(update_err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 2).await,
+        (0, 2),
+        "update_role: same guard, same single-denial verdict"
+    );
+
+    let rebind_err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: make_source_id("rebound"),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(rebind_err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 3).await,
+        (0, 3),
+        "update_role_source_system: same guard, same single-denial verdict"
+    );
+
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 3],
+        "a deliberate refusal is `ActionForbidden`, not an internal-catalog-error non-verdict"
+    );
+}
+
+/// The other arm of the same guard: a role whose provider namespace is owned by a
+/// configured role provider is refused by `reject_managed_role`, and that refusal
+/// is the authorization outcome — a single denial, labelled `ActionForbidden`.
+///
+/// Needs a non-`AllowAll` authorizer because the deny-set comes from
+/// `Authorizer::managed_role_provider_ids`, and needs store-level seeding because
+/// `reject_managed_provider` refuses a managed provider-id on create, so the API
+/// cannot produce this state.
+#[sqlx::test]
+async fn test_managed_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    let source: RoleSourceId = "ldap-1".parse().unwrap();
+    let request = CatalogCreateRoleRequest::builder()
+        .role_id(RoleId::new_random())
+        .role_name("ldap-role")
+        .source_id(&source)
+        .provider_id(&provider)
+        .build();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let created = PostgresBackend::create_roles(project_id, vec![request], tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let role_id = created[0].id();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let err = ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "ManagedRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "a provider-managed role is refused as the authorization outcome — one \
+         denial, no success event"
+    );
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden],
     );
 }

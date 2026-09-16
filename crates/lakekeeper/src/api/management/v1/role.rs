@@ -671,10 +671,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let role =
-            apply_update_role::<A, C>(&authorizer, catalog_state, &project_id, &role, request)
-                .await
-                .map_err(authz_to_error_no_audit)?;
+        let role = apply_update_role::<C>(catalog_state, &project_id, &role, request)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_updated();
@@ -691,8 +690,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // Reject rebinding any role into the catalog-managed `system` namespace
         // or into a namespace owned by a configured role provider. The check on
         // the *current* role (cannot rebind a system- or provider-managed role
-        // to a different provider) lives inside the authz helper because it
-        // needs the role resolved.
+        // to a different provider) lives in `check_role_action`, which resolves
+        // the role and so can decide it.
         reject_managed_provider(
             &request.provider_id,
             context.v1_state.authz.managed_role_provider_ids(),
@@ -720,15 +719,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let role = apply_update_role_source_system::<A, C>(
-            &authorizer,
-            catalog_state,
-            &project_id,
-            &role,
-            request,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        let role = apply_update_role_source_system::<C>(catalog_state, &project_id, &role, request)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_updated();
@@ -886,13 +879,24 @@ async fn check_role_action<A: Authorizer, C: CatalogStore>(
         catalog_state,
     )
     .await;
-    Ok(authorizer
+    let role = authorizer
         .require_role_action(
             event_ctx.request_metadata(),
             role,
             event_ctx.action().clone(),
         )
-        .await?)
+        .await?;
+
+    // Identity guards belong here, not in the `apply_*` helpers: they are pure
+    // reads on the resolved role, and the resource authorizer having allowed the
+    // action makes them the decision that refused it. Feeding them through this
+    // one `Result` records exactly one verdict per request — a denial — instead
+    // of an "allowed" event followed by an unaudited rejection.
+    if role.ident.is_system() {
+        return Err(SystemRoleImmutable::new().into());
+    }
+    reject_managed_role::<_, ManagedRoleImmutable>(authorizer, &role)?;
+    Ok(role)
 }
 
 /// Delete the role authorized by [`check_role_action`]. See [`apply_create_role`]
@@ -905,10 +909,6 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     role: &ArcRole,
 ) -> Result<(), AuthZError> {
     let role_id = role.id;
-    if role.ident.is_system() {
-        return Err(DeleteRoleError::from(SystemRoleImmutable::new()).into());
-    }
-    reject_managed_role::<_, DeleteRoleError>(authorizer, role)?;
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
@@ -951,19 +951,13 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
 
 /// Update the role authorized by [`check_role_action`]. See [`apply_create_role`]
 /// for the ordering contract this must be called under.
-async fn apply_update_role<A: Authorizer, C: CatalogStore>(
-    authorizer: &A,
+async fn apply_update_role<C: CatalogStore>(
     catalog_state: C::State,
     project_id: &ArcProjectId,
     role: &ArcRole,
     request: UpdateRoleRequest,
 ) -> Result<ArcRole, AuthZError> {
     let role_id = role.id;
-    if role.ident.is_system() {
-        return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
-    }
-    reject_managed_role::<_, UpdateRoleError>(authorizer, role)?;
-
     let description = request.description.filter(|d| !d.is_empty());
 
     let mut t = C::Transaction::begin_write(catalog_state)
@@ -985,21 +979,16 @@ async fn apply_update_role<A: Authorizer, C: CatalogStore>(
 
 /// Rebind the source system of the role authorized by [`check_role_action`]. See
 /// [`apply_create_role`] for the ordering contract this must be called under.
-async fn apply_update_role_source_system<A: Authorizer, C: CatalogStore>(
-    authorizer: &A,
+async fn apply_update_role_source_system<C: CatalogStore>(
     catalog_state: C::State,
     project_id: &ArcProjectId,
     role: &ArcRole,
     request: UpdateRoleSourceSystemRequest,
 ) -> Result<ArcRole, AuthZError> {
+    // The role's *current* owner was guarded in `check_role_action`: a role owned
+    // by a configured role provider, or by the catalog, is not rebindable. (Rebinding
+    // *into* a managed/`system` namespace is rejected on the request in the handler.)
     let role_id = role.id;
-    if role.ident.is_system() {
-        return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
-    }
-    // Reject rebinding a role that is *currently* owned by a configured role
-    // provider — its identity is the provider's to manage. (Rebinding *into* a
-    // managed/`system` namespace is rejected on the request in the handler.)
-    reject_managed_role::<_, UpdateRoleError>(authorizer, role)?;
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await

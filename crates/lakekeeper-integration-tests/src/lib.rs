@@ -253,18 +253,49 @@ impl CapturingAuthzListener {
         self.failed.lock().unwrap().len()
     }
 
-    /// Events are dispatched from a spawned task, so give it a moment to land
-    /// before asserting. Waits for `expected` success events, then waits a little
-    /// longer so surplus emits are caught rather than raced past.
-    pub async fn settled_succeeded_count(&self, expected: usize) -> usize {
+    /// Both counts, after letting the dispatch settle.
+    ///
+    /// Events are dispatched from a spawned task, so wait until each count has
+    /// reached what the caller expects, then drain the run queue so a *surplus*
+    /// emit is caught rather than raced past. The two counts are read under
+    /// separate locks, so this is not an atomic snapshot; what makes the surplus
+    /// check sound is that the caller asserts *both* dimensions after the drain.
+    /// Reading one count after separately settling the other only works by
+    /// accident of call adjacency, and becomes a race the moment a statement is
+    /// inserted between them or the runtime gains threads.
+    ///
+    /// Assert on the tuple (`assert_eq!(l.settled_counts(2, 0).await, (2, 0))`)
+    /// so both dimensions are pinned to exact values.
+    #[must_use]
+    pub async fn settled_counts(
+        &self,
+        expected_succeeded: usize,
+        expected_failed: usize,
+    ) -> (usize, usize) {
         for _ in 0..100 {
-            if self.succeeded_count() >= expected {
+            if self.succeeded_count() >= expected_succeeded
+                && self.failed_count() >= expected_failed
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        self.succeeded_count()
+        (self.succeeded_count(), self.failed_count())
+    }
+
+    /// The failure reasons recorded so far, in order — so a test can pin *why* a
+    /// request was denied, not merely that it was.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn failure_reasons(&self) -> Vec<lakekeeper::service::events::AuthorizationFailureReason> {
+        self.failed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.failure_reason.clone())
+            .collect()
     }
 }
 

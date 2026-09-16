@@ -746,7 +746,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = check_tag_definition_action::<A, C>(
+        let authz_result = check_tag_definition_mutable::<A, C>(
             &authorizer,
             catalog_state.clone(),
             &event_ctx,
@@ -783,7 +783,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = check_tag_definition_action::<A, C>(
+        let authz_result = check_tag_definition_mutable::<A, C>(
             &authorizer,
             catalog_state.clone(),
             &event_ctx,
@@ -843,7 +843,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -883,7 +883,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -961,7 +961,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -1004,7 +1004,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -1085,7 +1085,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -1128,7 +1128,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -1212,7 +1212,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -1257,7 +1257,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -1373,7 +1373,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -1416,7 +1416,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -1497,7 +1497,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag,
             tag_definition,
             changed,
-        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+        } = apply_set_tag_on_target::<C>(catalog_state, change, request.value.as_deref())
             .await
             .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
@@ -1540,7 +1540,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
-        let removed = remove_tag_from_target::<C>(catalog_state, change)
+        let removed = apply_delete_tag_from_target::<C>(catalog_state, change)
             .await
             .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
@@ -1702,6 +1702,30 @@ async fn check_tag_definition_action<A: Authorizer, C: CatalogStore>(
         .await?)
 }
 
+/// [`check_tag_definition_action`] plus the reserved-namespace guard, for the
+/// endpoints that mutate the definition. Writes nothing.
+///
+/// A reserved definition stays readable, so the guard lives here rather than in
+/// `check_tag_definition_action`, which the read paths share. Folding it into
+/// the same `Result` as the authorization check records one verdict per request:
+/// the authorizer allowed the action and the reserved namespace is what refused
+/// it, so it is a denial, not an "allowed" event followed by a silent rejection.
+async fn check_tag_definition_mutable<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<TagDefinitionId, Unresolved, CatalogTagAction>,
+    project_id: &ProjectId,
+) -> Result<crate::service::TagDefinition, AuthZError> {
+    let current =
+        check_tag_definition_action::<A, C>(authorizer, catalog_state, event_ctx, project_id)
+            .await?;
+    // Reserved definitions are catalog-managed and immutable through this API.
+    if current.is_protected() {
+        return Err(TagDefinitionReserved::new().into());
+    }
+    Ok(current)
+}
+
 async fn authorize_get_tag_definition<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
@@ -1778,11 +1802,6 @@ async fn apply_update_tag_definition<C: CatalogStore>(
     request: UpdateTagDefinitionRequest,
 ) -> Result<(Arc<crate::service::TagDefinition>, Option<Vec<String>>), AuthZError> {
     let tag_definition_id = current.tag_definition_id;
-
-    // Reserved definitions are catalog-managed and immutable through this API.
-    if current.is_protected() {
-        return Err(UpdateTagDefinitionError::from(TagDefinitionReserved::new()).into());
-    }
     validate_scope_widening(&current.scope, &request.scope)
         .map_err(UpdateTagDefinitionError::from)?;
     let add_allowed_values: Vec<&str> = request
@@ -1844,11 +1863,6 @@ async fn apply_delete_tag_definition<A: Authorizer, C: CatalogStore>(
     current: crate::service::TagDefinition,
 ) -> Result<Arc<crate::service::TagDefinition>, AuthZError> {
     let tag_definition_id = current.tag_definition_id;
-
-    // Reserved definitions are catalog-managed and immutable through this API.
-    if current.is_protected() {
-        return Err(DeleteTagDefinitionError::from(TagDefinitionReserved::new()).into());
-    }
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
@@ -2128,8 +2142,8 @@ async fn require_tag_definition_by_name<A: Authorizer, C: CatalogStore>(
 
 /// A tag change whose target and definition both passed authorization. Carries
 /// no side effects: the `authorize_*` helpers produce it so the handler can emit
-/// the authorization event before [`apply_tag_to_target`] /
-/// [`remove_tag_from_target`] writes anything.
+/// the authorization event before [`apply_set_tag_on_target`] /
+/// [`apply_delete_tag_from_target`] writes anything.
 struct AuthorizedTagChange {
     target: TagTarget,
     definition: crate::service::TagDefinition,
@@ -2174,7 +2188,7 @@ async fn check_set_tag_on_target<A: Authorizer, C: CatalogStore>(
 /// succeeded, so a failure here is a write failure and must be mapped with
 /// `authz_to_error_no_audit` rather than logged as a second — mislabeled —
 /// authorization outcome.
-async fn apply_tag_to_target<C: CatalogStore>(
+async fn apply_set_tag_on_target<C: CatalogStore>(
     catalog_state: C::State,
     change: AuthorizedTagChange,
     value: Option<&str>,
@@ -2228,8 +2242,8 @@ async fn check_delete_tag_from_target<A: Authorizer, C: CatalogStore>(
 /// Remove the manual tag authorized by [`check_delete_tag_from_target`] from the
 /// target. Returns `None` (without touching the catalog) when the definition
 /// exists but is not attached to this target — removal is idempotent. See
-/// [`apply_tag_to_target`] for the ordering contract this must be called under.
-async fn remove_tag_from_target<C: CatalogStore>(
+/// [`apply_set_tag_on_target`] for the ordering contract this must be called under.
+async fn apply_delete_tag_from_target<C: CatalogStore>(
     catalog_state: C::State,
     change: AuthorizedTagChange,
 ) -> Result<Option<TagWithDefinition>, AuthZError> {

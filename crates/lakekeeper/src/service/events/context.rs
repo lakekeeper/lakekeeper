@@ -1221,19 +1221,28 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
 impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     APIEventContext<P, R, A, AuthzChecked>
 {
-    /// Convert an authorization failure to an [`ErrorModel`] without emitting any event.
+    /// Convert a failure to an [`ErrorModel`] without emitting any event.
     ///
-    /// Use this for sub-filtering in list-style operations where logging
-    /// every filtered-out entry would be too noisy.
+    /// See the free function of the same name for when this is the right choice.
     pub fn authz_to_error_no_audit(&self, error: impl AuthorizationFailureSource) -> ErrorModel {
         authz_to_error_no_audit(error)
     }
 }
 
-/// Convert an authorization failure to an [`ErrorModel`] without emitting any event.
+/// Convert a failure to an [`ErrorModel`] without emitting any event.
 ///
-/// Use this for sub-filtering in list-style operations where logging
-/// every filtered-out entry would be too noisy.
+/// Two uses:
+/// * sub-filtering in list-style operations, where logging every filtered-out
+///   entry would be too noisy;
+/// * mapping a failure that occurs *after* [`APIEventContext::emit_authz`] has
+///   already recorded the authorization outcome — the write half of a
+///   check/apply split — so the outcome is not logged a second time under the
+///   wrong label.
+///
+/// Not for a post-emit failure that is itself an authorization decision (an
+/// ownership guard, a lock). Those belong in the check half, so the request
+/// records one verdict; where the guard cannot be decided before the emit, use
+/// [`APIEventContext::emit_late_authz_failure`].
 pub fn authz_to_error_no_audit(error: impl AuthorizationFailureSource) -> ErrorModel {
     error.into_error_model()
 }
