@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.5](https://github.com/lakekeeper/lakekeeper/compare/v0.13.4...v0.13.5) (2026-09-15)
+
+
+### Features
+
+* **storage:** enable S3 request signing for Generic Tables ([#1910](https://github.com/lakekeeper/lakekeeper/issues/1910)) ([cc42aed](https://github.com/lakekeeper/lakekeeper/commit/cc42aed9ba4e4cf562c746159e9e21890586ada8))
+
+
+### Miscellaneous Chores
+
+* **deps:** update rustls to 0.23.45 and chacha20 to 0.10.2 ([f5b8993](https://github.com/lakekeeper/lakekeeper/commit/f5b899351e733906c7221337422462177608a8d5))
+* pull the S3 test fixture from a registry thatstill serves it ([#2024](https://github.com/lakekeeper/lakekeeper/issues/2024)) ([51b24b7](https://github.com/lakekeeper/lakekeeper/commit/51b24b7a032028f16c3a217c6875c70867626b1c))
+
 ## [0.13.4](https://github.com/lakekeeper/lakekeeper/compare/v0.13.3...v0.13.4) (2026-09-10)
 
 
