@@ -80,12 +80,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// budget covers the retries, not the initial request.
 const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_secs(30);
 
+/// Shared options for every ADLS client. `ClientOptions` carries the transport,
+/// and the SDK builders' `client_options()` replaces the whole struct, so the
+/// transport is set here to keep the custom [`HTTP_CLIENT`] — its connect timeout
+/// and its connection pool — in effect for the storage data plane.
 static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
-    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-        FixedRetryOptions::default()
-            .max_retries(3u32)
-            .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
-    ))
+    azure_core::ClientOptions::default()
+        .retry(RetryOptions::fixed(
+            FixedRetryOptions::default()
+                .max_retries(3u32)
+                .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
+        ))
+        .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
 });
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -220,7 +226,6 @@ impl AzureSettings {
 
         Ok(
             DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
                 .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .build(),
         )
@@ -238,7 +243,6 @@ impl AzureSettings {
 
         Ok(
             ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
                 .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .blob_service_client(),
         )

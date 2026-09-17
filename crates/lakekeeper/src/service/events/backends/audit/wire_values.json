@@ -34,6 +34,8 @@
       "manage_tags",
       "move",
       "read_grants",
+      "read_subtree_grants",
+      "revoke_subtree_grants",
       "set_protection",
       "update_properties"
     ],
@@ -137,7 +139,9 @@
       "modify_soft_deletion",
       "modify_task_queue_config",
       "read_grants",
+      "read_subtree_grants",
       "rename",
+      "revoke_subtree_grants",
       "set_format_version_policy",
       "set_protection",
       "update_storage",
@@ -153,6 +157,7 @@
       "introspect_permissions",
       "list_projects",
       "list_tasks",
+      "revoke_subtree_grants",
       "schedule_task",
       "search_tabulars",
       "search_users"
@@ -212,6 +217,7 @@
   },
   "operation": {
     "AuditOperation": [
+      "admission_decided",
       "grant_created",
       "grant_revoked",
       "idempotent_replay"
@@ -219,8 +225,10 @@
   },
   "outcome": {
     "AuditOutcome": [
+      "forbidden",
       "replayed",
-      "success"
+      "success",
+      "unavailable"
     ]
   },
   "resource_type": {

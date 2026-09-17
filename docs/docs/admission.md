@@ -31,14 +31,14 @@ Only an exact `403` is read as an authoritative deny. Every other non-`2xx` stat
 On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream.
 
 - **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the request-derived placeholders `{{subject}}` (the token `sub`) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
-- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`; tokens from any other identity provider are admitted untouched. That id is checked at startup against the providers the server authenticates: one matching none of them governs nobody while the gate still reports itself healthy, so it fails the deploy instead.
+- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`. Tokens from any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
 - **Cached.** Decisions are cached in memory per `(subject, check)` for `cache_ttl_secs`. Both allow *and* deny are cached, so a denied-but-authenticated caller triggers at most one upstream call per TTL and cannot amplify load; transient `5xx`/timeout results are never cached.
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
 - **Token relay is opt-in.** The caller's bearer token is forwarded only when `auth` is `forward_caller_token`; otherwise the endpoint is reached with the static `headers` only. A forwarded token goes over the configured URL (use TLS) and is never logged.
 
 ## Monitoring
 
-Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > Admission Gate Metrics](./monitoring.md#admission-gate-metrics) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
+Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > External Enforce Gate](./monitoring.md#external-enforce-gate) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
 
 ## Configuration
 

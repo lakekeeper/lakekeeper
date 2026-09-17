@@ -6,7 +6,7 @@
 #                        #   KEEPS the downloaded Ollama models (no ~6 GB re-pull)
 #   ./down.sh --purge    # also delete the Ollama models volume (full clean)
 #
-# Note: db / openfga / seaweedfs keep their data in ephemeral container layers, so a
+# Note: db / openfga / silo keep their data in ephemeral container layers, so a
 # plain `compose down` already resets the catalog. Only the Ollama models live in a
 # named volume, which --purge removes.
 set -euo pipefail

@@ -357,6 +357,7 @@ pub enum AuthZError {
     IsAllowedActionError(IsAllowedActionError),
     GrantActionForbidden(super::grant::AuthZGrantActionForbidden),
     ApplyGrantsStoreError(crate::service::ApplyGrantsStoreError),
+    ListGrantsStoreError(crate::service::ListGrantsStoreError),
 }
 impl From<ResolveTasksError> for AuthZError {
     fn from(err: ResolveTasksError) -> Self {
@@ -479,5 +480,6 @@ delegate_authorization_failure_source!(AuthZError => {
     BackendUnavailableOrCountMismatch,
     BadRequest,
     IsAllowedActionError,
-    ApplyGrantsStoreError
+    ApplyGrantsStoreError,
+    ListGrantsStoreError
 });

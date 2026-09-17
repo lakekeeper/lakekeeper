@@ -986,6 +986,8 @@ pub enum WarehouseRelation {
     CanManageTags,
     CanAcceptMovedNamespace,
     CanReadAssignments,
+    CanReadSubtreeAssignments,
+    CanRevokeSubtreeAssignments,
     CanGrantCreate,
     CanGrantDescribe,
     CanGrantModify,
@@ -1291,6 +1293,12 @@ impl ReducedRelation for CatalogWarehouseAction {
             // Same permission as `APIWarehouseAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,
+            CatalogWarehouseAction::ReadSubtreeGrants => {
+                WarehouseRelation::CanReadSubtreeAssignments
+            }
+            CatalogWarehouseAction::RevokeSubtreeGrants => {
+                WarehouseRelation::CanRevokeSubtreeAssignments
+            }
         }
     }
 }
@@ -1358,6 +1366,8 @@ pub enum NamespaceRelation {
     CanIncludeInList,
     CanManageTags,
     CanReadAssignments,
+    CanReadSubtreeAssignments,
+    CanRevokeSubtreeAssignments,
     CanGrantCreate,
     CanGrantDescribe,
     CanGrantModify,
@@ -1631,6 +1641,12 @@ impl ReducedRelation for CatalogNamespaceAction {
             // Same permission as `APINamespaceAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogNamespaceAction::ReadGrants => NamespaceRelation::CanReadAssignments,
+            CatalogNamespaceAction::ReadSubtreeGrants => {
+                NamespaceRelation::CanReadSubtreeAssignments
+            }
+            CatalogNamespaceAction::RevokeSubtreeGrants => {
+                NamespaceRelation::CanRevokeSubtreeAssignments
+            }
         }
     }
 }

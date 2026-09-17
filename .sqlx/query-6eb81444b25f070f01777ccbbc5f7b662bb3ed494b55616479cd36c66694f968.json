@@ -200,7 +200,11 @@
                       "management-v1-get-generic-table-grantable-privileges",
                       "management-v1-get-tag-grantable-privileges",
                       "management-v1-move-namespace",
-                      "sign-s3-request-by-table-name"
+                      "sign-s3-request-by-table-name",
+                      "management-v1-list-namespace-subtree-grants",
+                      "management-v1-revoke-namespace-subtree-grants",
+                      "management-v1-list-warehouse-subtree-grants",
+                      "management-v1-revoke-warehouse-subtree-grants"
                     ]
                   }
                 }

@@ -26,7 +26,7 @@ use crate::{
     request_metadata::{RequestMetadata, TokenRoles},
     service::{
         RoleIdent,
-        admission::{AdmissionContext, AdmissionGates, AdmissionRejection},
+        admission::{AdmissionContext, AdmissionGates, RejectionKind},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
     },
@@ -851,23 +851,24 @@ pub(crate) async fn auth_middleware_fn<
                 // authoritative deny is a plain 403, while a fail-closed
                 // `Unavailable` is a 503 with the gate's chosen `Retry-After`.
                 Err(rejection) => {
-                    return match rejection {
-                        AdmissionRejection::Forbidden(error) => error.into_response(),
-                        AdmissionRejection::Unavailable { error, retry_after } => {
-                            // `Retry-After` is whole seconds; round any
-                            // sub-second remainder up so a sub-second Duration
-                            // still asks for at least 1s of backoff rather than
-                            // truncating to 0 ("retry immediately").
-                            let secs =
-                                retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
-                            let mut response = error.into_response();
-                            response.headers_mut().insert(
-                                axum::http::header::RETRY_AFTER,
-                                axum::http::HeaderValue::from(secs),
-                            );
-                            response
+                    let retry_after = match rejection.kind() {
+                        RejectionKind::Forbidden => None,
+                        // `Retry-After` is whole seconds; round any sub-second
+                        // remainder up so a sub-second Duration still asks for
+                        // at least 1s of backoff rather than truncating to 0
+                        // ("retry immediately").
+                        RejectionKind::Unavailable { retry_after } => {
+                            Some(retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0))
                         }
                     };
+                    let mut response = rejection.into_error().into_response();
+                    if let Some(secs) = retry_after {
+                        response.headers_mut().insert(
+                            axum::http::header::RETRY_AFTER,
+                            axum::http::HeaderValue::from(secs),
+                        );
+                    }
+                    return response;
                 }
             }
         }

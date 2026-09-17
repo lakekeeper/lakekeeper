@@ -545,6 +545,15 @@ impl RequestMetadata {
         &self.actor
     }
 
+    /// The request's actor, rendered for an audit event.
+    ///
+    /// The one way to put this request's actor on a record, so every record
+    /// raised while serving it agrees on who the caller is.
+    #[must_use]
+    pub fn audit_actor(&self) -> crate::service::events::backends::audit::AuditActor<'_> {
+        crate::service::events::backends::audit::AuditActor(&self.actor)
+    }
+
     #[must_use]
     pub fn authentication(&self) -> Option<&Authentication> {
         self.authentication.as_ref()
@@ -667,13 +676,18 @@ pub struct RequestMetadataTestBuilder {
     /// middleware. Lets tests exercise the audit log's `user_agent` field.
     #[builder(default, setter(strip_option))]
     pub user_agent: Option<UserAgent>,
+    /// Fixed request id. Random by default, as in production; set it where a
+    /// test compares a whole emitted record against a committed one, which a
+    /// fresh uuid per run would make impossible.
+    #[builder(default = Uuid::now_v7())]
+    pub request_id: Uuid,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
         Self {
-            request_id: Uuid::now_v7(),
+            request_id: b.request_id,
             authentication: b.authentication,
             base_url: b.base_url,
             actor: b.actor.into(),

@@ -188,13 +188,18 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 /// undocumented field in the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
+    AllowPartial,
     BaseLocation,
+    CreatedBefore,
     Deletes,
     Destination,
+    DryRun,
     Force,
     Format,
     GenericTableId,
+    IncludeRootLevel,
     Name,
+    Principal,
     Principals,
     Privileges,
     ProjectId,
@@ -204,6 +209,7 @@ pub enum ActionContextKey {
     RemovedProperties,
     RequestedProviderId,
     RequestedSourceId,
+    ResourceTypes,
     Source,
     TableId,
     TargetRefs,
@@ -221,13 +227,18 @@ impl ActionContextKey {
     #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::AllowPartial => "allow-partial",
             Self::BaseLocation => "base_location",
+            Self::CreatedBefore => "created-before",
             Self::Deletes => "deletes",
             Self::Destination => "destination",
+            Self::DryRun => "dry-run",
             Self::Force => "force",
             Self::Format => "format",
             Self::GenericTableId => "generic_table_id",
+            Self::IncludeRootLevel => "include-root-level",
             Self::Name => "name",
+            Self::Principal => "principal",
             Self::Principals => "principals",
             Self::Privileges => "privileges",
             Self::ProjectId => "project_id",
@@ -237,6 +248,7 @@ impl ActionContextKey {
             Self::RemovedProperties => "removed-properties",
             Self::RequestedProviderId => "requested_provider_id",
             Self::RequestedSourceId => "requested_source_id",
+            Self::ResourceTypes => "resource-types",
             Self::Source => "source",
             Self::TableId => "table_id",
             Self::TargetRefs => "target-refs",
@@ -727,6 +739,7 @@ pub enum ManagementAction {
     ControlTasks,
     ScheduleTask,
     ApplyGrants,
+    RevokeSubtreeGrants,
 }
 
 /// The actions the authentication layer checks. See [`ManagementAction`] for why this is an

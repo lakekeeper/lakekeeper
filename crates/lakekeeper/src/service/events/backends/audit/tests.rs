@@ -10,6 +10,9 @@ use crate::{
     WarehouseId,
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
+        admission::{
+            AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, GateDecision,
+        },
         authn::UserId,
         authz::{
             ActionDescriptor, CatalogAction as _, CatalogTableAction, DeterminingFactor,
@@ -146,6 +149,9 @@ fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededE
 const FIXTURE_WAREHOUSE_ID: &str = "019684ff-0000-7000-8000-000000000001";
 const FIXTURE_TABLE_ID: &str = "019684ff-0000-7000-8000-000000000002";
 const FIXTURE_NAMESPACE_ID: &str = "019684ff-0000-7000-8000-000000000003";
+const FIXTURE_REQUEST_ID: &str = "019684ff-0000-7000-8000-000000000005";
+const FIXTURE_ERROR_ID: &str = "019684ff-0000-7000-8000-000000000006";
+const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
 
 /// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
 /// derived from [`AUDIT_FORMAT`].
@@ -461,6 +467,8 @@ const FIXTURE_NAMES: &[&str] = &[
     "grant_created",
     "grant_revoked",
     "idempotent_replay",
+    "admission_forbidden",
+    "admission_unavailable",
 ];
 
 fn read_fixture(name: &str) -> serde_json::Value {
@@ -1050,6 +1058,194 @@ fn fixture_grants_changed_emits_one_record_per_triple() {
 
     assert_matches_fixture("grant_revoked", &contract_fields(revoked));
     assert_matches_fixture("grant_created", &contract_fields(created));
+}
+
+/// Recursively collect every `.rs` file under `dir`.
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+    {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// `operation` and `outcome` must reach the wire from [`AuditOperation`] and
+/// [`AuditOutcome`], never from a literal.
+///
+/// This is the one wire value the type system cannot protect. Every other one is a
+/// variant of a closed enum reached through an exhaustive `match`, so a new value
+/// stops the build until it is named and documented. These two are `tracing` fields
+/// taking any expression — deliberately, because `audit_operation!` is exported and a
+/// crate outside this repository names its own vocabulary. That openness also means a
+/// literal *here* compiles, reaches no manifest, and is therefore never checked for a
+/// rename: `check-audit-format` would see nothing disappear while every consumer
+/// matching on the old string broke.
+///
+/// So the check is lexical rather than type-driven. It scans this crate's own sources
+/// because the hole is this crate's: an external crate owning its vocabulary is the
+/// supported case, and it commits its own manifest.
+#[test]
+fn no_production_code_names_an_operation_or_outcome_with_a_literal() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_sources(&src, &mut files);
+    assert!(
+        files.len() > 50,
+        "only {} source files found under {} — the walk is not reaching the crate, so \
+         this test would pass by scanning nothing",
+        files.len(),
+        src.display()
+    );
+
+    let mut offenders = Vec::new();
+    for file in files {
+        // Test modules may use literals freely: several exist precisely to prove the
+        // macro accepts a vocabulary this crate does not own.
+        if file.file_name().is_some_and(|name| name == "tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            // Doc comments show callers the macro's shape, including the literal an
+            // external crate would pass. They emit nothing.
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.starts_with("operation = \"") || code.starts_with("outcome = \"") {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    file.strip_prefix(&src).unwrap_or(&file).display(),
+                    number + 1,
+                    code
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "an audit record names its `operation` or `outcome` with a string literal:\n  \
+         {}\n\n\
+         A literal reaches no wire-value manifest, so renaming it later breaks every \
+         consumer matching on it while `just check-audit-format` reports nothing. Add a \
+         variant to `AuditOperation` or `AuditOutcome` and emit `Variant::as_str()` \
+         instead. If the value also feeds a metric label, have the helper return the enum \
+         and call `as_str()` at both sites so the two cannot drift.\n\n\
+         See the audit log section of docs/docs/developer-guide.md.",
+        offenders.join("\n  ")
+    );
+}
+
+/// A gate that rejects, so the admission path emits its record. Both kinds are
+/// covered because they reach the wire differently: a denial names the rule that
+/// decided it, a fail-closed one carries none and is the shape a consumer sees
+/// during an upstream outage.
+#[derive(Debug)]
+struct FixtureGate {
+    rejection: fn() -> AdmissionRejection,
+}
+
+#[async_trait::async_trait]
+impl AdmissionGate for FixtureGate {
+    fn name(&self) -> &'static str {
+        "fixture_gate"
+    }
+
+    async fn admit(&self, _: AdmissionContext<'_>) -> Result<GateDecision, AdmissionRejection> {
+        Err((self.rejection)())
+    }
+}
+
+/// Request metadata with a pinned `request_id`, which the admission record
+/// carries in its context and which a random id per run would make
+/// uncomparable.
+fn fixture_admission_metadata(actor: Actor) -> RequestMetadata {
+    RequestMetadataTestBuilder::builder()
+        .actor(actor)
+        .request_id(FIXTURE_REQUEST_ID.parse().expect("fixed test uuid"))
+        .build()
+}
+
+fn emit_admission_rejection(
+    actor: Actor,
+    rejection: fn() -> AdmissionRejection,
+) -> serde_json::Value {
+    let metadata = fixture_admission_metadata(actor);
+    let records = emit_and_capture(|| async {
+        AdmissionGates::new(vec![Arc::new(FixtureGate { rejection })])
+            .admit(AdmissionContext::new(&metadata, None))
+            .await
+            .expect_err("the fixture gate rejects");
+        Ok(())
+    });
+    // A fail-closed rejection also warns on the general stream, which is not an
+    // audit record. Take the one record that is.
+    let mut audit: Vec<serde_json::Value> = records
+        .into_iter()
+        .filter(|record| record["event_source"] == "audit")
+        .collect();
+    assert_eq!(
+        audit.len(),
+        1,
+        "expected exactly one audit record from the admission path: {audit:#?}"
+    );
+    contract_fields(audit.pop().expect("length asserted above"))
+}
+
+/// An authoritative denial, for a caller acting through an assumed role.
+///
+/// The assumed-role actor is the point: admission is the only operational record
+/// that renders the request's resolved actor (through
+/// `RequestMetadata::audit_actor`) rather than the bare principal, so this is
+/// the one fixture pinning the three-field actor shape on an operational
+/// record. Every other operational fixture uses `AuditPrincipal` and cannot.
+#[test]
+fn fixture_admission_forbidden() {
+    let user_id = UserId::try_from("oidc~alice").expect("valid test user id");
+    // Deterministic from the id: the ident, and with it the `provider_id` and
+    // `source_id` the record renders, are derived from it rather than generated.
+    let assumed_role = Arc::new(crate::service::Role::new_random_with_id(
+        crate::service::RoleId::new(FIXTURE_ROLE_ID.parse().expect("fixed test uuid")),
+    ));
+    let record = emit_admission_rejection(
+        Actor::Role {
+            principal: user_id,
+            assumed_role,
+        },
+        || {
+            AdmissionRejection::forbidden(
+                "Principal is not admitted to this instance",
+                "ExternalEnforceForbidden",
+            )
+            .denied_by("instance_access")
+            .with_error_id(FIXTURE_ERROR_ID.parse().expect("fixed test uuid"))
+        },
+    );
+    assert_matches_fixture("admission_forbidden", &record);
+}
+
+/// A gate failing closed. `denied_by` is absent — there was no rule, the gate
+/// could not reach the upstream that has them — so this fixture is what pins
+/// that the field is optional rather than always present.
+#[test]
+fn fixture_admission_unavailable() {
+    let user_id = UserId::try_from("oidc~alice").expect("valid test user id");
+    let record = emit_admission_rejection(Actor::Principal(user_id), || {
+        AdmissionRejection::unavailable(
+            "Permission service is unreachable",
+            "ExternalEnforceUnavailable",
+            std::time::Duration::from_secs(30),
+            None,
+        )
+        .with_error_id(FIXTURE_ERROR_ID.parse().expect("fixed test uuid"))
+    });
+    assert_matches_fixture("admission_unavailable", &record);
 }
 
 /// The envelope fields are deliberately outside the format contract, so no fixture
