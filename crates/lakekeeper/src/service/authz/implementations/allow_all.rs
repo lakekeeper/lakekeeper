@@ -11,18 +11,19 @@ use crate::{
     api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
-        CatalogStore, GenericTableId, NamespaceId, NamespaceWithParent, ProjectId,
+        ArcProjectId, AuthZDatasetInfo, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
+        AuthZViewInfo, CatalogStore, GenericTableId, NamespaceId, NamespaceWithParent, ProjectId,
         ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, TagDefinition,
         TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
-            ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
-            AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-            CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
-            ListProjectsResponse, NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
+            ActionOnDataset, ActionOnGenericTable, ActionOnTable, ActionOnView,
+            AuthorizationDecision, Authorizer, AuthzBackendErrorOrBadRequest, CatalogAction,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            GrantAuthorityCheck, GrantTarget, IsAllowedActionError, ListProjectsResponse,
+            NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -93,6 +94,7 @@ impl Authorizer for AllowAllAuthorizer {
     type TableAction = CatalogTableAction;
     type ViewAction = CatalogViewAction;
     type GenericTableAction = CatalogGenericTableAction;
+    type DatasetAction = CatalogDatasetAction;
     type UserAction = CatalogUserAction;
     type RoleAction = CatalogRoleAction;
     type TagAction = CatalogTagAction;
@@ -261,6 +263,21 @@ impl Authorizer for AllowAllAuthorizer {
         actions: &[(
             &NamespaceWithParent,
             ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
+    }
+
+    async fn are_allowed_dataset_actions_impl<
+        A: Into<Self::DatasetAction> + Send + Clone + Sync,
+    >(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnDataset<'_, '_, impl AuthZDatasetInfo, A>,
         )],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         Ok(vec![AuthorizationDecision::allow(); actions.len()])
@@ -445,6 +462,9 @@ fn build_vocabulary(resource_type: ResourceType) -> Vec<PrivilegeDescriptor> {
         ResourceType::View => privileges_from_actions(CatalogViewAction::variants(), resource_type),
         ResourceType::GenericTable => {
             privileges_from_actions(CatalogGenericTableAction::variants(), resource_type)
+        }
+        ResourceType::Dataset => {
+            privileges_from_actions(CatalogDatasetAction::variants(), resource_type)
         }
         ResourceType::Tag => privileges_from_actions(CatalogTagAction::variants(), resource_type),
     }

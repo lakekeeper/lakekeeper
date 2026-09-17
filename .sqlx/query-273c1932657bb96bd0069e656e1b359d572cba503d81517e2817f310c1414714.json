@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_ref\n        SET snapshot_id = $4\n        WHERE warehouse_id = $1\n          AND dataset_id = $2\n          AND name = $3\n          AND snapshot_id IS NOT DISTINCT FROM $5\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "273c1932657bb96bd0069e656e1b359d572cba503d81517e2817f310c1414714"
+}

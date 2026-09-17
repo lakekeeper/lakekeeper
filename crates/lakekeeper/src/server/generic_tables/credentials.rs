@@ -292,11 +292,11 @@ fn interpret_authz_results_for_load_generic_table(
                     .into());
                 }
             }
-            ActionOnTableOrView::Table(_) => {
+            ActionOnTableOrView::Table(_) | ActionOnTableOrView::Dataset(_) => {
                 // Unreachable: target is a generic table; chain intermediates are views only.
                 debug_assert!(
                     false,
-                    "Table action in load_generic_table authorization chain"
+                    "Table or dataset action in load_generic_table authorization chain"
                 );
             }
         }

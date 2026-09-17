@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_ref SET protected = $4\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND name = $3\n        RETURNING name, typ as \"typ: DatasetRefTypeDb\", snapshot_id, protected\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "typ: DatasetRefTypeDb",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_ref_type",
+            "kind": {
+              "Enum": [
+                "branch",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "protected"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "929df069c36a3299c8aa6df5e9fba73f9f277c2e3903a5a862972d9fc1b72450"
+}

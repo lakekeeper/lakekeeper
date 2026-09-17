@@ -6,12 +6,12 @@ use lakekeeper::{
     api::ApiContext,
     service::{
         CatalogGenericTableOps, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, GenericTabularInfo, NamespaceWithParent, TableInfo,
-        TabularIdentBorrowed, TabularListFlags, Transaction, ViewInfo,
+        CatalogWarehouseOps, DatasetTabularInfo, GenericTabularInfo, NamespaceWithParent,
+        TableInfo, TabularIdentBorrowed, TabularListFlags, Transaction, ViewInfo,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZGenericTableOps, AuthZTableOps, CatalogGenericTableAction, CatalogTableAction,
-            CatalogViewAction, tests::HidingAuthorizer,
+            AuthZGenericTableOps, AuthZTableOps, CatalogDatasetAction, CatalogGenericTableAction,
+            CatalogTableAction, CatalogViewAction, tests::HidingAuthorizer,
         },
     },
 };
@@ -31,6 +31,8 @@ type TestTabularAction<'a> = ActionOnTableOrView<
     CatalogViewAction,
     GenericTabularInfo,
     CatalogGenericTableAction,
+    DatasetTabularInfo,
+    CatalogDatasetAction,
 >;
 
 #[sqlx::test]

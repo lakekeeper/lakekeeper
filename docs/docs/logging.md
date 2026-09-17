@@ -172,7 +172,7 @@ New keys may be added at any minor version, so consumers must not assume this li
 
 **Entity Format:**
 
-Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
+Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `dataset`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
 
 Which of the following fields appear depends on the entity type and on what the request supplied — a field is omitted rather than emitted empty. Every value is a string.
 
@@ -190,6 +190,8 @@ Which of the following fields appear depends on the entity type and on what the 
 | `view-id`            | View identifier                                                    |
 | `generic-table`      | Generic-table name, qualified by its namespace                     |
 | `generic-table-id`   | Generic-table identifier                                           |
+| `dataset`            | Dataset name, qualified by its namespace                           |
+| `dataset-id`         | Dataset identifier                                                 |
 | `task-id`            | Task identifier                                                    |
 | `role-id`            | Role identifier                                                    |
 | `role-source-id`     | Identifier of the role in its originating source                   |
@@ -230,6 +232,9 @@ Which context fields appear depends on the action. A field is omitted rather tha
 | `generic_table_id`      | String | generic-table creation            | The generic-table id the client requested               |
 | `format`                | String | generic-table creation            | The requested table format                              |
 | `base_location`         | String | generic-table creation            | The requested storage location                          |
+| `dataset_id`            | String | dataset creation                  | The dataset id the client requested                     |
+| `location`              | String | dataset creation                  | The prefix the client asked the dataset to borrow       |
+| `managed`               | String | dataset creation                  | `"true"` when Lakekeeper owns the prefix rather than borrowing it |
 | `project_id`            | String | project creation                  | The project id the client requested                     |
 | `force`                 | String | delete and drop actions           | `"true"` when the client asked to force the operation   |
 | `purge`                 | String | delete and drop actions           | `"true"` when the client asked to purge the data        |

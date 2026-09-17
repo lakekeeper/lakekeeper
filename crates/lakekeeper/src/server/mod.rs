@@ -1,6 +1,7 @@
 pub(crate) mod commit_tables;
 pub(crate) mod compression_codec;
 mod config;
+pub(crate) mod datasets;
 pub mod generic_tables;
 pub(crate) mod io;
 mod metrics;

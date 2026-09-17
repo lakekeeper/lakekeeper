@@ -10,19 +10,20 @@ use lakekeeper::{
     async_trait,
     axum::Router,
     service::{
-        Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, InternalErrorMessage, NamespaceId,
-        NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State,
-        TableId, TabularId, TagDefinition, TagDefinitionId, UserId, ViewId,
+        Actor, ArcProjectId, AuthZDatasetInfo, AuthZGenericTableInfo, AuthZNamespaceInfo,
+        AuthZTableInfo, AuthZViewInfo, CatalogStore, DatasetId, ErrorModel, GenericTableId,
+        InternalErrorMessage, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId,
+        SecretStore, ServerId, State, TableId, TabularId, TagDefinition, TagDefinitionId, UserId,
+        ViewId,
         authz::{
-            ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
-            AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
-            AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
-            ListProjectsResponse, ListRoleAssignmentsError, ListRoleAssignmentsResultPage,
-            MalformedRoleAssignment, ManagesGrants, ManagesRoleAssignments, NamespaceParent,
-            PrivilegeDescriptor, ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole,
-            UserOrRoleId,
+            ActionOnDataset, ActionOnGenericTable, ActionOnTable, ActionOnView,
+            AddRoleAssignmentsError, AuthorizationBackendUnavailable, AuthorizationDecision,
+            Authorizer, AuthzBackendErrorOrBadRequest, CannotInspectPermissions,
+            CatalogProjectAction, CatalogUserAction, GrantAuthorityCheck, GrantTarget,
+            IsAllowedActionError, ListProjectsResponse, ListRoleAssignmentsError,
+            ListRoleAssignmentsResultPage, MalformedRoleAssignment, ManagesGrants,
+            ManagesRoleAssignments, NamespaceParent, PrivilegeDescriptor, ResourceType,
+            RoleAssignmentFilter, RoleAssignmentRow, UserOrRole, UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -49,9 +50,9 @@ use crate::{
     },
     models::OpenFgaType,
     relations::{
-        self, GenericTableRelation, NamespaceRelation, OpenFgaRelation, ProjectRelation,
-        ReducedRelation, RoleRelation, ServerRelation, TableRelation, TagRelation, ViewRelation,
-        WarehouseRelation,
+        self, DatasetRelation, GenericTableRelation, NamespaceRelation, OpenFgaRelation,
+        ProjectRelation, ReducedRelation, RoleRelation, ServerRelation, TableRelation, TagRelation,
+        ViewRelation, WarehouseRelation,
     },
 };
 
@@ -97,6 +98,7 @@ impl Authorizer for OpenFGAAuthorizer {
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
     type GenericTableAction = GenericTableRelation;
+    type DatasetAction = DatasetRelation;
     type UserAction = CatalogUserAction;
     type RoleAction = RoleRelation;
     type TagAction = TagRelation;
@@ -740,6 +742,88 @@ impl Authorizer for OpenFGAAuthorizer {
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await
+    }
+
+    async fn are_allowed_dataset_actions_impl<
+        A: Into<Self::DatasetAction> + Send + Clone + Sync,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnDataset<'_, '_, impl AuthZDatasetInfo, A>,
+        )],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
+            .iter()
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.dataset_id()).to_openfga(),
+                }
+            })
+            .collect();
+
+        // Inspecting another principal's permissions requires `CanReadAssignments` on
+        // the dataset, not merely the ability to describe it. Datasets have no DEFINER
+        // chain, so unlike generic tables there is no delegated-execution exemption.
+        let unique_datasets_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some())
+            .map(|(_, action)| (action.info.warehouse_id(), action.info.dataset_id()).to_openfga())
+            .collect();
+
+        let guard_tuples: Vec<_> = unique_datasets_needing_guards
+            .into_iter()
+            .map(|ds_obj| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: DatasetRelation::CanReadAssignments.to_string(),
+                object: ds_obj,
+            })
+            .collect();
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
+    }
+
+    async fn create_dataset(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        parent: NamespaceId,
+    ) -> AuthorizerResult<()> {
+        let actor = metadata.actor();
+
+        self.require_no_relations(&(warehouse_id, dataset_id))
+            .await?;
+
+        let mut tuples =
+            crate::tuples::hierarchy_tuples_for_dataset(warehouse_id, dataset_id, parent);
+        tuples.extend(crate::tuples::ownership_tuples_for_dataset(
+            actor,
+            warehouse_id,
+            dataset_id,
+        ));
+        self.write_higher_consistency(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn delete_dataset(
+        &self,
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+    ) -> AuthorizerResult<()> {
+        self.delete_all_relations(&(warehouse_id, dataset_id)).await
     }
 
     async fn create_generic_table(

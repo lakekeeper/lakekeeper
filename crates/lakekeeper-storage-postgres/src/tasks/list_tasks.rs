@@ -162,6 +162,9 @@ pub(crate) async fn list_tasks(
             WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
                 (Some(*generic_table_id), TaskEntityTypeDB::GenericTable)
             }
+            WarehouseTaskEntityFilter::Dataset { dataset_id } => {
+                (Some(*dataset_id), TaskEntityTypeDB::Dataset)
+            }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
         .unzip::<_, _, Vec<_>, Vec<_>>();

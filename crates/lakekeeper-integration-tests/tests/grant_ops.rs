@@ -47,8 +47,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, create_generic_table, create_view, create_view_request, memory_io_profile,
-    random_request_metadata,
+    SetupTestCatalog, create_dataset, create_generic_table, create_view, create_view_request,
+    memory_io_profile, random_request_metadata,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -999,6 +999,7 @@ async fn grantable_privileges_publishes_the_whole_vocabulary(pool: PgPool) {
     assert_eq!(
         keys,
         vec![
+            "dataset",
             "generic-table",
             "namespace",
             "project",
@@ -1037,7 +1038,7 @@ async fn grantable_privileges_needs_no_project_or_principal(pool: PgPool) {
         Server::get_grantable_privileges(f.ctx.clone(), RequestMetadata::new_unauthenticated())
             .await
             .unwrap();
-    assert_eq!(published.privileges.len(), 8);
+    assert_eq!(published.privileges.len(), 9);
 }
 
 /// A revoke is never checked against the vocabulary: a privilege that has left it
@@ -1931,6 +1932,16 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
     .find(|i| i.name == "gt1")
     .and_then(|i| i.id)
     .unwrap();
+    let dataset_id = create_dataset(
+        f.ctx.clone(),
+        f.warehouse_id.to_string(),
+        "grant_routes",
+        "ds1",
+    )
+    .await
+    .unwrap()
+    .dataset
+    .id;
     let tag_definition_id = Server::create_tag_definition(
         CreateTagDefinitionRequest::builder()
             .name("routes".to_string())
@@ -1965,6 +1976,7 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
             .replace("{table_id}", &table_id.to_string())
             .replace("{view_id}", &view_id.to_string())
             .replace("{generic_table_id}", &generic_table_id.to_string())
+            .replace("{dataset_id}", &dataset_id.to_string())
             .replace("{tag_definition_id}", &tag_definition_id.to_string());
         // The project-scoped listing requires a principal, so the request that proves
         // its route resolves has to name one. Every other path answers without a query.
@@ -2008,10 +2020,10 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
         );
         visited += 1;
     }
-    // Two per resource level across eight levels, plus one `grantable-privileges` each,
+    // Two per resource level across nine levels, plus one `grantable-privileges` each,
     // plus the project-wide listing and the deployment vocabulary, plus a listing and a
     // revoke for each of the two subtree roots.
-    assert_eq!(visited, 30);
+    assert_eq!(visited, 33);
 }
 
 /// The per-resource vocabulary answers "what may I grant *here*", which the

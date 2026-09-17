@@ -24,12 +24,13 @@ use lakekeeper::{
     api::{RequestMetadata, iceberg::v1::PaginationQuery},
     async_trait,
     service::authz::{
-        AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
-        CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-        CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck,
-        GrantFilter, GrantListingNotImplemented, GrantNotSupported, GrantOp, GrantResource,
-        GrantRow, GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage,
-        MalformedGrant, ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
+        AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogDatasetAction,
+        CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+        CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
+        CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantListingNotImplemented,
+        GrantNotSupported, GrantOp, GrantResource, GrantRow, GrantSpec, IsAllowedActionError,
+        ListGrantsError, ListGrantsResultPage, MalformedGrant, ManagesGrants, PrivilegeDescriptor,
+        ResourceType, UserOrRole, UserOrRoleId,
     },
 };
 use openfga_client::client::{
@@ -42,9 +43,9 @@ use crate::{
     entities::OpenFgaEntity,
     error::OpenFGABackendUnavailable,
     relations::{
-        APIGenericTableRelation, APINamespaceRelation, APIProjectRelation, APIServerRelation,
-        APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation, GrantableRelation,
-        ReducedRelation, RevocableRelation,
+        APIDatasetRelation, APIGenericTableRelation, APINamespaceRelation, APIProjectRelation,
+        APIServerRelation, APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation,
+        GrantableRelation, ReducedRelation, RevocableRelation,
     },
 };
 
@@ -81,6 +82,10 @@ macro_rules! for_level {
             }
             ResourceType::GenericTable => {
                 type $R = APIGenericTableRelation;
+                $body
+            }
+            ResourceType::Dataset => {
+                type $R = APIDatasetRelation;
                 $body
             }
             ResourceType::Tag => {
@@ -266,6 +271,7 @@ fn read_grants_relation(resource_type: ResourceType) -> String {
         ResourceType::GenericTable => CatalogGenericTableAction::ReadGrants
             .to_openfga()
             .to_string(),
+        ResourceType::Dataset => CatalogDatasetAction::ReadGrants.to_openfga().to_string(),
         ResourceType::Tag => CatalogTagAction::ReadGrants.to_openfga().to_string(),
     }
 }
@@ -290,6 +296,10 @@ pub(crate) fn grant_object(authorizer: &OpenFGAAuthorizer, resource: &GrantResou
             warehouse_id,
             generic_table_id,
         } => (*warehouse_id, *generic_table_id).to_openfga(),
+        GrantResource::Dataset {
+            warehouse_id,
+            dataset_id,
+        } => (*warehouse_id, *dataset_id).to_openfga(),
         GrantResource::Tag(tag_definition_id) => tag_definition_id.to_openfga(),
     }
 }
@@ -662,6 +672,7 @@ mod tests {
             ResourceType::Table => FgaType::Table,
             ResourceType::View => FgaType::View,
             ResourceType::GenericTable => FgaType::GenericTable,
+            ResourceType::Dataset => FgaType::Dataset,
             ResourceType::Tag => FgaType::Tag,
         }
     }

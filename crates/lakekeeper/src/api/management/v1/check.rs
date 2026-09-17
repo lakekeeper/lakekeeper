@@ -13,23 +13,25 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
-        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
-        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
-        RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
-        TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
+        ArcProjectId, ArcRole, AuthZDatasetInfo, BasicTabularInfo, CachePolicy,
+        CatalogGetNamespaceError, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, DatasetTabularInfo,
+        GenericTabularInfo, GetRoleAcrossProjectsError, NamespaceId, NamespaceVersion,
+        NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound, SecretStore, State,
+        TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId, ViewInfo,
+        ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
-            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
-            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
-            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, DeterminingFactor, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError,
-            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            ActionDescriptor, ActionOnDataset, ActionOnGenericTable, ActionOnTable,
+            ActionOnTableOrView, ActionOnView, AuthZCannotSeeDataset, AuthZCannotSeeGenericTable,
+            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogDatasetAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            DeterminingFactor, MustUse, RequireNamespaceActionError, RequireTableActionError,
+            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
@@ -873,6 +875,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::GenericTable(info) => {
                     TabularIdentOwned::GenericTable(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::Dataset(info) => {
+                    TabularIdentOwned::Dataset(info.dataset_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -974,24 +979,29 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
 }
 
 /// Convert optional table/view actions into `ActionOnTableOrView`
+/// The batch action shape for a tabular of any subtype. Named because the enum
+/// carries one info/action pair per subtype and is unreadable inline.
+type TabularActionRequest<'a, 'u> = ActionOnTableOrView<
+    'a,
+    'u,
+    TableInfo,
+    ViewInfo,
+    CatalogTableAction,
+    CatalogViewAction,
+    GenericTabularInfo,
+    CatalogGenericTableAction,
+    DatasetTabularInfo,
+    CatalogDatasetAction,
+>;
+
 fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
     generic_table_action: Option<CatalogGenericTableAction>,
+    dataset_action: Option<CatalogDatasetAction>,
     user: Option<&'u AuthzUserOrRole>,
-) -> Option<
-    ActionOnTableOrView<
-        'a,
-        'u,
-        TableInfo,
-        ViewInfo,
-        CatalogTableAction,
-        CatalogViewAction,
-        GenericTabularInfo,
-        CatalogGenericTableAction,
-    >,
-> {
+) -> Option<TabularActionRequest<'a, 'u>> {
     match tabular_info {
         ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
             ActionOnTableOrView::Table(ActionOnTable {
@@ -1015,6 +1025,13 @@ fn convert_tabular_action<'a, 'u>(
                 action,
                 user,
                 is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::Dataset(ds_info) => dataset_action.map(|action| {
+            ActionOnTableOrView::Dataset(ActionOnDataset {
+                info: ds_info,
+                action,
+                user,
             })
         }),
     }
@@ -1615,6 +1632,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::GenericTable(gt_id) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
                             }
+                            TabularId::Dataset(ds_id) => {
+                                return Err(AuthZCannotSeeDataset::new_not_found(warehouse_id, *ds_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1639,7 +1659,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), None, authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1731,6 +1751,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             TabularIdentOwned::GenericTable(gt_ident) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
                             }
+                            TabularIdentOwned::Dataset(ds_ident) => {
+                                return Err(AuthZCannotSeeDataset::new_not_found(warehouse_id, ds_ident.clone()).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1755,7 +1778,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), None, authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }

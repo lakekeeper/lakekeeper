@@ -93,6 +93,8 @@ pub enum FgaType {
     View,
     #[strum(serialize = "lakekeeper_generic_table")]
     GenericTable,
+    #[strum(serialize = "lakekeeper_dataset")]
+    Dataset,
     #[strum(serialize = "lakekeeper_catalog_tag")]
     Tag,
     ModelVersion,

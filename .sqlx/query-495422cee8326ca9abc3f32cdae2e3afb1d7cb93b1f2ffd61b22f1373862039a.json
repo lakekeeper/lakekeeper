@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM dataset_ref\n           WHERE warehouse_id = $1 AND dataset_id = $2 AND name = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "495422cee8326ca9abc3f32cdae2e3afb1d7cb93b1f2ffd61b22f1373862039a"
+}

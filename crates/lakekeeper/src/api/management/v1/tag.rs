@@ -18,26 +18,26 @@ use crate::{
     service::{
         ApplyTagError, ArcProjectId, CachePolicy, CatalogBackendError,
         CatalogCreateTagDefinitionRequest, CatalogStore, CatalogTableOps, CatalogTagOps,
-        CatalogWarehouseOps, ColumnNotFound, CreateTagDefinitionError, DeleteTagDefinitionError,
-        GenericTableId, InvalidTagDefinition, LoadTableError, NamespaceId, RemoveTagError, Result,
-        SecretStore, State, TableId, TabularId, TabularListFlags, TagAttachmentFilter,
-        TagDefinitionId, TagDefinitionReserved, TagId, TagNameNotFound, TagScope, TagSource,
-        TagTarget, TagTargetNotFound, TagValueKind, TagValueSpec, Transaction,
-        UpdateTagDefinitionError, UpdateTagDefinitionRequest as CatalogUpdateTagDefinitionRequest,
-        ViewId, WarehouseStatus,
+        CatalogWarehouseOps, ColumnNotFound, CreateTagDefinitionError, DatasetId,
+        DeleteTagDefinitionError, GenericTableId, InvalidTagDefinition, LoadTableError,
+        NamespaceId, RemoveTagError, Result, SecretStore, State, TableId, TabularId,
+        TabularListFlags, TagAttachmentFilter, TagDefinitionId, TagDefinitionReserved, TagId,
+        TagNameNotFound, TagScope, TagSource, TagTarget, TagTargetNotFound, TagValueKind,
+        TagValueSpec, Transaction, UpdateTagDefinitionError,
+        UpdateTagDefinitionRequest as CatalogUpdateTagDefinitionRequest, ViewId, WarehouseStatus,
         authz::{
-            AuthZError, AuthZGenericTableOps, AuthZProjectOps, AuthZTableOps, AuthZTagOps,
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, CatalogTagAction, CatalogViewAction, CatalogWarehouseAction,
-            GrantResource, GrantSpec, RequireTagActionError, emit_bootstrap_grants_async,
-            write_bootstrap_grants,
+            AuthZDatasetOps, AuthZError, AuthZGenericTableOps, AuthZProjectOps, AuthZTableOps,
+            AuthZTagOps, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
+            CatalogWarehouseAction, GrantResource, GrantSpec, RequireTagActionError,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         events::{
             APIEventContext,
             context::{
-                Unresolved, UserProvidedGenericTable, UserProvidedNamespace, UserProvidedTable,
-                UserProvidedView,
+                Unresolved, UserProvidedDataset, UserProvidedGenericTable, UserProvidedNamespace,
+                UserProvidedTable, UserProvidedView,
             },
         },
         is_reserved_tag_name, validate_scope_widening, validate_tag_name, validate_tag_scope,
@@ -397,6 +397,14 @@ pub enum TagAttachmentTarget {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
+    Dataset {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "dataset-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        dataset_id: DatasetId,
+    },
     Column {
         #[serde(rename = "warehouse-id")]
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
@@ -436,6 +444,10 @@ impl From<TagTarget> for TagAttachmentTarget {
                 TabularId::GenericTable(generic_table_id) => Self::GenericTable {
                     warehouse_id,
                     generic_table_id,
+                },
+                TabularId::Dataset(dataset_id) => Self::Dataset {
+                    warehouse_id,
+                    dataset_id,
                 },
             },
             // Column tags are only creatable on tables, so the parent is a table.
@@ -1479,6 +1491,121 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             event_ctx.emit_tag_removed();
         }
         Ok(())
+    }
+
+    async fn set_dataset_tag(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        tag_name: String,
+        request: SetTagRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<AppliedTag> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // -------------------- AUTHZ --------------------
+        let event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            dataset_id,
+            CatalogDatasetAction::ManageTags,
+        );
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let authz_result = authorize_set_dataset_tag::<A, C>(
+            &authorizer,
+            catalog_state,
+            &event_ctx,
+            dataset_id,
+            &project_id,
+            &tag_name,
+            request.value.as_deref(),
+        )
+        .await;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
+        let result = AppliedTag::new(&tag, &tag_definition);
+        let event_ctx = event_ctx.resolve((tag, tag_definition));
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
+        Ok(result)
+    }
+
+    async fn delete_dataset_tag(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        tag_name: String,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // -------------------- AUTHZ --------------------
+        let event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            dataset_id,
+            CatalogDatasetAction::ManageTags,
+        );
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let authz_result = authorize_delete_dataset_tag::<A, C>(
+            &authorizer,
+            catalog_state,
+            &event_ctx,
+            dataset_id,
+            &project_id,
+            &tag_name,
+        )
+        .await;
+        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        if let Some(removed) = removed {
+            let event_ctx = event_ctx.resolve(removed);
+            event_ctx.emit_tag_removed();
+        }
+        Ok(())
+    }
+
+    async fn list_dataset_tags(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        query: ListTagsQuery,
+    ) -> Result<ListTagsResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // -------------------- AUTHZ --------------------
+        let event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            dataset_id,
+            CatalogDatasetAction::GetMetadata,
+        );
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let authz_result = authorize_list_dataset_tags::<A, C>(
+            &authorizer,
+            catalog_state,
+            &event_ctx,
+            dataset_id,
+            &project_id,
+            query.effective(),
+        )
+        .await;
+        let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
+        Ok(tags)
     }
 
     async fn list_generic_table_tags(
@@ -2741,6 +2868,105 @@ async fn authorize_delete_generic_table_tag<A: Authorizer, C: CatalogStore>(
         target,
     )
     .await
+}
+
+async fn authorize_dataset_tag_target<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedDataset, Unresolved, CatalogDatasetAction>,
+    dataset_id: DatasetId,
+    request_project_id: &ProjectId,
+) -> Result<TagTarget, AuthZError> {
+    let warehouse_id = event_ctx.user_provided_entity().warehouse_id;
+    let (warehouse, _, _) = authorizer
+        .load_and_authorize_dataset_operation::<C>(
+            event_ctx.request_metadata(),
+            event_ctx.user_provided_entity(),
+            TabularListFlags::all(),
+            event_ctx.action().clone(),
+            catalog_state,
+        )
+        .await?;
+    ensure_target_in_project(warehouse.project_id.as_ref(), request_project_id)?;
+    Ok(TagTarget::Tabular {
+        warehouse_id,
+        tabular_id: TabularId::Dataset(dataset_id),
+    })
+}
+
+async fn authorize_set_dataset_tag<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedDataset, Unresolved, CatalogDatasetAction>,
+    dataset_id: DatasetId,
+    project_id: &ProjectId,
+    tag_name: &str,
+    value: Option<&str>,
+) -> Result<AppliedTagResult, AuthZError> {
+    let target = authorize_dataset_tag_target::<A, C>(
+        authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        dataset_id,
+        project_id,
+    )
+    .await?;
+    set_tag_on_target::<A, C>(
+        authorizer,
+        catalog_state,
+        event_ctx.request_metadata(),
+        project_id,
+        tag_name,
+        value,
+        target,
+    )
+    .await
+}
+
+async fn authorize_delete_dataset_tag<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedDataset, Unresolved, CatalogDatasetAction>,
+    dataset_id: DatasetId,
+    project_id: &ProjectId,
+    tag_name: &str,
+) -> Result<Option<TagWithDefinition>, AuthZError> {
+    let target = authorize_dataset_tag_target::<A, C>(
+        authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        dataset_id,
+        project_id,
+    )
+    .await?;
+    delete_tag_from_target::<A, C>(
+        authorizer,
+        catalog_state,
+        event_ctx.request_metadata(),
+        project_id,
+        tag_name,
+        target,
+    )
+    .await
+}
+
+async fn authorize_list_dataset_tags<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<UserProvidedDataset, Unresolved, CatalogDatasetAction>,
+    dataset_id: DatasetId,
+    project_id: &ProjectId,
+    effective: bool,
+) -> Result<ListTagsResponse, AuthZError> {
+    let target = authorize_dataset_tag_target::<A, C>(
+        authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        dataset_id,
+        project_id,
+    )
+    .await?;
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 async fn authorize_list_generic_table_tags<A: Authorizer, C: CatalogStore>(

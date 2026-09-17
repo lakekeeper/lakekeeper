@@ -152,6 +152,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
 ///
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
+#[allow(clippy::too_many_lines)]
 pub async fn new_full_router<
     C: CatalogStore,
     A: Authorizer + Clone,
@@ -172,10 +173,16 @@ pub async fn new_full_router<
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
 
-    let generic_table_routes = crate::api::data::v1::generic_tables::router::<
+    // Both data-plane resources live under `/lakekeeper/v1`; merge them into one
+    // router so the prefix is nested exactly once.
+    let data_plane_routes = crate::api::data::v1::generic_tables::router::<
         crate::server::CatalogServer<C, A, S>,
         State<A, C, S>,
-    >();
+    >()
+    .merge(crate::api::data::v1::datasets::router::<
+        crate::server::CatalogServer<C, A, S>,
+        State<A, C, S>,
+    >());
 
     let authorizer = state.v1_state.authz.clone();
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
@@ -200,7 +207,7 @@ pub async fn new_full_router<
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/lakekeeper/v1", generic_table_routes)
+        .nest("/lakekeeper/v1", data_plane_routes)
         // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
         // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
         // before `/health` is added so liveness/readiness probes are

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO dataset_snapshot\n                (warehouse_id, dataset_id, snapshot_id, parent_snapshot_id, location,\n                 status, is_checkpoint)\n            SELECT $1, $2, $3, $4, location, 'active', false\n            FROM dataset_snapshot WHERE warehouse_id = $1 AND snapshot_id = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0b7c15987800287805b136724bcb09ed27cfb334fbd9034781f9910632618df1"
+}

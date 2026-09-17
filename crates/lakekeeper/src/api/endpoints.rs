@@ -190,6 +190,23 @@ generate_endpoints! {
         LoadGenericTableCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials"),
     }
 
+    enum DatasetV1 {
+        CreateDataset(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets"),
+        ListDatasets(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets"),
+        LoadDataset(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}"),
+        DropDataset(DELETE, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}"),
+        ListDatasetRefs(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs"),
+        CreateDatasetRef(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs"),
+        MoveDatasetRef(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}"),
+        DeleteDatasetRef(DELETE, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}"),
+        ListDatasetFiles(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}/files"),
+        SetDatasetRefProtection(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}/protection"),
+        CommitDataset(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/branches/{branch}/commits"),
+        ImportDataset(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/import"),
+        LoadDatasetCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/credentials"),
+        RenameDataset(POST, "/lakekeeper/v1/{prefix}/datasets/rename"),
+    }
+
     enum Sign {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
@@ -249,6 +266,9 @@ generate_endpoints! {
         SetViewTag(PUT, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}"),
         DeleteViewTag(DELETE, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}"),
         ListViewTags(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags"),
+        SetDatasetTag(PUT, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/tags/{tag_name}"),
+        DeleteDatasetTag(DELETE, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/tags/{tag_name}"),
+        ListDatasetTags(GET, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/tags"),
         SetGenericTableTag(PUT, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags/{tag_name}"),
         DeleteGenericTableTag(DELETE, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags/{tag_name}"),
         ListGenericTableTags(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags"),
@@ -271,6 +291,8 @@ generate_endpoints! {
         ApplyTableGrants(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/grants"),
         ListViewGrants(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/grants"),
         ApplyViewGrants(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/grants"),
+        ListDatasetGrants(GET, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/grants"),
+        ApplyDatasetGrants(POST, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/grants"),
         ListGenericTableGrants(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants"),
         ApplyGenericTableGrants(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants"),
         // Reading and clearing a whole subtree at once. Separate routes rather than a
@@ -289,6 +311,7 @@ generate_endpoints! {
         GetNamespaceGrantablePrivileges(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/grantable-privileges"),
         GetTableGrantablePrivileges(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/grants/grantable-privileges"),
         GetViewGrantablePrivileges(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/grants/grantable-privileges"),
+        GetDatasetGrantablePrivileges(GET, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/grants/grantable-privileges"),
         GetGenericTableGrantablePrivileges(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants/grantable-privileges"),
         GetTagGrantablePrivileges(GET, "/management/v1/tag-definition/{tag_definition_id}/grants/grantable-privileges"),
         CreateWarehouse(POST, "/management/v1/warehouse"),
@@ -324,6 +347,9 @@ generate_endpoints! {
         GetViewProtection(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
+        GetDatasetActions(GET, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/actions"),
+        GetDatasetProtection(GET, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/protection"),
+        SetDatasetProtection(POST, "/management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/protection"),
         GetGenericTableActions(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions"),
         GetGenericTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
         SetGenericTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
@@ -461,6 +487,9 @@ mod test {
         let variants: Vec<Endpoint> = GenericTableV1Endpoint::iter().map(Into::into).collect_vec();
         all_variants.extend(variants);
 
+        let variants: Vec<Endpoint> = DatasetV1Endpoint::iter().map(Into::into).collect_vec();
+        all_variants.extend(variants);
+
         let endpoint_variants = Endpoint::iter().collect_vec();
 
         // Check no duplicates in all_variants
@@ -505,6 +534,8 @@ mod test {
         let exempt_config_paths = [
             "management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config",
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/dataset_checkpoint/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/dataset_import/config",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];
         // Load YAML files
@@ -512,6 +543,7 @@ mod test {
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
         let generic_table_yaml =
             include_str!("../../../../docs/docs/api/generic-table-open-api.yaml");
+        let dataset_yaml = include_str!("../../../../docs/docs/api/dataset-open-api.yaml");
 
         // Parse YAML files
         let management: Value =
@@ -520,6 +552,8 @@ mod test {
             serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
         let generic_table: Value =
             serde_norway::from_str(generic_table_yaml).expect("Failed to parse generic-table YAML");
+        let dataset: Value =
+            serde_norway::from_str(dataset_yaml).expect("Failed to parse dataset YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();
@@ -561,6 +595,23 @@ mod test {
 
         // Process generic-table YAML paths (already prefixed with /lakekeeper/v1)
         if let Value::Mapping(paths) = &generic_table["paths"] {
+            for (path, methods) in paths {
+                let path_str = path.as_str().expect("Path is not a string");
+                if let Value::Mapping(methods_map) = methods {
+                    for (method, _) in methods_map {
+                        let method_str = method.as_str().expect("Method is not a string");
+                        if method_str != "parameters" {
+                            let normalized_path = path_str.trim_start_matches('/');
+                            expected_endpoints
+                                .insert((method_str.to_uppercase(), normalized_path.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process dataset YAML paths (already prefixed with /lakekeeper/v1)
+        if let Value::Mapping(paths) = &dataset["paths"] {
             for (path, methods) in paths {
                 let path_str = path.as_str().expect("Path is not a string");
                 if let Value::Mapping(methods_map) = methods {

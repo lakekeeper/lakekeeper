@@ -13,7 +13,7 @@ use crate::{
         ResolvedWarehouse, SecretStore, State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
-            CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
             CatalogWarehouseAction, RequireWarehouseActionError,
         },
         events::{
@@ -91,6 +91,7 @@ where
                         CatalogViewAction::IncludeInList,
                         CatalogTableAction::IncludeInList,
                         CatalogGenericTableAction::IncludeInList,
+                        CatalogDatasetAction::IncludeInList,
                         None,
                     ),
                 ))

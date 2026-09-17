@@ -1,0 +1,138 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT ON (t.logical_key)\n            t.logical_key,\n            t.physical_path,\n            t.change AS \"change: DatasetManifestChange\",\n            t.etag,\n            t.size,\n            t.content_type,\n            t.checksum,\n            t.version_id,\n            t.last_modified\n        FROM unnest($2::uuid[]) WITH ORDINALITY AS a(snapshot_id, depth)\n        CROSS JOIN LATERAL (\n            SELECT m.logical_key, m.physical_path, m.change, m.etag, m.size,\n                   m.content_type, m.checksum, m.version_id, m.last_modified,\n                   a.depth AS depth\n            FROM dataset_manifest_entry m\n            WHERE m.warehouse_id = $1\n              AND m.snapshot_id = a.snapshot_id\n              AND ($3::text IS NULL OR m.logical_key > $3)\n            ORDER BY m.logical_key ASC\n            LIMIT $4\n        ) t\n        ORDER BY t.logical_key ASC, t.depth ASC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "logical_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "logical_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "physical_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "physical_path"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "change: DatasetManifestChange",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_manifest_change",
+            "kind": {
+              "Enum": [
+                "added",
+                "removed",
+                "modified"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "change"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "size",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "size"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "checksum",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "checksum"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "version_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "last_modified",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "last_modified"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "62403d09c47ffbedd2c8274d42eee56ba54069148c9cff695df14be841c77146"
+}

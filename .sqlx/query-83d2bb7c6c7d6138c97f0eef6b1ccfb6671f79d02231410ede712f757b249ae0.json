@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT constraints FROM dataset\n           WHERE warehouse_id = $1 AND dataset_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "constraints",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "dataset",
+            "name": "constraints"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "83d2bb7c6c7d6138c97f0eef6b1ccfb6671f79d02231410ede712f757b249ae0"
+}

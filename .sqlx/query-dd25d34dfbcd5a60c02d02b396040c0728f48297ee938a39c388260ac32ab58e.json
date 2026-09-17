@@ -43,7 +43,8 @@
                 "role",
                 "user",
                 "server",
-                "generic-table"
+                "generic-table",
+                "dataset"
               ]
             }
           }
