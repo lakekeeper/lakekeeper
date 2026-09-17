@@ -27,9 +27,18 @@ pub trait WarehouseAction
 where
     Self: CatalogAction + Clone + From<CatalogWarehouseAction> + Eq + PartialEq,
 {
+    /// Whether this is one of the grant-read actions, which double as visibility.
+    ///
+    /// A method because the subtree actions carry a per-request payload: no single
+    /// constructed value equals every form of them.
+    fn is_grant_read(&self) -> bool;
 }
 
-impl WarehouseAction for CatalogWarehouseAction {}
+impl WarehouseAction for CatalogWarehouseAction {
+    fn is_grant_read(&self) -> bool {
+        matches!(self, Self::ReadGrants | Self::ReadSubtreeGrants { .. })
+    }
+}
 
 // --------------------------- Errors ---------------------------
 #[derive(Debug, PartialEq, Eq)]
@@ -264,10 +273,7 @@ pub trait AuthzWarehouseOps: Authorizer {
                 is_allowed.then_some(warehouse).ok_or_else(|| {
                     AuthZWarehouseActionForbidden::new(user_provided_warehouse, &action).into()
                 })
-            } else if is_allowed
-                && (action == CatalogWarehouseAction::ReadGrants.into()
-                    || action == CatalogWarehouseAction::ReadSubtreeGrants.into())
-            {
+            } else if is_allowed && action.is_grant_read() {
                 // The grant-read actions double as visibility: reading who holds
                 // access discloses more than existence, so a caller granted one is not
                 // masked. Without this, a principal holding only grant administration

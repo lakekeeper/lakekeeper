@@ -43,7 +43,10 @@
 //! (resolution, can-see action, event context). A ninth level is the trigger to
 //! revisit.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, LazyLock},
+};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -74,8 +77,9 @@ use crate::{
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
             CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp,
             GrantResource, GrantRevokeCandidates, GrantRow, GrantSpec, GrantSubtreeFilter,
-            GrantSubtreeRoot, GrantTarget, PrivilegeDescriptor, RequireTagActionError,
-            ResourceType, RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
+            GrantSubtreePrincipal, GrantSubtreeRoot, GrantSubtreeScope, GrantSubtreeShape,
+            GrantTarget, PrivilegeDescriptor, RequireTagActionError, ResourceType,
+            RoleAssignee as AuthzRoleAssignee, SubtreeResourceTypes, UserOrRole as AuthzUserOrRole,
             UserOrRoleId,
         },
         events::{
@@ -1176,6 +1180,75 @@ fn subtree_filter(request: &RevokeSubtreeGrantsRequest) -> GrantSubtreeFilter {
     }
 }
 
+/// The store filter a subtree listing asks for.
+fn subtree_listing_filter(
+    query: &ListSubtreeGrantsQuery,
+    principal: Option<UserOrRoleId>,
+) -> GrantSubtreeFilter {
+    GrantSubtreeFilter {
+        include_root_level: query.include_root_level,
+        principal,
+        privileges: query.privilege.clone(),
+        resource_types: query.resource_type.clone(),
+        include_soft_deleted: query.include_soft_deleted,
+        created_before: query.created_before,
+    }
+}
+
+/// The scope the four subtree actions are asked with: what this call will actually do.
+///
+/// The only place a [`GrantSubtreeScope::Of`] is built, and it is built from the store
+/// filter the same call runs with — so the shape an authorizer fences on cannot drift
+/// from the shape the store reads. Both entry points reach it through their own
+/// `GrantSubtreeFilter`, which already carries the server-side defaults resolved (an
+/// omitted `include-root-level` is `true` by the time it is here), so the scope never
+/// describes the raw request where that differs from the effect.
+///
+/// A filter naming no resource type is recorded as the full set the root covers: empty
+/// means "every kind under here" to the store, and a policy reading it as "no kind"
+/// would allow the widest request of all.
+fn subtree_scope(root: GrantSubtreeRoot, filter: &GrantSubtreeFilter) -> GrantSubtreeScope {
+    let warehouse_level =
+        matches!(root, GrantSubtreeRoot::Warehouse { .. }) && filter.include_root_level;
+    let requested: BTreeSet<ResourceType> = filter.resource_types.iter().copied().collect();
+    // Naming no kind means every kind the root covers, which is what the fallback is.
+    let resource_types =
+        SubtreeResourceTypes::new(requested).unwrap_or_else(|_| covered_kinds(warehouse_level));
+    GrantSubtreeScope::Of(GrantSubtreeShape {
+        resource_types,
+        root_level: filter.include_root_level.into(),
+        principal: match filter.principal.as_ref() {
+            Some(principal) => GrantSubtreePrincipal::One(UserOrRole::from(principal)),
+            None => GrantSubtreePrincipal::Every {},
+        },
+    })
+}
+
+/// The kinds [`subtree_kinds`] names, in the scope's non-empty type.
+///
+/// Built from that function, so the set a policy is fenced on and the set the filter
+/// validators answer from are one fact. Built once, so the only fallible construction
+/// happens at load time over a constant.
+fn covered_kinds(include_warehouse_level: bool) -> SubtreeResourceTypes {
+    fn covered(include_warehouse_level: bool) -> SubtreeResourceTypes {
+        SubtreeResourceTypes::new(
+            subtree_kinds(include_warehouse_level)
+                .iter()
+                .copied()
+                .collect(),
+        )
+        .expect("every subtree root covers at least one resource kind")
+    }
+    static NAMESPACE_LEVEL: LazyLock<SubtreeResourceTypes> = LazyLock::new(|| covered(false));
+    static WAREHOUSE_LEVEL: LazyLock<SubtreeResourceTypes> = LazyLock::new(|| covered(true));
+
+    if include_warehouse_level {
+        WAREHOUSE_LEVEL.clone()
+    } else {
+        NAMESPACE_LEVEL.clone()
+    }
+}
+
 /// Read one page of the subtree and render it.
 ///
 /// `ReadSubtreeGrants` on the root covers every member, so the page is returned as read:
@@ -1184,19 +1257,10 @@ async fn list_subtree_and_render<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     root: GrantSubtreeRoot,
-    query: &ListSubtreeGrantsQuery,
-    principal: Option<UserOrRoleId>,
+    filter: &GrantSubtreeFilter,
     pagination: PaginationQuery,
 ) -> Result<ListSubtreeGrantsResponse> {
-    let filter = GrantSubtreeFilter {
-        include_root_level: query.include_root_level,
-        principal,
-        privileges: query.privilege.clone(),
-        resource_types: query.resource_type.clone(),
-        include_soft_deleted: query.include_soft_deleted,
-        created_before: query.created_before,
-    };
-    let page = C::list_grants_in_subtree(root, &filter, pagination, catalog_state).await?;
+    let page = C::list_grants_in_subtree(root, filter, pagination, catalog_state).await?;
     Ok(ListSubtreeGrantsResponse {
         grants: page
             .grants
@@ -1583,6 +1647,7 @@ async fn require_subtree_revoke_actions<A: Authorizer>(
     metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
     namespace: Option<&NamespaceHierarchy>,
+    scope: &GrantSubtreeScope,
 ) -> std::result::Result<(), AuthZError> {
     let (read, revoke) = if let Some(namespace) = namespace {
         tokio::try_join!(
@@ -1592,7 +1657,9 @@ async fn require_subtree_revoke_actions<A: Authorizer>(
                 warehouse,
                 &namespace.parents,
                 &namespace.namespace,
-                CatalogNamespaceAction::ReadSubtreeGrants,
+                CatalogNamespaceAction::ReadSubtreeGrants {
+                    scope: scope.clone()
+                },
             ),
             authorizer.is_allowed_namespace_action(
                 metadata,
@@ -1600,7 +1667,9 @@ async fn require_subtree_revoke_actions<A: Authorizer>(
                 warehouse,
                 &namespace.parents,
                 &namespace.namespace,
-                CatalogNamespaceAction::RevokeSubtreeGrants,
+                CatalogNamespaceAction::RevokeSubtreeGrants {
+                    scope: scope.clone()
+                },
             ),
         )?
     } else {
@@ -1609,13 +1678,17 @@ async fn require_subtree_revoke_actions<A: Authorizer>(
                 metadata,
                 None,
                 warehouse,
-                CatalogWarehouseAction::ReadSubtreeGrants,
+                CatalogWarehouseAction::ReadSubtreeGrants {
+                    scope: scope.clone()
+                },
             ),
             authorizer.is_allowed_warehouse_action(
                 metadata,
                 None,
                 warehouse,
-                CatalogWarehouseAction::RevokeSubtreeGrants,
+                CatalogWarehouseAction::RevokeSubtreeGrants {
+                    scope: scope.clone()
+                },
             ),
         )?
     };
@@ -1654,42 +1727,27 @@ async fn require_subtree_revoke_actions<A: Authorizer>(
 /// only by the batch size. Every removed grant gets its own `grant_revoked` record, so
 /// nothing is lost by keeping this event to the request.
 #[derive(Clone, Debug)]
-// Mirrors the request's flags one-to-one; see the note on the request struct.
-#[allow(clippy::struct_excessive_bools)]
 pub struct RevokeSubtreeGrants {
-    principal: Option<String>,
+    // The same scope the gate is asked with, so the audit record and the authorization
+    // decision describe one request: it carries the effective resource kinds, the
+    // root-level reach and the principal.
+    scope: GrantSubtreeScope,
     privileges: Vec<String>,
-    resource_types: Vec<String>,
     created_before: Option<String>,
     allow_partial: bool,
-    include_root_level: bool,
     dry_run: bool,
 }
 
 impl RevokeSubtreeGrants {
-    fn of(request: &RevokeSubtreeGrantsRequest) -> Self {
+    fn of(request: &RevokeSubtreeGrantsRequest, scope: &GrantSubtreeScope) -> Self {
         let mut privileges = request.privilege.clone();
         privileges.sort_unstable();
         privileges.dedup();
-        let mut resource_types: Vec<String> = request
-            .resource_type
-            .iter()
-            .map(|kind| kind.as_str().to_string())
-            .collect();
-        resource_types.sort_unstable();
-        resource_types.dedup();
         Self {
-            // Prefixed by kind, matching the wire discriminator, so a user id and a role
-            // id that coincide stay distinguishable in the log.
-            principal: request.principal.as_ref().map(|principal| match principal {
-                UserOrRole::User(user_id) => format!("user:{user_id}"),
-                UserOrRole::Role(assignee) => format!("role:{}", assignee.role_id()),
-            }),
+            scope: scope.clone(),
             privileges,
-            resource_types,
             created_before: request.created_before.map(|at| at.to_rfc3339()),
             allow_partial: request.allow_partial,
-            include_root_level: request.include_root_level,
             dry_run: request.dry_run,
         }
     }
@@ -1699,20 +1757,13 @@ impl APIEventActions for RevokeSubtreeGrants {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         let mut descriptor = ActionDescriptor::builder()
             .action_name(ManagementAction::RevokeSubtreeGrants.into())
+            .context_pairs(self.scope.context())
             .context_list(ActionContextKey::Privileges, self.privileges.clone())
-            .context_list(ActionContextKey::ResourceTypes, self.resource_types.clone())
             .context_string(
                 ActionContextKey::AllowPartial,
                 self.allow_partial.to_string(),
             )
-            .context_string(
-                ActionContextKey::IncludeRootLevel,
-                self.include_root_level.to_string(),
-            )
             .context_string(ActionContextKey::DryRun, self.dry_run.to_string());
-        if let Some(principal) = &self.principal {
-            descriptor = descriptor.context_string(ActionContextKey::Principal, principal.clone());
-        }
         if let Some(created_before) = &self.created_before {
             descriptor =
                 descriptor.context_string(ActionContextKey::CreatedBefore, created_before.clone());
@@ -1827,19 +1878,27 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_filter_privileges(&authorizer, kinds, &query.privilege)?;
         validate_filter_resource_types(kinds, &query.resource_type)?;
 
+        let root = GrantSubtreeRoot::Namespace {
+            warehouse_id,
+            namespace_id,
+        };
+        let filter = subtree_listing_filter(&query, principal);
+        let required = CatalogNamespaceAction::ReadSubtreeGrants {
+            scope: subtree_scope(root, &filter),
+        };
         let event_ctx = APIEventContext::for_namespace(
             request_metadata.into(),
             context.v1_state.events.clone(),
             warehouse_id,
             namespace_id,
-            CatalogNamespaceAction::ReadSubtreeGrants,
+            required.clone(),
         );
         let authz_result = async {
             let (warehouse, _) = authorizer
                 .load_and_authorize_namespace_action::<C>(
                     event_ctx.request_metadata(),
                     event_ctx.user_provided_entity().clone(),
-                    CatalogNamespaceAction::ReadSubtreeGrants,
+                    required,
                     CachePolicy::Use,
                     catalog_state.clone(),
                 )
@@ -1851,18 +1910,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
         require_bounded_subtree::<C>(warehouse_id, namespace_id, catalog_state.clone()).await?;
 
-        list_subtree_and_render::<A, C>(
-            &authorizer,
-            catalog_state,
-            GrantSubtreeRoot::Namespace {
-                warehouse_id,
-                namespace_id,
-            },
-            &query,
-            principal,
-            pagination,
-        )
-        .await
+        list_subtree_and_render::<A, C>(&authorizer, catalog_state, root, &filter, pagination).await
     }
 
     /// List the direct grants held anywhere under a warehouse, the warehouse's own
@@ -1883,11 +1931,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_filter_privileges(&authorizer, kinds, &query.privilege)?;
         validate_filter_resource_types(kinds, &query.resource_type)?;
 
+        let root = GrantSubtreeRoot::Warehouse { warehouse_id };
+        let filter = subtree_listing_filter(&query, principal);
+        let required = CatalogWarehouseAction::ReadSubtreeGrants {
+            scope: subtree_scope(root, &filter),
+        };
         let event_ctx = APIEventContext::for_warehouse(
             request_metadata.into(),
             context.v1_state.events.clone(),
             warehouse_id,
-            CatalogWarehouseAction::ReadSubtreeGrants,
+            required.clone(),
         );
         // Active only, unlike the warehouse's own grant listing. Deactivating a warehouse
         // is documented to hide its children's grants, and a listing that walks every
@@ -1899,7 +1952,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     event_ctx.request_metadata(),
                     warehouse_id,
                     warehouse,
-                    CatalogWarehouseAction::ReadSubtreeGrants,
+                    required,
                 )
                 .await?;
             ensure_warehouse_in_project(warehouse_id, &resolved.project_id, &project_id)?;
@@ -1908,15 +1961,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await;
         let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
 
-        list_subtree_and_render::<A, C>(
-            &authorizer,
-            catalog_state,
-            GrantSubtreeRoot::Warehouse { warehouse_id },
-            &query,
-            principal,
-            pagination,
-        )
-        .await
+        list_subtree_and_render::<A, C>(&authorizer, catalog_state, root, &filter, pagination).await
     }
 
     /// Revoke the direct grants held anywhere under a namespace, bounded per call.
@@ -1940,12 +1985,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             warehouse_id,
             namespace_id,
         };
+        let filter = subtree_filter(&request);
+        let scope = subtree_scope(root, &filter);
         let event_ctx = APIEventContext::for_namespace(
             request_metadata.into(),
             events.clone(),
             warehouse_id,
             namespace_id,
-            RevokeSubtreeGrants::of(&request),
+            RevokeSubtreeGrants::of(&request, &scope),
         );
         let authz_result = async {
             // Presence, then the root's subtree actions. Both before anything else, so a
@@ -1969,12 +2016,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 event_ctx.request_metadata(),
                 &warehouse,
                 Some(&namespace),
+                &scope,
             )
             .await?;
             // Inside this one result, so a store failure is recorded and reported rather
             // than escaping the gate it happened under.
             require_bounded_subtree::<C>(warehouse_id, namespace_id, catalog_state.clone()).await?;
-            let filter = subtree_filter(&request);
             let candidates = C::select_subtree_grant_candidates_impl(
                 root,
                 &filter,
@@ -2020,11 +2067,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validate_filter_resource_types(kinds, &request.resource_type)?;
 
         let root = GrantSubtreeRoot::Warehouse { warehouse_id };
+        let filter = subtree_filter(&request);
+        let scope = subtree_scope(root, &filter);
         let event_ctx = APIEventContext::for_warehouse(
             request_metadata.into(),
             events.clone(),
             warehouse_id,
-            RevokeSubtreeGrants::of(&request),
+            RevokeSubtreeGrants::of(&request, &scope),
         );
         // As `apply_warehouse_grants` resolves it: inactive included, because stripping
         // access from a deactivated warehouse is the point of the operation, and uncached,
@@ -2037,7 +2086,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await;
         let authz_result = async {
-            let filter = subtree_filter(&request);
             // Presence, then the root's subtree actions; see the namespace-rooted twin.
             let resolved = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
             ensure_warehouse_in_project(warehouse_id, &resolved.project_id, &project_id)?;
@@ -2046,6 +2094,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 event_ctx.request_metadata(),
                 &resolved,
                 None,
+                &scope,
             )
             .await?;
             let candidates = C::select_subtree_grant_candidates_impl(
@@ -3625,7 +3674,7 @@ mod tests {
         api::management::v1::{RoleId, check::RoleAssignee},
         request_metadata::RequestMetadataTestBuilder,
         service::{
-            authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
+            authz::{AllowAllAuthorizer, RootLevelGrants, tests::HidingAuthorizer},
             events::types::authorization::AuthorizationFailureSource,
         },
     };
@@ -3650,6 +3699,130 @@ mod tests {
         assert_eq!(with(Some(0)), 1);
         assert_eq!(with(Some(10)), 10);
         assert_eq!(with(Some(999_999)), MAX_GRANTS_PER_SUBTREE_REVOKE);
+    }
+
+    fn kinds(kinds: &[ResourceType]) -> SubtreeResourceTypes {
+        SubtreeResourceTypes::new(kinds.iter().copied().collect()).expect("non-empty kinds")
+    }
+
+    fn warehouse_root() -> GrantSubtreeRoot {
+        GrantSubtreeRoot::Warehouse {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+        }
+    }
+
+    /// The scope an authorizer is fenced on states what the call will do. A body that
+    /// omits `include-root-level` still sweeps the root, and one that names no
+    /// `resource-type` still reaches every kind under it — a scope echoing the raw
+    /// request would offer a policy an empty kind list for the widest request there is.
+    /// Driven from a deserialized body, so the server-side defaults are part of what is
+    /// asserted.
+    #[test]
+    fn the_scope_states_what_an_unfiltered_request_will_do() {
+        let request: RevokeSubtreeGrantsRequest =
+            serde_json::from_value(serde_json::json!({})).expect("an empty revoke body is valid");
+        assert_eq!(
+            subtree_scope(warehouse_root(), &subtree_filter(&request)),
+            GrantSubtreeScope::Of(GrantSubtreeShape {
+                resource_types: kinds(WAREHOUSE_SUBTREE_KINDS),
+                root_level: RootLevelGrants::Included,
+                principal: GrantSubtreePrincipal::Every {},
+            })
+        );
+    }
+
+    /// Keeping the root's own grants also puts the warehouse kind out of reach, and the
+    /// scope says so — the two travel together, and a policy reading only `root_level`
+    /// would still have to infer it.
+    #[test]
+    fn excluding_the_root_level_drops_the_warehouse_kind() {
+        let request: RevokeSubtreeGrantsRequest =
+            serde_json::from_value(serde_json::json!({ "include-root-level": false }))
+                .expect("a revoke body naming include-root-level is valid");
+        assert_eq!(
+            subtree_scope(warehouse_root(), &subtree_filter(&request)),
+            GrantSubtreeScope::Of(GrantSubtreeShape {
+                resource_types: kinds(NAMESPACE_SUBTREE_KINDS),
+                root_level: RootLevelGrants::Excluded,
+                principal: GrantSubtreePrincipal::Every {},
+            })
+        );
+    }
+
+    /// The audit record of a revoke and the authorization decision for it describe one
+    /// request: the event carries the same scope the gate is asked with, so its kind set
+    /// is the effective one and its principal is always stated. Nothing else pins these
+    /// keys or values — a change here is invisible to the compiler.
+    #[test]
+    fn the_revoke_event_records_the_effective_scope() {
+        fn context(body: &serde_json::Value) -> Vec<(String, String)> {
+            let request: RevokeSubtreeGrantsRequest =
+                serde_json::from_value(body.clone()).expect("a valid revoke body");
+            let scope = subtree_scope(warehouse_root(), &subtree_filter(&request));
+            let actions = RevokeSubtreeGrants::of(&request, &scope).event_actions();
+            let [descriptor] = actions.as_slice() else {
+                panic!("a revoke emits one action")
+            };
+            assert_eq!(descriptor.action_name, "revoke_subtree_grants");
+            descriptor
+                .context
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.to_string()))
+                .collect()
+        }
+
+        let unfiltered = context(&serde_json::json!({}));
+        assert!(
+            unfiltered.contains(&(
+                "resource_types".to_string(),
+                "[warehouse, namespace, table, view, generic-table]".to_string()
+            )),
+            "the unfiltered request records every kind it will reach: {unfiltered:?}"
+        );
+        assert!(
+            unfiltered.contains(&("root_level".to_string(), "included".to_string())),
+            "an omitted include-root-level records as included: {unfiltered:?}"
+        );
+        assert!(
+            unfiltered.contains(&("principal".to_string(), "every".to_string())),
+            "covering every principal is stated, never left out: {unfiltered:?}"
+        );
+
+        let narrowed = context(&serde_json::json!({
+            "principal": {"user": "oidc~alice"},
+            "resource-type": ["table"],
+            "include-root-level": false,
+        }));
+        assert!(
+            narrowed.contains(&("resource_types".to_string(), "[table]".to_string()))
+                && narrowed.contains(&("root_level".to_string(), "excluded".to_string()))
+                && narrowed.contains(&("principal".to_string(), "user:oidc~alice".to_string())),
+            "a narrowed request records exactly its narrowing: {narrowed:?}"
+        );
+    }
+
+    /// A narrowed listing — one principal, one kind — is the access review a policy may
+    /// want to allow where it refuses a full enumeration, so both narrowings reach the
+    /// authorizer.
+    #[test]
+    fn a_narrowed_listing_carries_its_principal_and_kind() {
+        let query = ListSubtreeGrantsQuery {
+            resource_type: vec![ResourceType::Table],
+            ..ListSubtreeGrantsQuery::default()
+        };
+        let root = GrantSubtreeRoot::Namespace {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+            namespace_id: NamespaceId::new(uuid::Uuid::nil()),
+        };
+        let principal = UserOrRoleId::from(&alice());
+        assert_eq!(
+            subtree_scope(root, &subtree_listing_filter(&query, Some(principal))),
+            GrantSubtreeScope::Of(GrantSubtreeShape {
+                resource_types: kinds(&[ResourceType::Table]),
+                root_level: RootLevelGrants::Included,
+                principal: GrantSubtreePrincipal::One(alice()),
+            })
+        );
     }
 
     /// A filter naming a privilege no kind under the root publishes is a typo, and

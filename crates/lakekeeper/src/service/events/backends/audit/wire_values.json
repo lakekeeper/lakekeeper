@@ -270,6 +270,12 @@
       "upgrade-format-version"
     ]
   },
+  "root_level": {
+    "RootLevelGrants": [
+      "excluded",
+      "included"
+    ]
+  },
   "privilege_source": {
     "PrivilegeSource": [
       "authorizer",

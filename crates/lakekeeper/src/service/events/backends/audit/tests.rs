@@ -1793,7 +1793,7 @@ fn derived_wire_values() -> serde_json::Value {
     use crate::{
         request_metadata::PrivilegeSource,
         service::{
-            authz::{DeterminingFactor, PolicyEffect, ResourceType},
+            authz::{DeterminingFactor, PolicyEffect, ResourceType, RootLevelGrants},
             events::{AuthorizationFailureReason, context::EntityType},
         },
     };
@@ -1852,6 +1852,12 @@ fn derived_wire_values() -> serde_json::Value {
         "update_kinds": owner_map(vec![(
             "TableUpdateKind",
             sorted_strings(<TableUpdateKind as strum::VariantNames>::VARIANTS.to_vec()),
+        )]),
+        // `root_level` is the other action-context VALUE: `ActionContextKey` pins the
+        // field, and these are the two labels that may appear inside it.
+        "root_level": owner_map(vec![(
+            "RootLevelGrants",
+            sorted_strings(<RootLevelGrants as strum::VariantNames>::VARIANTS.to_vec()),
         )]),
         "privilege_source": owner_map(vec![(
             "PrivilegeSource",

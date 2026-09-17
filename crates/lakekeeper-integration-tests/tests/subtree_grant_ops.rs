@@ -2092,10 +2092,9 @@ async fn denying_tree(
 async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
-    ctx.v1_state.authz.block_action(&format!(
-        "namespace:{:?}",
-        lakekeeper::service::authz::CatalogNamespaceAction::RevokeSubtreeGrants
-    ));
+    ctx.v1_state
+        .authz
+        .block_action("namespace:RevokeSubtreeGrants");
 
     let err = DenyServer::revoke_namespace_subtree_grants(
         warehouse_id,
@@ -2133,10 +2132,9 @@ async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
 async fn a_warehouse_revoke_without_subtree_read_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
-    ctx.v1_state.authz.block_action(&format!(
-        "warehouse:{:?}",
-        lakekeeper::service::authz::CatalogWarehouseAction::ReadSubtreeGrants
-    ));
+    ctx.v1_state
+        .authz
+        .block_action("warehouse:ReadSubtreeGrants");
 
     let err = DenyServer::revoke_warehouse_subtree_grants(
         warehouse_id,
@@ -2171,10 +2169,9 @@ async fn a_warehouse_revoke_without_subtree_read_is_refused(pool: PgPool) {
 async fn a_warehouse_revoke_without_revoke_authority_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
-    ctx.v1_state.authz.block_action(&format!(
-        "warehouse:{:?}",
-        lakekeeper::service::authz::CatalogWarehouseAction::RevokeSubtreeGrants
-    ));
+    ctx.v1_state
+        .authz
+        .block_action("warehouse:RevokeSubtreeGrants");
 
     let err = DenyServer::revoke_warehouse_subtree_grants(
         warehouse_id,
@@ -2211,10 +2208,9 @@ async fn a_warehouse_revoke_without_revoke_authority_is_refused(pool: PgPool) {
 #[sqlx::test]
 async fn a_warehouse_listing_without_subtree_read_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, _child) = denying_tree(pool, &[]).await;
-    ctx.v1_state.authz.block_action(&format!(
-        "warehouse:{:?}",
-        lakekeeper::service::authz::CatalogWarehouseAction::ReadSubtreeGrants
-    ));
+    ctx.v1_state
+        .authz
+        .block_action("warehouse:ReadSubtreeGrants");
 
     let err = DenyServer::list_warehouse_subtree_grants(
         warehouse_id,
@@ -2300,10 +2296,9 @@ async fn subtree_read_without_warehouse_visibility_lists(pool: PgPool) {
 async fn a_revoke_without_grant_read_on_the_root_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
-    ctx.v1_state.authz.block_action(&format!(
-        "namespace:{:?}",
-        lakekeeper::service::authz::CatalogNamespaceAction::ReadSubtreeGrants
-    ));
+    ctx.v1_state
+        .authz
+        .block_action("namespace:ReadSubtreeGrants");
 
     let err = DenyServer::revoke_namespace_subtree_grants(
         warehouse_id,

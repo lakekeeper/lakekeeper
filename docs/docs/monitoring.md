@@ -35,17 +35,17 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased — except for `table_metadata`, where a low hit rate is expected, and `admission_enforce`, where a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
 
 Role-membership cache invalidation emits one additional metric:
 
 | Metric                                                                                | Type      | Labels      | Description |
 |---------------------------------------------------------------------------------------|-----------|-------------|-----|
-| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users whose cached role assignments were invalidated by a single role-to-role membership edge change (`operation`: `add` / `remove`) |
+| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users invalidated by one role-to-role membership edge change |
 
-The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
+`operation` is `add` or `remove`. The user-assignments cache stores a fully-expanded transitive closure. One edge change can therefore invalidate many users at once. A high p99 means a single edit fans out widely. Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
 
-The same edge change clears the role-ancestors cache in full, since it alters the ancestors of the member role and of everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance, so it falls after a clear rather than at the moment of one — do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all, since OpenFGA resolves role nesting from its own tuples and never reads this cache: alert on absence there, not on a zero value.
+The same edge change clears the role-ancestors cache in full. It alters the ancestors of the member role and everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance. It falls after a clear rather than at the moment of one, so do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all. OpenFGA resolves role nesting from its own tuples and never reads this cache. Alert on absence there, not on a zero value.
 
 #### Table Metadata Cache { #table-metadata-cache .lkp }
 
@@ -68,26 +68,28 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 
 | Metric                                                                                             | Type      | Labels                   | Description |
 |----------------------------------------------------------------------------------------------------|-----------|--------------------------|-----|
-| <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. Emitted only for providers with an external backend (e.g. LDAP); the OIDC token provider has no external dependency and reports no series. |
-| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). Emitted by external-backed providers (LDAP). |
-| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. Emitted by LDAP providers and by the OIDC token provider when `persist_token_roles` is enabled. |
-| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts (LDAP providers only), labelled `success` or `error`. |
+| <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Failures writing fresh roles back to the Postgres catalog cache |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts |
 
-**`outcome` values for `lakekeeper_role_provider_get_roles_duration_seconds`** (histogram label):
+Only providers with an external backend (LDAP) emit `up`, the role-lookup histogram and the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+
+`outcome` values on the role-lookup histogram:
 
 | Value                         | Meaning                                      |
 |-------------------------------|----------------------------------------------|
 | `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
 | `success`                     | Fresh roles were fetched from the external provider and synced to Postgres. |
-| `stale_fallback` | The external provider was unreachable, but previously cached roles from Postgres were served instead. Authorization continues to work. |
+| `stale_fallback` | The external provider was unreachable; cached roles from Postgres were served instead. |
 | `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
 
-**Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle (to drive reconnection attempts and keep `lakekeeper_role_provider_up` current), but an unreachable provider does **not** cause the pod to fail its liveness or readiness probe. Lakekeeper continues serving the roles it last synced to Postgres (`stale_fallback`), so authorization keeps working during a provider outage — at the cost of potentially stale group memberships.
+**Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle, which drives reconnection attempts and keeps `lakekeeper_role_provider_up` current. An unreachable provider does **not** fail the pod's liveness or readiness probe. Lakekeeper keeps serving the roles it last synced to Postgres (`stale_fallback`). Authorization therefore keeps working during a provider outage, at the cost of potentially stale group memberships.
 
-This contrasts with the Postgres connection: if Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`; it returns `503 Service Unavailable` when the aggregate state is `error` or `unknown`.
+The Postgres connection differs. If Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`. It returns `503 Service Unavailable` when that state is `error` or `unknown`.
 
 !!! tip "Alerting on role provider health"
-    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported — the series exists only for external-backed providers (LDAP) and only after the first health-check cycle, so pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` indicates failures writing roles back to Postgres — for an LDAP provider a database connectivity/permissions problem; for the OIDC token provider (`persist_token_roles`) a failure persisting token roles for definer-view reuse.
+    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for external-backed providers (LDAP), and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
 
 ### Admission Gate Metrics
 
@@ -95,23 +97,45 @@ This contrasts with the Postgres connection: if Postgres becomes unreachable, th
 
 | Metric                                                                              | Type      | Labels            | Description |
 |-------------------------------------------------------------------------------------|-----------|-------------------|-----|
-| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code> | Histogram | `gate`, `outcome` | Latency the caller paid for this gate, cache hits included. `outcome`: `admitted`, `skipped` (the gate does not govern this request — for example, it is scoped to another identity provider), `forbidden` (`403`), `unavailable` (failed closed, `503` with `Retry-After`) |
+| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code> | Histogram | `gate`, `outcome` | Latency the caller paid for this gate, cache hits included |
+
+`outcome` values:
+
+- `admitted`
+- `skipped` — the gate does not govern this request, for example when it is scoped to another identity provider
+- `forbidden` — `403`
+- `unavailable` — failed closed, `503` with `Retry-After`
 
 !!! tip "Alerting on any admission gate"
-    In `axum_http_requests_total{status="403"}` an admission denial is indistinguishable from an authorization denial — use this metric's `outcome` instead. Split latency quantiles by `outcome`: cache hits and `skipped` sit in the lowest bucket, so an un-split p99 stays flat even when every cache miss pays the full timeout. A gate that is not running emits no series at all, so confirm enforcement from the startup log, which names the identity provider each gate governs.
+    In `axum_http_requests_total{status="403"}` an admission denial looks identical to an authorization denial. Use this metric's `outcome` instead. Split latency quantiles by `outcome`. Cache hits and `skipped` sit in the lowest bucket, so an un-split p99 stays flat even when every cache miss pays the full timeout. A gate that is not running emits no series at all. Confirm enforcement from the startup log, which names the identity provider each gate governs.
 
 #### External Enforce Gate { #external-enforce-gate .lkp }
 
 | Metric                                                                                      | Type      | Labels                                | Description |
 |---------------------------------------------------------------------------------------------|-----------|---------------------------------------|-----|
-| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>call_duration_seconds</code> | Histogram | `check`, `outcome`                    | One sample per `POST` to your enforce endpoint, so `_count` is the load on it rather than the request rate — cached decisions make no call. Buckets stop at 10s. `outcome`: `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
-| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>decisions_total</code>       | Counter   | `check`, `kind`, `decision`, `source` | One per check per answered request, cache replays included; a check that failed closed records none. `kind`: `gating` / `role_granting`. `decision`: `allow` / `deny`. `source`: `cache` / `upstream` |
-| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>fail_closed_total</code>     | Counter   | `reason`                              | No verdict obtainable. `upstream` counts per failed check, so one rejected request increments once per configured check. `no_bearer_token` and `no_principal` (a `403`, not a `503`) are unreachable on the shipped server; nonzero means a [custom build](./customize.md) runs the gate unauthenticated |
-| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>roles_dropped_total</code>   | Counter   | `reason`                              | Roles resolved, then dropped. Only `no_project`: the request named no project to scope them to, so the caller ran with fewer privileges than your endpoint granted |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>call_duration_seconds</code> | Histogram | `check`, `outcome`                    | Duration of one `POST` to your enforce endpoint |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>decisions_total</code>       | Counter   | `check`, `kind`, `decision`, `source` | One per check per answered request, cache replays included |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>fail_closed_total</code>     | Counter   | `reason` | No verdict obtainable for a check |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>roles_dropped_total</code>   | Counter   | `reason` | Roles resolved, then dropped |
 
-A `role_granting` `deny` withholds a role but still admits the request, so no error series moves, and these metrics name no principal. To find who lost a role, read the audit record `operation="admission_enforce_check"` (see [Logging](./logging.md#operational-audit-events)).
+Label values:
 
-Decisions are cached per `(subject, check)` and report as `cache_type="admission_enforce"` in the [cache metrics](#cache-metrics). `cache_ttl_secs` bounds how long an entitlement change takes to apply, in both directions: a revoked entitlement keeps working, and a new one keeps being refused, until the entry expires. The cache is per replica, with no invalidation and no flush. Size `cache_max_entries` for active subjects × checks.
+| Label                                 | Values |
+|---------------------------------------|--------|
+| `kind`                                | `gating`, `role_granting` |
+| `decision`                            | `allow`, `deny` |
+| `source`                              | `cache`, `upstream` |
+| `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
+| `reason` on `fail_closed_total`       | `upstream`, `no_bearer_token`, `no_principal` |
+| `reason` on `roles_dropped_total`     | `no_project` |
+
+Buckets stop at 10s. Cached decisions make no call, so `_count` measures load on your endpoint, not the request rate.
+
+A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times. `no_bearer_token` and `no_principal` (a `403`, not a `503`) are unreachable on the shipped server. Nonzero means a [custom build](./customize.md) runs the gate unauthenticated. `no_project` means the request named no project to scope roles to, so the caller ran with fewer privileges than your endpoint granted.
+
+A `role_granting` `deny` withholds a role but still admits the request, so no error series moves. These metrics name no principal. To find who lost a role, read the audit record `operation="admission_enforce_check"` (see [Logging](./logging.md#operational-audit-events)).
+
+Decisions are cached per `(subject, check)` and report as `cache_type="admission_enforce"` in the [cache metrics](#cache-metrics). `cache_ttl_secs` bounds how long an entitlement change takes to apply, in both directions. A revoked entitlement keeps working, and a new one keeps being refused, until the entry expires. The cache is per replica, with no invalidation and no flush. Size `cache_max_entries` for active subjects × checks.
 
 ## Prometheus Integration
 
@@ -120,7 +144,7 @@ Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults:
 | Variable                                                      | Description  |
 |---------------------------------------------------------------|--------------|
 | <code class="selectable">LAKEKEEPER__<wbr>METRICS__PORT</code> | Port Lakekeeper listens on for the metrics endpoint (default `9000`) |
-| <code class="selectable">LAKEKEEPER__<wbr>BIND_IP</code>      | Listener bind address for metrics, REST API, and Management API (default `0.0.0.0`; use a specific IP to restrict access) |
+| <code class="selectable">LAKEKEEPER__<wbr>BIND_IP</code>      | Listener bind address for metrics, REST API, and Management API (default `0.0.0.0`) |
 
 ```yaml title="Example Prometheus scrape configuration"
 scrape_configs:

@@ -308,6 +308,14 @@ impl std::fmt::Display for ContextValue {
     pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
     }
+    /// Append the context a value describes about itself.
+    #[allow(unreachable_pub)]
+    pub fn context_pairs(
+        &mut self,
+        pairs: impl IntoIterator<Item = (ActionContextKey, ContextValue)>,
+    ) {
+        self.context.extend(pairs);
+    }
 ))]
 pub struct ActionDescriptor {
     pub action_name: &'static str,
@@ -683,6 +691,196 @@ impl CatalogAction for CatalogRoleAction {
     }
 }
 
+/// Whether a subtree grant operation extends to the addressed resource itself, alongside
+/// everything below it. Set from the request's `include-root-level`.
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum RootLevelGrants {
+    /// The request's range extends to the addressed resource itself. The kinds it
+    /// actually reaches are in `resource_types`; a kind filter can still exclude the
+    /// root's own kind.
+    Included,
+    /// Only grants held below the addressed resource are in range.
+    Excluded,
+}
+
+impl From<bool> for RootLevelGrants {
+    fn from(included: bool) -> Self {
+        if included {
+            Self::Included
+        } else {
+            Self::Excluded
+        }
+    }
+}
+
+impl RootLevelGrants {
+    /// The label used on the wire and in action context.
+    ///
+    /// Derived through `strum`, not spelled out: the value is committed to a wire-value
+    /// manifest, and a hand-written arm would let a renamed variant keep the old literal
+    /// while the manifest recorded the new one.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// A subtree scope that named no resource kind.
+#[derive(Debug, thiserror::Error)]
+#[error("A subtree scope must name at least one resource type")]
+pub struct NoSubtreeResourceTypes;
+
+/// The resource kinds a subtree grant operation reaches. Always at least one, and always
+/// a subset of the kinds the addressed resource covers.
+// A newtype with a private set so the empty case is unconstructable, and `try_from` so a
+// `/check` body cannot introduce it either: an empty list reads as "no kinds" to a policy
+// while meaning "every kind" to the store — an inverted fence on the widest request there
+// is.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeSet<ResourceType>", into = "BTreeSet<ResourceType>")]
+pub struct SubtreeResourceTypes(BTreeSet<ResourceType>);
+
+impl SubtreeResourceTypes {
+    /// The kinds in scope.
+    ///
+    /// # Errors
+    /// When `kinds` is empty.
+    pub fn new(kinds: BTreeSet<ResourceType>) -> std::result::Result<Self, NoSubtreeResourceTypes> {
+        if kinds.is_empty() {
+            return Err(NoSubtreeResourceTypes);
+        }
+        Ok(Self(kinds))
+    }
+
+    /// The kinds, in a stable order.
+    #[must_use]
+    pub fn as_set(&self) -> &BTreeSet<ResourceType> {
+        &self.0
+    }
+}
+
+impl TryFrom<BTreeSet<ResourceType>> for SubtreeResourceTypes {
+    type Error = NoSubtreeResourceTypes;
+
+    fn try_from(kinds: BTreeSet<ResourceType>) -> std::result::Result<Self, Self::Error> {
+        Self::new(kinds)
+    }
+}
+
+impl From<SubtreeResourceTypes> for BTreeSet<ResourceType> {
+    fn from(kinds: SubtreeResourceTypes) -> Self {
+        kinds.0
+    }
+}
+
+/// Which principals' grants a subtree operation covers.
+// Both cases are named and one of them is always on the wire: an omitted field would
+// encode the widest case as an absence, and a policy engine that errors on a missing
+// attribute skips the rule that reads it — which turns a `forbid` into an allow.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSubtreePrincipal {
+    /// Every principal holding a grant in range.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrincipalEvery"))]
+    Every {},
+    /// The single principal the request is narrowed to.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrincipalOne"))]
+    One(AuthzUserOrRole),
+}
+
+/// The shape of a concrete subtree grant request: what it reaches, and how far.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub struct GrantSubtreeShape {
+    /// Every resource kind whose grants the request reaches. Never empty, and always a
+    /// subset of the kinds the addressed resource covers: a request naming no kinds
+    /// carries that full set, so this always states what the operation actually touches.
+    #[cfg_attr(feature = "open-api", schema(value_type = Vec<ResourceType>, min_items = 1))]
+    pub resource_types: SubtreeResourceTypes,
+    /// Whether the request's range extends to the addressed resource itself.
+    pub root_level: RootLevelGrants,
+    /// Whether the request covers every principal, or one named principal.
+    pub principal: GrantSubtreePrincipal,
+}
+
+/// What a subtree grant operation covers.
+///
+/// `of` describes a concrete request and is what every enforced check carries: Lakekeeper
+/// never authorizes a real subtree listing or revoke with `any`. `any` is the
+/// base-capability form, used for permission introspection and for "may this principal
+/// run subtree operations here at all?" queries. An authorizer that refuses `any` removes
+/// the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
+/// succeed.
+// The base case is a named value, so an authorizer is never silently asked to allow an
+// unspecified subtree operation: a policy that fences on the concrete shape gates `of`
+// and never matches `any`.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSubtreeScope {
+    /// Concrete request shape.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeOf"))]
+    Of(GrantSubtreeShape),
+    /// No specific request — the base-capability form.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeAny"))]
+    Any {},
+}
+
+impl GrantSubtreeScope {
+    /// The scope as action context, so a policy-based authorizer can fence on it. `any`
+    /// carries none: it describes no request.
+    #[must_use]
+    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
+        let Self::Of(shape) = self else {
+            return Vec::new();
+        };
+        // Principals are prefixed by kind, matching the wire discriminator, so a user id
+        // and a role id that coincide stay distinguishable.
+        let principal = match &shape.principal {
+            GrantSubtreePrincipal::Every {} => "every".to_string(),
+            GrantSubtreePrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
+            GrantSubtreePrincipal::One(AuthzUserOrRole::Role(assignee)) => {
+                format!("role:{}", assignee.role_id())
+            }
+        };
+        vec![
+            (
+                ActionContextKey::ResourceTypes,
+                ContextValue::List(
+                    shape
+                        .resource_types
+                        .as_set()
+                        .iter()
+                        .map(|kind| kind.as_str().to_string())
+                        .collect(),
+                ),
+            ),
+            (
+                ActionContextKey::RootLevel,
+                ContextValue::String(shape.root_level.as_str().to_string()),
+            ),
+            (ActionContextKey::Principal, ContextValue::String(principal)),
+        ]
+    }
+}
+
 #[derive(
     Debug,
     Hash,
@@ -748,12 +946,26 @@ pub enum CatalogWarehouseAction {
     /// Can list and read every grant in the warehouse: the warehouse's own and those on
     /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
     /// covers this one resource; granted separately because it enumerates the subtree.
-    ReadSubtreeGrants,
+    ///
+    /// `scope` states what the listing covers — the kinds it reaches, how far its range
+    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
+    /// access review and still refuse a full enumeration. A real listing is checked with
+    /// the `of` form; permission introspection uses `any`.
+    ReadSubtreeGrants {
+        scope: GrantSubtreeScope,
+    },
     /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
     /// batch. An authorizer must answer it as authority over everything beneath — or
     /// refuse the subtree routes.
-    RevokeSubtreeGrants,
+    ///
+    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    RevokeSubtreeGrants {
+        scope: GrantSubtreeScope,
+    },
 }
+/// The warehouse actions enumerated for permission introspection (`GET
+/// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
+/// shapeless [`GrantSubtreeScope::Any`] marker (the base-capability form).
 static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
@@ -785,11 +997,16 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogWarehouseAction::ReadGrants,
-        CatalogWarehouseAction::ReadSubtreeGrants,
-        CatalogWarehouseAction::RevokeSubtreeGrants,
+        CatalogWarehouseAction::ReadSubtreeGrants {
+            scope: GrantSubtreeScope::Any {},
+        },
+        CatalogWarehouseAction::RevokeSubtreeGrants {
+            scope: GrantSubtreeScope::Any {},
+        },
     ]
 });
 impl CatalogWarehouseAction {
+    /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
     pub fn variants() -> &'static [CatalogWarehouseAction; 26] {
         &WAREHOUSE_ACTION_VARIANTS
@@ -837,8 +1054,8 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::ManageTags
             // Grant administration is not part of the reconciled spec.
             | CatalogWarehouseAction::ReadGrants
-            | CatalogWarehouseAction::ReadSubtreeGrants
-            | CatalogWarehouseAction::RevokeSubtreeGrants => false,
+            | CatalogWarehouseAction::ReadSubtreeGrants { .. }
+            | CatalogWarehouseAction::RevokeSubtreeGrants { .. } => false,
         }
     }
 }
@@ -857,6 +1074,9 @@ impl CatalogAction for CatalogWarehouseAction {
             }
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
+            }
+            Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
+                b = b.context_pairs(scope.context());
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::Delete { .. }
@@ -881,9 +1101,7 @@ impl CatalogAction for CatalogWarehouseAction {
             | Self::GetEndpointStatistics { .. }
             | Self::ManageTags { .. }
             | Self::AcceptMovedNamespace { .. }
-            | Self::ReadGrants { .. }
-            | Self::ReadSubtreeGrants { .. }
-            | Self::RevokeSubtreeGrants { .. } => {}
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1022,12 +1240,26 @@ pub enum CatalogNamespaceAction {
     /// those on every descendant namespace and tabular. Strictly stronger than
     /// `ReadGrants`, which covers this one resource; granted separately because it
     /// enumerates the subtree.
-    ReadSubtreeGrants,
+    ///
+    /// `scope` states what the listing covers — the kinds it reaches, how far its range
+    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
+    /// access review and still refuse a full enumeration. A real listing is checked with
+    /// the `of` form; permission introspection uses `any`.
+    ReadSubtreeGrants {
+        scope: GrantSubtreeScope,
+    },
     /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
     /// the whole batch. An authorizer must answer it as authority over everything
     /// beneath — or refuse the subtree routes.
-    RevokeSubtreeGrants,
+    ///
+    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    RevokeSubtreeGrants {
+        scope: GrantSubtreeScope,
+    },
 }
+/// The namespace actions enumerated for permission introspection (`GET
+/// /namespace/{id}/actions`). The subtree grant actions are enumerated with the
+/// shapeless [`GrantSubtreeScope::Any`] marker (the base-capability form).
 static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
@@ -1076,11 +1308,16 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogNamespaceAction::ReadGrants,
-        CatalogNamespaceAction::ReadSubtreeGrants,
-        CatalogNamespaceAction::RevokeSubtreeGrants,
+        CatalogNamespaceAction::ReadSubtreeGrants {
+            scope: GrantSubtreeScope::Any {},
+        },
+        CatalogNamespaceAction::RevokeSubtreeGrants {
+            scope: GrantSubtreeScope::Any {},
+        },
     ]
 });
 impl CatalogNamespaceAction {
+    /// Introspectable namespace actions — see [`NAMESPACE_ACTION_VARIANTS`].
     #[must_use]
     pub fn variants() -> &'static [CatalogNamespaceAction; 20] {
         &NAMESPACE_ACTION_VARIANTS
@@ -1188,6 +1425,9 @@ impl CatalogAction for CatalogNamespaceAction {
                     b = b.context_string(ActionContextKey::Force, "true");
                 }
             }
+            Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
+                b = b.context_pairs(scope.context());
+            }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
             | Self::ListTables { .. }
@@ -1199,9 +1439,7 @@ impl CatalogAction for CatalogNamespaceAction {
             | Self::ListGenericTables { .. }
             | Self::ManageTags { .. }
             | Self::AcceptMovedNamespace { .. }
-            | Self::ReadGrants { .. }
-            | Self::ReadSubtreeGrants { .. }
-            | Self::RevokeSubtreeGrants { .. } => {}
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1771,8 +2009,8 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
-            CatalogWarehouseAction::ReadSubtreeGrants => Self::ReadSubtreeGrants,
-            CatalogWarehouseAction::RevokeSubtreeGrants => Self::RevokeSubtreeGrants,
+            CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
+            CatalogWarehouseAction::RevokeSubtreeGrants { .. } => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -1824,8 +2062,8 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
             CatalogNamespaceAction::ManageTags => Self::ManageTags,
             CatalogNamespaceAction::ReadGrants => Self::ReadGrants,
-            CatalogNamespaceAction::ReadSubtreeGrants => Self::ReadSubtreeGrants,
-            CatalogNamespaceAction::RevokeSubtreeGrants => Self::RevokeSubtreeGrants,
+            CatalogNamespaceAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
+            CatalogNamespaceAction::RevokeSubtreeGrants { .. } => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -3255,6 +3493,133 @@ pub mod tests {
             .unwrap(),
             serde_json::json!({ "action": "delete" }),
         );
+    }
+
+    /// `POST /check` deserializes these actions from user input and `GET /.../actions`
+    /// serializes them, so the payload's wire shape is a public contract. The `OpenAPI`
+    /// regeneration reflects utoipa's model of the type; this pins serde's output, which
+    /// is what a client actually sends and receives.
+    #[test]
+    fn test_subtree_grant_action_scope_serde() {
+        let shape = GrantSubtreeShape {
+            resource_types: SubtreeResourceTypes::new(
+                [ResourceType::Namespace, ResourceType::Table]
+                    .into_iter()
+                    .collect(),
+            )
+            .expect("non-empty kinds"),
+            root_level: RootLevelGrants::Excluded,
+            principal: GrantSubtreePrincipal::One(AuthzUserOrRole::User(
+                UserId::try_from("oidc~alice").expect("valid user id"),
+            )),
+        };
+        let of = serde_json::json!({
+            "of": {
+                "resource_types": ["namespace", "table"],
+                "root_level": "excluded",
+                "principal": {"one": {"user": "oidc~alice"}},
+            }
+        });
+        // The base-capability form is an object, like every other union member in the
+        // published spec: a bare string member emits clients that do not compile.
+        let any = serde_json::json!({"any": {}});
+
+        for (action, expected) in [
+            (
+                CatalogWarehouseAction::ReadSubtreeGrants {
+                    scope: GrantSubtreeScope::Of(shape.clone()),
+                },
+                serde_json::json!({"action": "read_subtree_grants", "scope": of}),
+            ),
+            (
+                CatalogWarehouseAction::RevokeSubtreeGrants {
+                    scope: GrantSubtreeScope::Any {},
+                },
+                serde_json::json!({"action": "revoke_subtree_grants", "scope": any}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+            let deserialized: CatalogWarehouseAction =
+                serde_json::from_value(expected).expect("deserialize");
+            assert_eq!(deserialized, action);
+        }
+
+        for (action, expected) in [
+            (
+                CatalogNamespaceAction::ReadSubtreeGrants {
+                    scope: GrantSubtreeScope::Any {},
+                },
+                serde_json::json!({"action": "read_subtree_grants", "scope": any}),
+            ),
+            (
+                CatalogNamespaceAction::RevokeSubtreeGrants {
+                    scope: GrantSubtreeScope::Of(shape.clone()),
+                },
+                serde_json::json!({"action": "revoke_subtree_grants", "scope": of}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+            let deserialized: CatalogNamespaceAction =
+                serde_json::from_value(expected).expect("deserialize");
+            assert_eq!(deserialized, action);
+        }
+
+        // Every principal is a named value on the wire, so a policy never reads the
+        // widest case out of a missing attribute.
+        assert_eq!(
+            serde_json::to_value(GrantSubtreePrincipal::Every {}).expect("serialize"),
+            serde_json::json!({"every": {}}),
+        );
+
+        // An empty kind list means "every kind" to the store and "no kinds" to a policy,
+        // so the boundary refuses it.
+        let empty = serde_json::json!({
+            "action": "read_subtree_grants",
+            "scope": {"of": {
+                "resource_types": [],
+                "root_level": "included",
+                "principal": {"every": {}},
+            }},
+        });
+        serde_json::from_value::<CatalogWarehouseAction>(empty)
+            .expect_err("an empty resource_types list is refused");
+    }
+
+    /// Permission introspection asks whether a principal may run subtree operations here
+    /// at all, which no concrete request shape answers. Both levels must therefore
+    /// enumerate the shapeless marker: a scope built from a made-up request would have a
+    /// per-shape policy answer about a request nobody made.
+    #[test]
+    fn subtree_grant_actions_are_introspected_with_the_any_scope() {
+        let warehouse = CatalogWarehouseAction::variants()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    CatalogWarehouseAction::ReadSubtreeGrants {
+                        scope: GrantSubtreeScope::Any {}
+                    } | CatalogWarehouseAction::RevokeSubtreeGrants {
+                        scope: GrantSubtreeScope::Any {}
+                    }
+                )
+            })
+            .count();
+        assert_eq!(warehouse, 2, "warehouse subtree actions, enumerated as Any");
+
+        let namespace = CatalogNamespaceAction::variants()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    CatalogNamespaceAction::ReadSubtreeGrants {
+                        scope: GrantSubtreeScope::Any {}
+                    } | CatalogNamespaceAction::RevokeSubtreeGrants {
+                        scope: GrantSubtreeScope::Any {}
+                    }
+                )
+            })
+            .count();
+        assert_eq!(namespace, 2, "namespace subtree actions, enumerated as Any");
     }
 
     #[test]

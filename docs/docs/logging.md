@@ -273,23 +273,30 @@ Because the event records the attempt, a *denied* apply is logged with the same 
 }
 ```
 
-**Subtree grant revocation (`action_name = "revoke_subtree_grants"`):**
+**Subtree grants (`action_name = "read_subtree_grants"` / `"revoke_subtree_grants"`):**
 
-Revoking across a subtree is authorized once at the subtree root, so a single `revoke_subtree_grants` action describes the whole batch. The root is the event's `entity`, not part of the action.
+Both are authorized once at the subtree root for the whole batch, so a single action describes it. The root is the event's `entity`, not part of the action.
 
-| Context field        | Type   | Description                                                                 |
-|----------------------|--------|-----------------------------------------------------------------------------|
-| `principal`          | String | Optional. The single principal the revocation was narrowed to, prefixed by kind (`user:oidc~alice`, `role:<uuid>`). Absent means every principal in the subtree |
-| `privileges`         | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
-| `resource-types`     | Array  | The distinct resource types the revocation was narrowed to. Emitted as `[]` when the request named none, which means every type |
-| `created-before`     | String | Optional. RFC 3339 timestamp; only grants created before it were in scope   |
-| `allow-partial`      | String | `"true"` when the client asked for the revocation to proceed despite grants it could not revoke |
-| `include-root-level` | String | `"true"` when the grants on the subtree root itself were in scope, not only those beneath it |
-| `dry-run`            | String | `"true"` when the client asked only which grants would be revoked. A dry run changes nothing, so a record carrying it is not evidence of a revocation |
+The first three fields are the **scope** — the same value the authorizer is asked with, so the record and the decision describe one request. They are emitted together or not at all: a request that names no scope, which is the base-capability form, carries none of them.
 
-Only `principal` and `created-before` are omitted when the request does not narrow on them. The rest are always present — the two arrays as `[]`, the three flags as `"true"` or `"false"` — unlike `force`, `purge` and `recursive` on the actions above, which appear only when true. Each of these widens or narrows what the request covered, so an absence would have to be read as a default rather than as "not asked for".
+| Context field    | Type   | Description                                                                 |
+|------------------|--------|------------------------------------------------------------------------------|
+| `resource_types` | Array  | The resource kinds the request reaches. Always at least one, and always a subset of the kinds the addressed resource covers |
+| `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are. Open, like the other value sets — see [Format version and stability](#audit-format) |
+| `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
 
-**These are the filters, not the outcome.** The action records what the caller asked to revoke and whether they were allowed to; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry-run` requests, nothing is.
+`revoke_subtree_grants` carries four more, describing the filter rather than the reach:
+
+| Context field    | Type   | Description                                                                 |
+|------------------|--------|------------------------------------------------------------------------------|
+| `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
+| `allow-partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
+| `dry-run`        | String | `"true"` when the client asked only which grants would be revoked. A dry run changes nothing, so a record carrying it is not evidence of a revocation |
+| `created-before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
+
+`created-before` is omitted when the request does not narrow on it. `allow-partial` and `dry-run` are always present, `"true"` or `"false"` — unlike `force`, `purge` and `recursive` on the actions above, which appear only when true. Each widens or narrows what the request covered, so an absence would have to be read as a default rather than as "not asked for".
+
+**These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry-run` requests, nothing is.
 
 #### Per-decision breakdown (`authorizations`)
 

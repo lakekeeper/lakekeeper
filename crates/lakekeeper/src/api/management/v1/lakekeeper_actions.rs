@@ -606,8 +606,8 @@ async fn authorize_get_warehouse_actions<C: CatalogStore>(
             subtree_answers
                 || !matches!(
                     action,
-                    CatalogWarehouseAction::ReadSubtreeGrants
-                        | CatalogWarehouseAction::RevokeSubtreeGrants
+                    CatalogWarehouseAction::ReadSubtreeGrants { .. }
+                        | CatalogWarehouseAction::RevokeSubtreeGrants { .. }
                 )
         })
         .cloned()
@@ -711,8 +711,8 @@ async fn authorize_get_namespace_actions<C: CatalogStore>(
             subtree_answers
                 || !matches!(
                     action,
-                    CatalogNamespaceAction::ReadSubtreeGrants
-                        | CatalogNamespaceAction::RevokeSubtreeGrants
+                    CatalogNamespaceAction::ReadSubtreeGrants { .. }
+                        | CatalogNamespaceAction::RevokeSubtreeGrants { .. }
                 )
         })
         .cloned()
