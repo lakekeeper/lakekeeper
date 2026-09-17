@@ -11,6 +11,7 @@ use iceberg_ext::catalog::rest::{
 use lakekeeper::{
     api::{
         ApiContext,
+        data::v1::datasets::{CreateDatasetRequest, DatasetService as _},
         iceberg::{
             types::Prefix,
             v1::{
@@ -214,6 +215,28 @@ pub fn create_table_request(
         stage_create,
         properties: None,
     }
+}
+
+pub async fn create_dataset<T: Authorizer>(
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
+    prefix: impl Into<String>,
+    ns_name: impl Into<String>,
+    name: impl Into<String>,
+) -> lakekeeper::api::Result<lakekeeper::api::data::v1::datasets::LoadDatasetResponse> {
+    CatalogServer::create_dataset(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.into())),
+            namespace: NamespaceIdent::new(ns_name.into()),
+        },
+        CreateDatasetRequest {
+            name: name.into(),
+            location: None,
+            constraints: None,
+        },
+        api_context,
+        random_request_metadata(),
+    )
+    .await
 }
 
 pub async fn create_generic_table<T: Authorizer>(

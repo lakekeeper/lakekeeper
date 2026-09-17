@@ -23,8 +23,17 @@ mod grant {
             ProjectId, WarehouseId,
             api::{
                 ApiContext, RequestMetadata, RequestMetadataTestBuilder,
-                iceberg::v1::{
-                    CreateNamespaceRequest, PageToken, PaginationQuery, namespace::NamespaceService,
+                data::v1::datasets::{
+                    CommitDatasetRequest, CreateDatasetRefRequest, CreateDatasetRequest,
+                    DatasetParameters, DatasetRefParameters, DatasetRefSource, DatasetService as _,
+                    SetDatasetRefProtectionRequest,
+                },
+                iceberg::{
+                    types::Prefix,
+                    v1::{
+                        CreateNamespaceRequest, PageToken, PaginationQuery,
+                        namespace::{NamespaceParameters, NamespaceService},
+                    },
                 },
                 management::v1::{
                     ApiServer,
@@ -37,8 +46,8 @@ mod grant {
             },
             server::CatalogServer,
             service::{
-                CatalogNamespaceOps as _, CatalogWarehouseOps as _, NamespaceId, ResolvedWarehouse,
-                State, UserId,
+                CatalogNamespaceOps as _, CatalogWarehouseOps as _, DatasetRefType, NamespaceId,
+                ResolvedWarehouse, State, UserId,
                 authn::Actor,
                 authz::{
                     AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
@@ -246,7 +255,8 @@ mod grant {
                     "select",
                     "create",
                     "modify",
-                    "manage_tags"
+                    "manage_tags",
+                    "manage_refs"
                 ]
             );
 
@@ -480,7 +490,8 @@ mod grant {
                     "select",
                     "create",
                     "modify",
-                    "manage_tags"
+                    "manage_tags",
+                    "manage_refs"
                 ]
             );
             assert!(asked.privileges.iter().all(|p| !p.allowed));
@@ -825,6 +836,7 @@ mod grant {
                     "create",
                     "describe",
                     "manage_grants",
+                    "manage_refs",
                     "manage_tags",
                     "modify",
                     "ownership",
@@ -850,8 +862,8 @@ mod grant {
                 .filter(|p| !p.allowed)
                 .map(|p| p.privilege.name.as_str())
                 .collect();
-            assert_eq!(unavailable.len(), 8);
-            assert_eq!(as_nobody.privileges.len(), 8);
+            assert_eq!(unavailable.len(), 9);
+            assert_eq!(as_nobody.privileges.len(), 9);
         }
 
         /// A per-resource listing narrowed to one principal is served by narrowing the
@@ -1062,6 +1074,148 @@ mod grant {
 
         fn no_principal() -> lakekeeper::api::management::v1::grant::GetGrantAccessQuery {
             lakekeeper::api::management::v1::grant::GetGrantAccessQuery::default()
+        }
+
+        /// `manage_refs` is granted apart from `modify`. A writer commits but can
+        /// neither create a ref nor unprotect one; a `manage_refs` grant on the
+        /// namespace reaches the dataset below it, without write access.
+        #[sqlx::test]
+        async fn managing_refs_is_granted_apart_from_writing(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let md = metadata(&admin, &project_id);
+            let namespace_id = create_namespace(&ctx, &md, warehouse_id, "ml").await;
+            let prefix = Some(Prefix(warehouse_id.to_string()));
+            let namespace = NamespaceIdent::new("ml".to_string());
+            let dataset_id = CatalogServer::create_dataset(
+                NamespaceParameters {
+                    prefix: prefix.clone(),
+                    namespace: namespace.clone(),
+                },
+                CreateDatasetRequest {
+                    name: "images".to_string(),
+                    location: None,
+                    constraints: None,
+                },
+                ctx.clone(),
+                md.clone(),
+            )
+            .await
+            .unwrap()
+            .dataset
+            .id;
+            let dataset = || DatasetParameters {
+                prefix: prefix.clone(),
+                namespace: namespace.clone(),
+                dataset_name: "images".to_string(),
+            };
+            let main = || DatasetRefParameters {
+                prefix: prefix.clone(),
+                namespace: namespace.clone(),
+                dataset_name: "images".to_string(),
+                ref_name: "main".to_string(),
+            };
+            let branch = |name: &str| CreateDatasetRefRequest {
+                name: name.to_string(),
+                typ: DatasetRefType::Branch,
+                source: DatasetRefSource::Ref {
+                    name: "main".to_string(),
+                },
+            };
+
+            let writer = UserId::new_unchecked("oidc", "writer");
+            let refs_manager = UserId::new_unchecked("oidc", "refs_manager");
+            Server::apply_dataset_grants(
+                warehouse_id,
+                dataset_id,
+                ctx.clone(),
+                md.clone(),
+                writes(vec![
+                    entry("modify", &writer),
+                    entry("describe", &refs_manager),
+                ]),
+            )
+            .await
+            .unwrap();
+            Server::apply_namespace_grants(
+                warehouse_id,
+                namespace_id,
+                ctx.clone(),
+                md.clone(),
+                writes(vec![entry("manage_refs", &refs_manager)]),
+            )
+            .await
+            .unwrap();
+            let as_writer = metadata(&writer, &project_id);
+            let as_refs_manager = metadata(&refs_manager, &project_id);
+
+            CatalogServer::commit_dataset(
+                main(),
+                CommitDatasetRequest {
+                    parent_snapshot_id: None,
+                    added: vec![],
+                    removed: vec![],
+                    summary: None,
+                    on_constraint_violation: None,
+                },
+                ctx.clone(),
+                as_writer.clone(),
+            )
+            .await
+            .expect("modify confers commit");
+            let err = CatalogServer::create_dataset_ref(
+                dataset(),
+                branch("by-writer"),
+                ctx.clone(),
+                as_writer.clone(),
+            )
+            .await
+            .expect_err("modify must not confer creating a ref");
+            assert_eq!(err.error.code, 403, "got: {err:?}");
+
+            CatalogServer::create_dataset_ref(
+                dataset(),
+                branch("by-refs-manager"),
+                ctx.clone(),
+                as_refs_manager.clone(),
+            )
+            .await
+            .expect("a namespace grant of manage_refs reaches the dataset");
+            CatalogServer::set_dataset_ref_protection(
+                main(),
+                SetDatasetRefProtectionRequest { protected: true },
+                ctx.clone(),
+                as_refs_manager.clone(),
+            )
+            .await
+            .expect("manage_refs confers setting protection");
+            let err = CatalogServer::set_dataset_ref_protection(
+                main(),
+                SetDatasetRefProtectionRequest { protected: false },
+                ctx.clone(),
+                as_writer,
+            )
+            .await
+            .expect_err("modify must not confer unprotecting a branch");
+            assert_eq!(err.error.code, 403, "got: {err:?}");
+
+            let err = CatalogServer::commit_dataset(
+                DatasetRefParameters {
+                    ref_name: "by-refs-manager".to_string(),
+                    ..main()
+                },
+                CommitDatasetRequest {
+                    parent_snapshot_id: None,
+                    added: vec![],
+                    removed: vec![],
+                    summary: None,
+                    on_constraint_violation: None,
+                },
+                ctx.clone(),
+                as_refs_manager,
+            )
+            .await
+            .expect_err("manage_refs must not confer commit");
+            assert_eq!(err.error.code, 403, "got: {err:?}");
         }
     }
 }

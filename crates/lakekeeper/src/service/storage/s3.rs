@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use veil::Redact;
 
-use super::ShortTermCredentialsRequest;
+use super::{ReadTarget, ShortTermCredentialsRequest, presign_each};
 use crate::{
     CONFIG, WarehouseId,
     api::{
@@ -334,6 +334,27 @@ impl S3Profile {
             .map(|c| S3Auth::try_from(c.clone()))
             .transpose()?;
         Ok(s3_settings.get_storage_client(auth.as_ref()).await)
+    }
+
+    /// Signed GET URLs for `targets`, one each and in order, valid for `validity`,
+    /// each reading its pinned version if it has one.
+    ///
+    /// # Errors
+    /// Fails if the client cannot be built or a location cannot be signed.
+    pub async fn presign_reads(
+        &self,
+        credential: Option<&S3Credential>,
+        targets: &[ReadTarget],
+        validity: Duration,
+    ) -> Result<Vec<String>, CredentialsError> {
+        let storage = self.lakekeeper_io(credential).await?;
+        presign_each(
+            targets
+                .iter()
+                .map(|t| storage.presign_get(t.location.as_str(), t.version.as_deref(), validity))
+                .collect(),
+        )
+        .await
     }
 
     /// Validate the S3 profile.

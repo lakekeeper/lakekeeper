@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM dataset_snapshot\n        WHERE warehouse_id = $1\n          AND ($2::uuid IS NULL OR dataset_id = $2)\n          AND status = 'staging'\n          AND created_at < $3\n          -- Defensive: a ref should never point at a staging snapshot, but\n          -- deleting one that something resolves through would lose history.\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_ref r\n              WHERE r.warehouse_id = dataset_snapshot.warehouse_id\n                AND r.snapshot_id = dataset_snapshot.snapshot_id\n          )\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_snapshot child\n              WHERE child.warehouse_id = dataset_snapshot.warehouse_id\n                AND child.parent_snapshot_id = dataset_snapshot.snapshot_id\n          )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d139bdca21a849949ac4d82dc2aa8201efb52980dc3fa4bfb4d09d0523689765"
+}

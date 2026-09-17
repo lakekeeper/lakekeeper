@@ -18,7 +18,7 @@ pub use error::{
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
 use futures::{TryStreamExt as _, stream::BoxStream};
-pub use location::{Location, LocationParseError};
+pub use location::{Location, LocationParseError, check_unsafe_chars};
 // Re-exported so consumers can drive `object_store_bridge::ObjectStoreBridge`
 // through the `ObjectStore` trait without pinning their own `object_store` version.
 #[cfg(feature = "object-store")]
@@ -183,6 +183,68 @@ pub enum StorageBackend {
     Gcs(crate::gcs::GcsStorage),
 }
 
+impl StorageBackend {
+    /// [`LakekeeperStorage::list`], with each object's current version where the
+    /// backend keeps versions apart from its objects. On S3 this lists object
+    /// versions, which takes `s3:ListBucketVersions`; GCS lists the generation with
+    /// every object anyway. Azure and the in-memory store list no versions.
+    ///
+    /// # Errors
+    /// Fails if `path` is not a location of this backend.
+    pub async fn list_current_versions(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.list_current_versions(path, page_size),
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.list(path, page_size).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.list(path, page_size).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.list(path, page_size).await,
+        }
+    }
+
+    /// Whether `version` of the object at `path` is still stored, on a backend that
+    /// keeps object versions a reader can address: S3 and GCS.
+    ///
+    /// # Errors
+    /// Fails on Azure and the in-memory store, which keep no such versions, and
+    /// when storage answers anything but the version or its absence.
+    // Built without S3 and GCS, no arm awaits or reads the version.
+    #[cfg_attr(
+        not(any(feature = "storage-s3", feature = "storage-gcs")),
+        allow(
+            clippy::unused_async,
+            clippy::unused_async_trait_impl,
+            unused_variables
+        )
+    )]
+    pub async fn version_exists(&self, path: &str, version: &str) -> Result<bool, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.version_exists(path, version).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.version_exists(path, version).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(_) => Err(no_object_versions(path)),
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(_) => Err(no_object_versions(path)),
+        }
+    }
+}
+
+fn no_object_versions(path: &str) -> ReadError {
+    ReadError::IOError(IOError::new(
+        ErrorKind::Unexpected,
+        "This storage keeps no object versions a reader can address".to_string(),
+        path.to_string(),
+    ))
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RetryConfig<B, E>
 where
@@ -236,6 +298,7 @@ pub struct FileInfo {
     location: Location,
     size: Option<u64>,
     e_tag: Option<String>,
+    version: Option<String>,
 }
 
 impl FileInfo {
@@ -250,6 +313,7 @@ impl FileInfo {
             location,
             size,
             e_tag: None,
+            version: None,
         }
     }
 
@@ -258,6 +322,21 @@ impl FileInfo {
     pub fn with_e_tag(mut self, e_tag: Option<String>) -> Self {
         self.e_tag = e_tag;
         self
+    }
+
+    /// The same entry, with the object version the backend reported for it.
+    #[must_use]
+    pub fn with_version(mut self, version: Option<String>) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The object's version, where the backend reports one in a listing: the
+    /// generation on GCS. A read of this version returns these bytes for as long as
+    /// the version exists.
+    #[must_use]
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     #[must_use]

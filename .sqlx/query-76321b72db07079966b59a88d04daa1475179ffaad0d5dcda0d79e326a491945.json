@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_manifest_entry\n            (warehouse_id, snapshot_id, logical_key, physical_path, change,\n             etag, size, content_type)\n        SELECT $1, $2,\n               'shard=' || lpad((i / 10000)::text, 5, '0')\n                        || '/img_' || lpad(i::text, 9, '0') || '.jpg',\n               's3://bucket/data/img_' || i,\n               'added', md5(i::text), 4096 + i % 1024,\n               CASE WHEN i % 10 = 0 THEN 'application/json' ELSE 'image/jpeg' END\n        FROM generate_series(1::bigint, $3::bigint) AS i\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "76321b72db07079966b59a88d04daa1475179ffaad0d5dcda0d79e326a491945"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_degraded_file\n            (warehouse_id, snapshot_id, logical_key, physical_path, problem)\n        SELECT $1, $2, k, p, q\n        FROM unnest($3::text[], $4::text[], $5::dataset_degraded_file_problem[]) AS t(k, p, q)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "dataset_degraded_file_problem[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "dataset_degraded_file_problem",
+                  "kind": {
+                    "Enum": [
+                      "missing",
+                      "changed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3d066600dfafd526a433f66e2c852c994cff92948914554faf0234d4a2cd0be3"
+}

@@ -60,6 +60,7 @@ http-body-util = { workspace = true }
 lakekeeper-authz-openfga = { path = "../authz-openfga", features = ["test-utils"] }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
+reqwest = { workspace = true }
 similar = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

@@ -12,9 +12,16 @@ use iceberg_ext::catalog::rest::RenameTableRequest;
 use lakekeeper::{
     api::{
         ApiContext, RequestMetadata, RequestMetadataTestBuilder,
-        data::v1::generic_tables::{
-            CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-            RenameGenericTableRequest, RenameGenericTableTarget,
+        data::v1::{
+            datasets::{
+                CommitDatasetRequest, CreateDatasetRefRequest, DatasetParameters,
+                DatasetRefParameters, DatasetRefSource, DatasetService as _, RenameDatasetRequest,
+                RenameDatasetTarget,
+            },
+            generic_tables::{
+                CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
+                RenameGenericTableRequest, RenameGenericTableTarget,
+            },
         },
         iceberg::{
             types::{DropParams, Prefix},
@@ -29,7 +36,7 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        GenericTableFormat, State, UserId,
+        DatasetRefType, GenericTableFormat, State, UserId,
         authn::Actor,
         authz::AllowAllAuthorizer,
         events::{EventListener, IdempotentReplayEvent, context::EntityField},
@@ -37,8 +44,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table as create_table_helper, create_table_request, create_view_request,
-    memory_io_profile, setup_simple,
+    create_dataset, create_ns, create_table as create_table_helper, create_table_request,
+    create_view_request, memory_io_profile, setup_simple,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -351,7 +358,7 @@ async fn test_recursive_namespace_drop_replays(pool: PgPool) {
         .expect("a retried recursive drop must replay, not 404");
 }
 
-/// Collects the replay records the seven 204 handlers emit, so a test can assert
+/// Collects the replay records the ten 204 handlers emit, so a test can assert
 /// what a retry announced rather than only that it returned 204.
 #[derive(Debug)]
 struct ReplayCapture(tokio::sync::mpsc::UnboundedSender<IdempotentReplayEvent>);
@@ -390,6 +397,7 @@ fn describe(event: &IdempotentReplayEvent) -> String {
         EntityField::Table,
         EntityField::View,
         EntityField::GenericTable,
+        EntityField::Dataset,
         EntityField::Namespace,
     ]
     .into_iter()
@@ -435,7 +443,7 @@ fn generic_table_request(name: &str) -> CreateGenericTableRequest {
 /// banner, so it has to record the replay itself — a handler that forgets leaves
 /// the retry unattributed for as long as the key lives.
 ///
-/// All seven in one test on purpose: the failure mode is one of seven identical
+/// All ten in one test on purpose: the failure mode is one of ten identical
 /// sites silently omitting a line, which only an enumeration catches.
 #[sqlx::test]
 async fn test_every_replayed_204_is_audited(pool: PgPool) {
@@ -631,12 +639,109 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
         .expect("the retry is served from the record");
     }
 
+    // ---- dropDataset ----
+    create_dataset(ctx.clone(), prefix.clone(), "idem_ns", "dropped_ds")
+        .await
+        .unwrap();
+    let key = new_key();
+    for _ in 0..2 {
+        CatalogServer::drop_dataset(
+            DatasetParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns.clone(),
+                dataset_name: "dropped_ds".to_string(),
+            },
+            purging_drop.clone(),
+            ctx.clone(),
+            metadata_with_key(key),
+        )
+        .await
+        .expect("the retry is served from the record");
+    }
+
+    // ---- renameDataset ----
+    create_dataset(ctx.clone(), prefix.clone(), "idem_ns", "dsren_src")
+        .await
+        .unwrap();
+    let key = new_key();
+    let rename_target = |name: &str| RenameDatasetTarget {
+        namespace: ns.clone().inner(),
+        name: name.to_string(),
+    };
+    for _ in 0..2 {
+        CatalogServer::rename_dataset(
+            Some(Prefix(prefix.clone())),
+            RenameDatasetRequest {
+                source: rename_target("dsren_src"),
+                destination: rename_target("dsren_dst"),
+            },
+            ctx.clone(),
+            metadata_with_key(key),
+        )
+        .await
+        .expect("the retry is served from the record");
+    }
+
+    // ---- deleteDatasetRef ----
+    create_dataset(ctx.clone(), prefix.clone(), "idem_ns", "refs_ds")
+        .await
+        .unwrap();
+    let refs_ds_ref = |name: &str| DatasetRefParameters {
+        prefix: Some(Prefix(prefix.clone())),
+        namespace: ns.clone(),
+        dataset_name: "refs_ds".to_string(),
+        ref_name: name.to_string(),
+    };
+    // A branch is cut from a commit.
+    CatalogServer::commit_dataset(
+        refs_ds_ref("main"),
+        CommitDatasetRequest {
+            parent_snapshot_id: None,
+            added: vec![],
+            removed: vec!["absent".to_string()],
+            summary: None,
+            on_constraint_violation: None,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::create_dataset_ref(
+        DatasetParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: ns.clone(),
+            dataset_name: "refs_ds".to_string(),
+        },
+        CreateDatasetRefRequest {
+            name: "doomed_ref".to_string(),
+            typ: DatasetRefType::Branch,
+            source: DatasetRefSource::Ref {
+                name: "main".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let key = new_key();
+    for _ in 0..2 {
+        CatalogServer::delete_dataset_ref(
+            refs_ds_ref("doomed_ref"),
+            ctx.clone(),
+            metadata_with_key(key),
+        )
+        .await
+        .expect("the retry is served from the record");
+    }
+
     // Emission is fire-and-forget, so wait for the records rather than draining
     // whatever has arrived. Never receiving one is the failure under test, and
     // the timeout reports it.
     let mut records = Vec::new();
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while records.len() < 7 {
+        while records.len() < 10 {
             let event = events.recv().await.expect("the capture outlives dispatch");
             records.push(event);
         }
@@ -644,7 +749,10 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
     .await
     .unwrap_or_else(|_| {
         let seen = records.iter().map(describe).collect::<Vec<_>>();
-        panic!("only {} of 7 replays were audited: {seen:?}", records.len())
+        panic!(
+            "only {} of 10 replays were audited: {seen:?}",
+            records.len()
+        )
     });
 
     let mut seen = records.iter().map(describe).collect::<Vec<_>>();
@@ -652,6 +760,9 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
     assert_eq!(
         seen,
         vec![
+            "dataset:drop[force=true,purge=true]:dropped_ds",
+            "dataset:manage_refs[target-refs=[doomed_ref]]:refs_ds",
+            "dataset:rename:dsren_src",
             "generic-table:drop:dropped_gt",
             "generic-table:rename:gtren_src",
             "namespace:delete[force=true,purge=true,recursive=true]:doomed_ns",
@@ -665,7 +776,7 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
     // Exactly one replay record per replay. `emit_idempotent_replay` consumes the
     // context, but `APIEventContext` is `Clone`, so a site can still emit twice
     // and compile. Waiting for a receive that must time out catches a duplicate
-    // that arrives after the seventh record, which the set above cannot see.
+    // that arrives after the tenth record, which the set above cannot see.
     // This capture only subscribes to replay records, so it says nothing about a
     // site that emitted a replay *and* an authorization event.
     assert!(
@@ -675,7 +786,7 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
         "a replay must announce itself exactly once"
     );
 
-    // The set above pins identity and flags across all seven. Two things it
+    // The set above pins identity and flags across all ten. Two things it
     // projects away, on the one record whose request is still in scope: the key
     // that served it, and — the claim the whole event rests on — that the record
     // describes the *retry* and not the request that did the work.

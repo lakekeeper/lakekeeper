@@ -11,19 +11,20 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZGenericTableInfo, AuthZTableInfo, AuthZViewInfo, CatalogBackendError,
-        CatalogGetNamespaceError, GetTabularInfoByLocationError, GetTabularInfoError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ResolvedWarehouse, SerializationError, TableId, TableIdentOrId,
-        TableInfo, TabularNotFound, TaskNotFoundError, UnexpectedTabularInResponse,
-        WarehouseStatus,
+        AuthZDatasetInfo, AuthZGenericTableInfo, AuthZTableInfo, AuthZViewInfo,
+        CatalogBackendError, CatalogGetNamespaceError, GetTabularInfoByLocationError,
+        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
+        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound, TaskNotFoundError,
+        UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZError, AuthZGenericTableActionForbidden, AuthZGenericTableOps,
-            AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
-            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthZDatasetActionForbidden, AuthZDatasetOps, AuthZError,
+            AuthZGenericTableActionForbidden, AuthZGenericTableOps, AuthZViewActionForbidden,
+            AuthZViewOps, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogTableAction, DatasetAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -526,6 +527,7 @@ pub enum RequireTabularActionsError {
     AuthZViewActionForbidden(AuthZViewActionForbidden),
     AuthZTableActionForbidden(AuthZTableActionForbidden),
     AuthZGenericTableActionForbidden(AuthZGenericTableActionForbidden),
+    AuthZDatasetActionForbidden(AuthZDatasetActionForbidden),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
@@ -534,6 +536,7 @@ pub enum RequireTabularActionsError {
 delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthorizationBackendUnavailable,
     AuthZViewActionForbidden,
+    AuthZDatasetActionForbidden,
     AuthZTableActionForbidden,
     AuthZGenericTableActionForbidden,
     AuthorizationCountMismatch,
@@ -1032,6 +1035,7 @@ pub trait AuthZTableOps: Authorizer {
         .map(MustUse::from)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn are_allowed_tabular_actions_vec<
         AT: TableAction + Into<Self::TableAction> + Send + Sync + Clone,
         AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync + Clone,
@@ -1040,6 +1044,7 @@ pub trait AuthZTableOps: Authorizer {
             + Send
             + Clone
             + Sync,
+        AD: DatasetAction + Into<Self::DatasetAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -1056,12 +1061,15 @@ pub trait AuthZTableOps: Authorizer {
                 AV,
                 impl AuthZGenericTableInfo,
                 AG,
+                impl AuthZDatasetInfo,
+                AD,
             >,
         )],
     ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         let mut tables = Vec::new();
         let mut views = Vec::new();
         let mut generic_tables = Vec::new();
+        let mut datasets = Vec::new();
         for (ns, action) in actions {
             match action {
                 ActionOnTableOrView::Table(table_action) => {
@@ -1072,6 +1080,9 @@ pub trait AuthZTableOps: Authorizer {
                 }
                 ActionOnTableOrView::GenericTable(generic_action) => {
                     generic_tables.push((*ns, generic_action.clone()));
+                }
+                ActionOnTableOrView::Dataset(dataset_action) => {
+                    datasets.push((*ns, dataset_action.clone()));
                 }
             }
         }
@@ -1105,6 +1116,14 @@ pub trait AuthZTableOps: Authorizer {
             .into_inner()
         };
 
+        let dataset_results = if datasets.is_empty() {
+            Vec::new()
+        } else {
+            self.are_allowed_dataset_actions_vec(metadata, warehouse, parent_namespaces, &datasets)
+                .await?
+                .into_inner()
+        };
+
         if table_results.len() != tables.len() {
             return Err(AuthorizationCountMismatch::new(
                 tables.len(),
@@ -1127,18 +1146,29 @@ pub trait AuthZTableOps: Authorizer {
             .into());
         }
 
+        if dataset_results.len() != datasets.len() {
+            return Err(AuthorizationCountMismatch::new(
+                datasets.len(),
+                dataset_results.len(),
+                "dataset",
+            )
+            .into());
+        }
+
         // Reorder results to match the original order of actions. Each per-type
         // result is consumed in order (lengths validated above), carrying its
         // `determined_by` through unchanged.
         let mut table_results = table_results.into_iter();
         let mut view_results = view_results.into_iter();
         let mut generic_table_results = generic_table_results.into_iter();
+        let mut dataset_results = dataset_results.into_iter();
         let ordered_results: Vec<AuthorizationDecision> = actions
             .iter()
             .map(|(_ns, action)| match action {
                 ActionOnTableOrView::Table(_) => table_results.next().unwrap(),
                 ActionOnTableOrView::View(_) => view_results.next().unwrap(),
                 ActionOnTableOrView::GenericTable(_) => generic_table_results.next().unwrap(),
+                ActionOnTableOrView::Dataset(_) => dataset_results.next().unwrap(),
             })
             .collect();
 
@@ -1164,6 +1194,7 @@ pub trait AuthZTableOps: Authorizer {
             + Send
             + Clone
             + Sync,
+        AD: DatasetAction + Into<Self::DatasetAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -1180,6 +1211,8 @@ pub trait AuthZTableOps: Authorizer {
                 AV,
                 impl AuthZGenericTableInfo,
                 AG,
+                impl AuthZDatasetInfo,
+                AD,
             >,
         )],
     ) -> Result<(), RequireTabularActionsError> {
@@ -1212,6 +1245,14 @@ pub trait AuthZTableOps: Authorizer {
                             generic_action.info.warehouse_id(),
                             generic_action.info.generic_table_id(),
                             &generic_action.action.clone().into(),
+                        )
+                        .into());
+                    }
+                    ActionOnTableOrView::Dataset(dataset_action) => {
+                        return Err(AuthZDatasetActionForbidden::new(
+                            dataset_action.info.warehouse_id(),
+                            dataset_action.info.dataset_id(),
+                            &dataset_action.action.clone().into(),
                         )
                         .into());
                     }
@@ -1379,6 +1420,37 @@ impl<I: AuthZGenericTableInfo, A> std::fmt::Debug for ActionOnGenericTable<'_, '
     }
 }
 
+/// An action requested on a dataset, together with the resolved dataset info.
+///
+/// Datasets have no DEFINER chain, so unlike [`ActionOnGenericTable`] there is no
+/// delegated-execution flag: a dataset is always authorized as the request actor
+/// (or, for permission inspection, as an explicitly named `user`).
+pub struct ActionOnDataset<'a, 'u, I: AuthZDatasetInfo, A> {
+    pub info: &'a I,
+    pub action: A,
+    pub user: Option<&'u UserOrRole>,
+}
+
+impl<I: AuthZDatasetInfo, A: Clone> Clone for ActionOnDataset<'_, '_, I, A> {
+    fn clone(&self) -> Self {
+        Self {
+            info: self.info,
+            action: self.action.clone(),
+            user: self.user,
+        }
+    }
+}
+
+impl<I: AuthZDatasetInfo, A> std::fmt::Debug for ActionOnDataset<'_, '_, I, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionOnDataset")
+            .field("info", &format!("<{}>", std::any::type_name::<I>()))
+            .field("action", &std::any::type_name::<A>())
+            .field("user", &self.user)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub enum ActionOnTableOrView<
     'a,
@@ -1389,8 +1461,11 @@ pub enum ActionOnTableOrView<
     AV,
     IG: AuthZGenericTableInfo,
     AG,
+    ID: AuthZDatasetInfo,
+    AD,
 > {
     Table(ActionOnTable<'a, 'u, IT, AT>),
     View(ActionOnView<'a, 'u, IV, AV>),
     GenericTable(ActionOnGenericTable<'a, 'u, IG, AG>),
+    Dataset(ActionOnDataset<'a, 'u, ID, AD>),
 }

@@ -182,6 +182,42 @@ impl EventDispatcher {
         dispatch_event!(self, view_loaded, event);
     }
 
+    pub(crate) async fn dataset_created(&self, event: types::CreateDatasetEvent) {
+        dispatch_event!(self, dataset_created, event);
+    }
+
+    pub(crate) async fn dataset_dropped(&self, event: types::DropDatasetEvent) {
+        dispatch_event!(self, dataset_dropped, event);
+    }
+
+    pub(crate) async fn dataset_loaded(&self, event: types::LoadDatasetEvent) {
+        dispatch_event!(self, dataset_loaded, event);
+    }
+
+    pub(crate) async fn dataset_renamed(&self, event: types::RenameDatasetEvent) {
+        dispatch_event!(self, dataset_renamed, event);
+    }
+
+    pub(crate) async fn dataset_committed(&self, event: types::CommitDatasetEvent) {
+        dispatch_event!(self, dataset_committed, event);
+    }
+
+    pub(crate) async fn dataset_ref_created(&self, event: types::CreateDatasetRefEvent) {
+        dispatch_event!(self, dataset_ref_created, event);
+    }
+
+    pub(crate) async fn dataset_ref_moved(&self, event: types::MoveDatasetRefEvent) {
+        dispatch_event!(self, dataset_ref_moved, event);
+    }
+
+    pub(crate) async fn dataset_ref_deleted(&self, event: types::DeleteDatasetRefEvent) {
+        dispatch_event!(self, dataset_ref_deleted, event);
+    }
+
+    pub(crate) async fn dataset_settings_updated(&self, event: types::UpdateDatasetSettingsEvent) {
+        dispatch_event!(self, dataset_settings_updated, event);
+    }
+
     pub(crate) async fn generic_table_created(&self, event: types::CreateGenericTableEvent) {
         dispatch_event!(self, generic_table_created, event);
     }
@@ -449,6 +485,63 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a view's metadata has been successfully loaded
     async fn view_loaded(&self, _event: types::LoadViewEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Dataset Events =====
+
+    /// Invoked after a dataset has been successfully created
+    async fn dataset_created(&self, _event: types::CreateDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset has been successfully dropped
+    async fn dataset_dropped(&self, _event: types::DropDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset's metadata has been successfully loaded
+    async fn dataset_loaded(&self, _event: types::LoadDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset has been successfully renamed
+    async fn dataset_renamed(&self, _event: types::RenameDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a snapshot has been published onto a dataset branch, by a
+    /// commit or an import
+    async fn dataset_committed(&self, _event: types::CommitDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a branch or tag of a dataset has been created
+    async fn dataset_ref_created(
+        &self,
+        _event: types::CreateDatasetRefEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset branch has been fast-forwarded or reset
+    async fn dataset_ref_moved(&self, _event: types::MoveDatasetRefEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a branch or tag of a dataset has been deleted
+    async fn dataset_ref_deleted(
+        &self,
+        _event: types::DeleteDatasetRefEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset's settings have been changed
+    async fn dataset_settings_updated(
+        &self,
+        _event: types::UpdateDatasetSettingsEvent,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

@@ -74,6 +74,17 @@ impl SignableTabular {
                 );
                 None
             }
+            // Datasets are never signed through the Iceberg table signer: their
+            // files are addressed by logical key against a snapshot, not by a
+            // table location, and are served by the dataset read path.
+            ViewOrTableInfo::Dataset(info) => {
+                tracing::warn!(
+                    "Signer resolved dataset {} at location {}, but datasets are not signed through this path",
+                    info.tabular_id,
+                    info.location
+                );
+                None
+            }
         }
     }
 

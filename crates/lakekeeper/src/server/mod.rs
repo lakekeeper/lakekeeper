@@ -1,6 +1,7 @@
 pub(crate) mod commit_tables;
 pub(crate) mod compression_codec;
 mod config;
+pub(crate) mod datasets;
 pub mod generic_tables;
 pub(crate) mod io;
 mod metrics;
@@ -91,6 +92,23 @@ pub struct CatalogServer<C: CatalogStore, A: Authorizer, S: SecretStore> {
     auth_handler: PhantomData<A>,
     catalog_backend: PhantomData<C>,
     secret_store: PhantomData<S>,
+}
+
+const MAX_BLOB_BYTES: usize = 1024 * 1024;
+
+/// Refuse a client-supplied JSON blob larger than [`MAX_BLOB_BYTES`] once serialized.
+fn validate_blob_size(field: &str, value: Option<&serde_json::Value>) -> Result<()> {
+    let Some(value) = value else { return Ok(()) };
+    let len = serde_json::to_string(value).map_or(usize::MAX, |s| s.len());
+    if len > MAX_BLOB_BYTES {
+        return Err(ErrorModel::bad_request(
+            format!("{field} payload of {len} bytes exceeds the {MAX_BLOB_BYTES}-byte limit."),
+            "PayloadTooLarge",
+            None,
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn require_warehouse_id(prefix: Option<&Prefix>) -> std::result::Result<WarehouseId, ErrorModel> {

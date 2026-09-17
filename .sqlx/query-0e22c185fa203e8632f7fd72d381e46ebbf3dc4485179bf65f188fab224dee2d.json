@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_ref\n        SET snapshot_id = $4\n        WHERE warehouse_id = $1\n          AND dataset_id = $2\n          AND name = $3\n          AND snapshot_id IS NOT DISTINCT FROM $5\n          -- Re-checked in the statement: the ref can be protected after the check\n          -- above read it.\n          AND typ = 'branch' AND NOT protected\n          -- The snapshot must be staged on the expected head, or the branch would\n          -- skip every commit between the two.\n          AND EXISTS (\n              SELECT 1 FROM dataset_snapshot s\n              WHERE s.warehouse_id = $1 AND s.dataset_id = $2 AND s.snapshot_id = $4\n                AND s.status = 'staging'\n                AND s.parent_snapshot_id IS NOT DISTINCT FROM $5\n          )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e22c185fa203e8632f7fd72d381e46ebbf3dc4485179bf65f188fab224dee2d"
+}

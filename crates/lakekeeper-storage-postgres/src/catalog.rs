@@ -32,36 +32,46 @@ use lakekeeper::{
         CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
         CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
         CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
-        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CatalogView, ClearTabularDeletedAtError, CommitDatasetError, CommitTableTransactionError,
+        CommitViewError, ConstraintViolationPolicy, CreateDatasetError, CreateDatasetRefError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteRoleError, DeleteTagDefinitionError, DropGenericTableError, DropTabularError,
-        EffectiveTagCandidate, EnsureWarehouseSpecMutableError, GenericTableCreation,
+        DatasetAccessGrant, DatasetAccessGrantCreation, DatasetAccessGrantError,
+        DatasetAccessGrantId, DatasetCommit, DatasetCommitOutcome, DatasetCreation, DatasetId,
+        DatasetInfo, DatasetListEntry, DatasetOwnership, DatasetPurge, DatasetRef, DatasetRefType,
+        DatasetSettingsUpdate, DatasetSnapshot, DatasetSnapshotId, DatasetSnapshotNode,
+        DeleteDatasetRefError, DeleteRoleError, DeleteTagDefinitionError, DropDatasetError,
+        DropGenericTableError, DropTabularError, EffectiveTagCandidate,
+        EnsureWarehouseSpecMutableError, ExpireDatasetSnapshotError, GenericTableCreation,
         GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
         GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
-        ListCatalogRoleMembersPage, ListGenericTablesError, ListGrantsStoreError,
+        ListCatalogRoleMembersPage, ListDatasetRefsError, ListDatasetsError,
+        ListGenericTablesError, ListGrantsStoreError, ListManifestEntriesError,
         ListNamespacesQuery, ListRoleMembersResult, ListRolesError, ListRolesPage,
         ListRolesResponse, ListTabularsError, ListTagAttachmentsError, ListTagAttachmentsResponse,
         ListTagDefinitionsError, ListTagDefinitionsResponse, ListUserRoleAssignmentsResult,
-        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
-        MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
-        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
-        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
-        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        ListedObject, LoadDatasetError, LoadGenericTableError, LoadTableError, LoadTableResponse,
+        LoadViewError, ManagedBy, ManifestEntry, MarkTabularAsDeletedError,
+        MaterializationFindings, MoveDatasetRefError, MovedNamespace, NamespaceDropInfo,
+        NamespaceId, NamespaceWithParent, ProjectId, RecordedCommit, RemoveRoleMembersError,
+        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
+        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
+        ResolvedWarehouse, RestoreDatasetSnapshotError, Result, RevokeSubtreeGrantsStoreError,
+        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetDatasetRefProtectionError, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        SnapshotMaterialization, SnapshotMaterializationStatus, StagedBatch, StagedChanges,
         StagedTableId, SyncFor, SyncRoleMembersError, SyncRoleMembersResult,
         SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
         TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Tag,
         TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
         TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
-        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
-        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
-        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
-        WarehouseId, WarehouseStatus,
+        UpdateDatasetSettingsError, UpdateRoleError, UpdateTagDefinitionError,
+        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
+        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
@@ -362,6 +372,677 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError> {
         commit_table_transaction(warehouse_id, commits, transaction).await
+    }
+
+    // ---------------- Dataset Management ----------------
+    async fn create_dataset_impl<'a>(
+        creation: DatasetCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetInfo, CreateDatasetError> {
+        super::tabular::dataset::create_dataset(creation, transaction).await
+    }
+
+    async fn load_dataset_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        dataset_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetInfo, LoadDatasetError> {
+        super::tabular::dataset::load_dataset(warehouse_id, namespace_id, dataset_name, transaction)
+            .await
+    }
+
+    async fn load_dataset_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetInfo, LoadDatasetError> {
+        super::tabular::dataset::load_dataset_by_id(warehouse_id, dataset_id, transaction).await
+    }
+
+    async fn load_dataset_ownership_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetOwnership, LoadDatasetError> {
+        super::tabular::dataset::load_dataset_ownership(warehouse_id, dataset_id, transaction).await
+    }
+
+    async fn list_dataset_task_ids_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<TaskId>, CatalogBackendError> {
+        super::tabular::dataset::list_dataset_task_ids(warehouse_id, dataset_id, transaction).await
+    }
+
+    async fn bring_dataset_task_forward_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        queue_name: &str,
+        at: chrono::DateTime<chrono::Utc>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError> {
+        super::tabular::dataset::bring_dataset_task_forward(
+            warehouse_id,
+            dataset_id,
+            queue_name,
+            at,
+            transaction,
+        )
+        .await
+    }
+
+    async fn dataset_has_renamed_files_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<bool, LoadDatasetError> {
+        super::tabular::dataset::dataset_has_renamed_files(warehouse_id, dataset_id, transaction)
+            .await
+    }
+
+    async fn update_dataset_settings_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        update: DatasetSettingsUpdate,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), UpdateDatasetSettingsError> {
+        super::tabular::dataset::update_dataset_settings(
+            warehouse_id,
+            dataset_id,
+            update,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_datasets_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<DatasetListEntry>, Option<String>), ListDatasetsError> {
+        super::tabular::dataset::list_datasets(
+            warehouse_id,
+            namespace_id,
+            namespace_ident,
+            page_size,
+            page_token,
+            transaction,
+        )
+        .await
+    }
+
+    async fn drop_dataset_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        dataset_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetId, DropDatasetError> {
+        super::tabular::dataset::drop_dataset(warehouse_id, namespace_id, dataset_name, transaction)
+            .await
+    }
+
+    async fn commit_dataset_impl<'a>(
+        commit: DatasetCommit,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetCommitOutcome, CommitDatasetError> {
+        super::tabular::dataset_version::commit_dataset(commit, transaction).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn begin_dataset_commit_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        branch: &str,
+        snapshot_id: DatasetSnapshotId,
+        parent_snapshot_id: Option<DatasetSnapshotId>,
+        location: &str,
+        summary: Option<serde_json::Value>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<chrono::DateTime<chrono::Utc>, CommitDatasetError> {
+        super::tabular::dataset_version::begin_dataset_commit(
+            warehouse_id,
+            dataset_id,
+            branch,
+            snapshot_id,
+            parent_snapshot_id,
+            location,
+            summary,
+            transaction,
+        )
+        .await
+    }
+
+    async fn stage_dataset_files_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        added: &[ManifestEntry],
+        modified: &[ManifestEntry],
+        removed: &[String],
+        on_violation: ConstraintViolationPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<StagedBatch, CommitDatasetError> {
+        super::tabular::dataset_version::stage_dataset_files(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            added,
+            modified,
+            removed,
+            on_violation,
+            transaction,
+        )
+        .await
+    }
+
+    async fn finish_dataset_commit_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        branch: &str,
+        snapshot_id: DatasetSnapshotId,
+        expected_snapshot_id: Option<DatasetSnapshotId>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<bool, CommitDatasetError> {
+        super::tabular::dataset_version::finish_dataset_commit(
+            warehouse_id,
+            dataset_id,
+            branch,
+            snapshot_id,
+            expected_snapshot_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn rebase_staging_snapshot_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        new_parent: Option<DatasetSnapshotId>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<StagedChanges, CommitDatasetError> {
+        super::tabular::dataset_version::rebase_staging_snapshot(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            new_parent,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_snapshot_files_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        from_key: Option<&str>,
+        after_key: Option<&str>,
+        page_size: i64,
+        include_expired: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<ManifestEntry>, Option<String>), ListManifestEntriesError> {
+        super::tabular::dataset_version::list_snapshot_files(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            from_key,
+            after_key,
+            page_size,
+            include_expired,
+            transaction,
+        )
+        .await
+    }
+
+    async fn spool_import_listing_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_id: DatasetSnapshotId,
+        objects: &[ListedObject],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CommitDatasetError> {
+        super::tabular::dataset_version::spool_import_listing(
+            warehouse_id,
+            snapshot_id,
+            objects,
+            transaction,
+        )
+        .await
+    }
+
+    async fn read_import_listing_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_id: DatasetSnapshotId,
+        after: Option<&str>,
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<ListedObject>, CommitDatasetError> {
+        super::tabular::dataset_version::read_import_listing(
+            warehouse_id,
+            snapshot_id,
+            after,
+            limit,
+            transaction,
+        )
+        .await
+    }
+
+    async fn mark_import_objects_referenced_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_id: DatasetSnapshotId,
+        keys: &[String],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CommitDatasetError> {
+        super::tabular::dataset_version::mark_import_objects_referenced(
+            warehouse_id,
+            snapshot_id,
+            keys,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_listed_import_objects_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_id: DatasetSnapshotId,
+        keys: &[String],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<ListedObject>, CommitDatasetError> {
+        super::tabular::dataset_version::get_listed_import_objects(
+            warehouse_id,
+            snapshot_id,
+            keys,
+            transaction,
+        )
+        .await
+    }
+
+    async fn clear_import_listing_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_id: DatasetSnapshotId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CommitDatasetError> {
+        super::tabular::dataset_version::clear_import_listing(
+            warehouse_id,
+            snapshot_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn record_snapshot_materialization_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        findings: &MaterializationFindings,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CommitDatasetError> {
+        super::tabular::dataset_version::record_snapshot_materialization(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            findings,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_snapshot_materialization_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        page_token: Option<&str>,
+        page_size: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<SnapshotMaterialization>, ListManifestEntriesError> {
+        super::tabular::dataset_version::get_snapshot_materialization(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            page_token,
+            page_size,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_snapshot_materialization_statuses_impl<'a>(
+        warehouse_id: WarehouseId,
+        snapshot_ids: &[DatasetSnapshotId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<SnapshotMaterializationStatus>, ListDatasetRefsError> {
+        super::tabular::dataset_version::get_snapshot_materialization_statuses(
+            warehouse_id,
+            snapshot_ids,
+            transaction,
+        )
+        .await
+    }
+
+    async fn create_dataset_access_grant_impl<'a>(
+        grant: DatasetAccessGrantCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetAccessGrant, DatasetAccessGrantError> {
+        super::tabular::dataset_access_grant::create_dataset_access_grant(grant, transaction).await
+    }
+
+    async fn get_dataset_access_grant_impl<'a>(
+        warehouse_id: WarehouseId,
+        grant_id: DatasetAccessGrantId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<DatasetAccessGrant>, DatasetAccessGrantError> {
+        super::tabular::dataset_access_grant::get_dataset_access_grant(
+            warehouse_id,
+            grant_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_dataset_access_grant_by_idempotency_key_impl<'a>(
+        warehouse_id: WarehouseId,
+        key: IdempotencyKey,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<DatasetAccessGrant>, DatasetAccessGrantError> {
+        super::tabular::dataset_access_grant::get_dataset_access_grant_by_idempotency_key(
+            warehouse_id,
+            key,
+            transaction,
+        )
+        .await
+    }
+
+    async fn revoke_dataset_access_grant_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        grant_id: DatasetAccessGrantId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<DatasetAccessGrant>, DatasetAccessGrantError> {
+        super::tabular::dataset_access_grant::revoke_dataset_access_grant(
+            warehouse_id,
+            dataset_id,
+            grant_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_snapshot_files_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        keys: &[String],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<ManifestEntry>, ListManifestEntriesError> {
+        super::tabular::dataset_version::get_snapshot_files(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            keys,
+            transaction,
+        )
+        .await
+    }
+
+    async fn abort_dataset_commit_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CommitDatasetError> {
+        super::tabular::dataset_version::abort_dataset_commit(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn expire_staging_snapshots_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: Option<DatasetId>,
+        older_than: chrono::DateTime<chrono::Utc>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<u64, CommitDatasetError> {
+        super::tabular::dataset_version::expire_staging_snapshots(
+            warehouse_id,
+            dataset_id,
+            older_than,
+            transaction,
+        )
+        .await
+    }
+
+    async fn checkpoint_dataset_branch_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        branch: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<DatasetSnapshotId>, CommitDatasetError> {
+        super::tabular::dataset_version::checkpoint_dataset_branch(
+            warehouse_id,
+            dataset_id,
+            branch,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_dataset_snapshot_by_idempotency_key_impl<'a>(
+        warehouse_id: WarehouseId,
+        key: IdempotencyKey,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Option<RecordedCommit>, CommitDatasetError> {
+        super::tabular::dataset_version::get_dataset_snapshot_by_idempotency_key(
+            warehouse_id,
+            key,
+            transaction,
+        )
+        .await
+    }
+
+    async fn expire_dataset_snapshot_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        purge_after: chrono::DateTime<chrono::Utc>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<chrono::DateTime<chrono::Utc>, ExpireDatasetSnapshotError> {
+        super::tabular::dataset_version::expire_dataset_snapshot(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            purge_after,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_dataset_snapshot_graph_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<DatasetSnapshotNode>, CommitDatasetError> {
+        super::tabular::dataset_version::list_dataset_snapshot_graph(
+            warehouse_id,
+            dataset_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn expire_dataset_snapshots_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_ids: &[DatasetSnapshotId],
+        purge_after: chrono::DateTime<chrono::Utc>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<u64, CommitDatasetError> {
+        super::tabular::dataset_version::expire_dataset_snapshots(
+            warehouse_id,
+            dataset_id,
+            snapshot_ids,
+            purge_after,
+            transaction,
+        )
+        .await
+    }
+
+    async fn purge_expired_dataset_snapshots_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetPurge, CommitDatasetError> {
+        super::tabular::dataset_version::purge_expired_dataset_snapshots(
+            warehouse_id,
+            dataset_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn restore_dataset_snapshot_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        snapshot_id: DatasetSnapshotId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetSnapshot, RestoreDatasetSnapshotError> {
+        super::tabular::dataset_version::restore_dataset_snapshot(
+            warehouse_id,
+            dataset_id,
+            snapshot_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_dataset_refs_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<Vec<DatasetRef>, ListDatasetRefsError> {
+        super::tabular::dataset_version::list_dataset_refs(warehouse_id, dataset_id, transaction)
+            .await
+    }
+
+    async fn get_dataset_ref_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetRef, ListDatasetRefsError> {
+        super::tabular::dataset_version::get_dataset_ref(
+            warehouse_id,
+            dataset_id,
+            name,
+            transaction,
+        )
+        .await
+    }
+
+    async fn create_dataset_ref_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        name: &str,
+        typ: DatasetRefType,
+        snapshot_id: DatasetSnapshotId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetRef, CreateDatasetRefError> {
+        super::tabular::dataset_version::create_dataset_ref(
+            warehouse_id,
+            dataset_id,
+            name,
+            typ,
+            snapshot_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn set_dataset_ref_protection_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        name: &str,
+        protected: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetRef, SetDatasetRefProtectionError> {
+        super::tabular::dataset_version::set_dataset_ref_protection(
+            warehouse_id,
+            dataset_id,
+            name,
+            protected,
+            transaction,
+        )
+        .await
+    }
+
+    async fn delete_dataset_ref_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), DeleteDatasetRefError> {
+        super::tabular::dataset_version::delete_dataset_ref(
+            warehouse_id,
+            dataset_id,
+            name,
+            transaction,
+        )
+        .await
+    }
+
+    async fn move_dataset_ref_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        name: &str,
+        snapshot_id: DatasetSnapshotId,
+        expected_snapshot_id: Option<DatasetSnapshotId>,
+        require_descendant: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<DatasetRef, MoveDatasetRefError> {
+        super::tabular::dataset_version::move_dataset_ref(
+            warehouse_id,
+            dataset_id,
+            name,
+            snapshot_id,
+            expected_snapshot_id,
+            require_descendant,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_dataset_files_impl<'a>(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        ref_name: &str,
+        content_type: Option<&str>,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<
+        (
+            Option<DatasetSnapshotId>,
+            Vec<ManifestEntry>,
+            Option<String>,
+        ),
+        ListManifestEntriesError,
+    > {
+        super::tabular::dataset_version::list_dataset_files(
+            warehouse_id,
+            dataset_id,
+            ref_name,
+            content_type,
+            page_size,
+            page_token,
+            transaction,
+        )
+        .await
     }
 
     // ---------------- Role Management API ----------------

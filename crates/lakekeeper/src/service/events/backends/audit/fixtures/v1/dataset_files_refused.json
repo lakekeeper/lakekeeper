@@ -1,0 +1,17 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "operation": "dataset_files_signed",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "outcome": "forbidden",
+  "context": {
+    "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+    "dataset_id": null,
+    "snapshot_id": "019684ff-0000-7000-8000-000000000009",
+    "access_grant_id": "019684ff-0000-7000-8000-00000000000a",
+    "key_count": 1000
+  }
+}

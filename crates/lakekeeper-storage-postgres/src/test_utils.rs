@@ -63,7 +63,7 @@ pub async fn spawn_build_in_queues<T: Authorizer>(
     poll_interval: Option<std::time::Duration>,
     cancellation_token: lakekeeper::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
-    let task_queues = TaskQueueRegistry::new();
+    let task_queues = TaskQueueRegistry::new().with_event_dispatcher(ctx.v1_state.events.clone());
     task_queues
         .register_built_in_queues::<PostgresBackend, _, _>(
             ctx.v1_state.catalog.clone(),
@@ -261,7 +261,12 @@ pub async fn get_api_context_with_registry<T: Authorizer>(
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
-    let task_queues = TaskQueueRegistry::new();
+    let events = EventDispatcher::new(vec![
+        Arc::new(WarehouseCacheEventListener {}),
+        Arc::new(NamespaceCacheEventListener {}),
+        Arc::new(RoleCacheEventListener {}),
+    ]);
+    let task_queues = TaskQueueRegistry::new().with_event_dispatcher(events.clone());
     task_queues
         .register_built_in_queues::<PostgresBackend, _, _>(
             catalog_state.clone(),
@@ -277,11 +282,7 @@ pub async fn get_api_context_with_registry<T: Authorizer>(
             catalog: catalog_state,
             secrets: secret_store,
             contract_verifiers: ContractVerifiers::new(vec![]),
-            events: EventDispatcher::new(vec![
-                Arc::new(WarehouseCacheEventListener {}),
-                Arc::new(NamespaceCacheEventListener {}),
-                Arc::new(RoleCacheEventListener {}),
-            ]),
+            events,
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
             build_info: &DEFAULT_BUILD_INFO,

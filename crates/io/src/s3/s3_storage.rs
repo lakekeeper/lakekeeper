@@ -2,11 +2,12 @@ use std::{collections::HashMap, ops::Range, str::FromStr, time::Duration};
 
 use aws_sdk_s3::{
     operation::head_object::HeadObjectOutput,
-    types::{Object, ObjectIdentifier, ServerSideEncryption},
+    presigning::PresigningConfig,
+    types::{Object, ObjectIdentifier, ObjectVersion, ServerSideEncryption},
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, stream, stream::BoxStream};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
@@ -17,8 +18,8 @@ use crate::{
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_bucket_policy_error,
-            parse_get_object_error, parse_head_object_error, parse_list_objects_v2_error,
-            parse_put_object_error, parse_upload_part_error,
+            parse_get_object_error, parse_head_object_error, parse_list_object_versions_error,
+            parse_list_objects_v2_error, parse_put_object_error, parse_upload_part_error,
         },
     },
     safe_usize_to_i32, validate_file_size,
@@ -60,6 +61,48 @@ impl S3Storage {
         self.aws_kms_key_arn.as_ref()
     }
 
+    /// A presigned GET URL for `path`, valid for `expires_in`. Signed here with the
+    /// client's credentials: no request reaches S3.
+    ///
+    /// With a `version_id` the URL reads exactly that version, and fails once it is
+    /// gone; without one it reads whatever is current.
+    ///
+    /// # Errors
+    /// Fails if `path` is not an S3 location, the validity is out of range, or the
+    /// credentials cannot sign.
+    pub async fn presign_get(
+        &self,
+        path: &str,
+        version_id: Option<&str>,
+        expires_in: Duration,
+    ) -> Result<String, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let config = PresigningConfig::expires_in(expires_in).map_err(|e| {
+            IOError::new(
+                ErrorKind::ConfigInvalid,
+                format!("Invalid presigned URL validity: {e}"),
+                path.to_string(),
+            )
+        })?;
+        let request = self
+            .client
+            .get_object()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .set_version_id(version_id.map(ToString::to_string))
+            .presigned(config)
+            .await
+            .map_err(|e| {
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    format!("Failed to presign S3 GET: {e}"),
+                    path.to_string(),
+                )
+                .set_source(anyhow::anyhow!(e))
+            })?;
+        Ok(request.uri().to_string())
+    }
+
     /// The policy document of `bucket`, or `None` if it has none.
     ///
     /// # Errors
@@ -71,6 +114,183 @@ impl S3Storage {
             Err(e) => parse_get_bucket_policy_error(e, bucket),
         }
     }
+
+    /// Whether `version` of the object at `path` is still stored. A version that
+    /// was deleted, or that S3 cannot address, reads as absent.
+    ///
+    /// # Errors
+    /// Fails if `path` is not an S3 location, or storage answers anything but the
+    /// version or its absence.
+    pub async fn version_exists(&self, path: &str, version: &str) -> Result<bool, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        match self
+            .client
+            .head_object()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .version_id(version)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            // A version storage does not hold answers 404.
+            Err(e) if e.raw_response().map(|r| r.status().as_u16()) == Some(404) => Ok(false),
+            // A HEAD's error has no body, so its 400 does not tell a version S3
+            // cannot address, such as a malformed id, from an expired token: a
+            // read of the version's first byte, whose error does, tells.
+            Err(e) if e.raw_response().map(|r| r.status().as_u16()) == Some(400) => {
+                self.version_readable(&s3_location, version).await
+            }
+            Err(e) => Err(ReadError::IOError(parse_head_object_error(e, &s3_location))),
+        }
+    }
+
+    async fn version_readable(
+        &self,
+        s3_location: &S3Location,
+        version: &str,
+    ) -> Result<bool, ReadError> {
+        match self
+            .client
+            .get_object()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .version_id(version)
+            .range("bytes=0-0")
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let status = e.raw_response().map(|r| r.status().as_u16());
+                let code = e.as_service_error().and_then(|e| e.meta().code());
+                match version_held(status, code) {
+                    Some(held) => Ok(held),
+                    None => Err(ReadError::IOError(parse_get_object_error(
+                        e,
+                        &s3_location.to_string(),
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// List `path` as [`LakekeeperStorage::list`] does, with each object's current
+    /// version id. A plain listing carries none, so this lists object versions,
+    /// which takes `s3:ListBucketVersions`. An object with no version of its own,
+    /// as in a bucket that never had versioning on, lists without one.
+    ///
+    /// # Errors
+    /// Fails if `path` is not an S3 location.
+    pub fn list_current_versions(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'static, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
+        let path = format!("{}/", path.trim_end_matches('/'));
+        let s3_location = S3Location::try_from_str(&path, true)?;
+        let base_location = s3_location.location().clone();
+        let s3_bucket = s3_location.bucket_name().to_string();
+        let mut request = self
+            .client
+            .list_object_versions()
+            .bucket(s3_bucket.clone())
+            .prefix(s3_key_to_str(&s3_location.key()));
+        if let Some(size) = page_size {
+            request = request.max_keys(i32::try_from(size).unwrap_or(i32::MAX));
+        }
+
+        Ok(listing_pages(
+            move |markers: Option<(Option<String>, Option<String>)>| {
+                let (key_marker, version_id_marker) = markers.unwrap_or_default();
+                let request = request
+                    .clone()
+                    .set_key_marker(key_marker)
+                    .set_version_id_marker(version_id_marker);
+                let base_location = base_location.clone();
+                let s3_bucket = s3_bucket.clone();
+                async move {
+                    let response = send_listing(|| async {
+                        request.clone().send().await.map_err(|e| {
+                            parse_list_object_versions_error(e, base_location.as_str())
+                        })
+                    })
+                    .await?;
+                    // Older versions and delete markers list too; only the
+                    // current version of a key that still exists is an object.
+                    let file_infos = response
+                        .versions()
+                        .iter()
+                        .filter(|version| version.is_latest() == Some(true))
+                        .filter_map(try_parse_current_version(&base_location, &s3_bucket))
+                        .collect::<Vec<_>>();
+                    let next = if response.is_truncated().unwrap_or(false) {
+                        let key_marker = response
+                            .next_key_marker()
+                            .ok_or_else(|| missing_cursor(&base_location))?;
+                        Some((
+                            Some(key_marker.to_string()),
+                            response.next_version_id_marker().map(ToString::to_string),
+                        ))
+                    } else {
+                        None
+                    };
+                    Ok((file_infos, next))
+                }
+            },
+        ))
+    }
+}
+
+/// The pages of an S3 listing. `fetch` asks for the page after `cursor`, the
+/// first when it is `None`, and returns it with the cursor to continue from,
+/// `None` once the listing is complete. An error ends the stream once reported.
+fn listing_pages<C, F, Fut>(fetch: F) -> BoxStream<'static, Result<Vec<FileInfo>, IOError>>
+where
+    C: Send + 'static,
+    F: Fn(Option<C>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(Vec<FileInfo>, Option<C>), IOError>> + Send + 'static,
+{
+    stream::unfold(Some(None), move |state: Option<Option<C>>| {
+        let page = state.map(&fetch);
+        async move {
+            match page?.await {
+                Ok((file_infos, next)) => Some((Ok(file_infos), next.map(Some))),
+                Err(error) => Some((Err(error), None)),
+            }
+        }
+    })
+    .boxed()
+}
+
+/// A page that says more follow but not where: ending the listing there would pass
+/// it off as complete, and starting over would never end.
+fn missing_cursor(base_location: &Location) -> IOError {
+    IOError::new(
+        ErrorKind::Unexpected,
+        "S3 reported a truncated listing without a cursor to continue from".to_string(),
+        base_location.to_string(),
+    )
+}
+
+/// Send one listing request, again while its error is temporary.
+async fn send_listing<O, Fut>(send: impl Fn() -> Fut) -> Result<O, IOError>
+where
+    Fut: Future<Output = Result<O, IOError>>,
+{
+    tryhard::retry_fn(|| async {
+        match send().await {
+            Ok(output) => Ok(Ok(output)),
+            Err(error) if error.should_retry() => Err(error),
+            Err(error) => Ok(Err(error)),
+        }
+    })
+    .retries(3)
+    .exponential_backoff(Duration::from_millis(100))
+    .max_delay(Duration::from_secs(10))
+    .await
+    // A temporary error retries did not resolve, or a permanent one.
+    .and_then(|sent| sent)
 }
 
 #[async_trait::async_trait]
@@ -322,78 +542,44 @@ impl LakekeeperStorage for S3Storage {
         let base_location = s3_location.location().clone();
         let s3_bucket = s3_location.bucket_name().to_string(); // Store the bucket name
 
-        let list_request_template = self
+        let mut request = self
             .client
             .list_objects_v2()
             .bucket(s3_bucket.clone())
             .prefix(s3_key_to_str(&s3_location.key()));
+        if let Some(size) = page_size {
+            request = request.max_keys(i32::try_from(size).unwrap_or(i32::MAX));
+        }
 
-        let stream = stream::unfold(
-            (None, false), // (continuation_token, is_done)
-            move |(continuation_token, is_done)| {
-                let base_location = base_location.clone();
-                let list_request = list_request_template.clone();
-                let s3_bucket = s3_bucket.clone(); // Clone the bucket name for use in the closure
-
-                async move {
-                    if is_done {
-                        return None;
-                    }
-
-                    let mut list_request = list_request;
-
-                    if let Some(token) = continuation_token {
-                        list_request = list_request.continuation_token(token);
-                    }
-
-                    if let Some(size) = page_size {
-                        list_request =
-                            list_request.max_keys(i32::try_from(size).unwrap_or(i32::MAX));
-                    }
-
-                    let result = tryhard::retry_fn(|| async {
-                        match list_request.clone().send().await {
-                            Ok(response) => Ok(Ok(response)),
-                            Err(e) => {
-                                let error = parse_list_objects_v2_error(e, base_location.as_str());
-                                if error.should_retry() {
-                                    Err(error)
-                                } else {
-                                    Ok(Err(error))
-                                }
-                            }
-                        }
-                    })
-                    .retries(3)
-                    .exponential_backoff(std::time::Duration::from_millis(100))
-                    .max_delay(std::time::Duration::from_secs(10))
-                    .await;
-
-                    match result {
-                        Ok(Ok(response)) => {
-                            let file_infos = response
-                                .contents()
-                                .iter()
-                                .filter_map(try_parse_file_info(&base_location, &s3_bucket))
-                                .collect::<Vec<_>>();
-
-                            let next_continuation_token = response
-                                .next_continuation_token()
-                                .map(std::string::ToString::to_string);
-                            let is_truncated = response.is_truncated().unwrap_or(false);
-                            let next_state = (next_continuation_token, !is_truncated);
-
-                            Some((Ok(file_infos), next_state))
-                        }
-                        // First case: Retryable error occurred but retries didn't resolve it
-                        // Second case: Non-retryable error occurred
-                        Ok(Err(error)) | Err(error) => Some((Err(error), (None, true))),
-                    }
-                }
-            },
-        );
-
-        Ok(stream.boxed())
+        Ok(listing_pages(move |continuation_token: Option<String>| {
+            let request = request.clone().set_continuation_token(continuation_token);
+            let base_location = base_location.clone();
+            let s3_bucket = s3_bucket.clone();
+            async move {
+                let response = send_listing(|| async {
+                    request
+                        .clone()
+                        .send()
+                        .await
+                        .map_err(|e| parse_list_objects_v2_error(e, base_location.as_str()))
+                })
+                .await?;
+                let file_infos = response
+                    .contents()
+                    .iter()
+                    .filter_map(try_parse_file_info(&base_location, &s3_bucket))
+                    .collect::<Vec<_>>();
+                let next = if response.is_truncated().unwrap_or(false) {
+                    let token = response
+                        .next_continuation_token()
+                        .ok_or_else(|| missing_cursor(&base_location))?;
+                    Some(token.to_string())
+                } else {
+                    None
+                };
+                Ok((file_infos, next))
+            }
+        }))
     }
 }
 
@@ -410,7 +596,35 @@ fn try_parse_file_info(
         let size = object
             .size()
             .and_then(|s| crate::size_to_u64(s, &full_path));
-        Some(FileInfo::new(last_modified, location, size))
+        // A plain listing carries no version id: that takes `ListObjectVersions`.
+        Some(
+            FileInfo::new(last_modified, location, size)
+                .with_e_tag(object.e_tag().map(ToString::to_string)),
+        )
+    }
+}
+
+fn try_parse_current_version(
+    base_location: &Location,
+    s3_bucket: &str,
+) -> impl FnMut(&ObjectVersion) -> Option<FileInfo> {
+    move |version| {
+        let key = version.key()?;
+        let last_modified = version.last_modified().and_then(parse_timestamp);
+        let scheme = base_location.scheme();
+        let full_path = format!("{scheme}://{s3_bucket}/{key}");
+        let location = Location::from_str(&full_path).ok()?;
+        let size = version
+            .size()
+            .and_then(|s| crate::size_to_u64(s, &full_path));
+        // S3 names the version of an object written without versioning `null`:
+        // there is no version to pin.
+        let version_id = version.version_id().filter(|id| *id != "null");
+        Some(
+            FileInfo::new(last_modified, location, size)
+                .with_e_tag(version.e_tag().map(ToString::to_string))
+                .with_version(version_id.map(ToString::to_string)),
+        )
     }
 }
 
@@ -1187,6 +1401,19 @@ async fn process_delete_results(
     Ok(())
 }
 
+/// What a failed read of a version says of it: not held, when S3 holds no such
+/// version or cannot address it; held, when the object is too short for the
+/// range read; `None` when the failure says nothing of the version.
+fn version_held(status: Option<u16>, code: Option<&str>) -> Option<bool> {
+    match (status, code) {
+        (Some(404), _) | (_, Some("NoSuchKey" | "NoSuchVersion" | "InvalidArgument")) => {
+            Some(false)
+        }
+        (_, Some("InvalidRange")) => Some(true),
+        _ => None,
+    }
+}
+
 fn s3_key_to_str(key: &[&str]) -> String {
     if key.is_empty() {
         return String::new();
@@ -1235,6 +1462,36 @@ mod tests {
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
             .build();
         S3Storage::new(aws_sdk_s3::Client::from_conf(config), None)
+    }
+
+    /// A version S3 cannot address is absent, but a 400 for any other reason,
+    /// an expired token among them, is a failure: no reader learns the version
+    /// is gone from it.
+    #[tokio::test]
+    async fn a_refused_version_lookup_is_not_an_absent_version() {
+        let malformed = storage_answering(
+            "400 Bad Request",
+            "<Error><Code>InvalidArgument</Code><Message>Invalid version id specified</Message></Error>",
+        )
+        .await;
+        assert!(
+            !malformed
+                .version_exists("s3://my-bucket/k", "not-a-version")
+                .await
+                .unwrap()
+        );
+        let expired = storage_answering(
+            "400 Bad Request",
+            "<Error><Code>ExpiredToken</Code><Message>The provided token has expired.</Message></Error>",
+        )
+        .await;
+        assert!(
+            expired
+                .version_exists("s3://my-bucket/k", "v1")
+                .await
+                .is_err(),
+            "an expired token says nothing of the version"
+        );
     }
 
     #[tokio::test]

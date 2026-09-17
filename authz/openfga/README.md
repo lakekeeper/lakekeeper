@@ -4,6 +4,46 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.13`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Adds datasets. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+
+Supersedes `v4.12`, which reached no release. A store already provisioned with `v4.12` from a `main` build must see a higher version to pick up the new type, hence the bump. `v4.12` is no longer registered; stores on it migrate straight to `v4.13`.
+
+New type `lakekeeper_dataset` (a namespace-level resource holding a versioned collection of files). Modelled on `lakekeeper_generic_table` — `namespace` parent, `ownership`, the same assignable privileges split into granted and `_effective` twins, the same `visible_below` leaf, and the same grant actions — plus the versioning actions:
+
+- `can_commit` (from `modify_effective`): append a snapshot and move one branch pointer forward.
+- `can_manage_refs` (from `manage_refs`): create, delete and protect branches and tags.
+- `can_promote` (from `modify_effective`): fast-forward a branch to a descendant snapshot — the publish step of write-audit-publish, and the only way changes reach a protected branch.
+- `can_reset` (from `manage_refs`): point a branch at an arbitrary non-descendant snapshot, `main` included. It is ref management, like creating, deleting and protecting refs. A protected branch is refused a reset whoever asks, but a `manage_refs` holder may lift the protection first; a rule that nobody rewinds `main` belongs in a policy-based authorizer, which sees the branch in `target-refs`.
+
+And three on access grants and retention:
+
+- `can_revoke_access_grants` (from `manage_grants`): revoke an access grant another caller obtained. Containment, so grant authority; a grant's holder revokes its own without it.
+- `can_restore_snapshots` (from `manage_grants`): bring back a snapshot retention expired, before it is purged. It undoes a retention decision, so grant authority.
+- `can_expire_snapshots` (from `manage_grants`): expire a snapshot by hand, which a dataset in `manual` retention relies on. It makes a retention decision, so the same authority as undoing one.
+
+And two on the dataset's settings:
+
+- `can_update_settings` (from `modify_effective`): change the dataset's constraints. Constraints bound what may be committed, so changing them is a write, like a table's property update.
+- `can_update_retention` (from `manage_grants`): change the dataset's retention policy. A policy expires snapshots from then on, so the same authority as expiring one by hand; with plain write authority, a writer could set a policy that purges the dataset's history.
+
+There are deliberately **no per-ref objects**. Refs are cheap, disposable rows — an agent fleet may create thousands — so per-ref tuples would impose authz-store churn and cross-store cleanup for objects that live minutes. The versioning actions apply to every ref of a dataset; the structural `protected` flag on a branch is the only per-branch control, and deleting a branch leaves nothing to clean up.
+
+`namespace`:
+
+- Add `lakekeeper_dataset` to the `child` relation type set, so a grant on a dataset reaches `visible_below` and the listings above it.
+- Add `can_create_dataset` (from `create_effective`) and `can_list_datasets` (from `can_get_metadata`).
+
+`warehouse`, `namespace`, `lakekeeper_dataset`:
+
+- Add `manage_refs` relation and `can_grant_manage_refs` grant. `manage_refs` is independent of `modify`, so a writer can commit but can neither replace a tag nor unprotect a branch. It inherits down the resource hierarchy, so one grant on a namespace covers every dataset below it, and `ownership` at any level confers it, as does `data_admin` on the project.
+
 ## `v4.12`
 
 ```text

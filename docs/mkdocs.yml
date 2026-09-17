@@ -12,6 +12,7 @@ nav:
           - Overview: api-overview.md
           - Catalog: api/catalog.md
           - Generic Tables: api/generic-table.md
+          - Datasets: api/dataset.md
           - Management (Core): api/management.md
           - Management <span class="lkp"></span>: api/management-plus.md
     - Query Engines: engines.md
@@ -21,6 +22,7 @@ nav:
           - Python Client: generic-tables-pylakekeeper.md
           - Apache Spark (PySpark): generic-tables-spark.md
           - Apache Flink (Java): generic-tables-flink.md
+    - Datasets: datasets.md
     - User Guide:
           - bootstrap.md
           - Storage:

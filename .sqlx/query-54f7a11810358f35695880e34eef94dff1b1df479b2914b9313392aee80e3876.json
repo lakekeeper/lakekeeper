@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS (\n            SELECT 1 FROM dataset_ref\n            WHERE warehouse_id = $1 AND snapshot_id = $2\n        ) OR EXISTS (\n            SELECT 1 FROM dataset_access_grant\n            WHERE warehouse_id = $1 AND snapshot_id = $2\n              AND revoked_at IS NULL AND expires_at > now()\n        ) AS \"held!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "held!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "54f7a11810358f35695880e34eef94dff1b1df479b2914b9313392aee80e3876"
+}

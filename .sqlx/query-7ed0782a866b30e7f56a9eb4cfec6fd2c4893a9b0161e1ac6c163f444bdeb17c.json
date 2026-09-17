@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM dataset_import_listing l\n        USING dataset_snapshot s\n        WHERE l.warehouse_id = $1\n          AND s.warehouse_id = l.warehouse_id AND s.snapshot_id = l.snapshot_id\n          AND ($2::uuid IS NULL OR s.dataset_id = $2)\n          AND s.status <> 'staging'\n          AND s.created_at < $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7ed0782a866b30e7f56a9eb4cfec6fd2c4893a9b0161e1ac6c163f444bdeb17c"
+}

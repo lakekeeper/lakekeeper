@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.snapshot_id FROM dataset_snapshot s\n        WHERE s.warehouse_id = $1 AND s.dataset_id = $2\n          AND s.status = 'expired' AND s.purge_after <= now()\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_ref r\n              WHERE r.warehouse_id = s.warehouse_id AND r.snapshot_id = s.snapshot_id\n          )\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_access_grant g\n              WHERE g.warehouse_id = s.warehouse_id AND g.snapshot_id = s.snapshot_id\n                AND g.revoked_at IS NULL AND g.expires_at > now()\n          )\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_snapshot c\n              WHERE c.warehouse_id = s.warehouse_id AND c.dataset_id = s.dataset_id\n                AND c.status = 'staging'\n          )\n        FOR UPDATE OF s\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "snapshot_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b87792b8c8254676ed64a8d64470654c1fd2a78b28f23bf182374c86b205059a"
+}

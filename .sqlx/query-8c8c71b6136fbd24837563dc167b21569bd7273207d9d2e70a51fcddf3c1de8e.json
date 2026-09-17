@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_manifest_entry\n            (warehouse_id, snapshot_id, logical_key, physical_path, change,\n             etag, size, content_type, checksum, version_id, last_modified)\n        SELECT $1, $2, k, p, $11::dataset_manifest_change,\n               e, s, c, ck, v, lm\n        FROM UNNEST(\n            $3::text[], $4::text[], $5::text[], $6::bigint[],\n            $7::text[], $8::text[], $9::text[], $10::timestamptz[]\n        ) AS t(k, p, e, s, c, ck, v, lm)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestamptzArray",
+        {
+          "Custom": {
+            "name": "dataset_manifest_change",
+            "kind": {
+              "Enum": [
+                "added",
+                "removed",
+                "modified"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c8c71b6136fbd24837563dc167b21569bd7273207d9d2e70a51fcddf3c1de8e"
+}

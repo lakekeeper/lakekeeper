@@ -10,9 +10,9 @@ use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
-    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
-    SecretStore, State, TableId, TabularId, TagDefinition, TagDefinitionId, ViewId, WarehouseId,
-    health::HealthExt,
+    CatalogStore, DatasetId, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId,
+    RoleSourceId, SecretStore, State, TableId, TabularId, TagDefinition, TagDefinitionId, ViewId,
+    WarehouseId, health::HealthExt,
 };
 use crate::{
     api::{
@@ -21,9 +21,9 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
-        events::context::ActionContextKey,
+        Actor, ArcProjectId, ArcRole, AuthZDatasetInfo, AuthZGenericTableInfo, AuthZNamespaceInfo,
+        AuthZTableInfo, AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId,
+        TableInfo, events::context::ActionContextKey,
     },
 };
 
@@ -51,6 +51,8 @@ mod view;
 pub use view::*;
 mod generic_table;
 pub use generic_table::*;
+mod dataset;
+pub use dataset::*;
 mod project;
 pub use project::*;
 mod server;
@@ -1351,6 +1353,29 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     ListGenericTables,
+    CreateDataset {
+        /// Name of the dataset to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Dataset ID, if externally provided.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
+        dataset_id: Option<DatasetId>,
+        /// User-supplied location. For imports this is an existing prefix the
+        /// dataset will borrow — the primary lever for path-based authorization
+        /// policy, e.g. restricting which prefixes may be registered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location: Option<String>,
+        /// Whether Lakekeeper owns an exclusive prefix (managed) or borrows an
+        /// existing one (imported). Policy-relevant: the two differ in whether
+        /// Lakekeeper may ever delete the underlying objects.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed: Option<bool>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        #[serde(deserialize_with = "deserialize_string_map")]
+        properties: Arc<BTreeMap<String, String>>,
+    },
+    ListDatasets,
     /// Attach/detach governance tags on this namespace.
     ManageTags,
     /// Move this namespace to a new path, re-parenting and/or renaming it.
@@ -1415,7 +1440,7 @@ pub enum CatalogNamespaceAction {
 /// The namespace actions enumerated for permission introspection (`GET
 /// /namespace/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 22]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -1454,6 +1479,14 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::ListGenericTables,
+        CatalogNamespaceAction::CreateDataset {
+            name: None,
+            dataset_id: None,
+            location: None,
+            managed: None,
+            properties: Arc::new(BTreeMap::new()),
+        },
+        CatalogNamespaceAction::ListDatasets,
         CatalogNamespaceAction::ManageTags,
         CatalogNamespaceAction::Move {
             destination: Arc::new(Vec::new()),
@@ -1470,7 +1503,7 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
 impl CatalogNamespaceAction {
     /// Introspectable namespace actions — see [`NAMESPACE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 20] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 22] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1516,6 +1549,32 @@ impl CatalogAction for CatalogNamespaceAction {
                 }
                 if let Some(bl) = base_location {
                     b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                }
+            }
+            Self::CreateDataset {
+                name,
+                dataset_id,
+                location,
+                managed,
+                properties,
+            } => {
+                if let Some(n) = name {
+                    b = b.context_string(ActionContextKey::Name, n.clone());
+                }
+                if let Some(did) = dataset_id {
+                    b = b.context_string(ActionContextKey::DatasetId, did.to_string());
+                }
+                if let Some(l) = location {
+                    b = b.context_string(ActionContextKey::BaseLocation, l.clone());
+                }
+                if let Some(m) = managed {
+                    b = b.context_string(
+                        ActionContextKey::Managed,
+                        if *m { "true" } else { "false" },
+                    );
                 }
                 if !properties.is_empty() {
                     b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
@@ -1593,6 +1652,7 @@ impl CatalogAction for CatalogNamespaceAction {
             | Self::SetProtection { .. }
             | Self::IncludeInList { .. }
             | Self::ListGenericTables { .. }
+            | Self::ListDatasets { .. }
             | Self::ManageTags { .. }
             | Self::AcceptMovedNamespace { .. }
             | Self::ReadGrants { .. } => {}
@@ -1939,6 +1999,194 @@ impl CatalogAction for CatalogGenericTableAction {
 
 #[derive(
     Debug,
+    Hash,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperDatasetAction))]
+#[serde(rename_all = "snake_case", tag = "action")]
+#[strum(serialize_all = "snake_case")]
+pub enum CatalogDatasetAction {
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, so the dataset
+        /// is hard-deleted at once, with no grace period to recover it in.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the dataset's files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
+    /// Read the files of a ref of this dataset.
+    ReadData {
+        /// The ref read. Empty when the check covers every ref, as it does for
+        /// vended credentials.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+    },
+    GetMetadata,
+    Rename,
+    IncludeInList,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
+    /// Attach/detach governance tags on this dataset.
+    ManageTags,
+    /// Can list the grants held on this dataset.
+    ReadGrants,
+    /// Append a snapshot and move a branch pointer forward.
+    Commit {
+        /// The branch the commit moves. Empty when the check covers every branch, as
+        /// it does for vended credentials.
+        // Lets an authorizer decide per branch, as a table commit's refs do.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+    },
+    /// Create and delete branches and tags, and set their protection. Kept apart
+    /// from [`Commit`], so write access does not confer control over refs: a writer
+    /// can neither replace a tag nor unprotect a branch.
+    ///
+    /// [`Commit`]: CatalogDatasetAction::Commit
+    ManageRefs {
+        /// The branch or tag created, deleted or protected.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+    },
+    /// Fast-forward a branch to a descendant snapshot: the publish step of
+    /// write-audit-publish, and the only way changes reach a protected branch.
+    Promote {
+        /// The branch fast-forwarded.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+    },
+    /// Point a branch at an arbitrary non-descendant snapshot, `main` included.
+    /// Unlike [`Promote`] this abandons history on the branch, so it is not
+    /// reachable through the promote path: it is ref management, like creating,
+    /// deleting and protecting refs.
+    ///
+    /// [`Promote`]: CatalogDatasetAction::Promote
+    Reset {
+        /// The branch moved.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+    },
+    /// Revoke an access grant another caller obtained. Its own holder may always
+    /// revoke one.
+    RevokeAccessGrants,
+    /// Bring back a snapshot retention expired, before it is purged. Grant
+    /// authority: it undoes a retention decision.
+    RestoreSnapshots,
+    /// Change the dataset's constraints. A write, like a table's property update.
+    UpdateSettings,
+    /// Expire a snapshot by hand, starting its grace period. Grant authority, like
+    /// [`RestoreSnapshots`], which undoes it.
+    ///
+    /// [`RestoreSnapshots`]: CatalogDatasetAction::RestoreSnapshots
+    ExpireSnapshots,
+    /// Change the dataset's retention policy. Grant authority, like
+    /// [`ExpireSnapshots`]: a policy expires snapshots as a caller expiring them by
+    /// hand does.
+    ///
+    /// [`ExpireSnapshots`]: CatalogDatasetAction::ExpireSnapshots
+    UpdateRetention,
+}
+static DATASET_ACTION_VARIANTS: LazyLock<[CatalogDatasetAction; 20]> = LazyLock::new(|| {
+    [
+        CatalogDatasetAction::Drop {
+            force: false,
+            purge: false,
+        },
+        CatalogDatasetAction::ReadData {
+            target_refs: Arc::default(),
+        },
+        CatalogDatasetAction::GetMetadata,
+        CatalogDatasetAction::Rename,
+        CatalogDatasetAction::IncludeInList,
+        CatalogDatasetAction::Undrop,
+        CatalogDatasetAction::GetTasks,
+        CatalogDatasetAction::ControlTasks,
+        CatalogDatasetAction::SetProtection,
+        CatalogDatasetAction::ManageTags,
+        CatalogDatasetAction::ReadGrants,
+        CatalogDatasetAction::Commit {
+            target_refs: Arc::default(),
+        },
+        CatalogDatasetAction::ManageRefs {
+            target_refs: Arc::default(),
+        },
+        CatalogDatasetAction::Promote {
+            target_refs: Arc::default(),
+        },
+        CatalogDatasetAction::Reset {
+            target_refs: Arc::default(),
+        },
+        CatalogDatasetAction::RevokeAccessGrants,
+        CatalogDatasetAction::RestoreSnapshots,
+        CatalogDatasetAction::UpdateSettings,
+        CatalogDatasetAction::ExpireSnapshots,
+        CatalogDatasetAction::UpdateRetention,
+    ]
+});
+impl CatalogDatasetAction {
+    #[must_use]
+    pub fn variants() -> &'static [CatalogDatasetAction; 20] {
+        &DATASET_ACTION_VARIANTS
+    }
+}
+impl CatalogAction for CatalogDatasetAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
+    fn action_descriptor(&self) -> ActionDescriptor {
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        match self {
+            Self::ReadData { target_refs }
+            | Self::Commit { target_refs }
+            | Self::ManageRefs { target_refs }
+            | Self::Promote { target_refs }
+            | Self::Reset { target_refs } => {
+                if !target_refs.is_empty() {
+                    b = b.context_list(
+                        ActionContextKey::TargetRefs,
+                        target_refs.iter().cloned().collect::<Vec<_>>(),
+                    );
+                }
+            }
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string(ActionContextKey::Force, "true");
+                }
+                if *purge {
+                    b = b.context_string(ActionContextKey::Purge, "true");
+                }
+            }
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata
+            | Self::Rename
+            | Self::IncludeInList
+            | Self::Undrop
+            | Self::GetTasks
+            | Self::ControlTasks
+            | Self::SetProtection
+            | Self::ManageTags
+            | Self::ReadGrants
+            | Self::RevokeAccessGrants
+            | Self::RestoreSnapshots
+            | Self::UpdateSettings
+            | Self::ExpireSnapshots
+            | Self::UpdateRetention => {}
+        }
+        b.build()
+    }
+}
+
+#[derive(
+    Debug,
     Clone,
     Eq,
     PartialEq,
@@ -2190,6 +2438,8 @@ pub enum CatalogNamespaceActionKind {
     IncludeInList,
     CreateGenericTable,
     ListGenericTables,
+    CreateDataset,
+    ListDatasets,
     ManageTags,
     Move,
     AcceptMovedNamespace,
@@ -2216,6 +2466,8 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
+            CatalogNamespaceAction::CreateDataset { .. } => Self::CreateDataset,
+            CatalogNamespaceAction::ListDatasets => Self::ListDatasets,
             CatalogNamespaceAction::ManageTags => Self::ManageTags,
             CatalogNamespaceAction::ReadGrants => Self::ReadGrants,
             CatalogNamespaceAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
@@ -2296,6 +2548,59 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::SetProtection => Self::SetProtection,
             CatalogViewAction::ManageTags => Self::ManageTags,
             CatalogViewAction::ReadGrants => Self::ReadGrants,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperDatasetActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogDatasetActionKind {
+    Drop,
+    ReadData,
+    GetMetadata,
+    Rename,
+    IncludeInList,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
+    ManageTags,
+    ReadGrants,
+    Commit,
+    ManageRefs,
+    Promote,
+    Reset,
+    RevokeAccessGrants,
+    RestoreSnapshots,
+    UpdateSettings,
+    ExpireSnapshots,
+    UpdateRetention,
+}
+impl From<&CatalogDatasetAction> for CatalogDatasetActionKind {
+    fn from(action: &CatalogDatasetAction) -> Self {
+        match action {
+            CatalogDatasetAction::Drop { .. } => Self::Drop,
+            CatalogDatasetAction::ReadData { .. } => Self::ReadData,
+            CatalogDatasetAction::GetMetadata => Self::GetMetadata,
+            CatalogDatasetAction::Rename => Self::Rename,
+            CatalogDatasetAction::IncludeInList => Self::IncludeInList,
+            CatalogDatasetAction::Undrop => Self::Undrop,
+            CatalogDatasetAction::GetTasks => Self::GetTasks,
+            CatalogDatasetAction::ControlTasks => Self::ControlTasks,
+            CatalogDatasetAction::SetProtection => Self::SetProtection,
+            CatalogDatasetAction::ManageTags => Self::ManageTags,
+            CatalogDatasetAction::ReadGrants => Self::ReadGrants,
+            CatalogDatasetAction::Commit { .. } => Self::Commit,
+            CatalogDatasetAction::ManageRefs { .. } => Self::ManageRefs,
+            CatalogDatasetAction::Promote { .. } => Self::Promote,
+            CatalogDatasetAction::Reset { .. } => Self::Reset,
+            CatalogDatasetAction::RevokeAccessGrants => Self::RevokeAccessGrants,
+            CatalogDatasetAction::RestoreSnapshots => Self::RestoreSnapshots,
+            CatalogDatasetAction::UpdateSettings => Self::UpdateSettings,
+            CatalogDatasetAction::ExpireSnapshots => Self::ExpireSnapshots,
+            CatalogDatasetAction::UpdateRetention => Self::UpdateRetention,
         }
     }
 }
@@ -2390,6 +2695,7 @@ where
     type TableAction: TableAction;
     type ViewAction: ViewAction;
     type GenericTableAction: GenericTableAction;
+    type DatasetAction: DatasetAction;
     type UserAction: UserAction;
     type RoleAction: RoleAction;
     type TagAction: TagAction;
@@ -2598,6 +2904,17 @@ where
         actions: &[(
             &NamespaceWithParent,
             ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
+
+    async fn are_allowed_dataset_actions_impl<A: Into<Self::DatasetAction> + Send + Clone + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse: &ResolvedWarehouse,
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnDataset<'_, '_, impl AuthZDatasetInfo, A>,
         )],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
@@ -2919,6 +3236,27 @@ where
         Ok(())
     }
 
+    /// Hook that is called when a new dataset is created.
+    /// Sets up its parent (namespace) and ownership permissions.
+    async fn create_dataset(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _dataset_id: DatasetId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that is called when a dataset is deleted.
+    async fn delete_dataset(
+        &self,
+        _warehouse_id: WarehouseId,
+        _dataset_id: DatasetId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Hook that removes a tabular's hierarchy relation to `parent`, so it stops
     /// inheriting permissions from it.
     ///
@@ -3096,6 +3434,10 @@ pub mod tests {
             CatalogViewActionKind::from(&CatalogViewAction::ReadGrants),
             CatalogViewActionKind::ReadGrants
         );
+        assert_eq!(
+            CatalogDatasetActionKind::from(&CatalogDatasetAction::ReadGrants),
+            CatalogDatasetActionKind::ReadGrants
+        );
     }
 
     #[test]
@@ -3218,6 +3560,7 @@ pub mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_catalog_namespace_action_serde_no_properties() {
         for (action, expected) in [
             (
@@ -3298,6 +3641,20 @@ pub mod tests {
             (
                 CatalogNamespaceAction::ListGenericTables,
                 serde_json::json!({"action": "list_generic_tables"}),
+            ),
+            (
+                CatalogNamespaceAction::CreateDataset {
+                    name: None,
+                    dataset_id: None,
+                    location: None,
+                    managed: None,
+                    properties: Arc::new(BTreeMap::new()),
+                },
+                serde_json::json!({"action": "create_dataset"}),
+            ),
+            (
+                CatalogNamespaceAction::ListDatasets,
+                serde_json::json!({"action": "list_datasets"}),
             ),
         ] {
             let serialized = serde_json::to_value(&action).expect("Failed to serialize");
@@ -3423,6 +3780,175 @@ pub mod tests {
         let log_minimal = action_minimal.action_descriptor().log_string();
         assert!(!log_minimal.contains("format="), "{log_minimal}");
         assert!(!log_minimal.contains("base_location="), "{log_minimal}");
+    }
+
+    #[test]
+    fn test_dataset_action_variant_completeness() {
+        let variants = CatalogDatasetAction::variants();
+        assert_eq!(variants.len(), CatalogDatasetAction::COUNT);
+    }
+
+    #[test]
+    fn test_catalog_dataset_action_serde() {
+        for (action, expected) in [
+            (
+                CatalogDatasetAction::Drop {
+                    force: false,
+                    purge: false,
+                },
+                serde_json::json!({"action": "drop"}),
+            ),
+            (
+                CatalogDatasetAction::ReadData {
+                    target_refs: Arc::default(),
+                },
+                serde_json::json!({"action": "read_data"}),
+            ),
+            (
+                CatalogDatasetAction::RevokeAccessGrants,
+                serde_json::json!({"action": "revoke_access_grants"}),
+            ),
+            (
+                CatalogDatasetAction::RestoreSnapshots,
+                serde_json::json!({"action": "restore_snapshots"}),
+            ),
+            (
+                CatalogDatasetAction::UpdateSettings,
+                serde_json::json!({"action": "update_settings"}),
+            ),
+            (
+                CatalogDatasetAction::ExpireSnapshots,
+                serde_json::json!({"action": "expire_snapshots"}),
+            ),
+            (
+                CatalogDatasetAction::UpdateRetention,
+                serde_json::json!({"action": "update_retention"}),
+            ),
+            (
+                CatalogDatasetAction::GetMetadata,
+                serde_json::json!({"action": "get_metadata"}),
+            ),
+            (
+                CatalogDatasetAction::Commit {
+                    target_refs: Arc::default(),
+                },
+                serde_json::json!({"action": "commit"}),
+            ),
+            (
+                CatalogDatasetAction::ManageRefs {
+                    target_refs: Arc::new(BTreeSet::from(["v1".to_string()])),
+                },
+                serde_json::json!({"action": "manage_refs", "target_refs": ["v1"]}),
+            ),
+            (
+                CatalogDatasetAction::Promote {
+                    target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+                },
+                serde_json::json!({"action": "promote", "target_refs": ["main"]}),
+            ),
+            (
+                CatalogDatasetAction::Reset {
+                    target_refs: Arc::default(),
+                },
+                serde_json::json!({"action": "reset"}),
+            ),
+            (
+                CatalogDatasetAction::Drop {
+                    force: true,
+                    purge: true,
+                },
+                serde_json::json!({"action": "drop", "force": true, "purge": true}),
+            ),
+        ] {
+            let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+            let expected_serialized =
+                serde_json::to_value(expected).expect("Failed to serialize expected");
+            assert_eq!(serialized, expected_serialized);
+
+            let deserialized: CatalogDatasetAction =
+                serde_json::from_value(serialized).expect("Failed to deserialize");
+            assert_eq!(deserialized, action);
+        }
+    }
+
+    /// The ref a versioning action names reaches the authorizer in the same
+    /// `target-refs` field as a table commit's, so one policy covers both.
+    #[test]
+    fn test_dataset_versioning_descriptors_carry_the_ref() {
+        let main = || Arc::new(BTreeSet::from(["main".to_string()]));
+        for action in [
+            CatalogDatasetAction::ReadData {
+                target_refs: main(),
+            },
+            CatalogDatasetAction::Commit {
+                target_refs: main(),
+            },
+            CatalogDatasetAction::ManageRefs {
+                target_refs: main(),
+            },
+            CatalogDatasetAction::Promote {
+                target_refs: main(),
+            },
+            CatalogDatasetAction::Reset {
+                target_refs: main(),
+            },
+        ] {
+            let context: BTreeMap<&str, String> = action
+                .action_descriptor()
+                .context
+                .into_iter()
+                .map(|(k, v)| (k.as_str(), v.to_string()))
+                .collect();
+            assert_eq!(
+                context.get("target-refs"),
+                Some(&"[main]".to_string()),
+                "{action:?}"
+            );
+        }
+        let purge = CatalogDatasetAction::Drop {
+            force: false,
+            purge: true,
+        }
+        .action_descriptor();
+        let context: BTreeMap<&str, String> = purge
+            .context
+            .into_iter()
+            .map(|(k, v)| (k.as_str(), v.to_string()))
+            .collect();
+        assert_eq!(context.get("purge"), Some(&"true".to_string()));
+        assert_eq!(context.get("force"), None);
+    }
+
+    #[test]
+    fn test_create_dataset_action_descriptor_carries_location_and_managed() {
+        let mut props = BTreeMap::new();
+        props.insert("k".to_string(), "v".to_string());
+        let action = CatalogNamespaceAction::CreateDataset {
+            name: Some("images".to_string()),
+            dataset_id: Some(DatasetId::from(Uuid::nil())),
+            location: Some("ml/images/raw/".to_string()),
+            managed: Some(false),
+            properties: Arc::new(props),
+        };
+        let descriptor = action.action_descriptor();
+        assert_eq!(descriptor.action_name, "create_dataset");
+        let log = descriptor.log_string();
+        // Both are policy levers: which prefix is being registered, and whether
+        // Lakekeeper is being asked to own it or borrow it.
+        assert!(log.contains("location=ml/images/raw/"), "{log}");
+        assert!(log.contains("managed=false"), "{log}");
+        assert!(log.contains("name=images"), "{log}");
+
+        let action_minimal = CatalogNamespaceAction::CreateDataset {
+            name: None,
+            dataset_id: None,
+            location: None,
+            managed: None,
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log_minimal = action_minimal.action_descriptor().log_string();
+        assert!(!log_minimal.contains("location="), "{log_minimal}");
+        assert!(!log_minimal.contains("managed="), "{log_minimal}");
     }
 
     #[test]
@@ -3674,6 +4200,9 @@ pub mod tests {
         }
         for a in CatalogViewAction::variants() {
             assert_stateless::<_, CatalogViewActionKind>(a);
+        }
+        for a in CatalogDatasetAction::variants() {
+            assert_stateless::<_, CatalogDatasetActionKind>(a);
         }
 
         // Spot-check that context-bearing variants collapse to the bare action.
@@ -4203,6 +4732,7 @@ pub mod tests {
         type TableAction = CatalogTableAction;
         type ViewAction = CatalogViewAction;
         type GenericTableAction = CatalogGenericTableAction;
+        type DatasetAction = CatalogDatasetAction;
         type UserAction = CatalogUserAction;
         type RoleAction = CatalogRoleAction;
         type TagAction = CatalogTagAction;
@@ -4513,6 +5043,41 @@ pub mod tests {
                     let view_id = action.info.view_id();
                     let warehouse_id = action.info.warehouse_id();
                     let object = format!("view:{warehouse_id}/{view_id}");
+                    let subject = action.user.or(actor_identity.as_ref());
+                    self.check_available_for_user(&object, subject)
+                })
+                .collect();
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
+        }
+
+        async fn are_allowed_dataset_actions_impl<
+            A: Into<Self::DatasetAction> + Send + Clone + Sync,
+        >(
+            &self,
+            metadata: &RequestMetadata,
+            _warehouse: &ResolvedWarehouse,
+            _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+            actions: &[(
+                &NamespaceWithParent,
+                ActionOnDataset<'_, '_, impl AuthZDatasetInfo, A>,
+            )],
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
+            // See the table impl above for why we fall back to the actor.
+            let actor_identity = metadata.actor().to_user_or_role();
+            let results: Vec<bool> = actions
+                .iter()
+                .map(|(_parent_namespace, action)| {
+                    let converted: Self::DatasetAction = action.action.clone().into();
+                    if self.action_is_blocked(format!("dataset:{converted:?}").as_str()) {
+                        return false;
+                    }
+                    let dataset_id = action.info.dataset_id();
+                    let warehouse_id = action.info.warehouse_id();
+                    let object = format!("dataset:{warehouse_id}/{dataset_id}");
                     let subject = action.user.or(actor_identity.as_ref());
                     self.check_available_for_user(&object, subject)
                 })

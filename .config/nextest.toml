@@ -19,6 +19,7 @@ default-filter = """
     and not test(::gcp_system_credentials_integration_tests::)
     and not test(::kv2_integration_tests::)
     and not test(::s3_compat_integration_tests::)
+    and not test(::s3_versioning_integration_tests::)
     and not test(::openfga_integration_tests::)
     and not test(::r2_integration_tests::)
     and not test(::oss_integration_tests::)

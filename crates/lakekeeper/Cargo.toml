@@ -52,6 +52,7 @@ fastrand = { workspace = true }
 figment = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
+glob = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
 hmac = { workspace = true }

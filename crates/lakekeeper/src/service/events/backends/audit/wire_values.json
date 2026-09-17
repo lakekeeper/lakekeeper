@@ -3,6 +3,28 @@
     "AuthnAction": [
       "assume_role"
     ],
+    "CatalogDatasetAction": [
+      "commit",
+      "control_tasks",
+      "drop",
+      "expire_snapshots",
+      "get_metadata",
+      "get_tasks",
+      "include_in_list",
+      "manage_refs",
+      "manage_tags",
+      "promote",
+      "read_data",
+      "read_grants",
+      "rename",
+      "reset",
+      "restore_snapshots",
+      "revoke_access_grants",
+      "set_protection",
+      "undrop",
+      "update_retention",
+      "update_settings"
+    ],
     "CatalogGenericTableAction": [
       "control_tasks",
       "drop",
@@ -19,6 +41,7 @@
     ],
     "CatalogNamespaceAction": [
       "accept_moved_namespace",
+      "create_dataset",
       "create_generic_table",
       "create_namespace",
       "create_table",
@@ -26,6 +49,7 @@
       "delete",
       "get_metadata",
       "include_in_list",
+      "list_datasets",
       "list_everything",
       "list_generic_tables",
       "list_namespaces",
@@ -195,6 +219,7 @@
   },
   "entity_type": {
     "EntityType": [
+      "dataset",
       "generic-table",
       "namespace",
       "project",
@@ -222,6 +247,7 @@
   "operation": {
     "AuditOperation": [
       "admission_decided",
+      "dataset_files_signed",
       "grant_created",
       "grant_revoked",
       "idempotent_replay"
@@ -229,6 +255,7 @@
   },
   "outcome": {
     "AuditOutcome": [
+      "failed",
       "forbidden",
       "replayed",
       "success",
@@ -237,6 +264,7 @@
   },
   "resource_type": {
     "ResourceType": [
+      "dataset",
       "generic-table",
       "namespace",
       "project",

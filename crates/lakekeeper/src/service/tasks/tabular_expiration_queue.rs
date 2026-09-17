@@ -10,11 +10,12 @@ use crate::{
     CancellationToken,
     api::{ErrorModel, Result, management::v1::DeleteKind},
     service::{
-        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
+        CatalogDatasetOps, CatalogStore, CatalogTabularOps, CatalogTaskOps, DatasetOwnership,
+        DropTabularError, Transaction,
         authz::Authorizer,
         tasks::{
-            ScheduleTaskMetadata, SpecializedTask, TaskData, TaskEntity, TaskQueueName,
-            tabular_purge_queue::TabularPurgePayload,
+            CancelTasksFilter, ScheduleTaskMetadata, SpecializedTask, TaskData, TaskEntity,
+            TaskQueueName, tabular_purge_queue::TabularPurgePayload,
         },
     },
 };
@@ -286,6 +287,64 @@ where
                 .inspect_err(|e| {
                     tracing::error!(
                         "Failed to delete generic table from authorizer in `{QN_STR}` task. {e}"
+                    );
+                })
+                .ok();
+            location
+        }
+        WarehouseTaskEntityId::Dataset { dataset_id } => {
+            // An imported dataset borrows its prefix, so its location must never
+            // reach the purge queue. The drop handler refuses purge for those before
+            // queuing this task; re-checked here whatever queued it, and on error the
+            // safe answer is the one that deletes nothing.
+            let ownership = C::load_dataset_ownership(warehouse_id, dataset_id, trx.transaction())
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to load ownership of dataset `{dataset_id}` in `{QN_STR}` task; treating it as imported, so nothing is purged. {e}"
+                    );
+                })
+                .unwrap_or(DatasetOwnership::Imported);
+
+            let location = match C::drop_tabular(warehouse_id, dataset_id, true, trx.transaction())
+                .await
+            {
+                Err(DropTabularError::TabularNotFound(..)) => {
+                    tracing::warn!(
+                        "Dataset with id `{dataset_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
+                    );
+                    None
+                }
+                Err(e) => {
+                    return Err(e
+                            .append_detail(format!(
+                                "Failed to drop dataset with id `{dataset_id}` from catalog for `{QN_STR}` task."
+                            ))
+                            .into());
+                }
+                // Withheld for an imported dataset; the catalog and authorizer
+                // cleanup below still runs.
+                Ok(loc) => ownership.is_managed().then_some(loc),
+            };
+            // This task, running, is not among those cancelled.
+            let tasks = C::list_dataset_task_ids(warehouse_id, dataset_id, trx.transaction())
+                .await
+                .map_err(ErrorModel::from)?;
+            C::cancel_scheduled_tasks(
+                None,
+                &[],
+                CancelTasksFilter::TaskIds(tasks),
+                false,
+                trx.transaction(),
+            )
+            .await?;
+
+            authorizer
+                .delete_dataset(warehouse_id, dataset_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Failed to delete dataset from authorizer in `{QN_STR}` task. {e}"
                     );
                 })
                 .ok();

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM dataset_ref\n           WHERE warehouse_id = $1 AND dataset_id = $2 AND name = $3\n             -- Re-checked in the statement: the ref can be protected after the check\n             -- above read it.\n             AND NOT protected",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bed6aaf0c51ce073bb11fe42d5870126bd61a6c0e23e11b74973ccee18b4b6fd"
+}

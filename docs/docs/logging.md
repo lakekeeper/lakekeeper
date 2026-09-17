@@ -186,7 +186,7 @@ New keys may be added at any minor version, so consumers must not assume this li
 
 **Entity Format:**
 
-Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
+Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `dataset`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
 
 Which of the following fields appear depends on the entity type and on what the request supplied — a field is omitted rather than emitted empty. Every value is a string.
 
@@ -204,6 +204,8 @@ Which of the following fields appear depends on the entity type and on what the 
 | `view-id`            | View identifier                                                    |
 | `generic-table`      | Generic-table name, qualified by its namespace                     |
 | `generic-table-id`   | Generic-table identifier                                           |
+| `dataset`            | Dataset name, qualified by its namespace                           |
+| `dataset-id`         | Dataset identifier                                                 |
 | `task-id`            | Task identifier                                                    |
 | `role-id`            | Role identifier                                                    |
 | `role-source-id`     | Identifier of the role in its originating source                   |
@@ -230,7 +232,7 @@ Each action is a structured object containing the operation name and optional co
 
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
 
-Commit actions carry two further context fields when the commit names them: `target-refs`, the branch or tag references the commit targets, and `update-kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
+Commit actions carry two further context fields when the commit names them: `target-refs`, the branch or tag references the commit targets, and `update-kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty. A dataset's versioning actions — `commit`, `promote`, `reset` and `manage_refs` — carry `target-refs` too, naming the one branch or tag they act on, and so does a dataset's `read_data` when it reads through a ref: listing its files, or issuing an access grant. A diff names each ref it compares. Vending storage credentials, and reading a snapshot's materialization, read no ref, so that `read_data` carries none.
 
 Which context fields appear depends on the action. A field is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false.
 
@@ -243,12 +245,14 @@ Which context fields appear depends on the action. A field is omitted rather tha
 | `table_id`              | String | table creation                    | The table id the client requested                       |
 | `generic_table_id`      | String | generic-table creation            | The generic-table id the client requested               |
 | `format`                | String | generic-table creation            | The requested table format                              |
-| `base_location`         | String | generic-table creation            | The requested storage location                          |
+| `base_location`         | String | generic-table, dataset creation   | The requested storage location; for a dataset, the prefix it borrows |
+| `dataset_id`            | String | dataset creation                  | The dataset id the client requested                     |
+| `managed`               | String | dataset creation                  | `"true"` when Lakekeeper owns the prefix, `"false"` when the dataset borrows it |
 | `project_id`            | String | project creation                  | The project id the client requested                     |
 | `force`                 | String | delete and drop actions           | `"true"` when the client asked to force the operation   |
 | `purge`                 | String | delete and drop actions           | `"true"` when the client asked to purge the data        |
 | `recursive`             | String | delete actions                    | `"true"` when the client asked for a recursive delete   |
-| `target-refs`           | Array  | commits                           | The branch or tag references the commit targets         |
+| `target-refs`           | Array  | commits, dataset ref actions      | The branch or tag references the action targets         |
 | `source`                | Array  | accepting a moved namespace       | The namespace path the entity is being moved from        |
 | `destination`           | Array  | move actions                      | The namespace path the entity is being moved to          |
 | `update-kinds`          | Array  | commits                           | The kinds of update the commit contains                 |
@@ -523,7 +527,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
 
 #### Operational Audit Events
 
-Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, admission decisions, and requests answered from an idempotency record. Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
+Emitted for operations that produce no authorization decision of their own — LDAP/directory role resolution and user enrichment, the grants an apply actually wrote, admission decisions, requests answered from an idempotency record, and the dataset files signed under an access grant (`dataset_files_signed`). Use these to audit *what the system did on behalf of a user*, rather than *whether the user was allowed to do something*. Several carry user identity (PII); the per-operation sections below say which.
 
 **Structure:**
 
@@ -619,13 +623,33 @@ These records also carry the top-level `action`, `entity`, `privilege_source` an
 
 **Audit records carry live idempotency keys**, on authorization records as well as these. A reader of the audit log can replay those keys to a 204 and mint further records; treat audit-log access accordingly. `idempotency-key-lifetime` sets the earliest a record becomes eligible for deletion; keyed traffic decides when that deletion runs, because cleanup rides on a small fraction of keyed requests. A record stays replayable until then, so a quiet deployment keeps its keys live until traffic resumes.
 
-**Seven endpoints emit this marker**, and no others: `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and serve the replay before authorizing, so no `decision` is recorded — the mutation already happened, and denying the retry would report a failure for a completed operation.
+**Ten endpoints emit this marker**, and no others: `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `dropDataset`, `deleteDatasetRef` (recorded as `action_name = "manage_refs"`), `renameTable`, `renameView`, `renameGenericTable`, `renameDataset`. They answer 204 and serve the replay before authorizing, so no `decision` is recorded — the mutation already happened, and denying the retry would report a failure for a completed operation.
 
-**Replays of the other idempotent endpoints are not marked, and do not look like the original request.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView` and `createGenericTable` re-derive their response body by loading it, so a retry emits the authorization record of that *load* — `action_name = "get_metadata"` on the entity — and no record for the create or update; `updateTable` emits both `commit` and `get_metadata`. For these the replay is a different authorization event from the original, and `idempotency_key` is what ties the two together.
+**Replays of the other idempotent endpoints are not marked, and do not look like the original request.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView`, `createGenericTable`, `createDataset`, `createDatasetRef` and `moveDatasetRef` re-derive their response body by loading it, so a retry emits the authorization record of that *load* — `action_name = "get_metadata"` on the entity — and no record for the create or update; `updateTable` emits both `commit` and `get_metadata`. `createDatasetAccessGrant` answers with the grant the original request recorded, read under the same `get_metadata` authorization. For these the replay is a different authorization event from the original, and `idempotency_key` is what ties the two together. `commitDataset` answers with the snapshot the original commit published, authorized as that commit was, so its retry emits the same `commit` record as a first execution, as `commitTransaction`'s does below.
 
 **`commitTransaction` is the exception: nothing marks its replay.** It authorizes before it detects the replay, so the retry emits the same `commit` record as a first execution, carrying the same `idempotency_key`. Only the pair of records sharing one key shows that a retry happened — neither record does on its own.
 
 These records are audit-log only. Like the grant records above, they are never published to the configured event stream (Kafka, NATS, CloudEvents), and delivery is best-effort.
+
+**Dataset file signing (`operation = "dataset_files_signed"`):**
+
+Emitted once per call to `POST .../datasets/{dataset}/snapshots/{snapshot}/files/sign`, which returns presigned URLs for a batch of a dataset's files. A call whose batch is empty or over the size limit is refused with `400` before it reaches the grant, and leaves no record. The call runs no policy. It presents an access grant, and the grant was authorized once, when it was issued: that is the `read_data` authorization record for the dataset whose `target-refs` names the ref the grant pins. This record is the account of what was read under the grant afterwards — one record per batch, never one per file, and never the URLs.
+
+`outcome` is one of:
+
+- `success` — every requested key was signed.
+- `forbidden` — the grant refused the call: it does not exist or belongs to another actor, it was revoked, it expired, it pins a different snapshot, or it does not cover one of the keys. Nothing was signed.
+- `failed` — the catalog or the storage backend returned an error. Nothing was signed.
+
+| Context field  | Description |
+|----------------|-------------|
+| `warehouse_id` | The warehouse the call named |
+| `dataset_id`   | The dataset the call named, or `null` when no active dataset has that name |
+| `snapshot_id`  | The snapshot the call asked to sign, from the path. On `success` it is also the snapshot the grant pins |
+| `access_grant_id` | The access grant the call presented |
+| `key_count`    | How many keys the call asked to sign, as a JSON **number** |
+
+The issuing `read_data` record does not carry `access_grant_id`: the id is assigned after authorization. Correlate a grant's issuance with its sign records on `actor`, the dataset and time. Revoking a grant is recorded as an authorization only when a caller revokes someone else's — `action_name = "revoke_access_grants"`; revoking one's own needs only `get_metadata` on the dataset, and that is the record it leaves.
 
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 

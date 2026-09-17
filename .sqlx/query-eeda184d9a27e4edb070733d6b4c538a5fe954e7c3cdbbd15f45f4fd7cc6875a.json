@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_ref (warehouse_id, dataset_id, name, typ, snapshot_id)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "dataset_ref_type",
+            "kind": {
+              "Enum": [
+                "branch",
+                "tag"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eeda184d9a27e4edb070733d6b4c538a5fe954e7c3cdbbd15f45f4fd7cc6875a"
+}

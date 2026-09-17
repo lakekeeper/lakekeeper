@@ -23,11 +23,12 @@ The default permission model is focused on collaborating on data. Permissions ar
 |-----------|------------------------------------------------------------------|
 | server    | admin, operator                                                  |
 | project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, create, modify |
-| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, modify |
-| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, modify |
+| warehouse | ownership, pass_grants, manage_grants, manage_tags, manage_refs, describe, select, create, modify |
+| namespace | ownership, pass_grants, manage_grants, manage_tags, manage_refs, describe, select, create, modify |
 | table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
 | view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
 | generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify |
+| dataset   | ownership, pass_grants, manage_grants, manage_tags, manage_refs, describe, select, modify |
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
 
@@ -91,7 +92,11 @@ The `manage_grants` grant allows a user to manage all grants on an object, inclu
 
 ### Manage Tags
 
-The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
+The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, generic table, or dataset) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
+
+### Manage Refs
+
+The `manage_refs` grant allows a user to create, delete and protect the branches and tags of a [dataset](./datasets.md). It is **independent of `modify`**: a writer can commit to a branch but can neither delete a tag and recreate it elsewhere nor unprotect a branch. `manage_refs` inherits down the object hierarchy, so one grant on a namespace covers every dataset below it. Owners hold it, as does a project's `data_admin`.
 
 ## Managing grants through the grants API
 

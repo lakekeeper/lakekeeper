@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE dataset_snapshot SET status = 'active', created_at = now()\n           WHERE warehouse_id = $1 AND snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1477b62e3c2a72ac04df2ed8e1035e25fc0f0558a8b0157b40ffe285e490650e"
+}
