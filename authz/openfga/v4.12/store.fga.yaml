@@ -1766,10 +1766,8 @@ tests:
           can_get_config: true
 
   - name: every grantable privilege is a visibility source at its own level
-    # Each leg of `visible_below` on its own. Without these, dropping any of
-    # `select`/`create`/`modify`/`ownership` from a `visible_below` body leaves the
-    # suite green while a principal holding only that privilege silently vanishes
-    # from the listings above it.
+    # Each leg of `visible_below` on its own: a principal holding exactly one
+    # privilege stays visible in the listings above the object it was granted on.
     check:
       - user: user:warehouse_1_describe_only
         object: warehouse:warehouse_1
@@ -1868,8 +1866,8 @@ tests:
           visible_below: true
 
   - name: modify on a view implies select and describe and bubbles up
-    # The view type carried no grant in any fixture, so `lakekeeper_view`'s split
-    # relations were never evaluated.
+    # A direct `modify` on a view exercises `lakekeeper_view`'s split relations
+    # and the visibility it propagates to every ancestor.
     check:
       - user: user:view_1_modify_only
         object: lakekeeper_view:warehouse_1/view_1
@@ -1912,8 +1910,8 @@ tests:
           can_get_metadata: false
 
   - name: create alone below the warehouse is a visibility source
-    # No fixture held a bare `create` or `modify` tuple anywhere, so those legs of
-    # the split were never evaluated from a grant of their own.
+    # A direct `create` on a namespace exercises `create_effective`, the
+    # `describe_effective` it implies, and visibility at every ancestor.
     check:
       - user: user:namespace_1_2_create_only
         object: namespace:namespace_1_2
