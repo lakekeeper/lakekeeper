@@ -10,6 +10,13 @@ license = { workspace = true }
 description = "Extensions for Apache Iceberg Rust"
 keywords = ["iceberg", "rest", "extension"]
 
+[package.metadata.cargo-machete]
+# `strum` is used only through `strum_macros` derives: `VariantNames` and `EnumCount`
+# expand to `impl ::strum::VariantNames` / `::strum::EnumCount`, so the crate is required
+# to compile even though no source file here names `strum::`. cargo-machete scans source
+# text and cannot see the expansion.
+ignored = ["strum"]
+
 [lib]
 
 [features]

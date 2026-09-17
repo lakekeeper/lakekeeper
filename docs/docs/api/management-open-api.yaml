@@ -8977,10 +8977,13 @@ components:
       description: |-
         A single factor that contributed to an authorization decision.
 
-        Discriminated by `type`: `policy` names a policy the authorizer matched,
-        `system-authority` records that a built-in authority tier decided the
-        request. Further kinds may be added, so treat an unrecognised `type` as an
-        opaque factor rather than an error.
+        Discriminated by `type` in the management API, and by a single-key wrapper in the audit
+        log: `policy` / `Policy` names a policy the authorizer matched, `system-authority` /
+        `SystemAuthority` records that a built-in authority tier decided the request. Further
+        kinds may be added, so treat an unrecognised one as an opaque factor rather than an error.
+
+        Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
+        diagnostics) add a variant without breaking existing consumers.
       discriminator:
         propertyName: type
         mapping:

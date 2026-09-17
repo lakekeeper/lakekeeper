@@ -79,14 +79,16 @@ impl From<bool> for AuthorizationDecision {
 ///
 /// Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
 /// diagnostics) add a variant without breaking existing consumers.
-///
-/// The two renderings differ, deliberately. The `serde` attributes below govern the
-/// management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
-/// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
-/// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
-/// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
-/// never an absent field. See "Optional fields" in the audit-log section of
-/// `docs/docs/developer-guide.md`.
+// Deliberately a plain comment, not a doc comment: `utoipa` copies doc comments into the
+// public OpenAPI schema, and the audit rendering below is internal to this repository.
+//
+// The two renderings differ, deliberately. The `serde` attributes below govern the
+// management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
+// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
+// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
+// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
+// never an absent field. See "Optional fields" in the audit-log section of
+// `docs/docs/developer-guide.md`.
 #[derive(
     Clone,
     Debug,

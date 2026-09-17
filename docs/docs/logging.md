@@ -289,12 +289,12 @@ The first three fields are the **scope** — the same value the authorizer is as
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
-| `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
+| `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Omitted when the request named none, which means every privilege |
 | `allow-partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
 | `dry-run`        | String | `"true"` when the client asked only which grants would be revoked. A dry run changes nothing, so a record carrying it is not evidence of a revocation |
 | `created-before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
 
-`created-before` is omitted when the request does not narrow on it. `allow-partial` and `dry-run` are always present, `"true"` or `"false"` — unlike `force`, `purge` and `recursive` on the actions above, which appear only when true. Each widens or narrows what the request covered, so an absence would have to be read as a default rather than as "not asked for".
+`privileges` and `created-before` are omitted when the request does not narrow on them, as the general rule above requires. `allow-partial` and `dry-run` are the exception: they are always present, `"true"` or `"false"`, unlike `force`, `purge` and `recursive` on the actions above, which appear only when true. Each of those two changes what the request covered rather than filtering it, so an absence would have to be read as a default rather than as "not asked for".
 
 **These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry-run` requests, nothing is.
 

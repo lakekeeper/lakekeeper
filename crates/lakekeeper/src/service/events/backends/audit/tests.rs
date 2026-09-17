@@ -1110,20 +1110,55 @@ fn no_production_code_names_an_operation_or_outcome_with_a_literal() {
         }
         let text = std::fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
-        for (number, line) in text.lines().enumerate() {
-            let code = line.trim_start();
-            // Doc comments show callers the macro's shape, including the literal an
-            // external crate would pass. They emit nothing.
-            if code.starts_with("//") {
-                continue;
-            }
-            if code.starts_with("operation = \"") || code.starts_with("outcome = \"") {
-                offenders.push(format!(
-                    "{}:{}: {}",
-                    file.strip_prefix(&src).unwrap_or(&file).display(),
-                    number + 1,
-                    code
-                ));
+        // Blank out line comments, keeping every byte position so the line numbers below
+        // stay true. Doc comments show callers the macro's shape, including the literal an
+        // external crate would pass, and emit nothing themselves.
+        let stripped: String = text
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(at) => format!("{}{}\n", &line[..at], " ".repeat(line.len() - at)),
+                None => format!("{line}\n"),
+            })
+            .collect();
+        let bytes = stripped.as_bytes();
+        for name in ["operation", "outcome"] {
+            let mut from = 0;
+            while let Some(found) = stripped[from..].find(name) {
+                let at = from + found;
+                from = at + name.len();
+                // A whole identifier, not the tail of `some_operation` or the head of
+                // `operation_kind`.
+                let before_ok =
+                    at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+                let mut i = at + name.len();
+                if !before_ok
+                    || bytes
+                        .get(i)
+                        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                {
+                    continue;
+                }
+                // `=` then a string literal, with any whitespace — newlines included — in
+                // between, so a wrapped assignment is caught. `==` is a comparison.
+                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'=') || bytes.get(i + 1) == Some(&b'=') {
+                    continue;
+                }
+                i += 1;
+                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b'"') {
+                    let line = stripped[..at].matches('\n').count() + 1;
+                    offenders.push(format!(
+                        "{}:{}: {name} = {}",
+                        file.strip_prefix(&src).unwrap_or(&file).display(),
+                        line,
+                        stripped[i..].lines().next().unwrap_or("").trim_end(),
+                    ));
+                }
             }
         }
     }
