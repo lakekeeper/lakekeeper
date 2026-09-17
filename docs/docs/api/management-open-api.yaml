@@ -10249,6 +10249,79 @@ components:
             listings entirely, so `false` never appears there — see its documentation.
         resource:
           $ref: '#/components/schemas/GrantResourceResponse'
+    GrantSubtreePrincipal:
+      oneOf:
+        - type: object
+          title: GrantSubtreePrincipalEvery
+          description: Every principal holding a grant in range.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: Every principal holding a grant in range.
+        - type: object
+          title: GrantSubtreePrincipalOne
+          description: The single principal the request is narrowed to.
+          required:
+            - one
+          properties:
+            one:
+              $ref: '#/components/schemas/UserOrRole'
+              description: The single principal the request is narrowed to.
+      description: Which principals' grants a subtree operation covers.
+    GrantSubtreeScope:
+      oneOf:
+        - type: object
+          title: GrantSubtreeScopeOf
+          description: Concrete request shape.
+          required:
+            - of
+          properties:
+            of:
+              $ref: '#/components/schemas/GrantSubtreeShape'
+              description: Concrete request shape.
+        - type: object
+          title: GrantSubtreeScopeAny
+          description: No specific request — the base-capability form.
+          required:
+            - any
+          properties:
+            any:
+              type: object
+              description: No specific request — the base-capability form.
+      description: |-
+        What a subtree grant operation covers.
+
+        `of` describes a concrete request and is what every enforced check carries: Lakekeeper
+        never authorizes a real subtree listing or revoke with `any`. `any` is the
+        base-capability form, used for permission introspection and for "may this principal
+        run subtree operations here at all?" queries. An authorizer that refuses `any` removes
+        the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
+        succeed.
+    GrantSubtreeShape:
+      type: object
+      description: 'The shape of a concrete subtree grant request: what it reaches, and how far.'
+      required:
+        - resource_types
+        - root_level
+        - principal
+      properties:
+        principal:
+          $ref: '#/components/schemas/GrantSubtreePrincipal'
+          description: Whether the request covers every principal, or one named principal.
+        resource_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceType'
+          description: |-
+            Every resource kind whose grants the request reaches. Never empty, and always a
+            subset of the kinds the addressed resource covers: a request naming no kinds
+            carries that full set, so this always states what the operation actually touches.
+          minItems: 1
+        root_level:
+          $ref: '#/components/schemas/RootLevelGrants'
+          description: Whether the request's range extends to the addressed resource itself.
     GrantablePrivilege:
       type: object
       description: One privilege of a resource's vocabulary, and whether the principal may grant it.
@@ -10984,26 +11057,39 @@ components:
         those on every descendant namespace and tabular. Strictly stronger than
         `ReadGrants`, which covers this one resource; granted separately because it
         enumerates the subtree.
+
+        `scope` states what the listing covers — the kinds it reaches, how far its range
+        extends, and the principal it is narrowed to — so a policy can allow a narrow
+        access review and still refuse a full enumeration. A real listing is checked with
+        the `of` form; permission introspection uses `any`.
       required:
+        - scope
         - action
       properties:
         action:
           type: string
           enum:
             - read_subtree_grants
+        scope:
+          $ref: '#/components/schemas/GrantSubtreeScope'
     LakekeeperNamespaceActionRevokeSubtreeGrants:
       type: object
       description: |-
         Can revoke any grant in the subtree rooted here, asked once at this namespace for
         the whole batch. An authorizer must answer it as authority over everything
         beneath — or refuse the subtree routes.
+
+        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
+        - scope
         - action
       properties:
         action:
           type: string
           enum:
             - revoke_subtree_grants
+        scope:
+          $ref: '#/components/schemas/GrantSubtreeScope'
     LakekeeperNamespaceActionSetProtection:
       type: object
       required:
@@ -12983,13 +13069,21 @@ components:
         Can list and read every grant in the warehouse: the warehouse's own and those on
         every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
         covers this one resource; granted separately because it enumerates the subtree.
+
+        `scope` states what the listing covers — the kinds it reaches, how far its range
+        extends, and the principal it is narrowed to — so a policy can allow a narrow
+        access review and still refuse a full enumeration. A real listing is checked with
+        the `of` form; permission introspection uses `any`.
       required:
+        - scope
         - action
       properties:
         action:
           type: string
           enum:
             - read_subtree_grants
+        scope:
+          $ref: '#/components/schemas/GrantSubtreeScope'
     LakekeeperWarehouseActionRename:
       type: object
       required:
@@ -13005,13 +13099,18 @@ components:
         Can revoke any grant in the warehouse, asked once at the warehouse for the whole
         batch. An authorizer must answer it as authority over everything beneath — or
         refuse the subtree routes.
+
+        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
+        - scope
         - action
       properties:
         action:
           type: string
           enum:
             - revoke_subtree_grants
+        scope:
+          $ref: '#/components/schemas/GrantSubtreeScope'
     LakekeeperWarehouseActionSetFormatVersionPolicy:
       type: object
       required:
@@ -14495,6 +14594,14 @@ components:
       enum:
         - assignee
         - ownership
+    RootLevelGrants:
+      type: string
+      description: |-
+        Whether a subtree grant operation extends to the addressed resource itself, alongside
+        everything below it. Set from the request's `include-root-level`.
+      enum:
+        - included
+        - excluded
     S3AccessKeyCredential:
       type: object
       title: S3CredentialAccessKey

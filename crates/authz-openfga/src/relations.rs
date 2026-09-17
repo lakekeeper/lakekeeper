@@ -955,7 +955,14 @@ pub enum WarehouseRelation {
     CanRevokeModify,
     CanRevokeSelect,
 }
-impl WarehouseAction for WarehouseRelation {}
+impl WarehouseAction for WarehouseRelation {
+    fn is_grant_read(&self) -> bool {
+        matches!(
+            self,
+            Self::CanReadAssignments | Self::CanReadSubtreeAssignments
+        )
+    }
+}
 impl CatalogAction for WarehouseRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
@@ -1238,10 +1245,10 @@ impl ReducedRelation for CatalogWarehouseAction {
             // Same permission as `APIWarehouseAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,
-            CatalogWarehouseAction::ReadSubtreeGrants => {
+            CatalogWarehouseAction::ReadSubtreeGrants { .. } => {
                 WarehouseRelation::CanReadSubtreeAssignments
             }
-            CatalogWarehouseAction::RevokeSubtreeGrants => {
+            CatalogWarehouseAction::RevokeSubtreeGrants { .. } => {
                 WarehouseRelation::CanRevokeSubtreeAssignments
             }
         }
@@ -1327,7 +1334,14 @@ impl CatalogAction for NamespaceRelation {
         ActionDescriptor::builder().action_name(self.into()).build()
     }
 }
-impl NamespaceAction for NamespaceRelation {}
+impl NamespaceAction for NamespaceRelation {
+    fn is_grant_read(&self) -> bool {
+        matches!(
+            self,
+            Self::CanReadAssignments | Self::CanReadSubtreeAssignments
+        )
+    }
+}
 
 impl From<CatalogNamespaceAction> for NamespaceRelation {
     fn from(action: CatalogNamespaceAction) -> Self {
@@ -1575,10 +1589,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             // Same permission as `APINamespaceAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogNamespaceAction::ReadGrants => NamespaceRelation::CanReadAssignments,
-            CatalogNamespaceAction::ReadSubtreeGrants => {
+            CatalogNamespaceAction::ReadSubtreeGrants { .. } => {
                 NamespaceRelation::CanReadSubtreeAssignments
             }
-            CatalogNamespaceAction::RevokeSubtreeGrants => {
+            CatalogNamespaceAction::RevokeSubtreeGrants { .. } => {
                 NamespaceRelation::CanRevokeSubtreeAssignments
             }
         }
