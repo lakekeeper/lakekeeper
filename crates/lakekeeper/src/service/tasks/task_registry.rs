@@ -7,9 +7,11 @@ use crate::{
     service::{
         CatalogStore, SecretStore,
         authz::Authorizer,
+        events::EventDispatcher,
         tasks::{
             TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
-            task_queues_runner::QueueWorkerConfig,
+            dataset_checkpoint_queue, dataset_import_queue, dataset_snapshot_expiry_queue,
+            dataset_snapshot_purge_queue, task_queues_runner::QueueWorkerConfig,
         },
     },
 };
@@ -278,6 +280,9 @@ pub struct TaskQueueRegistry {
 
     // Mapping of queue names to their worker configuration
     task_workers: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredTaskQueueWorker>>>,
+
+    // Where built-in workers announce what they change, when set.
+    events: Option<EventDispatcher>,
 }
 
 impl Default for TaskQueueRegistry {
@@ -319,7 +324,16 @@ impl TaskQueueRegistry {
         Self {
             registered_queues: Arc::new(RwLock::new(HashMap::new())),
             task_workers: Arc::new(RwLock::new(HashMap::new())),
+            events: None,
         }
+    }
+
+    /// Let the built-in workers registered afterwards publish events through
+    /// `events`: a queued dataset import announces the snapshot it publishes.
+    #[must_use]
+    pub fn with_event_dispatcher(mut self, events: EventDispatcher) -> Self {
+        self.events = Some(events);
+        self
     }
 
     pub async fn register_queue<T: TaskConfig, D: super::TaskData>(
@@ -432,6 +446,9 @@ impl TaskQueueRegistry {
         )
         .await;
 
+        // Cloned before the purge registration below moves the original into its
+        // worker closure.
+        let secret_store_for_import = secret_store.clone();
         let catalog_state_clone_for_tabular_purge = catalog_state.clone();
         self.register_queue::<
             tabular_purge_queue::PurgeQueueConfig,
@@ -455,6 +472,17 @@ impl TaskQueueRegistry {
             scope: QueueScope::Warehouse,
             user_scheduling: UserScheduling::Disabled,
         })
+        .await;
+
+        self.register_dataset_checkpoint_queue::<C>(catalog_state.clone(), poll_interval)
+            .await;
+        self.register_dataset_retention_queues::<C>(catalog_state.clone(), poll_interval)
+            .await;
+        self.register_dataset_import_queue::<C, S>(
+            catalog_state.clone(),
+            secret_store_for_import,
+            poll_interval,
+        )
         .await;
 
         let catalog_state_for_task_log_cleanup = catalog_state.clone();
@@ -481,6 +509,125 @@ impl TaskQueueRegistry {
         .await;
 
         self
+    }
+
+    /// Registered in its own function, which keeps `register_built_in_queues`
+    /// under the line limit.
+    async fn register_dataset_import_queue<C: CatalogStore, S: SecretStore>(
+        &self,
+        catalog_state: C::State,
+        secret_store: S,
+        poll_interval: Duration,
+    ) {
+        let events = self.events.clone();
+        self.register_queue::<
+            dataset_import_queue::DatasetImportQueueConfig,
+            dataset_import_queue::DatasetImportPayload,
+        >(QueueRegistration {
+            queue_name: &dataset_import_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state = catalog_state.clone();
+                let secret_store = secret_store.clone();
+                let events = events.clone();
+                Box::pin(async move {
+                    dataset_import_queue::dataset_import_worker::<C, S>(
+                        catalog_state,
+                        secret_store,
+                        events,
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_dataset_import_workers,
+            scope: QueueScope::Warehouse,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
+    }
+
+    /// Registered in its own function, which keeps `register_built_in_queues`
+    /// under the line limit.
+    async fn register_dataset_retention_queues<C: CatalogStore>(
+        &self,
+        catalog_state: C::State,
+        poll_interval: Duration,
+    ) {
+        let expiry_state = catalog_state.clone();
+        self.register_queue::<
+            dataset_snapshot_expiry_queue::DatasetSnapshotExpiryQueueConfig,
+            dataset_snapshot_expiry_queue::DatasetSnapshotExpiryPayload,
+        >(QueueRegistration {
+            queue_name: &dataset_snapshot_expiry_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state = expiry_state.clone();
+                Box::pin(async move {
+                    dataset_snapshot_expiry_queue::dataset_snapshot_expiry_worker::<C>(
+                        catalog_state,
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_dataset_snapshot_expiry_workers,
+            scope: QueueScope::Warehouse,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
+
+        self.register_queue::<
+            dataset_snapshot_purge_queue::DatasetSnapshotPurgeQueueConfig,
+            dataset_snapshot_purge_queue::DatasetSnapshotPurgePayload,
+        >(QueueRegistration {
+            queue_name: &dataset_snapshot_purge_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state = catalog_state.clone();
+                Box::pin(async move {
+                    dataset_snapshot_purge_queue::dataset_snapshot_purge_worker::<C>(
+                        catalog_state,
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_dataset_snapshot_purge_workers,
+            scope: QueueScope::Warehouse,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
+    }
+
+    /// Registered in its own function, which keeps `register_built_in_queues`
+    /// under the line limit.
+    async fn register_dataset_checkpoint_queue<C: CatalogStore>(
+        &self,
+        catalog_state: C::State,
+        poll_interval: Duration,
+    ) {
+        self.register_queue::<
+            dataset_checkpoint_queue::DatasetCheckpointQueueConfig,
+            dataset_checkpoint_queue::DatasetCheckpointPayload,
+        >(QueueRegistration {
+            queue_name: &dataset_checkpoint_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move |cancellation_token| {
+                let catalog_state = catalog_state.clone();
+                Box::pin(async move {
+                    dataset_checkpoint_queue::dataset_checkpoint_worker::<C>(
+                        catalog_state,
+                        poll_interval,
+                        cancellation_token,
+                    )
+                    .await;
+                })
+            }),
+            num_workers: CONFIG.task_dataset_checkpoint_workers,
+            scope: QueueScope::Warehouse,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
     }
 
     /// Creates [`RegisteredTaskQueues`] for use in application state

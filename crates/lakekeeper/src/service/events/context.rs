@@ -21,14 +21,14 @@ use crate::{
     },
     audit::{Wire, audit_part},
     service::{
-        ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
-        NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
-        TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
+        ArcRoleIdent, DatasetIdentOrId, DatasetInfo, GenericTableIdentOrId, GenericTableInfo,
+        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
+        TableIdentOrId, TableInfo, TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
-            ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
-            EventAction, PrincipalScope, PrivilegeScope, ResourceType, RootLevelGrants,
-            UserOrRoleId,
+            ActionDescriptor, CatalogDatasetAction, CatalogGenericTableAction, CatalogTableAction,
+            CatalogViewAction, EventAction, PrincipalScope, PrivilegeScope, ResourceType,
+            RootLevelGrants, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -82,6 +82,10 @@ pub enum EntityField {
     GenericTable,
     /// The generic table's id.
     GenericTableId,
+    /// The dataset's name, qualified by its namespace.
+    Dataset,
+    /// The dataset's id.
+    DatasetId,
     /// The tag definition's id.
     TagDefinitionId,
 }
@@ -104,6 +108,8 @@ pub const FIELD_NAME_ROLE_PROVIDER_ID: EntityField = EntityField::RoleProviderId
 pub const FIELD_NAME_USER_ID: EntityField = EntityField::UserId;
 pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
+pub const FIELD_NAME_DATASET: EntityField = EntityField::Dataset;
+pub const FIELD_NAME_DATASET_ID: EntityField = EntityField::DatasetId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
 /// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
@@ -175,6 +181,7 @@ pub enum EntityType {
     Role,
     User,
     GenericTable,
+    Dataset,
     Tag,
 }
 
@@ -189,6 +196,7 @@ pub const ENTITY_TYPE_TASK: EntityType = EntityType::Task;
 pub const ENTITY_TYPE_ROLE: EntityType = EntityType::Role;
 pub const ENTITY_TYPE_USER: EntityType = EntityType::User;
 pub const ENTITY_TYPE_GENERIC_TABLE: EntityType = EntityType::GenericTable;
+pub const ENTITY_TYPE_DATASET: EntityType = EntityType::Dataset;
 pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 
 /// A field that can appear in an `action` object's context in an audit record.
@@ -204,6 +212,8 @@ pub enum ActionContextKey {
     BaseLocation(String),
     /// RFC 3339 time: only grants created before it are in range. Absent when the request does not narrow on it.
     CreatedBefore(String),
+    /// The dataset id the client requested.
+    DatasetId(String),
     /// The number of entries the request asked to revoke, before deduplication.
     Deletes(i64),
     /// Where the entity is being moved to: for a namespace, its full new path; for a table,
@@ -217,6 +227,8 @@ pub enum ActionContextKey {
     Format(String),
     /// The generic-table id the client requested.
     GenericTableId(String),
+    /// `true` when the client asked Lakekeeper to own the dataset's prefix, `false` when the dataset borrows an existing one.
+    Managed(bool),
     /// The name the client asked to create.
     Name(String),
     /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
@@ -254,7 +266,7 @@ pub enum ActionContextKey {
     Source(Vec<String>),
     /// The table id the client requested.
     TableId(String),
-    /// The branch or tag references the commit targets.
+    /// The branch or tag references the action targets.
     TargetRefs(Vec<String>),
     /// The kinds of update the commit contains.
     UpdateKinds(Vec<Wire<TableUpdateKind>>),
@@ -395,6 +407,12 @@ pub struct ResolvedGenericTable {
     pub storage_permissions: Option<StoragePermissions>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResolvedDataset {
+    pub warehouse: Arc<ResolvedWarehouse>,
+    pub dataset: Arc<DatasetInfo>,
+}
+
 // ── User-provided entity types ──────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -518,6 +536,9 @@ impl UserProvidedEntity for UserProvidedTabularsIDs {
                         .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
                         .field(FIELD_NAME_GENERIC_TABLE_ID, generic_table_id)
                 }
+                TabularId::Dataset(dataset_id) => EntityDescriptor::new(ENTITY_TYPE_DATASET)
+                    .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                    .field(FIELD_NAME_DATASET_ID, dataset_id),
             }
         }))
     }
@@ -584,6 +605,35 @@ impl UserProvidedEntity for UserProvidedGenericTable {
                 .field(FIELD_NAME_NAMESPACE, &ident.namespace)
                 .field(FIELD_NAME_GENERIC_TABLE, &ident.name),
             GenericTableIdentOrId::Id(id) => desc.field(FIELD_NAME_GENERIC_TABLE_ID, id),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UserProvidedDataset {
+    pub warehouse_id: WarehouseId,
+    pub dataset: DatasetIdentOrId,
+}
+
+impl UserProvidedDataset {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, dataset: impl Into<DatasetIdentOrId>) -> Self {
+        Self {
+            warehouse_id,
+            dataset: dataset.into(),
+        }
+    }
+}
+
+impl UserProvidedEntity for UserProvidedDataset {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_DATASET)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.dataset {
+            DatasetIdentOrId::Ident(ident) => desc
+                .field(FIELD_NAME_NAMESPACE, &ident.namespace)
+                .field(FIELD_NAME_DATASET, &ident.name),
+            DatasetIdentOrId::Id(id) => desc.field(FIELD_NAME_DATASET_ID, id),
         })
     }
 }
@@ -685,6 +735,22 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                             .field(FIELD_NAME_GENERIC_TABLE, table),
                     }
                 }
+                CatalogActionCheckOperation::Dataset { dataset, .. } => match dataset {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_DATASET)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_DATASET_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_DATASET)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, namespace)
+                        .field(FIELD_NAME_DATASET, table),
+                },
             }
         }))
     }
@@ -887,6 +953,14 @@ impl APIEventActions for TabularAction {
 }
 
 impl APIEventActions for Vec<CatalogTableAction> {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        self.iter()
+            .flat_map(APIEventActions::event_actions)
+            .collect()
+    }
+}
+
+impl APIEventActions for Vec<CatalogDatasetAction> {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         self.iter()
             .flat_map(APIEventActions::event_actions)
@@ -1215,6 +1289,27 @@ impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
             UserProvidedView {
                 warehouse_id,
                 view: view.into(),
+            },
+            action,
+        )
+    }
+}
+
+impl<A: APIEventActions> APIEventContext<UserProvidedDataset, Unresolved, A> {
+    #[must_use]
+    pub fn for_dataset(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        warehouse_id: WarehouseId,
+        dataset: impl Into<DatasetIdentOrId>,
+        action: A,
+    ) -> Self {
+        Self::new(
+            request_metadata,
+            dispatcher,
+            UserProvidedDataset {
+                warehouse_id,
+                dataset: dataset.into(),
             },
             action,
         )

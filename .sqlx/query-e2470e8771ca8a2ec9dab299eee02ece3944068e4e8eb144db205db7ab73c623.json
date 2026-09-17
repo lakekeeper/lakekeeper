@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.tabular_id as dataset_id\n        FROM tabular t\n        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'\n        WHERE t.warehouse_id = $1\n          AND t.namespace_id = $2\n          AND t.name = $3\n          AND t.typ = 'dataset'\n          AND t.deleted_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "dataset_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e2470e8771ca8a2ec9dab299eee02ece3944068e4e8eb144db205db7ab73c623"
+}

@@ -24,12 +24,13 @@ use lakekeeper::{
     api::{RequestMetadata, iceberg::v1::PaginationQuery},
     async_trait,
     service::authz::{
-        AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
-        CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-        CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck,
-        GrantFilter, GrantListingNotImplemented, GrantNotSupported, GrantOp, GrantResource,
-        GrantRow, GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage,
-        MalformedGrant, ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
+        AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogDatasetAction,
+        CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+        CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
+        CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantListingNotImplemented,
+        GrantNotSupported, GrantOp, GrantResource, GrantRow, GrantSpec, IsAllowedActionError,
+        ListGrantsError, ListGrantsResultPage, MalformedGrant, ManagesGrants, PrivilegeDescriptor,
+        ResourceType, UserOrRole, UserOrRoleId,
     },
 };
 use openfga_client::client::{
@@ -42,9 +43,9 @@ use crate::{
     entities::OpenFgaEntity,
     error::OpenFGABackendUnavailable,
     relations::{
-        APIGenericTableRelation, APINamespaceRelation, APIProjectRelation, APIServerRelation,
-        APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation, GrantableRelation,
-        ReducedRelation, RevocableRelation,
+        APIDatasetRelation, APIGenericTableRelation, APINamespaceRelation, APIProjectRelation,
+        APIServerRelation, APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation,
+        GrantableRelation, ReducedRelation, RevocableRelation,
     },
 };
 
@@ -81,6 +82,10 @@ macro_rules! for_level {
             }
             ResourceType::GenericTable => {
                 type $R = APIGenericTableRelation;
+                $body
+            }
+            ResourceType::Dataset => {
+                type $R = APIDatasetRelation;
                 $body
             }
             ResourceType::Tag => {
@@ -188,6 +193,11 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
              the right to change them. Attaching a specific tag additionally requires the \
              right to apply that tag."
         }),
+        "manage_refs" => ("write", {
+            "Create, delete and protect the branches and tags of every dataset in this \
+             object and beneath it. Independent of `modify`, so a producer can commit to a \
+             branch without being able to delete or recreate a tag, or unprotect a branch."
+        }),
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
         "create" => ("create", "Create new objects inside this one."),
@@ -266,6 +276,7 @@ fn read_grants_relation(resource_type: ResourceType) -> String {
         ResourceType::GenericTable => CatalogGenericTableAction::ReadGrants
             .to_openfga()
             .to_string(),
+        ResourceType::Dataset => CatalogDatasetAction::ReadGrants.to_openfga().to_string(),
         ResourceType::Tag => CatalogTagAction::ReadGrants.to_openfga().to_string(),
     }
 }
@@ -290,6 +301,10 @@ pub(crate) fn grant_object(authorizer: &OpenFGAAuthorizer, resource: &GrantResou
             warehouse_id,
             generic_table_id,
         } => (*warehouse_id, *generic_table_id).to_openfga(),
+        GrantResource::Dataset {
+            warehouse_id,
+            dataset_id,
+        } => (*warehouse_id, *dataset_id).to_openfga(),
         GrantResource::Tag(tag_definition_id) => tag_definition_id.to_openfga(),
     }
 }
@@ -313,6 +328,7 @@ fn assumed_role_restriction(
             | GrantResource::Table { .. }
             | GrantResource::View { .. }
             | GrantResource::GenericTable { .. }
+            | GrantResource::Dataset { .. }
     );
     if assumed_role && below_warehouse {
         return Err(GrantNotSupported::new(
@@ -645,7 +661,11 @@ fn tuple_timestamp(seconds_and_nanos: Option<(i64, i32)>) -> Option<chrono::Date
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::{UserId, authz::GrantOp};
+    use lakekeeper::service::{
+        DatasetId, GenericTableId, NamespaceId, ProjectId, RoleId, TableId, TagDefinitionId,
+        UserId, ViewId, WarehouseId, authz::GrantOp,
+    };
+    use uuid::Uuid;
 
     use super::*;
     use crate::FgaType;
@@ -662,6 +682,7 @@ mod tests {
             ResourceType::Table => FgaType::Table,
             ResourceType::View => FgaType::View,
             ResourceType::GenericTable => FgaType::GenericTable,
+            ResourceType::Dataset => FgaType::Dataset,
             ResourceType::Tag => FgaType::Tag,
         }
     }
@@ -696,6 +717,73 @@ mod tests {
         <ResourceType as strum::VariantArray>::VARIANTS
             .iter()
             .copied()
+    }
+
+    /// A grant target at `level`. Exhaustive, so a new level cannot skip the tests below.
+    fn resource_at(level: ResourceType) -> GrantResource {
+        let warehouse_id = WarehouseId::new_random();
+        match level {
+            ResourceType::Server => GrantResource::Server,
+            ResourceType::Project => GrantResource::Project(ProjectId::from(Uuid::now_v7())),
+            ResourceType::Warehouse => GrantResource::Warehouse(warehouse_id),
+            ResourceType::Namespace => GrantResource::Namespace {
+                warehouse_id,
+                namespace_id: NamespaceId::new_random(),
+            },
+            ResourceType::Table => GrantResource::Table {
+                warehouse_id,
+                table_id: TableId::new_random(),
+            },
+            ResourceType::View => GrantResource::View {
+                warehouse_id,
+                view_id: ViewId::new(Uuid::now_v7()),
+            },
+            ResourceType::GenericTable => GrantResource::GenericTable {
+                warehouse_id,
+                generic_table_id: GenericTableId::new(Uuid::now_v7()),
+            },
+            ResourceType::Dataset => GrantResource::Dataset {
+                warehouse_id,
+                dataset_id: DatasetId::new(Uuid::now_v7()),
+            },
+            ResourceType::Tag => GrantResource::Tag(TagDefinitionId::new(Uuid::now_v7())),
+        }
+    }
+
+    /// Below the warehouse an assumed role cannot be evaluated, so granting there is
+    /// refused. The expected answer is an exhaustive match independent of the
+    /// predicate under test, so every new level has to take a side.
+    #[test]
+    fn an_assumed_role_cannot_grant_below_the_warehouse() {
+        let user = UserId::new_unchecked("oidc", "alice");
+        let assumed = RequestMetadata::test_user_assumed_role(user.clone(), RoleId::new_random());
+        let plain = RequestMetadata::test_user(user);
+
+        for level in every_level() {
+            let below_warehouse = match level {
+                ResourceType::Server
+                | ResourceType::Project
+                | ResourceType::Warehouse
+                | ResourceType::Tag => false,
+                ResourceType::Namespace
+                | ResourceType::Table
+                | ResourceType::View
+                | ResourceType::GenericTable
+                | ResourceType::Dataset => true,
+            };
+            let resource = resource_at(level);
+            assert_eq!(
+                assumed_role_restriction(&assumed, &resource).is_err(),
+                below_warehouse,
+                "assumed role at `{}`",
+                level.as_str()
+            );
+            assert!(
+                assumed_role_restriction(&plain, &resource).is_ok(),
+                "a principal acting as itself is never restricted, at `{}`",
+                level.as_str()
+            );
+        }
     }
 
     /// Equal privileges are one tuple however many grantees name them, but the two
@@ -806,7 +894,8 @@ mod tests {
                 "select",
                 "create",
                 "modify",
-                "manage_tags"
+                "manage_tags",
+                "manage_refs"
             ]
         );
     }
@@ -833,7 +922,13 @@ mod tests {
     /// relation and the model needs no second action.
     #[test]
     fn a_privilege_that_cannot_be_delegated_answers_both_directions_alike() {
-        for privilege in ["pass_grants", "manage_grants", "manage_tags", "ownership"] {
+        for privilege in [
+            "pass_grants",
+            "manage_grants",
+            "manage_tags",
+            "manage_refs",
+            "ownership",
+        ] {
             assert_eq!(
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),

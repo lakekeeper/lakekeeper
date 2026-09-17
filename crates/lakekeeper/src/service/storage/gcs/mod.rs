@@ -30,12 +30,13 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, TableConfig,
+            ReadTarget, ShortTermCredentialsRequest, TableConfig,
             cache::{CachedStc, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
             },
+            presign_each,
             storage_layout::StorageLayout,
         },
     },
@@ -217,6 +218,27 @@ impl GcsProfile {
             .get_storage_client(&gcs_auth)
             .await
             .map_err(Into::into)
+    }
+
+    /// Signed GET URLs for `targets`, one each and in order, valid for `validity`,
+    /// each reading its pinned generation if it has one.
+    ///
+    /// # Errors
+    /// Fails if the client cannot be built or a location cannot be signed.
+    pub async fn presign_reads(
+        &self,
+        credential: &GcsCredential,
+        targets: &[ReadTarget],
+        validity: Duration,
+    ) -> Result<Vec<String>, CredentialsError> {
+        let storage = self.lakekeeper_io(credential).await?;
+        presign_each(
+            targets
+                .iter()
+                .map(|t| storage.presign_get(t.location.as_str(), t.version.as_deref(), validity))
+                .collect(),
+        )
+        .await
     }
 
     /// Validate the GCS profile.

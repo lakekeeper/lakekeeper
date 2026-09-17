@@ -4,7 +4,7 @@ use std::{future::Future, sync::LazyLock};
 use bytes::Bytes;
 use futures::StreamExt;
 use lakekeeper_io::{
-    ErrorKind, LakekeeperStorage, ReadError, RemoveEmptyDirectoryOutcome, StorageBackend,
+    ErrorKind, FileInfo, LakekeeperStorage, ReadError, RemoveEmptyDirectoryOutcome, StorageBackend,
     execute_with_parallelism,
 };
 use tokio::{
@@ -353,11 +353,14 @@ test_all_storages!(
     test_writer_then_read_range_impl
 );
 test_all_storages!(test_writer_then_metadata, test_writer_then_metadata_impl);
+test_all_storages!(test_presign_get, test_presign_get_impl);
 test_all_storages!(
     test_write_then_read_single_and_read,
     test_write_then_read_single_and_read_impl
 );
 test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
+test_all_storages!(test_list_current_versions, test_list_current_versions_impl);
+test_all_storages!(test_version_exists, test_version_exists_impl);
 
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
@@ -2336,4 +2339,151 @@ fn generate_test_data(size_mb: usize) -> Bytes {
     }
 
     buffer.freeze()
+}
+
+/// A presigned GET serves the file to a plain HTTP client, ranges included, for a
+/// key that needs encoding. Only S3 and GCS presign in this crate; ADLS signs in
+/// the catalog, with a SAS.
+async fn test_presign_get_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let presigns = match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => true,
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => true,
+        #[allow(unreachable_patterns)]
+        _ => false,
+    };
+    if !presigns {
+        println!("Skipping presign test: this backend does not presign in lakekeeper-io");
+        return Ok(());
+    }
+    let path = config.test_path("presign/a file+1.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+    storage.write(&path, Bytes::from(data.clone())).await?;
+    let validity = Duration::from_secs(300);
+    let url = match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(s3) => s3.presign_get(&path, None, validity).await?,
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(gcs) => gcs.presign_get(&path, None, validity).await?,
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("checked above"),
+    };
+
+    let client = reqwest::Client::new();
+    let whole = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(whole.as_ref(), data.as_slice());
+    let range = client
+        .get(&url)
+        .header(reqwest::header::RANGE, "bytes=100-199")
+        .send()
+        .await?;
+    assert_eq!(range.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range.bytes().await?.as_ref(), &data[100..200]);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+async fn listed_files(
+    storage: &StorageBackend,
+    dir: &str,
+    current_versions: bool,
+) -> anyhow::Result<Vec<FileInfo>> {
+    let mut stream = if current_versions {
+        storage.list_current_versions(dir, None).await?
+    } else {
+        storage.list(dir, None).await?
+    };
+    let mut files = Vec::new();
+    while let Some(page) = stream.next().await {
+        files.extend(page?);
+    }
+    files.sort_by_key(|file| file.location().to_string());
+    Ok(files)
+}
+
+/// `list_current_versions` lists the objects `list` lists, each with its version where
+/// the backend reports one: GCS always does, Azure and the in-memory store never do.
+async fn test_list_current_versions_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("list-current-versions");
+    for name in ["a.txt", "nested/b.txt"] {
+        storage
+            .write(&format!("{dir}{name}"), Bytes::from_static(b"x"))
+            .await?;
+    }
+
+    let plain = listed_files(storage, &dir, false).await?;
+    let versioned = listed_files(storage, &dir, true).await?;
+    let locations = |files: &[FileInfo]| {
+        files
+            .iter()
+            .map(|file| file.location().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(locations(&versioned), locations(&plain));
+    assert_eq!(versioned.len(), 2);
+    for file in &versioned {
+        match storage {
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(_) => assert!(file.version().is_some(), "{file:?}"),
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(_) => assert!(file.version().is_none(), "{file:?}"),
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(_) => assert!(file.version().is_none(), "{file:?}"),
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
+    storage.remove_all(&dir).await?;
+    Ok(())
+}
+
+/// `version_exists` finds a version the listing reported. A backend that keeps no
+/// addressable versions refuses to answer.
+async fn test_version_exists_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("version-exists");
+    let path = format!("{dir}f.bin");
+    storage.write(&path, Bytes::from_static(b"v1")).await?;
+    let listed = listed_files(storage, &dir, true).await?;
+    let [file] = listed.as_slice() else {
+        panic!("one object listed: {listed:?}");
+    };
+
+    match file.version() {
+        Some(version) => assert!(storage.version_exists(&path, version).await?),
+        None => {
+            let refuses = match storage {
+                #[cfg(feature = "storage-in-memory")]
+                StorageBackend::Memory(_) => true,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(_) => true,
+                // An S3 bucket without versioning lists no versions to ask about.
+                #[allow(unreachable_patterns)]
+                _ => false,
+            };
+            if refuses {
+                assert!(storage.version_exists(&path, "1").await.is_err());
+            }
+        }
+    }
+
+    storage.remove_all(&dir).await?;
+    Ok(())
 }

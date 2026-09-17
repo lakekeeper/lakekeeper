@@ -32,8 +32,10 @@ pub use render::{AuditJson, log_format};
 pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
 
 use crate::{
+    WarehouseId,
     request_metadata::RequestMetadata,
     service::{
+        DatasetAccessGrantId, DatasetId, DatasetSnapshotId,
         authz::UserOrRoleId,
         events::{
             AuthorizationFailedEvent, AuthorizationSucceededEvent, EventCatalog, EventListener,
@@ -47,7 +49,7 @@ use crate::{
 ///
 /// Derived from `audit-format/` by the format checker; never edit it, write a fragment. See
 /// the audit log section of `docs/docs/developer-guide.md`.
-pub const AUDIT_FORMAT: &str = "1.0";
+pub const AUDIT_FORMAT: &str = "1.1";
 
 /// The `event_source` every audit record carries: what marks a log line as one.
 pub const EVENT_SOURCE: &str = "audit";
@@ -130,6 +132,7 @@ pub enum Decision {
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOperation {
     AdmissionDecided,
+    DatasetFilesSigned,
     GrantCreated,
     GrantRevoked,
 }
@@ -142,11 +145,15 @@ pub enum AuditOperation {
 pub enum AuditOutcome {
     /// The operation completed.
     Success,
-    /// An admission gate denied the caller authoritatively.
+    /// An admission gate denied the caller authoritatively, or a sign request was refused by
+    /// the grant it presented.
     Forbidden,
     /// An admission gate could not reach an upstream it needs and failed closed: an outage,
     /// not a denial.
     Unavailable,
+    /// A permitted operation did not complete: the catalog or the storage backend
+    /// returned an error.
+    Failed,
 }
 
 // `TableUpdateKind` reaches the wire as the `update_kinds` field of a commit action's
@@ -245,6 +252,58 @@ impl Display for AuditEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AuditEventListener")
     }
+}
+
+/// One call signing a dataset's files, as the handler collects it.
+pub(crate) struct DatasetFilesSignedContext {
+    pub(crate) warehouse_id: WarehouseId,
+    /// `None` when the dataset named in the request does not exist.
+    pub(crate) dataset_id: Option<DatasetId>,
+    pub(crate) snapshot_id: DatasetSnapshotId,
+    pub(crate) access_grant_id: DatasetAccessGrantId,
+    pub(crate) key_count: usize,
+}
+
+/// One call signing a dataset's files: what the grant covered and how many keys were asked
+/// for, never the URLs, which are bearer secrets.
+#[audit_part(context)]
+struct DatasetFilesSignedRecord {
+    /// The warehouse the call named.
+    warehouse_id: String,
+    /// The dataset the call named. Absent when no active dataset has that name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dataset_id: Option<String>,
+    /// The snapshot the call asked to sign.
+    snapshot_id: String,
+    /// The access grant the call presented.
+    access_grant_id: String,
+    /// How many keys the call asked to sign.
+    key_count: usize,
+}
+
+/// Record one call signing a dataset's files, signed or refused.
+pub(crate) fn dataset_files_signed(
+    request_metadata: &RequestMetadata,
+    outcome: AuditOutcome,
+    context: &DatasetFilesSignedContext,
+) {
+    if !enabled() {
+        return;
+    }
+    OperationRecord::new(
+        AuditOperation::DatasetFilesSigned.as_wire(),
+        request_metadata,
+        outcome.as_wire(),
+    )
+    .context(DatasetFilesSignedRecord {
+        warehouse_id: context.warehouse_id.to_string(),
+        dataset_id: context.dataset_id.map(|id| id.to_string()),
+        snapshot_id: context.snapshot_id.to_string(),
+        access_grant_id: context.access_grant_id.to_string(),
+        key_count: context.key_count,
+    })
+    .message("Dataset files signed")
+    .emit();
 }
 
 /// One grant record per triple, not one per request: the batch is a dispatch optimisation,

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset SET has_renamed_files = true\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND NOT has_renamed_files\n          AND EXISTS (\n              SELECT 1 FROM dataset_manifest_entry m\n              WHERE m.warehouse_id = $1 AND m.snapshot_id = $3 AND m.change <> 'removed'\n                AND m.physical_path <> m.logical_key\n                AND m.physical_path <> $4 || m.logical_key\n          )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "48791849280451a71ce00785eb4aca67374953ca7c21cd66bacde66470622c6c"
+}

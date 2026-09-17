@@ -9,7 +9,7 @@
 //! The profile is persisted in its own shape so it round-trips as STACKIT, and
 //! converts to an [`S3Profile`] on demand via [`StackitProfile::to_s3`].
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -20,7 +20,7 @@ use url::Url;
 use veil::Redact;
 
 use super::{
-    S3Credential, S3Flavor, S3Profile, ShortTermCredentialsRequest, TableConfig,
+    ReadTarget, S3Credential, S3Flavor, S3Profile, ShortTermCredentialsRequest, TableConfig,
     error::{
         CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
         ValidationError,
@@ -441,6 +441,24 @@ impl StackitProfile {
         self.to_s3()
             .map_err(|e| CredentialsError::Misconfiguration(e.to_string()))?
             .lakekeeper_io(s3_credential.as_ref())
+            .await
+    }
+
+    /// Signed GET URLs for `targets`, one each and in order, valid for `validity`,
+    /// each reading its pinned version if it has one.
+    ///
+    /// # Errors
+    /// Fails if the client cannot be built or a location cannot be signed.
+    pub async fn presign_reads(
+        &self,
+        credential: Option<&StackitCredential>,
+        targets: &[ReadTarget],
+        validity: Duration,
+    ) -> Result<Vec<String>, CredentialsError> {
+        let s3_credential = credential.map(|c| S3Credential::from(c.clone()));
+        self.to_s3()
+            .map_err(|e| CredentialsError::Misconfiguration(e.to_string()))?
+            .presign_reads(s3_credential.as_ref(), targets, validity)
             .await
     }
 

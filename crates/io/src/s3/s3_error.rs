@@ -6,8 +6,8 @@ use aws_sdk_s3::{
         complete_multipart_upload::CompleteMultipartUploadError,
         create_multipart_upload::CreateMultipartUploadError, delete_object::DeleteObjectError,
         delete_objects::DeleteObjectsError, get_bucket_policy::GetBucketPolicyError,
-        list_objects_v2::ListObjectsV2Error, put_object::PutObjectError,
-        upload_part::UploadPartError,
+        list_object_versions::ListObjectVersionsError, list_objects_v2::ListObjectsV2Error,
+        put_object::PutObjectError, upload_part::UploadPartError,
     },
 };
 
@@ -192,6 +192,26 @@ pub(crate) fn parse_list_objects_v2_error(
     let msg = e.meta().message().map_or_else(
         || format!("Unknown S3 error during list: {e}"),
         |m| format!("S3 list failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+pub(crate) fn parse_list_object_versions_error(
+    err: SdkError<ListObjectVersionsError>,
+    location: &str,
+) -> IOError {
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .meta()
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error while listing object versions: {e}"),
+        |m| format!("S3 list object versions failed: {m}"),
     );
 
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)

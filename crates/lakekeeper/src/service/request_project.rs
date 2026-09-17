@@ -18,7 +18,9 @@ use crate::ProjectId;
 #[cfg(feature = "router")]
 use crate::{
     WarehouseId,
-    api::endpoints::{CatalogV1Endpoint, Endpoint, GenericTableV1Endpoint, SignEndpoint},
+    api::endpoints::{
+        CatalogV1Endpoint, DatasetV1Endpoint, Endpoint, GenericTableV1Endpoint, SignEndpoint,
+    },
 };
 
 /// Where a header-less catalog request says which warehouse it is about.
@@ -43,9 +45,9 @@ enum ProjectSource {
     Nothing,
 }
 
-/// Classify where `endpoint`'s project comes from. Every catalog, generic-table and
-/// signer endpoint is named explicitly, with no `_` arm in those groups: a new endpoint
-/// added to any of them fails to compile here until it is classified.
+/// Classify where `endpoint`'s project comes from. Every catalog, generic-table,
+/// dataset and signer endpoint is named explicitly, with no `_` arm in those groups: a
+/// new endpoint added to any of them fails to compile here until it is classified.
 #[cfg(feature = "router")]
 fn project_source(endpoint: Endpoint) -> ProjectSource {
     match endpoint {
@@ -87,6 +89,30 @@ fn project_source(endpoint: Endpoint) -> ProjectSource {
             | GenericTableV1Endpoint::DropGenericTable
             | GenericTableV1Endpoint::RenameGenericTable
             | GenericTableV1Endpoint::LoadGenericTableCredentials,
+        )
+        | Endpoint::DatasetV1(
+            DatasetV1Endpoint::CreateDataset
+            | DatasetV1Endpoint::ListDatasets
+            | DatasetV1Endpoint::LoadDataset
+            | DatasetV1Endpoint::DropDataset
+            | DatasetV1Endpoint::ListDatasetRefs
+            | DatasetV1Endpoint::CreateDatasetRef
+            | DatasetV1Endpoint::MoveDatasetRef
+            | DatasetV1Endpoint::DeleteDatasetRef
+            | DatasetV1Endpoint::ListDatasetFiles
+            | DatasetV1Endpoint::DiffDataset
+            | DatasetV1Endpoint::SetDatasetRefProtection
+            | DatasetV1Endpoint::CreateDatasetAccessGrant
+            | DatasetV1Endpoint::RevokeDatasetAccessGrant
+            | DatasetV1Endpoint::SignDatasetFiles
+            | DatasetV1Endpoint::RestoreDatasetSnapshot
+            | DatasetV1Endpoint::GetDatasetSnapshotMaterialization
+            | DatasetV1Endpoint::ExpireDatasetSnapshot
+            | DatasetV1Endpoint::CommitDataset
+            | DatasetV1Endpoint::ImportDataset
+            | DatasetV1Endpoint::LoadDatasetCredentials
+            | DatasetV1Endpoint::UpdateDatasetSettings
+            | DatasetV1Endpoint::RenameDataset,
         )
         | Endpoint::Sign(
             SignEndpoint::S3RequestPrefix
@@ -187,6 +213,10 @@ mod tests {
             Endpoint::Sign(SignEndpoint::S3RequestTabular),
             Endpoint::Sign(SignEndpoint::S3RequestByTableName),
             Endpoint::GenericTableV1(GenericTableV1Endpoint::ListGenericTables),
+            Endpoint::DatasetV1(DatasetV1Endpoint::ListDatasets),
+            Endpoint::DatasetV1(DatasetV1Endpoint::SignDatasetFiles),
+            Endpoint::DatasetV1(DatasetV1Endpoint::DiffDataset),
+            Endpoint::DatasetV1(DatasetV1Endpoint::RenameDataset),
         ] {
             assert_eq!(
                 warehouse_reference(&endpoint.method(), endpoint.path(), Some(WAREHOUSE), None),

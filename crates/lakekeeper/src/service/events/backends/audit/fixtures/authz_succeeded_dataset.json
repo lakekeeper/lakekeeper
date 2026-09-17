@@ -1,0 +1,51 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "commit",
+      "target_refs": [
+        "main"
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "dataset",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "dataset_id": "019684ff-0000-7000-8000-000000000008",
+      "dataset": "ml.images"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "commit",
+        "target_refs": [
+          "main"
+        ]
+      },
+      "entity": {
+        "entity_type": "dataset",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "dataset_id": "019684ff-0000-7000-8000-000000000008",
+        "dataset": "ml.images"
+      },
+      "allowed": true,
+      "determined_by": []
+    }
+  ],
+  "decision": "allowed"
+}

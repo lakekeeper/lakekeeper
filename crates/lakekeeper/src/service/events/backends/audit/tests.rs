@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
@@ -12,23 +15,25 @@ use crate::{
     audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
+        DatasetAccessGrantId, DatasetId, DatasetSnapshotId,
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
             GateDecision,
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
-            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
-            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            ActionDescriptor, CatalogDatasetAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogTableAction, DeterminingFactor, EventAction as _, GrantResource, PolicyEffect,
+            ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
+            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization,
             context::{
                 APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
-                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
-                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
+                FIELD_NAME_DATASET, FIELD_NAME_DATASET_ID, FIELD_NAME_NAMESPACE,
+                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
+                FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
                 UserProvidedEntity as _, UserProvidedTable, synthesise_authorizations,
             },
         },
@@ -146,6 +151,9 @@ const FIXTURE_ERROR_ID: &str = "019684ff-0000-7000-8000-000000000006";
 const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
 const FIXTURE_IDEMPOTENCY_KEY: &str = "019684ff-0000-7000-8000-000000000004";
 const FIXTURE_CREATED_BEFORE: &str = "2026-01-01T00:00:00Z";
+const FIXTURE_DATASET_ID: &str = "019684ff-0000-7000-8000-000000000008";
+const FIXTURE_SNAPSHOT_ID: &str = "019684ff-0000-7000-8000-000000000009";
+const FIXTURE_GRANT_ID: &str = "019684ff-0000-7000-8000-00000000000a";
 
 /// The fixture directory: one, holding what the code emits now.
 fn fixture_dir() -> std::path::PathBuf {
@@ -570,6 +578,10 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_apply_grants",
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
+    "authz_succeeded_create_dataset",
+    "authz_succeeded_dataset",
+    "dataset_files_signed",
+    "dataset_files_refused",
     "grant_created",
     "grant_created_server",
     "grant_revoked",
@@ -1046,6 +1058,57 @@ fn fixture_authz_succeeded_project_subtree_grants() {
     );
 }
 
+/// A dataset create on its namespace, built from the real action: the `dataset_id`,
+/// `base_location` and `managed` it carries. No other fixture carries these.
+#[test]
+fn fixture_authz_succeeded_create_dataset() {
+    let create = CatalogNamespaceAction::CreateDataset {
+        name: Some("images".to_string()),
+        dataset_id: Some(DatasetId::from(
+            FIXTURE_DATASET_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )),
+        base_location: Some("s3://bucket/ml/images/".to_string()),
+        managed: Some(false),
+        properties: Arc::default(),
+    };
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_namespace_entity()),
+            vec![create.action_descriptor()],
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_create_dataset", &contract_fields(record));
+}
+
+/// A dataset commit, built from the real action: a `dataset` entity with `dataset_id`,
+/// and the `target_refs` a versioning action names.
+#[test]
+fn fixture_authz_succeeded_dataset() {
+    let commit = CatalogDatasetAction::Commit {
+        target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+    };
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(
+                EntityDescriptor::new(EntityType::Dataset)
+                    .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
+                    .field(FIELD_NAME_DATASET_ID, &FIXTURE_DATASET_ID)
+                    .field(FIELD_NAME_DATASET, &"ml.images"),
+            ),
+            vec![commit.action_descriptor()],
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_dataset", &contract_fields(record));
+}
+
 /// A denied authorization. Carries `failure_reason` and `error`, which succeeded
 /// events do not, and records `decision: "denied"`.
 #[test]
@@ -1283,6 +1346,43 @@ fn fixture_grant_created_server() {
     let [created] = <[_; 1]>::try_from(records).expect("one record for one grant");
 
     assert_matches_fixture("grant_created_server", &contract_fields(created));
+}
+
+fn dataset_files_signed_record(
+    outcome: AuditOutcome,
+    dataset_id: Option<&str>,
+) -> serde_json::Value {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let record = emit_and_capture_one(|| async {
+        dataset_files_signed(
+            &fixture_metadata(),
+            outcome,
+            &DatasetFilesSignedContext {
+                warehouse_id: WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+                dataset_id: dataset_id.map(|id| DatasetId::from(uuid(id))),
+                snapshot_id: DatasetSnapshotId::from(uuid(FIXTURE_SNAPSHOT_ID)),
+                access_grant_id: DatasetAccessGrantId::from(uuid(FIXTURE_GRANT_ID)),
+                key_count: 1_000,
+            },
+        );
+        Ok(())
+    });
+    contract_fields(record)
+}
+
+/// A call signing a dataset's files: an operational record naming the grant and
+/// snapshot it signed under and how many keys, never the URLs.
+#[test]
+fn fixture_dataset_files_signed() {
+    let record = dataset_files_signed_record(AuditOutcome::Success, Some(FIXTURE_DATASET_ID));
+    assert_matches_fixture("dataset_files_signed", &record);
+}
+
+/// A sign call naming a dataset that does not exist: `dataset_id` is absent.
+#[test]
+fn fixture_dataset_files_refused() {
+    let record = dataset_files_signed_record(AuditOutcome::Forbidden, None);
+    assert_matches_fixture("dataset_files_refused", &record);
 }
 
 /// Recursively collect every `.rs` file under `dir`.

@@ -680,6 +680,41 @@ pub struct DynAppConfig {
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
+    /// Number of workers to spawn for folding dataset delta chains into
+    /// checkpoints. (default: 2)
+    ///
+    /// A single fold restates a dataset's whole file list and can run for
+    /// minutes on a large manifest.
+    pub task_dataset_checkpoint_workers: usize,
+    /// Number of workers to spawn for expiring dataset snapshots under a
+    /// dataset's or a warehouse's retention policy. (default: 1)
+    pub task_dataset_snapshot_expiry_workers: usize,
+    /// Number of workers to spawn for purging expired dataset snapshots once
+    /// their grace period is over. (default: 1)
+    pub task_dataset_snapshot_purge_workers: usize,
+    /// Number of workers to spawn for queued dataset imports. (default: 2)
+    ///
+    /// A single import lists an entire prefix and can run for minutes.
+    pub task_dataset_import_workers: usize,
+    // ------------- Datasets -------------
+    /// How long a signed dataset file URL stays valid, in seconds. (default: 900)
+    #[serde(
+        deserialize_with = "seconds_to_duration",
+        serialize_with = "duration_to_seconds"
+    )]
+    pub dataset_signed_url_validity_seconds: chrono::Duration,
+    /// How long a dataset access grant can sign, in seconds. (default: 43200)
+    ///
+    /// Bounds how stale the authorization behind a long read can get: a grant
+    /// outliving a revoked permission keeps signing until it expires or is
+    /// revoked itself.
+    #[serde(
+        deserialize_with = "seconds_to_duration",
+        serialize_with = "duration_to_seconds"
+    )]
+    pub dataset_access_grant_validity_seconds: chrono::Duration,
+    /// The most keys one dataset signing call accepts. (default: 1000)
+    pub dataset_sign_max_keys: usize,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -1409,6 +1444,13 @@ impl Default for DynAppConfig {
             task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
+            task_dataset_checkpoint_workers: 2,
+            task_dataset_snapshot_expiry_workers: 1,
+            task_dataset_snapshot_purge_workers: 1,
+            task_dataset_import_workers: 2,
+            dataset_signed_url_validity_seconds: chrono::Duration::minutes(15),
+            dataset_access_grant_validity_seconds: chrono::Duration::hours(12),
+            dataset_sign_max_keys: 1_000,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,

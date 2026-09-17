@@ -1,0 +1,574 @@
+use std::collections::HashMap;
+
+use iceberg::TableIdent;
+use lakekeeper::{
+    CONFIG, WarehouseId,
+    service::{
+        CatalogBackendError, CreateDatasetError, CreateTabularError, DEFAULT_DATASET_BRANCH,
+        DatasetAlreadyExists, DatasetConstraints, DatasetCreation, DatasetId, DatasetInfo,
+        DatasetListEntry, DatasetNotFound, DatasetOwnership, DatasetRetention,
+        DatasetSettingsUpdate, DropDatasetError, DropTabularError, ListDatasetsError,
+        LoadDatasetError, NamespaceId, NamespaceVersion, TabularId, UpdateDatasetSettingsError,
+        WarehouseVersion, storage::join_location, tasks::TaskId,
+    },
+};
+use uuid::Uuid;
+
+use super::{super::dbutils::DBErrorHandler as _, CreateTabular, TabularType};
+use crate::{
+    namespace::parse_namespace_identifier_from_vec,
+    pagination::{PaginateToken, V1PaginateToken},
+};
+
+struct DatasetFullRow {
+    dataset_id: Uuid,
+    warehouse_version: i64,
+    namespace_id: Uuid,
+    namespace_version: i64,
+    namespace_name: Vec<String>,
+    name: String,
+    fs_location: String,
+    fs_protocol: String,
+    protected: bool,
+    ownership: DbDatasetOwnership,
+    constraints: Option<serde_json::Value>,
+    retention: Option<serde_json::Value>,
+}
+
+struct DatasetListRow {
+    dataset_id: Uuid,
+    warehouse_id: Uuid,
+    namespace_id: Uuid,
+    name: String,
+    protected: bool,
+    ownership: DbDatasetOwnership,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(sqlx::Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[sqlx(type_name = "dataset_ownership", rename_all = "lowercase")]
+enum DbDatasetOwnership {
+    Managed,
+    Imported,
+}
+
+impl From<DatasetOwnership> for DbDatasetOwnership {
+    fn from(ownership: DatasetOwnership) -> Self {
+        match ownership {
+            DatasetOwnership::Managed => DbDatasetOwnership::Managed,
+            DatasetOwnership::Imported => DbDatasetOwnership::Imported,
+        }
+    }
+}
+
+impl From<DbDatasetOwnership> for DatasetOwnership {
+    fn from(ownership: DbDatasetOwnership) -> Self {
+        match ownership {
+            DbDatasetOwnership::Managed => DatasetOwnership::Managed,
+            DbDatasetOwnership::Imported => DatasetOwnership::Imported,
+        }
+    }
+}
+
+/// Constraints are one JSONB document, read as strictly as a request: a constraint
+/// written by a newer release fails the load, so a commit through an older one
+/// cannot slip past it.
+fn parse_constraints(
+    constraints: Option<serde_json::Value>,
+) -> Result<DatasetConstraints, CatalogBackendError> {
+    let Some(value) = constraints else {
+        return Ok(DatasetConstraints::default());
+    };
+    serde_json::from_value(value).map_err(CatalogBackendError::new_unexpected)
+}
+
+fn full_row_to_info(
+    row: DatasetFullRow,
+    warehouse_id: WarehouseId,
+) -> Result<DatasetInfo, CatalogBackendError> {
+    let namespace_ident = parse_namespace_identifier_from_vec(
+        &row.namespace_name,
+        warehouse_id,
+        Some(row.namespace_id),
+    )
+    .map_err(CatalogBackendError::new_unexpected)?;
+
+    let location = join_location(&row.fs_protocol, &row.fs_location)
+        .map_err(CatalogBackendError::new_unexpected)?;
+
+    let constraints = parse_constraints(row.constraints)?;
+    let retention = row
+        .retention
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(CatalogBackendError::new_unexpected)?
+        .unwrap_or_default();
+
+    let name = row.name;
+    let tabular_ident = TableIdent {
+        namespace: namespace_ident.clone(),
+        name: name.clone(),
+    };
+
+    Ok(DatasetInfo {
+        dataset_id: row.dataset_id.into(),
+        warehouse_id,
+        warehouse_version: WarehouseVersion::new(row.warehouse_version),
+        namespace_id: row.namespace_id.into(),
+        namespace_version: NamespaceVersion::new(row.namespace_version),
+        namespace_ident,
+        name,
+        tabular_ident,
+        location,
+        // Datasets have no per-type properties table; `constraints` carries the
+        // configuration and is surfaced separately.
+        properties: HashMap::new(),
+        protected: row.protected,
+        ownership: row.ownership.into(),
+        constraints,
+        retention,
+    })
+}
+
+pub(crate) async fn create_dataset(
+    creation: DatasetCreation,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<DatasetInfo, CreateDatasetError> {
+    let id: Uuid = *creation.dataset_id;
+
+    // The tabular row is what makes the name collide with tables and views in the
+    // same namespace, so it is inserted first and the dataset row hangs off it.
+    let tabular_info = super::create_tabular(
+        CreateTabular {
+            id,
+            name: &creation.name,
+            namespace_id: *creation.namespace_id,
+            warehouse_id: *creation.warehouse_id,
+            typ: TabularType::Dataset,
+            metadata_location: None,
+            location: &creation.location,
+        },
+        transaction,
+    )
+    .await
+    .map_err(|e| match e {
+        CreateTabularError::TabularAlreadyExists(_) => {
+            CreateDatasetError::from(DatasetAlreadyExists::new())
+        }
+        CreateTabularError::CatalogBackendError(e) => CreateDatasetError::from(e),
+        CreateTabularError::InternalParseLocationError(e) => CreateDatasetError::from(e),
+        CreateTabularError::LocationAlreadyTaken(e) => CreateDatasetError::from(e),
+        CreateTabularError::InvalidNamespaceIdentifier(e) => CreateDatasetError::from(e),
+    })?;
+
+    let constraints_json = constraints_json(&creation.constraints)?;
+
+    sqlx::query!(
+        r#"INSERT INTO dataset (warehouse_id, dataset_id, ownership, constraints)
+        VALUES ($1, $2, $3, $4)"#,
+        *creation.warehouse_id,
+        id,
+        DbDatasetOwnership::from(creation.ownership) as _,
+        constraints_json as Option<serde_json::Value>,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| CreateDatasetError::from(e.into_catalog_backend_error()))?;
+
+    // Every dataset has its default branch from the start, pointing at nothing: the
+    // first commit's compare-and-swap is against NULL.
+    sqlx::query!(
+        r#"INSERT INTO dataset_ref (warehouse_id, dataset_id, name, typ, snapshot_id)
+        VALUES ($1, $2, $3, 'branch', NULL)"#,
+        *creation.warehouse_id,
+        id,
+        DEFAULT_DATASET_BRANCH,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| CreateDatasetError::from(e.into_catalog_backend_error()))?;
+
+    let dataset_tabular = tabular_info
+        .into_dataset_info()
+        .expect("create_tabular returned Dataset type");
+
+    let tabular_ident = TableIdent {
+        namespace: dataset_tabular.tabular_ident.namespace.clone(),
+        name: dataset_tabular.tabular_ident.name.clone(),
+    };
+
+    Ok(DatasetInfo {
+        dataset_id: id.into(),
+        warehouse_id: dataset_tabular.warehouse_id,
+        warehouse_version: dataset_tabular.warehouse_version,
+        namespace_id: dataset_tabular.namespace_id,
+        namespace_version: dataset_tabular.namespace_version,
+        namespace_ident: tabular_ident.namespace.clone(),
+        name: tabular_ident.name.clone(),
+        tabular_ident,
+        location: dataset_tabular.location,
+        properties: HashMap::new(),
+        protected: dataset_tabular.protected,
+        ownership: creation.ownership,
+        constraints: creation.constraints,
+        retention: DatasetRetention::Inherit {},
+    })
+}
+
+pub(crate) async fn load_dataset(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    dataset_name: &str,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<DatasetInfo, LoadDatasetError> {
+    let row = sqlx::query_as!(
+        DatasetFullRow,
+        r#"
+        SELECT
+            t.tabular_id as dataset_id,
+            w.version as "warehouse_version!",
+            t.namespace_id,
+            n.version as "namespace_version!",
+            t.tabular_namespace_name as "namespace_name!",
+            t.name,
+            t.fs_location,
+            t.fs_protocol,
+            t.protected,
+            d.ownership as "ownership: DbDatasetOwnership",
+            d.constraints,
+            d.retention
+        FROM tabular t
+        INNER JOIN dataset d ON d.warehouse_id = t.warehouse_id AND d.dataset_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.name = $3
+          AND t.typ = 'dataset'
+          AND t.deleted_at IS NULL
+        "#,
+        *warehouse_id,
+        *namespace_id,
+        dataset_name,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| LoadDatasetError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| LoadDatasetError::from(DatasetNotFound::new()))?;
+
+    full_row_to_info(row, warehouse_id).map_err(LoadDatasetError::from)
+}
+
+/// Load a dataset by its stable id. Use this when the caller already holds an
+/// authorized identity (e.g. after a successful authz check); it closes the TOCTOU
+/// window where a concurrent rename + create-with-same-name between authz and load
+/// would let the caller read a different row than the one their grant applied to.
+pub(crate) async fn load_dataset_by_id(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<DatasetInfo, LoadDatasetError> {
+    let row = sqlx::query_as!(
+        DatasetFullRow,
+        r#"
+        SELECT
+            t.tabular_id as dataset_id,
+            w.version as "warehouse_version!",
+            t.namespace_id,
+            n.version as "namespace_version!",
+            t.tabular_namespace_name as "namespace_name!",
+            t.name,
+            t.fs_location,
+            t.fs_protocol,
+            t.protected,
+            d.ownership as "ownership: DbDatasetOwnership",
+            d.constraints,
+            d.retention
+        FROM tabular t
+        INNER JOIN dataset d ON d.warehouse_id = t.warehouse_id AND d.dataset_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
+        WHERE t.warehouse_id = $1
+          AND t.tabular_id = $2
+          AND t.typ = 'dataset'
+          AND t.deleted_at IS NULL
+        "#,
+        *warehouse_id,
+        *dataset_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| LoadDatasetError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| LoadDatasetError::from(DatasetNotFound::new()))?;
+
+    full_row_to_info(row, warehouse_id).map_err(LoadDatasetError::from)
+}
+
+/// The column value for `constraints`: none recorded when there are none.
+fn constraints_json(
+    constraints: &DatasetConstraints,
+) -> Result<Option<serde_json::Value>, CatalogBackendError> {
+    if constraints.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_value(constraints)
+        .map(Some)
+        .map_err(CatalogBackendError::new_unexpected)
+}
+
+pub(crate) async fn update_dataset_settings(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    update: DatasetSettingsUpdate,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), UpdateDatasetSettingsError> {
+    let DatasetSettingsUpdate {
+        constraints,
+        retention,
+    } = update;
+    if let Some(retention) = retention {
+        let json = (!retention.is_inherit())
+            .then(|| serde_json::to_value(&retention))
+            .transpose()
+            .map_err(CatalogBackendError::new_unexpected)?;
+        let updated = sqlx::query!(
+            r#"UPDATE dataset SET retention = $3 WHERE warehouse_id = $1 AND dataset_id = $2"#,
+            *warehouse_id,
+            *dataset_id,
+            json as Option<serde_json::Value>,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| UpdateDatasetSettingsError::from(e.into_catalog_backend_error()))?;
+        if updated.rows_affected() == 0 {
+            return Err(DatasetNotFound::new().into());
+        }
+    }
+    if let Some(constraints) = constraints {
+        let updated = sqlx::query!(
+            r#"UPDATE dataset SET constraints = $3 WHERE warehouse_id = $1 AND dataset_id = $2"#,
+            *warehouse_id,
+            *dataset_id,
+            constraints_json(&constraints)? as Option<serde_json::Value>,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| UpdateDatasetSettingsError::from(e.into_catalog_backend_error()))?;
+        if updated.rows_affected() == 0 {
+            return Err(DatasetNotFound::new().into());
+        }
+    }
+    Ok(())
+}
+
+/// The ownership alone, readable after the tabular row is soft-deleted, which
+/// [`load_dataset_by_id`] filters out.
+pub(crate) async fn load_dataset_ownership(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<DatasetOwnership, LoadDatasetError> {
+    let ownership = sqlx::query_scalar!(
+        r#"SELECT ownership AS "ownership: DbDatasetOwnership" FROM dataset WHERE warehouse_id = $1 AND dataset_id = $2"#,
+        *warehouse_id,
+        *dataset_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| LoadDatasetError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| LoadDatasetError::from(DatasetNotFound::new()))?;
+
+    Ok(ownership.into())
+}
+
+pub(crate) async fn list_dataset_task_ids(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Vec<TaskId>, CatalogBackendError> {
+    let ids = sqlx::query_scalar!(
+        r#"SELECT task_id FROM task
+           WHERE warehouse_id = $1 AND entity_type = 'dataset' AND entity_id = $2"#,
+        *warehouse_id,
+        *dataset_id,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+    Ok(ids.into_iter().map(TaskId::from).collect())
+}
+
+pub(crate) async fn bring_dataset_task_forward(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    queue_name: &str,
+    at: chrono::DateTime<chrono::Utc>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), CatalogBackendError> {
+    sqlx::query!(
+        r#"UPDATE task SET scheduled_for = $4
+           WHERE warehouse_id = $1 AND entity_type = 'dataset' AND entity_id = $2
+             AND queue_name = $3 AND status = 'scheduled' AND scheduled_for > $4"#,
+        *warehouse_id,
+        *dataset_id,
+        queue_name,
+        at,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+    Ok(())
+}
+
+pub(crate) async fn dataset_has_renamed_files(
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<bool, LoadDatasetError> {
+    sqlx::query_scalar!(
+        r#"SELECT has_renamed_files FROM dataset WHERE warehouse_id = $1 AND dataset_id = $2"#,
+        *warehouse_id,
+        *dataset_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| LoadDatasetError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| LoadDatasetError::from(DatasetNotFound::new()))
+}
+
+pub(crate) async fn list_datasets(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    namespace_ident: &iceberg::NamespaceIdent,
+    page_size: Option<i64>,
+    page_token: Option<&str>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(Vec<DatasetListEntry>, Option<String>), ListDatasetsError> {
+    let page_size = CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .map(PaginateToken::<Uuid>::try_from)
+        .transpose()?;
+
+    // `v1_parts` refuses a V2 token, which pins a subtree walk's ceiling. Listing a
+    // namespace's datasets is a plain keyset walk, so such a token belongs to a
+    // different listing and must not silently resume here.
+    let (token_ts, token_id) = match token.as_ref() {
+        Some(token) => {
+            let (created_at, id) = token.v1_parts()?;
+            (Some(*created_at), Some(*id))
+        }
+        None => (None, None),
+    };
+
+    let rows = sqlx::query_as!(
+        DatasetListRow,
+        r#"
+        SELECT
+            t.tabular_id as dataset_id,
+            t.warehouse_id,
+            t.namespace_id,
+            t.name,
+            t.protected,
+            d.ownership as "ownership: DbDatasetOwnership",
+            t.created_at
+        FROM tabular t
+        INNER JOIN dataset d ON d.warehouse_id = t.warehouse_id AND d.dataset_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.typ = 'dataset'
+          AND t.deleted_at IS NULL
+          AND (
+            ($3::timestamptz IS NULL)
+            OR (t.created_at, t.tabular_id) > ($3, $4)
+          )
+        ORDER BY t.created_at ASC, t.tabular_id ASC
+        LIMIT $5
+        "#,
+        *warehouse_id,
+        *namespace_id,
+        token_ts,
+        token_id,
+        page_size,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| ListDatasetsError::from(e.into_catalog_backend_error()))?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    let mut next_page_token = None;
+
+    for row in &rows {
+        next_page_token = Some(
+            PaginateToken::V1(V1PaginateToken {
+                created_at: row.created_at,
+                id: row.dataset_id,
+            })
+            .to_string(),
+        );
+
+        let tabular_ident = TableIdent::new(namespace_ident.clone(), row.name.clone());
+        entries.push(DatasetListEntry {
+            dataset_id: row.dataset_id.into(),
+            warehouse_id: row.warehouse_id.into(),
+            namespace_id: row.namespace_id.into(),
+            name: row.name.clone(),
+            tabular_ident,
+            namespace_ident: namespace_ident.clone(),
+            ownership: row.ownership.into(),
+            protected: row.protected,
+            created_at: row.created_at,
+        });
+    }
+
+    Ok((entries, next_page_token))
+}
+
+pub(crate) async fn drop_dataset(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    dataset_name: &str,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<DatasetId, DropDatasetError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT t.tabular_id as dataset_id
+        FROM tabular t
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.name = $3
+          AND t.typ = 'dataset'
+          AND t.deleted_at IS NULL
+        "#,
+        *warehouse_id,
+        *namespace_id,
+        dataset_name,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| DropDatasetError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| DropDatasetError::from(DatasetNotFound::new()))?;
+
+    let dataset_id: DatasetId = row.dataset_id.into();
+
+    super::drop_tabular(
+        warehouse_id,
+        TabularId::Dataset(dataset_id),
+        false,
+        None,
+        transaction,
+    )
+    .await
+    .map_err(|e| match e {
+        DropTabularError::TabularNotFound(_) => DropDatasetError::from(DatasetNotFound::new()),
+        DropTabularError::CatalogBackendError(e) => DropDatasetError::from(e),
+        DropTabularError::InvalidNamespaceIdentifier(e) => DropDatasetError::from(e),
+        DropTabularError::InternalParseLocationError(e) => DropDatasetError::from(e),
+        DropTabularError::ProtectedTabularDeletionWithoutForce(e) => DropDatasetError::from(e),
+        DropTabularError::ConcurrentUpdateError(e) => DropDatasetError::from(e),
+    })?;
+
+    Ok(dataset_id)
+}

@@ -12,7 +12,7 @@ use crate::{
     WarehouseId,
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     service::{
-        BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
+        BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore, DatasetId,
         InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
         SerializationError, StateOrTransaction, StateOrTransactionEnum, TableIdent, TabularId,
         Transaction, WarehouseIdNotFound,
@@ -342,6 +342,9 @@ pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
     // table-id, location, table-ident
     pub child_tables: Vec<(TabularId, Location, TableIdent)>,
+    /// The imported datasets among `child_tables`. Each borrows its prefix, so a
+    /// purge must not touch it.
+    pub imported_datasets: Vec<DatasetId>,
     pub open_tasks: Vec<TaskId>,
     /// Locations of the dropped namespace and its dropped children, in no particular order.
     pub namespace_locations: Vec<(NamespaceId, Location)>,

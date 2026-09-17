@@ -1,0 +1,23 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "operation",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "operation": "dataset_files_signed",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "outcome": "success",
+  "context": {
+    "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+    "dataset_id": "019684ff-0000-7000-8000-000000000008",
+    "snapshot_id": "019684ff-0000-7000-8000-000000000009",
+    "access_grant_id": "019684ff-0000-7000-8000-00000000000a",
+    "key_count": 1000
+  }
+}

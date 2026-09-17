@@ -13,10 +13,16 @@
 //! [`lakekeeper_storage_postgres::test_utils`] so that crate's own inline
 //! tests can use them without a dev-dep cycle.
 
+use std::{future::Future, time::Duration};
+
+use sqlx::PgPool;
+
 mod authz_helper;
+mod dataset;
 mod internal_helper;
 mod pagination_macro; // exports `impl_pagination_tests!` via `#[macro_export]`
 pub use authz_helper::*;
+pub use dataset::*;
 pub use internal_helper::*;
 // `pastey` is needed at the macro call sites because `impl_pagination_tests!`
 // expands to `paste! { ... }`. Re-export it so downstream test files don't
@@ -442,17 +448,51 @@ impl CommitGate {
 ///
 /// # Panics
 /// If it still fails after 10 seconds; `what` names it in the message.
-pub async fn eventually<F, Fut>(what: &str, mut condition: F)
+pub async fn eventually<F, Fut>(what: &str, condition: F)
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
+    Fut: Future<Output = bool>,
+{
+    eventually_within(what, Duration::from_secs(10), condition).await;
+}
+
+/// [`eventually`], for a condition that may take longer than 10 seconds.
+///
+/// # Panics
+/// If it still fails after `timeout`; `what` names it in the message.
+pub async fn eventually_within<F, Fut>(what: &str, timeout: Duration, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
 {
     let polled = async {
         while !condition().await {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(10), polled)
+    tokio::time::timeout(timeout, polled)
         .await
         .unwrap_or_else(|_| panic!("{what}"));
+}
+
+/// Returns once a statement containing `query_fragment` waits on a lock: a test
+/// holding that lock then knows the other side has reached it. An empty fragment
+/// matches any statement.
+///
+/// # Panics
+/// If none does within 10 seconds.
+pub async fn wait_for_lock_wait(pool: &PgPool, query_fragment: &str) {
+    eventually("the other side never waited on the lock", || async {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND strpos(query, $1) > 0",
+        )
+        .bind(query_fragment)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        waiting > 0
+    })
+    .await;
 }

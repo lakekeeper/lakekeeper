@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_snapshot\n        SET status = 'active', expired_at = NULL, purge_after = NULL\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n          AND status = 'expired'\n        RETURNING snapshot_id, parent_snapshot_id, location, is_checkpoint, summary, created_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "parent_snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "parent_snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "location"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "is_checkpoint",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "is_checkpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "summary",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "summary"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "03223c1d85fbd0e22cc39b1e8ca796f95e9b8aac26bf0b8391e376a43a8f59cd"
+}

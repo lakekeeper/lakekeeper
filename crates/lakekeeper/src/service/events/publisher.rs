@@ -16,6 +16,7 @@ use crate::{
     server::tables::maybe_body_to_json,
     service::{
         Actor, AuthZTableInfo, AuthZViewInfo, RoleId, TableId, TabularId, UserId, WarehouseId,
+        events::context::ResolvedDataset,
     },
 };
 
@@ -54,6 +55,24 @@ impl From<&Actor> for CloudEventActor {
             },
         }
     }
+}
+
+/// The metadata of a single event about `dataset`.
+fn dataset_event_metadata(
+    dataset: &ResolvedDataset,
+    request_metadata: &RequestMetadata,
+) -> anyhow::Result<EventMetadata> {
+    Ok(EventMetadata {
+        tabular_id: TabularId::Dataset(dataset.dataset.dataset_id),
+        warehouse_id: dataset.warehouse.warehouse_id,
+        name: dataset.dataset.name.clone(),
+        namespace: dataset.dataset.namespace_ident.to_string(),
+        prefix: dataset.warehouse.warehouse_id.to_string(),
+        num_events: 1,
+        sequence_number: 0,
+        trace_id: request_metadata.request_id().clone(),
+        actor: serialize_actor(request_metadata)?,
+    })
 }
 
 /// Serializes the actor from request metadata to a JSON string.
@@ -489,6 +508,195 @@ impl EventListener for CloudEventsPublisher {
         )
         .await
         .context("Failed to publish `renameGenericTable` event")?;
+        Ok(())
+    }
+
+    async fn dataset_created(&self, event: types::CreateDatasetEvent) -> anyhow::Result<()> {
+        let types::CreateDatasetEvent {
+            namespace,
+            dataset,
+            request_metadata,
+            request,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "createDataset",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::Dataset(dataset.dataset_id),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
+                warehouse_id: namespace.warehouse.warehouse_id,
+                name: dataset.name.clone(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id().clone(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `createDataset` event")?;
+        Ok(())
+    }
+
+    async fn dataset_dropped(&self, event: types::DropDatasetEvent) -> anyhow::Result<()> {
+        let types::DropDatasetEvent {
+            dataset,
+            drop_params: _drop_params,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "dropDataset",
+            serde_json::Value::Null,
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `dropDataset` event")?;
+        Ok(())
+    }
+
+    async fn dataset_committed(&self, event: types::CommitDatasetEvent) -> anyhow::Result<()> {
+        let types::CommitDatasetEvent {
+            dataset,
+            published:
+                types::DatasetPublished {
+                    branch,
+                    snapshot_id,
+                    parent_snapshot_id,
+                    summary,
+                    changes,
+                },
+            request_metadata,
+        } = event;
+        // Counts, not the file list: a commit can carry a million files.
+        let data = serde_json::json!({
+            "branch": branch,
+            "snapshot-id": snapshot_id,
+            "parent-snapshot-id": parent_snapshot_id,
+            "added": changes.added,
+            "modified": changes.modified,
+            "removed": changes.removed,
+            "summary": summary,
+        });
+        self.publish(
+            Uuid::now_v7(),
+            "commitDataset",
+            data,
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `commitDataset` event")?;
+        Ok(())
+    }
+
+    async fn dataset_ref_created(&self, event: types::CreateDatasetRefEvent) -> anyhow::Result<()> {
+        let types::CreateDatasetRefEvent {
+            dataset,
+            dataset_ref,
+            request_metadata,
+        } = event;
+        let data = serde_json::json!({
+            "name": dataset_ref.name,
+            "type": dataset_ref.typ,
+            "snapshot-id": dataset_ref.snapshot_id,
+        });
+        self.publish(
+            Uuid::now_v7(),
+            "createDatasetRef",
+            data,
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `createDatasetRef` event")?;
+        Ok(())
+    }
+
+    async fn dataset_ref_moved(&self, event: types::MoveDatasetRefEvent) -> anyhow::Result<()> {
+        let types::MoveDatasetRefEvent {
+            dataset,
+            dataset_ref,
+            fast_forward,
+            request_metadata,
+        } = event;
+        let data = serde_json::json!({
+            "name": dataset_ref.name,
+            "snapshot-id": dataset_ref.snapshot_id,
+            "fast-forward": fast_forward,
+        });
+        self.publish(
+            Uuid::now_v7(),
+            "updateDatasetRef",
+            data,
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `updateDatasetRef` event")?;
+        Ok(())
+    }
+
+    async fn dataset_ref_deleted(&self, event: types::DeleteDatasetRefEvent) -> anyhow::Result<()> {
+        let types::DeleteDatasetRefEvent {
+            dataset,
+            ref_name,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "deleteDatasetRef",
+            serde_json::json!({ "name": ref_name }),
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `deleteDatasetRef` event")?;
+        Ok(())
+    }
+
+    async fn dataset_settings_updated(
+        &self,
+        event: types::UpdateDatasetSettingsEvent,
+    ) -> anyhow::Result<()> {
+        let types::UpdateDatasetSettingsEvent {
+            dataset,
+            request,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "updateDatasetSettings",
+            maybe_body_to_json(&request),
+            dataset_event_metadata(&dataset, &request_metadata)?,
+        )
+        .await
+        .context("Failed to publish `updateDatasetSettings` event")?;
+        Ok(())
+    }
+
+    async fn dataset_renamed(&self, event: types::RenameDatasetEvent) -> anyhow::Result<()> {
+        let types::RenameDatasetEvent {
+            source_dataset,
+            destination_namespace: _,
+            request,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "renameDataset",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::Dataset(source_dataset.dataset.dataset_id),
+                warehouse_id: source_dataset.warehouse.warehouse_id,
+                name: source_dataset.dataset.name.clone(),
+                namespace: source_dataset.dataset.namespace_ident.to_url_string(),
+                prefix: source_dataset.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id().clone(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `renameDataset` event")?;
         Ok(())
     }
 

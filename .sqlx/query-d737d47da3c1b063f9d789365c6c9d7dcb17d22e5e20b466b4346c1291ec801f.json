@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH staged AS (\n            SELECT logical_key FROM dataset_manifest_entry\n            WHERE warehouse_id = $1 AND snapshot_id = $2\n        ),\n        before AS (\n            SELECT DISTINCT ON (m.logical_key)\n                m.logical_key, m.change, m.physical_path, m.etag, m.size,\n                m.content_type, m.checksum, m.version_id, m.last_modified\n            FROM unnest($3::uuid[]) WITH ORDINALITY AS a(snapshot_id, depth)\n            INNER JOIN dataset_manifest_entry m\n                ON m.warehouse_id = $1 AND m.snapshot_id = a.snapshot_id\n            INNER JOIN staged k ON k.logical_key = m.logical_key\n            ORDER BY m.logical_key, a.depth\n        ),\n        after AS (\n            SELECT DISTINCT ON (m.logical_key)\n                m.logical_key, m.change, m.physical_path, m.etag, m.size,\n                m.content_type, m.checksum, m.version_id, m.last_modified\n            FROM unnest($4::uuid[]) WITH ORDINALITY AS a(snapshot_id, depth)\n            INNER JOIN dataset_manifest_entry m\n                ON m.warehouse_id = $1 AND m.snapshot_id = a.snapshot_id\n            INNER JOIN staged k ON k.logical_key = m.logical_key\n            ORDER BY m.logical_key, a.depth\n        ),\n        changed AS (\n            SELECT k.logical_key\n            FROM staged k\n            LEFT JOIN before b ON b.logical_key = k.logical_key AND b.change <> 'removed'\n            LEFT JOIN after f ON f.logical_key = k.logical_key AND f.change <> 'removed'\n            WHERE (b.physical_path, b.etag, b.size, b.content_type, b.checksum,\n                   b.version_id, b.last_modified)\n                IS DISTINCT FROM\n                  (f.physical_path, f.etag, f.size, f.content_type, f.checksum,\n                   f.version_id, f.last_modified)\n        )\n        DELETE FROM dataset_manifest_entry d\n        USING changed c\n        WHERE d.warehouse_id = $1 AND d.snapshot_id = $2 AND d.logical_key = c.logical_key\n        RETURNING d.change AS \"change!: DatasetManifestChange\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "change!: DatasetManifestChange",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_manifest_change",
+            "kind": {
+              "Enum": [
+                "added",
+                "removed",
+                "modified"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_manifest_entry",
+            "name": "change"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d737d47da3c1b063f9d789365c6c9d7dcb17d22e5e20b466b4346c1291ec801f"
+}

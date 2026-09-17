@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use azure_storage::shared_access_signature::service_sas::UserDeligationKey;
 use moka::{
     Expiry,
     future::Cache,
@@ -107,9 +108,9 @@ fn build_stc_cache<V: Clone + Send + Sync + 'static>() -> Cache<STCCacheKey, Cac
 
 // Per-provider STC caches. Each stores a concrete credential type, so the
 // read-through hands back the right credential without a runtime variant check.
-// Each cache gets the full `CONFIG.cache.stc.capacity` ceiling: a single-cloud
-// deployment (the norm) is unaffected, but a multi-cloud server can hold up to 3×
-// the configured entries. `max_capacity` is a ceiling, not a reservation, so idle
+// Each cache gets the full `CONFIG.cache.stc.capacity` ceiling, so a server holds
+// up to that many entries per cache: one per provider, plus a second for Azure's
+// user delegation keys. `max_capacity` is a ceiling, not a reservation, so idle
 // providers' caches stay near-empty.
 pub(super) static S3_STC_CACHE: LazyLock<
     Cache<STCCacheKey, CachedStc<aws_sdk_sts::types::Credentials>>,
@@ -119,12 +120,19 @@ pub(super) static ADLS_STC_CACHE: LazyLock<
 > = LazyLock::new(build_stc_cache::<(String, time::OffsetDateTime)>);
 pub(super) static GCS_STC_CACHE: LazyLock<Cache<STCCacheKey, CachedStc<CachedSTSResponse>>> =
     LazyLock::new(build_stc_cache::<CachedSTSResponse>);
+/// Azure user delegation keys, one per dataset, that sign the per-file SAS of a
+/// dataset signing call. Keyed like a table's SAS, so a key serves one dataset.
+pub(super) static ADLS_DELEGATION_KEY_CACHE: LazyLock<
+    Cache<STCCacheKey, CachedStc<UserDeligationKey>>,
+> = LazyLock::new(build_stc_cache::<UserDeligationKey>);
 
 /// Update the cache size metric with the combined entry count of all STC caches.
 #[inline]
 fn update_cache_size_metric() {
-    let total =
-        S3_STC_CACHE.entry_count() + ADLS_STC_CACHE.entry_count() + GCS_STC_CACHE.entry_count();
+    let total = S3_STC_CACHE.entry_count()
+        + ADLS_STC_CACHE.entry_count()
+        + ADLS_DELEGATION_KEY_CACHE.entry_count()
+        + GCS_STC_CACHE.entry_count();
     set_cache_size("stc", total);
 }
 

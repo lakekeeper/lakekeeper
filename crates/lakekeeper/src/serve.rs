@@ -494,7 +494,7 @@ async fn serve_inner<
     }
 
     // Task queues
-    let task_queue_registry = TaskQueueRegistry::new();
+    let task_queue_registry = TaskQueueRegistry::new().with_event_dispatcher(dispatcher.clone());
     // In read-only maintenance mode we don't start built-in queue workers:
     // the operator drains writes before running schema migrations, and
     // workers would otherwise tick against a half-migrated DB.

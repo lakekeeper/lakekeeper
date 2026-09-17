@@ -20,7 +20,7 @@ use std::{
 pub use az::{AzCredential, EndpointMode, GenericAdlsProfile, OneLakeProfile, TopLevelFolder};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt as _};
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::{NamespaceIdent, TableIdent};
 // `rest::StorageCredential` is the response-side credential entry; `StorageCredential` in this
@@ -32,8 +32,8 @@ use iceberg_ext::{
     configs::table::TableProperties,
 };
 use lakekeeper_io::{
-    InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
-    adls::AdlsLocation, s3::S3Location,
+    InvalidLocationError, LakekeeperStorage, Location, LocationParseError, ReadError,
+    StorageBackend, adls::AdlsLocation, s3::S3Location,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
@@ -176,6 +176,33 @@ impl TableConfig {
             }]
         })
     }
+}
+
+/// Signing requests one presigned batch runs at a time.
+const PRESIGN_CONCURRENCY: usize = 32;
+
+/// An object to sign a read of, and the version to read when one is pinned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadTarget {
+    pub location: Location,
+    /// Signed into the URL on S3 (`versionId`) and GCS (`generation`), so it reads
+    /// exactly that version. Azure URLs read the current blob.
+    pub version: Option<String>,
+}
+
+/// Await `signs` a bounded number at a time, keeping their order. S3 signs
+/// locally; a GCS system identity asks the IAM API once per URL.
+async fn presign_each(
+    signs: Vec<impl Future<Output = Result<String, ReadError>>>,
+) -> Result<Vec<String>, CredentialsError> {
+    futures::stream::iter(signs)
+        .buffered(PRESIGN_CONCURRENCY)
+        .try_collect()
+        .await
+        .map_err(|e| CredentialsError::ShortTermCredential {
+            reason: "Failed to sign a read".to_string(),
+            source: Some(Box::new(e)),
+        })
 }
 
 /// Half of a credential's remaining lifetime, capped at 1h — the window during
@@ -428,6 +455,36 @@ impl StorageProfile {
         }
     }
 
+    /// Whether an object has one etag, whichever API reports it. Not on GCS: its
+    /// JSON API, which listings and the client libraries use, and its XML API,
+    /// which signed URLs use, report different etags for the same object.
+    #[must_use]
+    pub fn has_one_etag_per_object(&self) -> bool {
+        match self {
+            StorageProfile::S3(_)
+            | StorageProfile::Stackit(_)
+            | StorageProfile::Adls(_)
+            | StorageProfile::OneLake(_) => true,
+            StorageProfile::Gcs(_) => false,
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => true,
+        }
+    }
+
+    /// Whether this storage keeps object versions a dataset can pin: a listing
+    /// reports each object's current version (S3 lists versions apart from
+    /// objects, GCS the generation with each one), and a signed URL reads exactly
+    /// the version a file records. Azure does neither.
+    #[must_use]
+    pub fn pins_object_versions(&self) -> bool {
+        match self {
+            StorageProfile::S3(_) | StorageProfile::Stackit(_) | StorageProfile::Gcs(_) => true,
+            StorageProfile::Adls(_) | StorageProfile::OneLake(_) => false,
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => false,
+        }
+    }
+
     /// Whether [`Self::generate_table_config`] for `data_access` may vend
     /// credentials that expire. Gates the conditional-`loadTable` 304 path for
     /// the cases where the client's echoed `ETag` carries no revalidation point
@@ -558,6 +615,116 @@ impl StorageProfile {
                 credentials_expiration_ms: None,
                 remote_signing: None,
             }),
+        }
+    }
+
+    /// Signed GET URLs for `targets`, files of the tabular at `tabular_location`,
+    /// one each and in order, valid for `validity`. Signed with the warehouse's own
+    /// credentials, so no STS is needed. Range requests work on every backend.
+    ///
+    /// # Errors
+    /// Fails if the profile cannot sign, or its credentials cannot.
+    pub async fn presign_reads(
+        &self,
+        secret: Option<&StorageCredential>,
+        tabular_location: &Location,
+        tabular_info: &impl BasicTabularInfo,
+        targets: &[ReadTarget],
+        validity: Duration,
+    ) -> Result<Vec<String>, CredentialsError> {
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: tabular_location.clone(),
+            storage_permissions: StoragePermissions::Read,
+            warehouse_id: tabular_info.warehouse_id(),
+            tabular_id: tabular_info.tabular_id(),
+        };
+        match self {
+            StorageProfile::S3(profile) => {
+                profile
+                    .presign_reads(
+                        secret
+                            .map(|s| s.try_to_s3())
+                            .transpose()
+                            .map_err(CredentialsError::from)?,
+                        targets,
+                        validity,
+                    )
+                    .await
+            }
+            StorageProfile::Stackit(profile) => {
+                profile
+                    .presign_reads(
+                        secret
+                            .map(|s| s.try_to_stackit())
+                            .transpose()
+                            .map_err(CredentialsError::from)?,
+                        targets,
+                        validity,
+                    )
+                    .await
+            }
+            StorageProfile::Gcs(profile) => {
+                profile
+                    .presign_reads(
+                        secret
+                            .map(|s| s.try_to_gcs())
+                            .ok_or_else(|| CredentialsError::MissingCredential("gcs".to_string()))?
+                            .map_err(CredentialsError::from)?,
+                        targets,
+                        validity,
+                    )
+                    .await
+            }
+            StorageProfile::Adls(profile) => {
+                profile
+                    .presign_reads(
+                        secret
+                            .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                            .try_to_az()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        targets,
+                        validity,
+                    )
+                    .await
+            }
+            StorageProfile::OneLake(profile) => {
+                profile
+                    .presign_reads(
+                        secret
+                            .ok_or_else(|| {
+                                CredentialsError::MissingCredential("onelake".to_string())
+                            })?
+                            .try_to_az()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        targets,
+                        validity,
+                    )
+                    .await
+            }
+            // Nothing serves these URLs; they carry enough for tests to check
+            // which files were signed and until when.
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => {
+                let until = chrono::Utc::now()
+                    + chrono::Duration::from_std(validity).unwrap_or(chrono::Duration::MAX);
+                Ok(targets
+                    .iter()
+                    .map(|target| {
+                        let version = target
+                            .version
+                            .as_deref()
+                            .map(|v| format!("&version={v}"))
+                            .unwrap_or_default();
+                        format!(
+                            "{}?signed-until={}{version}",
+                            target.location,
+                            until.timestamp()
+                        )
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -770,8 +937,11 @@ impl StorageProfile {
         report.build()
     }
 
-    /// Whether the profile vends temporary credentials to clients.
-    fn credential_vending_enabled(&self) -> bool {
+    /// Whether the profile vends temporary credentials to clients, judged from the
+    /// profile alone. R2 and OSS credentials vend without STS, which only the stored
+    /// secret would show; they read as not vending.
+    #[must_use]
+    pub fn credential_vending_enabled(&self) -> bool {
         match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
             StorageProfile::Stackit(profile) => profile.sts_enabled,
@@ -2398,6 +2568,7 @@ mod tests {
                 let cred: StorageCredential = cred.into();
                 test_profile_vended_creds(&cred, &mut profile).await;
                 test_profile_io(&cred, &mut profile).await;
+                test_profile_presigned_reads(&cred, &mut profile).await;
             }
         }
     }
@@ -2415,6 +2586,7 @@ mod tests {
                 az::test::onelake_integration_tests::onelake_profile().into();
             test_profile_vended_creds(&cred, &mut profile).await;
             test_profile_io(&cred, &mut profile).await;
+            test_profile_presigned_reads(&cred, &mut profile).await;
         }
     }
 
@@ -2442,6 +2614,7 @@ mod tests {
 
             test_profile_vended_creds(&cred, &mut profile).await;
             test_profile_io(&cred, &mut profile).await;
+            test_profile_presigned_reads(&cred, &mut profile).await;
         }
     }
 
@@ -2480,6 +2653,7 @@ mod tests {
 
                     test_profile_vended_creds(&cred, &mut profile).await;
                     test_profile_io(&cred, &mut profile).await;
+                    test_profile_presigned_reads(&cred, &mut profile).await;
                 },
                 true,
             );
@@ -2519,6 +2693,7 @@ mod tests {
 
                     test_profile_vended_creds(&cred, &mut profile).await;
                     test_profile_io(&cred, &mut profile).await;
+                    test_profile_presigned_reads(&cred, &mut profile).await;
                 },
                 true,
             );
@@ -2609,6 +2784,60 @@ mod tests {
                 lakekeeper_io::RemoveEmptyDirectoryOutcome::Removed
             );
         }
+    }
+
+    /// A presigned URL serves the file over plain HTTP, ranges included, for a key
+    /// that needs encoding.
+    async fn test_profile_presigned_reads(cred: &StorageCredential, profile: &mut StorageProfile) {
+        profile
+            .normalize(Some(cred))
+            .expect("Failed to normalize profile");
+        let mut location = profile
+            .base_location()
+            .expect("Failed to get base location");
+        location
+            .without_trailing_slash()
+            .push("presigned file+1.bin");
+        let io = profile.file_io(Some(cred)).await.unwrap();
+        let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        io.write(location.as_str(), bytes::Bytes::from(data.clone()))
+            .await
+            .unwrap();
+
+        let urls = profile
+            .presign_reads(
+                Some(cred),
+                &location,
+                &TableInfo::new_random(WarehouseId::new_random()),
+                &[ReadTarget {
+                    location: location.clone(),
+                    version: None,
+                }],
+                Duration::from_mins(5),
+            )
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let whole = client
+            .get(&urls[0])
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(whole.as_ref(), data.as_slice());
+        let range = client
+            .get(&urls[0])
+            .header(reqwest::header::RANGE, "bytes=100-199")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(range.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(range.bytes().await.unwrap().as_ref(), &data[100..200]);
+        io.delete(location.as_str()).await.unwrap();
     }
 
     #[allow(clippy::too_many_lines)]

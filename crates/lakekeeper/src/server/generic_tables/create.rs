@@ -15,7 +15,7 @@ use crate::{
         iceberg::v1::namespace::NamespaceParameters,
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tabular::determine_tabular_location},
+    server::{require_warehouse_id, tabular::determine_tabular_location, validate_blob_size},
     service::{
         CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore,
         GenericTableCreation, GenericTableId, Result, SecretStore, State, TabularId, Transaction,
@@ -33,7 +33,6 @@ use crate::{
 };
 
 const MAX_FORMAT_LEN: usize = 64;
-const MAX_BLOB_BYTES: usize = 1024 * 1024;
 
 fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
     if request.name.is_empty() {
@@ -53,8 +52,8 @@ fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
         .into());
     }
     validate_format(request.format.as_str())?;
-    validate_blob_size("schema", request.schema.as_ref())?;
-    validate_blob_size("statistics", request.statistics.as_ref())?;
+    validate_blob_size("Generic table schema", request.schema.as_ref())?;
+    validate_blob_size("Generic table statistics", request.statistics.as_ref())?;
     Ok(())
 }
 
@@ -70,22 +69,6 @@ fn validate_format(format: &str) -> Result<()> {
                  letters, digits, '_' or '-', and be at most {MAX_FORMAT_LEN} characters."
             ),
             "InvalidFormat",
-            None,
-        )
-        .into());
-    }
-    Ok(())
-}
-
-fn validate_blob_size(field: &str, value: Option<&serde_json::Value>) -> Result<()> {
-    let Some(value) = value else { return Ok(()) };
-    let len = serde_json::to_string(value).map_or(usize::MAX, |s| s.len());
-    if len > MAX_BLOB_BYTES {
-        return Err(ErrorModel::bad_request(
-            format!(
-                "Generic table {field} payload of {len} bytes exceeds the {MAX_BLOB_BYTES}-byte limit."
-            ),
-            "PayloadTooLarge",
             None,
         )
         .into());

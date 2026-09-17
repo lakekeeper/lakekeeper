@@ -97,6 +97,7 @@ figment_file_provider_adapter = "0.1.1"
 flate2 = "^1.0"
 futures = "^0.3"
 gcloud-token = "1.0.0"
+glob = "0.3.3"
 google-cloud-auth = { package = "gcloud-auth", version = "~1.2", features = [
     "rustls-tls",
     "jwt-aws-lc-rs",

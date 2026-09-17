@@ -1,0 +1,113 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT dataset_id, snapshot_id, parent_snapshot_id, location, is_checkpoint, summary,\n               created_at, skipped_files\n        FROM dataset_snapshot\n        WHERE warehouse_id = $1 AND idempotency_key = $2 AND status <> 'staging'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "dataset_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "dataset_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "parent_snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "parent_snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "location"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_checkpoint",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "is_checkpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "summary",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "summary"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "skipped_files",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "skipped_files"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "4dab095524083e75b77948daff54540e2d48dd78121abe6b3b28f23ec49fcf5c"
+}

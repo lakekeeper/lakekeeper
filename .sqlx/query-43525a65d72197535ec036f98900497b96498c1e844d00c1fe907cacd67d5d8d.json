@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_ref\n        SET snapshot_id = $4\n        WHERE warehouse_id = $1\n          AND dataset_id = $2\n          AND name = $3\n          AND snapshot_id IS NOT DISTINCT FROM $5\n          -- Re-checked in the statement: the ref can change after the checks above.\n          AND typ = 'branch' AND (NOT protected OR $6)\n        RETURNING name, typ as \"typ: DbDatasetRefType\", snapshot_id, protected\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "typ: DbDatasetRefType",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_ref_type",
+            "kind": {
+              "Enum": [
+                "branch",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "protected"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "43525a65d72197535ec036f98900497b96498c1e844d00c1fe907cacd67d5d8d"
+}

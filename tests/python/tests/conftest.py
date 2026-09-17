@@ -589,6 +589,11 @@ class Server:
         return urllib.parse.urljoin(self.management_url, "v1/warehouse")
 
     @property
+    def data_url(self) -> str:
+        """The Lakekeeper data APIs (datasets, generic tables), beside management."""
+        return urllib.parse.urljoin(self.management_url, "../lakekeeper/v1/")
+
+    @property
     def project_url(self) -> str:
         return urllib.parse.urljoin(self.management_url, "v1/project")
 

@@ -136,7 +136,7 @@ Every record carries two kinds of version, and they answer different questions.
 ```json
 {
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "2.1"
@@ -157,7 +157,7 @@ Every record carries two kinds of version, and they answer different questions.
 ```
 
 - `audit_format` governs **the shape of the whole record**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper defines. Every record carries it, whoever produced the record.
-- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.0"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
+- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.1"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
 
 In the example above, the record's shape (`record_type`, `actor`, `outcome`, `context`) is governed by `audit_format`. The values of `operation` and `outcome` and the keys in `context` come from Lakekeeper+, so `emitters.lakekeeper_plus` governs them.
 
@@ -233,7 +233,7 @@ Written for every authorization check. Every one carries `actions`, `entities`, 
 | `event_source`         | String          | Always `"audit"`                  |
 | `audit_format`         | String          | Version of the record's shape, `MAJOR.MINOR`. See [Format version and stability](#audit-format). |
 | `record_type`          | String          | Always `"authorization"` for this shape. Route on this field. |
-| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.0"}`. See [Two version numbers](#audit-emitter). |
+| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.1"}`. See [Two version numbers](#audit-emitter). |
 | `request_id`           | String          | The request this record belongs to: the `x-request-id` the caller sent, in whatever form, or the id Lakekeeper generated and returned in that response header. The same value is on the request's other log lines and on the CloudEvents it publishes. |
 | `time`                 | String          | When the request was decided, in UTC, RFC 3339 with microseconds: `2026-02-15T14:20:50.758690Z`. It can be earlier than the subscriber's `timestamp`, which is when the line was written. |
 | `actions`              | Array           | The operations attempted. Always an array, even with one entry. Each entry has an `action_name` (e.g. `"read_data"`, `"drop"`, `"create_namespace"`) and optional fields describing what the caller asked for. See [Action Format](#action-format). |
@@ -317,7 +317,7 @@ New keys may be added in any minor version. On operation records, `context` has 
 
 **Entity Format** {#entity-format}
 
-Each entity has an `entity_type` and the fields that identify it. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table` or `tag`.
+Each entity has an `entity_type` and the fields that identify it. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `dataset` or `tag`.
 
 Which fields appear depends on the entity type and on what the request gave. A field with no value is left out, never written empty. Every value is a string.
 
@@ -335,6 +335,8 @@ Which fields appear depends on the entity type and on what the request gave. A f
 | `view_id`            | View identifier                                                    |
 | `generic_table`      | Generic-table name, qualified by its namespace                     |
 | `generic_table_id`   | Generic-table identifier                                           |
+| `dataset`            | Dataset name, qualified by its namespace                           |
+| `dataset_id`         | Dataset identifier                                                 |
 | `task_id`            | Task identifier                                                    |
 | `role_id`            | Role identifier                                                    |
 | `role_source_id`     | Identifier of the role in its originating source                   |
@@ -359,6 +361,8 @@ Each action has an `action_name` and, for some actions, fields describing what t
 
 Which fields an action can carry is listed in the [schema](audit/schema.json): the `ActionRecord` definition has one `if`/`then` branch per `action_name`, listing that action's fields and their types. An action with no branch carries no extra fields, or is newer than your copy of the schema.
 
+A dataset's versioning actions (`commit`, `promote`, `reset` and `manage_refs`) carry `target_refs` naming the one branch or tag they act on, and so does a dataset's `read_data` when it reads through a ref: listing its files, or issuing an access grant. A diff names each ref it compares. Vending storage credentials and reading a snapshot's materialization read no ref, so their `read_data` carries `[]`.
+
 When a field appears:
 
 - **Lists and maps** are always present once the action has them. They are empty (`[]`, `{}`) when the request gave nothing. Read "none" from the empty value, not from a missing key.
@@ -374,14 +378,16 @@ When a field appears:
 | `table_id`              | String | The table id the client asked for                       |
 | `generic_table_id`      | String | The generic-table id the client asked for               |
 | `format`                | String | The requested table format                              |
-| `base_location`         | String | The requested storage location                          |
+| `base_location`         | String | The requested storage location; for a dataset, the prefix it borrows |
+| `dataset_id`            | String | The dataset id the client asked for                     |
+| `managed`               | Boolean | `true` when Lakekeeper owns the dataset's prefix, `false` when the dataset borrows it |
 | `project_id`            | String | The project id the client asked for                     |
 | `force`                 | Boolean | `true` when the client asked to force the operation     |
 | `purge`                 | Boolean | `true` when the client asked to purge the data          |
 | `recursive`             | Boolean | `true` when the client asked for a recursive delete     |
-| `target_refs`           | Array  | Commit only. The branch or tag references the commit targets; `[]` when it names none |
-| `source`                | Array  | Where the entity is being moved from. For a namespace, its current full path. For a table, view or generic table, the path of the namespace it leaves |
-| `destination`           | Array  | Where the entity is being moved to. For a namespace, its full new path. For a table, view or generic table, the path of the destination namespace, without the new name |
+| `target_refs`           | Array  | Commits and dataset ref actions. The branch or tag references the action targets; `[]` when it names none |
+| `source`                | Array  | Where the entity is being moved from. For a namespace, its current full path. For a table, view, generic table or dataset, the path of the namespace it leaves |
+| `destination`           | Array  | Where the entity is being moved to. For a namespace, its full new path. For a table, view, generic table or dataset, the path of the destination namespace, without the new name |
 | `update_kinds`          | Array  | Commit only. The kinds of update the commit contains; `[]` when it names none |
 | `requested_provider_id` | String | The role provider the client named                   |
 | `requested_source_id`   | String | The source identifier the client named               |
@@ -505,10 +511,10 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-02-15T14:20:50.758690Z",
@@ -560,10 +566,10 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization failed event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-02-15T14:21:10.123456Z",
@@ -627,10 +633,10 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-04-07T17:58:34.358975Z",
@@ -721,9 +727,9 @@ A replay record also carries `actions`, `entities`, `privilege_source` and `user
 
 **Audit records contain live idempotency keys**, on authorization records as well as on replays. Anyone who can read the audit log can replay those keys, get a 204, and create more records. Protect access to the audit log accordingly. `idempotency-key-lifetime` sets the earliest time a stored result can be deleted. Deletion runs only as part of a small share of keyed requests, so on a quiet deployment keys stay live until traffic picks up again.
 
-**Only seven endpoints write replay records:** `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and return the stored result before authorization, so no `decision` is recorded. The change already happened, and denying the retry would report a failure for a completed operation. `renameTable`, `renameView` and `renameGenericTable` record a rename into another namespace as `action_name = "move"`, on replays as on their authorization records.
+**Only ten endpoints write replay records:** `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `dropDataset`, `deleteDatasetRef` (recorded as `action_name = "manage_refs"`), `renameTable`, `renameView`, `renameGenericTable`, `renameDataset`. They answer 204 and return the stored result before authorization, so no `decision` is recorded. The change already happened, and denying the retry would report a failure for a completed operation. `renameTable`, `renameView`, `renameGenericTable` and `renameDataset` record a rename into another namespace as `action_name = "move"`, on replays as on their authorization records.
 
-**Retries on the other idempotent endpoints are not marked, and look different from the original.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView` and `createGenericTable` build their response by loading the entity. A retry therefore writes the authorization record of that *load* (`action_name = "get_metadata"` on the entity) and no record for the create or update. `updateTable` writes both `commit` and `get_metadata`. Use `idempotency_key` to link these to the original.
+**Retries on the other idempotent endpoints are not marked, and look different from the original.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView`, `createGenericTable`, `createDataset`, `createDatasetRef` and `moveDatasetRef` build their response by loading the entity. A retry therefore writes the authorization record of that *load* (`action_name = "get_metadata"` on the entity) and no record for the create or update. `updateTable` writes both `commit` and `get_metadata`. `createDatasetAccessGrant` answers with the grant the original request recorded, read under the same `get_metadata` authorization. Use `idempotency_key` to link these to the original. `commitDataset` answers with the snapshot the original commit published, authorized as that commit was, so its retry writes the same `commit` record as a first run, as a `commitTransaction` retry does.
 
 **`commitTransaction` retries are not marked at all.** It authorizes before it detects the retry, so the retry writes the same `commit` record as the first run, with the same `idempotency_key`. Only two records sharing a key show that a retry happened.
 
@@ -731,7 +737,7 @@ Replay records appear only in the audit log. Like grant records, they are never 
 
 #### Operational Audit Events
 
-Written for things the system does for a user that involve no authorization decision: role resolution through LDAP or other providers, the grants actually written, and admission decisions. Use them to see *what the system did for a user*, not *whether the user was allowed to do something*. `record_type` is `"operation"`. Several carry user identities (PII); each section below says which.
+Written for things the system does for a user that involve no authorization decision: role resolution through LDAP or other providers, the grants actually written, admission decisions, and the dataset files signed under an access grant. Use them to see *what the system did for a user*, not *whether the user was allowed to do something*. `record_type` is `"operation"`. Several carry user identities (PII); each section below says which.
 
 **Structure:**
 
@@ -740,7 +746,7 @@ Written for things the system does for a user that involve no authorization deci
 | `event_source` | String | Always `"audit"`                                   |
 | `audit_format` | String | Version of the record's shape, `MAJOR.MINOR`       |
 | `record_type`  | String | Always `"operation"` for this shape                |
-| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.0"}` for grant and `admission_decided` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
+| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.1"}` for grant, `admission_decided` and `dataset_files_signed` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
 | `request_id`   | String | The request the operation belongs to, as on authorization records. Absent when no request caused the operation, such as a background role sync |
 | `time`         | String | When the operation happened, in UTC, as on authorization records |
 | `operation`    | String | Name of the operation (e.g. `"ldap_resolve_roles"`) |
@@ -750,7 +756,7 @@ Written for things the system does for a user that involve no authorization deci
 
 **Outcomes are not allow/deny.** They describe the result of a system operation. There is no `decision` field.
 
-**Which actor shapes appear.** `admission_decided`, `grant_created` and `grant_revoked` use the request's actor, so any of the four shapes can appear. On grant records, the `assumed_role` of an assumed-role caller is the role that holds the grant. On `admission_decided`, which is written before the `x-assume-role` check, `assumed_role` is the role the request *asked* to assume, not yet authorized. For a caller acting as a role, the acting identity is in `assumed_role`; `principal` alone does not show it. Operations that name a user directly, not taken from the request, always use `principal`.
+**Which actor shapes appear.** `admission_decided`, `grant_created`, `grant_revoked` and `dataset_files_signed` use the request's actor, so any of the four shapes can appear. On grant records, the `assumed_role` of an assumed-role caller is the role that holds the grant. On `admission_decided`, which is written before the `x-assume-role` check, `assumed_role` is the role the request *asked* to assume, not yet authorized. For a caller acting as a role, the acting identity is in `assumed_role`; `principal` alone does not show it. Operations that name a user directly, not taken from the request, always use `principal`.
 
 **Grant changes (`operation = "grant_created"` / `"grant_revoked"`):**
 
@@ -813,6 +819,26 @@ There is one record per answer from the control plane, not per request. The gate
 
 `actor` has the same shape here as in `admission_decided`, including the assumed role, so the two records can be joined on it.
 
+**Dataset file signing (`operation = "dataset_files_signed"`):**
+
+Written once per call to `POST .../datasets/{dataset}/snapshots/{snapshot}/files/sign`, which returns presigned URLs for a batch of a dataset's files. A call whose batch is empty or over the size limit is refused with `400` before it reaches the grant, and writes no record. The call runs no policy. It presents an access grant, and the grant was authorized once, when it was issued: that is the `read_data` authorization record for the dataset whose `target_refs` names the ref the grant pins. This record shows what was read under the grant afterwards: one record per batch, never one per file, and never the URLs.
+
+`outcome` is one of:
+
+- `success`: every requested key was signed.
+- `forbidden`: the grant refused the call. It does not exist or belongs to another actor, it was revoked, it expired, it pins a different snapshot, or it does not cover one of the keys. Nothing was signed.
+- `failed`: the catalog or the storage backend returned an error. Nothing was signed.
+
+| Context field     | Description |
+|-------------------|-------------|
+| `warehouse_id`    | The warehouse the call named |
+| `dataset_id`      | The dataset the call named. Absent when no active dataset has that name |
+| `snapshot_id`     | The snapshot the call asked to sign, from the path. On `success` it is also the snapshot the grant pins |
+| `access_grant_id` | The access grant the call presented |
+| `key_count`       | How many keys the call asked to sign, as a JSON **number** |
+
+The issuing `read_data` record does not carry `access_grant_id`: the id is assigned after authorization. Correlate a grant's issuance with its sign records on `actor`, the dataset and time. Revoking a grant is recorded as an authorization only when a caller revokes someone else's (`action_name = "revoke_access_grants"`). Revoking one's own needs only `get_metadata` on the dataset, and that is the record it leaves.
+
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 
 | `outcome`        | When written                                              |
@@ -850,7 +876,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP role resolution complete",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -882,7 +908,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP user not found; returning empty role list",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -914,7 +940,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -947,7 +973,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "branching DN regex did not match; explicit no-roles outcome",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -994,7 +1020,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "No role provider handled user; user will have no provider-assigned roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -1026,7 +1052,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "Resolved role assignments for user",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -1072,7 +1098,7 @@ A `WARN` line without PII is also written to the general log. This outcome point
   "message": "stale provider(s) failed to refresh; serving cached roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
