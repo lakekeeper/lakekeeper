@@ -22,21 +22,32 @@ type project
     define tag_creator: [user, role#assignee] or security_admin
 
     # ------------------ Assignable Privileges ------------------
-    # Privileges relevant for the warehouse and sub-objects
-    define describe: [user, role#assignee] or select or create or data_admin or security_admin
-    define select: [user, role#assignee] or modify
-    define create: [user, role#assignee] or data_admin
-    define modify: [user, role#assignee] or project_admin
+    # Privileges relevant for the warehouse and sub-objects.
+    #
+    # Each privilege is two relations: the bare name is what was granted here, and
+    # grants are written to and listed from it; the `_effective` twin adds the
+    # weaker privileges it subsumes. A project sits at the top of the privilege
+    # hierarchy, so nothing flows into it from above. Actions read the twin.
+    define describe: [user, role#assignee]
+    define describe_effective: describe or select_effective or create_effective or data_admin or security_admin
+    define select: [user, role#assignee]
+    define select_effective: select or modify_effective
+    define create: [user, role#assignee]
+    define create_effective: create or data_admin
+    define modify: [user, role#assignee]
+    define modify_effective: modify or project_admin
+    # A project carries no `visible_below`: it is the top of the resource tree
+    # that visibility bubbles up through, so nothing above it asks.
 
     # ------------------ Actions ------------------
     # Get endpoint statistics for project endpoints and all warehouses under it
-    define can_get_endpoint_statistics: describe
+    define can_get_endpoint_statistics: describe_effective
     # Create new warehouses
-    define can_create_warehouse: create
+    define can_create_warehouse: create_effective
     # Drop this project
-    define can_delete: modify
-    define can_rename: modify
-    define can_get_metadata: describe or can_get_metadata from warehouse or admin from server
+    define can_delete: modify_effective
+    define can_rename: modify_effective
+    define can_get_metadata: describe_effective or visible_below from warehouse or admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata
     define can_include_in_list: can_get_metadata
@@ -57,10 +68,10 @@ type project
     # project grants. "Only if we can GRANT a privilege, we can LIST them for now."
     define can_read_assignments: security_admin or project_admin or admin from server
     # Tasks
-    define can_get_project_tasks: describe or admin from server
-    define can_control_project_tasks: modify or admin from server
+    define can_get_project_tasks: describe_effective or admin from server
+    define can_control_project_tasks: modify_effective or admin from server
     define can_get_task_queue_config: can_get_metadata
-    define can_modify_task_queue_config: modify 
+    define can_modify_task_queue_config: modify_effective
 
     # GRANT Permissions
     define can_grant_role_creator: security_admin or admin from server
