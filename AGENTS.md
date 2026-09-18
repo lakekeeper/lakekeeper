@@ -68,13 +68,13 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 
 ## Audit Log
 
-Records carrying `"event_source": "audit"`. Before changing any of them, read `docs/docs/developer-guide.md` → "I need to change the audit log format". It has the decision table, the registration lists and what each check does and does not cover.
+Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format" — it has the decision table, the registration lists, and what each check does and does not cover.
 
 - `AUDIT_FORMAT` is derived from `audit-format/`. Write a fragment; never edit a version number.
 - Never pass a string literal to `action_name`, `operation` or `outcome` — it reaches no manifest, so a later rename breaks consumers silently. Add an enum variant and emit `Variant::as_str()`.
 - Never add a `_ =>` arm to an `as_str` or `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
-- New emission path: add a fixture — fixtures pin only the scenarios they cover. New record *shape*: extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs`, which is meant to grow.
-- After any change: `just update-audit-fixtures`, then `just check-audit-format`. Review the fixture diff — it is what consumers will see. Corpus test: `just test-audit-corpus` (needs the local Postgres).
+- Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.
+- Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
 
 ## Rules
 

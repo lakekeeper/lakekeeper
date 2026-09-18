@@ -100,7 +100,7 @@ Audit records — every line with `"event_source": "audit"` — carry a `MAJOR.M
 **You never pick that number.** It is derived from committed state:
 
 ```text
-AUDIT_FORMAT = audit-format/released.json  raised once by  the highest level in audit-format/unreleased/
+AUDIT_FORMAT = the version in audit-format/released.json, raised once by the highest level among audit-format/unreleased/*.md
 ```
 
 What a change owes is a **fragment**: one file recording how badly it affects a consumer, and describing it in that consumer's terms. `just update-audit-fixtures` reads the fragments and writes the version for you.
