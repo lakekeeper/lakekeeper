@@ -1833,7 +1833,9 @@ fn derived_wire_values() -> serde_json::Value {
     use crate::{
         request_metadata::PrivilegeSource,
         service::{
-            authz::{DeterminingFactor, PolicyEffect, ResourceType, RootLevelGrants},
+            authz::{
+                DeterminingFactor, PolicyEffect, PrivilegeScope, ResourceType, RootLevelGrants,
+            },
             events::{AuthorizationFailureReason, context::EntityType},
         },
     };
@@ -1899,6 +1901,10 @@ fn derived_wire_values() -> serde_json::Value {
             "RootLevelGrants",
             sorted_strings(<RootLevelGrants as strum::VariantNames>::VARIANTS.to_vec()),
         )]),
+        "privilege_scope": owner_map(vec![(
+            "PrivilegeScope",
+            sorted_strings(<PrivilegeScope as strum::VariantNames>::VARIANTS.to_vec()),
+        )]),
         "privilege_source": owner_map(vec![(
             "PrivilegeSource",
             sorted_strings(PrivilegeSource::VARIANTS.iter().map(|s| s.as_str())),
@@ -1959,6 +1965,7 @@ fn the_values_lakekeeper_names_itself_are_lower_snake_case() {
         "decision",
         "operation",
         "outcome",
+        "privilege_scope",
         "privilege_source",
         "root_level",
     ];

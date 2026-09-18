@@ -279,6 +279,12 @@
       "included"
     ]
   },
+  "privilege_scope": {
+    "PrivilegeScope": [
+      "every",
+      "only"
+    ]
+  },
   "privilege_source": {
     "PrivilegeSource": [
       "authorizer",
