@@ -204,7 +204,30 @@
                       "management-v1-list-namespace-subtree-grants",
                       "management-v1-revoke-namespace-subtree-grants",
                       "management-v1-list-warehouse-subtree-grants",
-                      "management-v1-revoke-warehouse-subtree-grants"
+                      "management-v1-revoke-warehouse-subtree-grants",
+                      "dataset-v1-create-dataset",
+                      "dataset-v1-list-datasets",
+                      "dataset-v1-load-dataset",
+                      "dataset-v1-drop-dataset",
+                      "dataset-v1-list-dataset-refs",
+                      "dataset-v1-create-dataset-ref",
+                      "dataset-v1-move-dataset-ref",
+                      "dataset-v1-delete-dataset-ref",
+                      "dataset-v1-list-dataset-files",
+                      "dataset-v1-commit-dataset",
+                      "dataset-v1-set-dataset-ref-protection",
+                      "management-v1-get-dataset-actions",
+                      "management-v1-get-dataset-protection",
+                      "management-v1-set-dataset-protection",
+                      "dataset-v1-rename-dataset",
+                      "dataset-v1-load-dataset-credentials",
+                      "dataset-v1-import-dataset",
+                      "management-v1-set-dataset-tag",
+                      "management-v1-delete-dataset-tag",
+                      "management-v1-list-dataset-tags",
+                      "management-v1-list-dataset-grants",
+                      "management-v1-apply-dataset-grants",
+                      "management-v1-get-dataset-grantable-privileges"
                     ]
                   }
                 }

@@ -299,6 +299,13 @@ fn interpret_authz_results_for_load_view(
                 )
                 .into());
             }
+            ActionOnTableOrView::Dataset(_) => {
+                // Unreachable: loadView authz chain only resolves views.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "dataset_in_load_view_chain"),
+                )
+                .into());
+            }
         }
     }
 

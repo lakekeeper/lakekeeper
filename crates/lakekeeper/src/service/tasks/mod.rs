@@ -13,8 +13,9 @@ use crate::{
     ProjectId,
     api::management::v1::tasks::TaskStatus,
     service::{
-        ArcProjectId, CatalogStore, CatalogTaskOps, GenericTableId, GenericTableNamed, TableId,
-        TableNamed, TabularId, ViewId, ViewNamed, task_configs::TaskQueueConfigFilter,
+        ArcProjectId, CatalogStore, CatalogTaskOps, DatasetId, DatasetNamed, GenericTableId,
+        GenericTableNamed, TableId, TableNamed, TabularId, ViewId, ViewNamed,
+        task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -25,6 +26,8 @@ pub use task_registry::{
     QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues, ScheduleEligibilityFn,
     TaskQueueRegistry, UserScheduling, ValidatorFn,
 };
+pub mod dataset_checkpoint_queue;
+pub mod dataset_import_queue;
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
@@ -38,6 +41,8 @@ const DEFAULT_MAX_RETRIES: i32 = 5;
 pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
     std::sync::LazyLock::new(|| {
         vec![
+            dataset_checkpoint_queue::API_CONFIG.clone(),
+            dataset_import_queue::API_CONFIG.clone(),
             tabular_expiration_queue::API_CONFIG.clone(),
             tabular_purge_queue::API_CONFIG.clone(),
         ]
@@ -164,6 +169,11 @@ pub enum WarehouseTaskEntityId {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
+    #[serde(rename_all = "kebab-case")]
+    Dataset {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        dataset_id: DatasetId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
@@ -171,6 +181,7 @@ pub enum ResolvedTaskEntity {
     Table(TableNamed),
     View(ViewNamed),
     GenericTable(GenericTableNamed),
+    Dataset(DatasetNamed),
     Warehouse(WarehouseId),
     Project,
 }
@@ -182,6 +193,7 @@ impl ResolvedTaskEntity {
             ResolvedTaskEntity::Table(t) => Some(t.warehouse_id),
             ResolvedTaskEntity::View(v) => Some(v.warehouse_id),
             ResolvedTaskEntity::GenericTable(g) => Some(g.warehouse_id),
+            ResolvedTaskEntity::Dataset(d) => Some(d.warehouse_id),
             ResolvedTaskEntity::Warehouse(w) => Some(*w),
             ResolvedTaskEntity::Project => None,
         }
@@ -505,6 +517,7 @@ pub enum WarehouseEntityType {
     Table,
     View,
     GenericTable,
+    Dataset,
 }
 
 impl std::fmt::Display for WarehouseTaskEntityId {
@@ -515,6 +528,7 @@ impl std::fmt::Display for WarehouseTaskEntityId {
             WarehouseTaskEntityId::GenericTable { generic_table_id } => {
                 write!(f, "GenericTable({generic_table_id})")
             }
+            WarehouseTaskEntityId::Dataset { dataset_id } => write!(f, "Dataset({dataset_id})"),
         }
     }
 }
@@ -526,6 +540,7 @@ impl WarehouseTaskEntityId {
             WarehouseTaskEntityId::Table { .. } => WarehouseEntityType::Table,
             WarehouseTaskEntityId::View { .. } => WarehouseEntityType::View,
             WarehouseTaskEntityId::GenericTable { .. } => WarehouseEntityType::GenericTable,
+            WarehouseTaskEntityId::Dataset { .. } => WarehouseEntityType::Dataset,
         }
     }
 
@@ -535,6 +550,7 @@ impl WarehouseTaskEntityId {
             WarehouseTaskEntityId::Table { table_id } => **table_id,
             WarehouseTaskEntityId::View { view_id } => **view_id,
             WarehouseTaskEntityId::GenericTable { generic_table_id } => **generic_table_id,
+            WarehouseTaskEntityId::Dataset { dataset_id } => **dataset_id,
         }
     }
 }
@@ -547,6 +563,7 @@ impl From<TabularId> for WarehouseTaskEntityId {
             TabularId::GenericTable(generic_table_id) => {
                 WarehouseTaskEntityId::GenericTable { generic_table_id }
             }
+            TabularId::Dataset(dataset_id) => WarehouseTaskEntityId::Dataset { dataset_id },
         }
     }
 }

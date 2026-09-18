@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE dataset_ref SET snapshot_id = $3\n           WHERE warehouse_id = $1 AND dataset_id = $2 AND name = 'main'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4a21ce16db42be5aa725a29488fd65dd9ee4ddbbe4318e24b5fdd189354328a"
+}

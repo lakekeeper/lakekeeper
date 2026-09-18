@@ -182,6 +182,22 @@ impl EventDispatcher {
         dispatch_event!(self, view_loaded, event);
     }
 
+    pub(crate) async fn dataset_created(&self, event: types::CreateDatasetEvent) {
+        dispatch_event!(self, dataset_created, event);
+    }
+
+    pub(crate) async fn dataset_dropped(&self, event: types::DropDatasetEvent) {
+        dispatch_event!(self, dataset_dropped, event);
+    }
+
+    pub(crate) async fn dataset_loaded(&self, event: types::LoadDatasetEvent) {
+        dispatch_event!(self, dataset_loaded, event);
+    }
+
+    pub(crate) async fn dataset_renamed(&self, event: types::RenameDatasetEvent) {
+        dispatch_event!(self, dataset_renamed, event);
+    }
+
     pub(crate) async fn generic_table_created(&self, event: types::CreateGenericTableEvent) {
         dispatch_event!(self, generic_table_created, event);
     }
@@ -449,6 +465,28 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a view's metadata has been successfully loaded
     async fn view_loaded(&self, _event: types::LoadViewEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Dataset Events =====
+
+    /// Invoked after a dataset has been successfully created
+    async fn dataset_created(&self, _event: types::CreateDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset has been successfully dropped
+    async fn dataset_dropped(&self, _event: types::DropDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset's metadata has been successfully loaded
+    async fn dataset_loaded(&self, _event: types::LoadDatasetEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a dataset has been successfully renamed
+    async fn dataset_renamed(&self, _event: types::RenameDatasetEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

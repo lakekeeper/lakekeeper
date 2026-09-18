@@ -1269,6 +1269,14 @@ pub fn interpret_authz_results_for_load_table(
                 )
                 .into());
             }
+            ActionOnTableOrView::Dataset(_) => {
+                // Unreachable: loadTable authz chain only resolves tables and
+                // intermediate views. Fail closed for the same reason as above.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "dataset_in_load_table_chain"),
+                )
+                .into());
+            }
         }
     }
 

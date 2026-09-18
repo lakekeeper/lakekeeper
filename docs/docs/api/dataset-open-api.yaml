@@ -1,0 +1,1141 @@
+openapi: 3.1.0
+info:
+  title: Lakekeeper Dataset API
+  description: 'Lakekeeper data-plane API for datasets: versioned collections of files.'
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  version: 0.0.0
+servers:
+  - url: '{scheme}://{host}{basePath}'
+    description: Lakekeeper Dataset API
+    variables:
+      basePath:
+        default: ''
+        description: Optional path prefix (starting with '/') to be prepended to all routes
+      host:
+        default: localhost
+        description: The host (and optional port) for the specified server
+      scheme:
+        default: https
+        description: The scheme of the URI, either http or https
+paths:
+  /lakekeeper/v1/{prefix}/datasets/rename:
+    post:
+      tags:
+        - dataset
+      summary: Rename a dataset
+      operationId: rename_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameDatasetRequest'
+        required: true
+      responses:
+        '204':
+          description: Dataset renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets:
+    get:
+      tags:
+        - dataset
+      summary: List datasets in a namespace
+      operationId: list_datasets
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDatasetsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - dataset
+      summary: Create a dataset
+      operationId: create_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatasetRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadDatasetResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}:
+    get:
+      tags:
+        - dataset
+      summary: Load a dataset
+      operationId: load_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadDatasetResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - dataset
+      summary: Drop a dataset
+      description: |-
+        A purge is refused for an imported dataset: Lakekeeper borrows the prefix and
+        never deletes objects it does not own. Drop it without one to remove the
+        catalog metadata.
+      operationId: drop_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: purgeRequested
+          in: query
+          description: Delete the dataset's files as well. Defaults to true.
+          required: false
+          schema:
+            type: boolean
+        - name: force
+          in: query
+          description: Delete immediately, ignoring the warehouse's soft-deletion profile and any protection.
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '204':
+          description: Dataset dropped
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/branches/{branch}/commits:
+    post:
+      tags:
+        - dataset
+      summary: Commit to a branch
+      operationId: commit_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: branch
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitDatasetRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+        '409':
+          description: 'The branch moved: rebase onto the returned head'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/credentials:
+    get:
+      tags:
+        - dataset
+      summary: Load storage credentials for a dataset
+      operationId: load_dataset_credentials
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Storage credentials for the dataset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadDatasetCredentialsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/import:
+    post:
+      tags:
+        - dataset
+      summary: Import objects already under a dataset's prefix
+      operationId: import_dataset
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportDatasetRequest'
+        required: true
+      responses:
+        '200':
+          description: Objects registered as a new snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportDatasetResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs:
+    get:
+      tags:
+        - dataset
+      summary: List branches and tags
+      operationId: list_dataset_refs
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDatasetRefsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - dataset
+      summary: Create a branch or tag
+      operationId: create_dataset_ref
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatasetRefRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetRefResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}:
+    post:
+      tags:
+        - dataset
+      summary: Move a branch (fast-forward, or reset)
+      operationId: move_dataset_ref
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveDatasetRefRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetRefResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - dataset
+      summary: Delete a branch or tag
+      operationId: delete_dataset_ref
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Ref deleted
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}/files:
+    get:
+      tags:
+        - dataset
+      summary: List the files of a ref
+      operationId: list_dataset_files
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: contentType
+          in: query
+          description: Return only files declaring this content type.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDatasetFilesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/datasets/{dataset}/refs/{ref}/protection:
+    post:
+      tags:
+        - dataset
+      summary: Protect a branch, or lift protection
+      description: |-
+        A protected branch refuses direct commits and deletion for everyone; changes
+        reach it by fast-forward only. Structural, not authorization: it does not
+        depend on who is asking.
+      operationId: set_dataset_ref_protection
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dataset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDatasetRefProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetRefResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+components:
+  schemas:
+    CommitDatasetRequest:
+      type: object
+      properties:
+        added:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommitFile'
+        parent-snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            The snapshot the caller believes the branch is on. Omit for the first
+            commit. A mismatch is answered with 409 and the current head, so a stale
+            writer rebases instead of overwriting a concurrent commit.
+        removed:
+          type: array
+          items:
+            type: string
+          description: |-
+            Logical keys to remove. Metadata-only: the objects stay in storage,
+            because older snapshots still reference them.
+        summary:
+          description: |-
+            Free-form correlation keys recorded on the snapshot (pipeline run id,
+            code commit, trace id). The external-lineage hook.
+    CommitFile:
+      type: object
+      required:
+        - logical-key
+      properties:
+        checksum:
+          type:
+            - string
+            - 'null'
+        content-type:
+          type:
+            - string
+            - 'null'
+        etag:
+          type:
+            - string
+            - 'null'
+        last-modified:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        logical-key:
+          type: string
+          description: What users see, filter and address. Relative to the dataset location.
+        physical-path:
+          type:
+            - string
+            - 'null'
+          description: Where the bytes are. Defaults to `logical-key` when omitted.
+        size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        version-id:
+          type:
+            - string
+            - 'null'
+    CreateDatasetRefRequest:
+      type: object
+      required:
+        - name
+        - typ
+        - source
+      properties:
+        name:
+          type: string
+        source:
+          $ref: '#/components/schemas/DatasetRefSource'
+          description: |-
+            Source to branch or tag from: another ref's name, or a raw snapshot id.
+            The new ref points at whatever the source resolves to at this moment;
+            a tag then never moves again.
+        typ:
+          $ref: '#/components/schemas/DatasetRefType'
+    CreateDatasetRequest:
+      type: object
+      required:
+        - name
+      properties:
+        constraints:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/DatasetConstraints'
+        location:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Location of the dataset, relative to the warehouse storage profile.
+
+            Omitted, Lakekeeper allocates an exclusive prefix and owns it (managed).
+            Supplied, the dataset borrows an existing prefix and Lakekeeper never
+            mutates or deletes objects under it (imported).
+        name:
+          type: string
+    DatasetConstraints:
+      type: object
+      description: |-
+        Limits a dataset places on the files it will accept into a commit.
+
+        Enforced at commit, never at write: a holder of storage credentials can always
+        put arbitrary objects under a prefix.
+      properties:
+        allowed-content-types:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Content types a file may declare. Unset means anything is accepted.
+        max-file-size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Largest file size in bytes. Unset means unlimited.
+    DatasetData:
+      type: object
+      required:
+        - name
+        - id
+        - location
+        - ownership
+        - protected
+      properties:
+        constraints:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/DatasetConstraints'
+        id:
+          type: string
+          format: uuid
+        location:
+          type: string
+        name:
+          type: string
+        ownership:
+          $ref: '#/components/schemas/DatasetOwnership'
+          description: Whether Lakekeeper owns the prefix (`managed`) or borrows it (`imported`).
+        protected:
+          type: boolean
+          description: Whether the dataset is protected from being deleted.
+    DatasetFile:
+      type: object
+      required:
+        - logical-key
+        - physical-path
+      properties:
+        checksum:
+          type:
+            - string
+            - 'null'
+        content-type:
+          type:
+            - string
+            - 'null'
+        etag:
+          type:
+            - string
+            - 'null'
+        last-modified:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        logical-key:
+          type: string
+        physical-path:
+          type: string
+        size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        version-id:
+          type:
+            - string
+            - 'null'
+    DatasetIdentifier:
+      type: object
+      required:
+        - namespace
+        - name
+        - id
+        - ownership
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        namespace:
+          type: array
+          items:
+            type: string
+        ownership:
+          $ref: '#/components/schemas/DatasetOwnership'
+    DatasetOwnership:
+      type: string
+      description: |-
+        Whether Lakekeeper owns the dataset's prefix or merely borrows it.
+
+        Gates every destructive behaviour: a managed prefix is Lakekeeper's to purge,
+        an imported one is not.
+      enum:
+        - managed
+        - imported
+    DatasetRefResponse:
+      type: object
+      required:
+        - name
+        - typ
+        - protected
+      properties:
+        name:
+          type: string
+        protected:
+          type: boolean
+        snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        typ:
+          $ref: '#/components/schemas/DatasetRefType'
+    DatasetRefSource:
+      oneOf:
+        - type: object
+          required:
+            - name
+            - type
+          properties:
+            name:
+              type: string
+            type:
+              type: string
+              enum:
+                - ref
+        - type: object
+          required:
+            - snapshot-id
+            - type
+          properties:
+            snapshot-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - snapshot
+    DatasetRefType:
+      type: string
+      description: Whether a ref moves with new commits or is fixed at the snapshot it was created on.
+      enum:
+        - branch
+        - tag
+    ErrorModel:
+      type: object
+      description: JSON error payload returned in a response with further details on the error
+      required:
+        - message
+        - type
+        - code
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP response code
+          minimum: 0
+        message:
+          type: string
+          description: Human-readable error message
+        stack:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          description: Internal type definition of the error
+    IcebergErrorResponse:
+      type: object
+      description: JSON wrapper for all error responses (non-2xx)
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorModel'
+    ImportDatasetRequest:
+      type: object
+      properties:
+        branch:
+          type:
+            - string
+            - 'null'
+          description: Branch to commit the discovered files to. Defaults to `main`.
+        max-files:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Stop after this many files, reporting `truncated`.
+        mode:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ImportMode'
+              description: |-
+                `add-only` registers what it finds and touches nothing else. `sync` also
+                reports files whose bytes changed and files that have since disappeared
+                from the prefix, so the snapshot mirrors the bucket. Defaults to `add-only`,
+                because removing manifest entries is not something to do by accident.
+        queued:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Run the scan on the task queue instead of in this request. The response
+            then carries a task id rather than a snapshot: a prefix with millions of
+            objects takes minutes, which is longer than a request should live.
+        sub-prefix:
+          type:
+            - string
+            - 'null'
+          description: Scan only this path below the dataset's location. Relative; may not escape it.
+        suffix:
+          type:
+            - string
+            - 'null'
+          description: Register only keys ending with this suffix, e.g. `.parquet`.
+        summary:
+          description: Commit properties, e.g. a pipeline run id.
+    ImportDatasetResponse:
+      type: object
+      required:
+        - imported
+        - modified
+        - removed
+        - truncated
+      properties:
+        imported:
+          type: integer
+          format: int64
+          description: Newly registered files.
+        modified:
+          type: integer
+          format: int64
+          description: Files whose size or modification time changed under an existing key.
+        removed:
+          type: integer
+          format: int64
+          description: Files no longer under the prefix. Always zero in `add-only` mode.
+        snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: The snapshot the import committed. Absent when the scan was queued.
+        task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: The queued scan. Absent when the import ran inline.
+        truncated:
+          type: boolean
+          description: The scan stopped at `max-files`; more objects remain under the prefix.
+    ImportMode:
+      type: string
+      enum:
+        - add-only
+        - sync
+    ListDatasetFilesResponse:
+      type: object
+      required:
+        - files
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetFile'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+        snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            The snapshot the ref resolved to. Pagination is scoped to it, so a
+            concurrent commit cannot shift or tear the page sequence. Absent on a
+            branch with no commits, which lists no files rather than failing.
+    ListDatasetRefsResponse:
+      type: object
+      required:
+        - refs
+      properties:
+        refs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetRefResponse'
+    ListDatasetsResponse:
+      type: object
+      required:
+        - identifiers
+      properties:
+        identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetIdentifier'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+    LoadDatasetCredentialsResponse:
+      type: object
+      required:
+        - storage-credentials
+      properties:
+        storage-credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+    LoadDatasetResponse:
+      type: object
+      required:
+        - dataset
+      properties:
+        dataset:
+          $ref: '#/components/schemas/DatasetData'
+    MoveDatasetRefRequest:
+      type: object
+      required:
+        - snapshot-id
+      properties:
+        expected-snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: 'Compare-and-swap guard: the head the caller believes the branch is on.'
+        fast-forward:
+          type: boolean
+          description: |-
+            `false` performs a reset: the target need not descend from the current
+            head, so commits can be abandoned. Separately authorized for that reason.
+        snapshot-id:
+          type: string
+          format: uuid
+    RenameDatasetRequest:
+      type: object
+      required:
+        - source
+        - destination
+      properties:
+        destination:
+          $ref: '#/components/schemas/RenameDatasetTarget'
+        source:
+          $ref: '#/components/schemas/RenameDatasetTarget'
+    RenameDatasetTarget:
+      type: object
+      required:
+        - namespace
+        - name
+      properties:
+        name:
+          type: string
+        namespace:
+          type: array
+          items:
+            type: string
+    SetDatasetRefProtectionRequest:
+      type: object
+      required:
+        - protected
+      properties:
+        protected:
+          type: boolean
+    SnapshotResponse:
+      type: object
+      required:
+        - snapshot-id
+        - location
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+        location:
+          type: string
+        parent-snapshot-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        snapshot-id:
+          type: string
+          format: uuid
+        summary: {}
+    StorageCredential:
+      type: object
+      required:
+        - prefix
+        - config
+      properties:
+        config:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        prefix:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+tags:
+  - name: dataset
+    description: Manage datasets

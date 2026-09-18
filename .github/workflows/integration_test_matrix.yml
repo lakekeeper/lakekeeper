@@ -38,6 +38,7 @@ jobs:
         names:
           - pyiceberg
           - pyiceberg-legacy_md5
+          - datasets
           - starrocks
           - trino
           - trino_opa

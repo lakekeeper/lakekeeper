@@ -1,3 +1,5 @@
+pub mod dataset;
+pub mod dataset_version;
 pub mod generic_table;
 mod load_by_location;
 mod protection;
@@ -12,14 +14,15 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     service::{
         CatalogBackendError, CatalogSearchTabularInfo, CatalogSearchTabularResponse,
-        ClearTabularDeletedAtError, ConcurrentUpdateError, CreateTabularError, DropTabularError,
-        ExpirationTaskInfo, GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
-        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
-        ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
-        SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
-        TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location,
+        ClearTabularDeletedAtError, ConcurrentUpdateError, CreateTabularError, DatasetDeletionInfo,
+        DatasetTabularInfo, DropTabularError, ExpirationTaskInfo, GenericTableDeletionInfo,
+        GenericTabularInfo, GetTabularInfoError, InternalParseLocationError,
+        InvalidNamespaceIdentifier, ListTabularsError, LocationAlreadyTaken,
+        MarkTabularAsDeletedError, NamespaceId, ProtectedTabularDeletionWithoutForce,
+        RenameTabularError, SearchTabularError, SerializationError, TableDeletionInfo, TableIdent,
+        TableInfo, TabularAlreadyExists, TabularId, TabularIdentBorrowed, TabularNotFound,
+        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        storage::join_location,
     },
 };
 use lakekeeper_io::Location;
@@ -41,6 +44,7 @@ pub(crate) enum TabularType {
     Table,
     View,
     GenericTable,
+    Dataset,
 }
 
 impl From<lakekeeper::api::management::v1::TabularType> for TabularType {
@@ -49,6 +53,7 @@ impl From<lakekeeper::api::management::v1::TabularType> for TabularType {
             lakekeeper::api::management::v1::TabularType::Table => TabularType::Table,
             lakekeeper::api::management::v1::TabularType::View => TabularType::View,
             lakekeeper::api::management::v1::TabularType::GenericTable => TabularType::GenericTable,
+            lakekeeper::api::management::v1::TabularType::Dataset => TabularType::Dataset,
         }
     }
 }
@@ -162,6 +167,19 @@ impl TabularRowCore {
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
+            TabularType::Dataset => ViewOrTableInfo::Dataset(DatasetTabularInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                properties,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+            }),
         };
 
         Ok(view_or_table_info)
@@ -211,6 +229,9 @@ impl TabularRowWithProperties {
                 self.generic_table_properties_keys,
                 self.generic_table_properties_values,
             ),
+            // Datasets have no per-type properties table; `constraints` lives on
+            // the dataset row and is surfaced through the dataset API, not here.
+            TabularType::Dataset => HashMap::new(),
         };
         let core = TabularRowCore {
             tabular_id: self.tabular_id,
@@ -262,6 +283,10 @@ where
                     t_ids.push(**id);
                     t_typs.push(TabularType::GenericTable);
                 }
+                TabularId::Dataset(id) => {
+                    t_ids.push(**id);
+                    t_typs.push(TabularType::Dataset);
+                }
             }
             (t_ids, t_typs)
         },
@@ -292,7 +317,7 @@ where
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             WHERE w.status = 'active'
                 AND (t.deleted_at is NULL OR $4)
-                AND (t.metadata_location is not NULL OR $5 OR t.typ = 'generic-table')
+                AND (t.metadata_location is not NULL OR $5 OR t.typ IN ('generic-table', 'dataset'))
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
@@ -440,7 +465,7 @@ where
             WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
                 AND w.status = 'active'
                 AND (t.deleted_at is NULL OR $5)
-                AND (t.metadata_location is not NULL OR $6 OR t.typ = 'generic-table')
+                AND (t.metadata_location is not NULL OR $6 OR t.typ IN ('generic-table', 'dataset'))
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
@@ -845,6 +870,13 @@ impl TabularRowWithDeletion {
                 created_at: self.created_at,
             }
             .into(),
+            ViewOrTableInfo::Dataset(dataset_info) => DatasetDeletionInfo {
+                tabular: dataset_info,
+                expiration_task,
+                deleted_at: self.deleted_at,
+                created_at: self.created_at,
+            }
+            .into(),
             ViewOrTableInfo::View(view_info) => ViewDeletionInfo {
                 tabular: view_info,
                 expiration_task,
@@ -924,7 +956,7 @@ where
             FROM tabular t
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
-            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table', 'dataset') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
             -- Deliberately NOT filtering on tt.queue_name here. The predicate used to be:
             --     AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
             -- It can never exclude a row: the LEFT JOIN's ON clause already restricts matches to
@@ -936,11 +968,15 @@ where
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
                 AND (t.typ = $3 OR $3 IS NULL)
-                -- active tabulars: not deleted AND (has metadata_location OR is generic-table)
+                -- active tabulars: not deleted AND (has metadata_location OR is a type
+                -- that never has one). Generic tables and datasets both lack a
+                -- metadata_location by design; omitting either classifies every row of
+                -- that type as staged. Keep in sync with the predicate on
+                -- tabular_warehouse_namespace_created_at_idx.
                 AND (
-                    (t.deleted_at IS NULL AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table') AND $4) OR   -- include_active
+                    (t.deleted_at IS NULL AND (t.metadata_location IS NOT NULL OR t.typ IN ('generic-table', 'dataset')) AND $4) OR   -- include_active
                     (t.deleted_at IS NOT NULL AND $5) OR                                   -- include_deleted
-                    (t.metadata_location IS NULL AND t.typ != 'generic-table' AND $6)      -- include_staged
+                    (t.metadata_location IS NULL AND t.typ NOT IN ('generic-table', 'dataset') AND $6)      -- include_staged
                 )
                 AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
             ORDER BY t.created_at, t.tabular_id ASC
@@ -1112,6 +1148,19 @@ impl PostgresSearchTabularInfo {
                     self.view_properties_values,
                 ),
             }),
+            TabularType::Dataset => ViewOrTableInfo::Dataset(DatasetTabularInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+                properties: HashMap::new(),
+            }),
             TabularType::GenericTable => ViewOrTableInfo::GenericTable(GenericTabularInfo {
                 namespace_id: self.namespace_id.into(),
                 tabular_ident,
@@ -1173,7 +1222,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
+                    AND (t.metadata_location IS NOT NULL OR t.typ IN ('generic-table', 'dataset'))
                     AND (t.tabular_id = $2 OR t.namespace_id = $2)
                 ORDER BY (t.tabular_id = $2) DESC
                 LIMIT 10
@@ -1260,7 +1309,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
+                    AND (t.metadata_location IS NOT NULL OR t.typ IN ('generic-table', 'dataset'))
                 ORDER BY distance ASC
                 LIMIT 10
             ),
@@ -1440,7 +1489,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $2
                     AND warehouse_id = $4
                     AND typ = $3
-                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
+                    AND (metadata_location IS NOT NULL OR typ IN ('generic-table', 'dataset'))
                     AND deleted_at IS NULL
                     -- The tabular must still be the one the caller resolved: same namespace,
                     -- same name. Locating it by id alone would let a rename that lost a race
@@ -1560,7 +1609,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $4
                     AND warehouse_id = $2
                     AND typ = $5
-                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
+                    AND (metadata_location IS NOT NULL OR typ IN ('generic-table', 'dataset'))
                     AND name = $6
                     AND deleted_at IS NULL
                     -- The tabular must still be in the namespace the caller resolved. This
@@ -1706,6 +1755,7 @@ impl From<TabularType> for lakekeeper::api::management::v1::TabularType {
             TabularType::Table => lakekeeper::api::management::v1::TabularType::Table,
             TabularType::View => lakekeeper::api::management::v1::TabularType::View,
             TabularType::GenericTable => lakekeeper::api::management::v1::TabularType::GenericTable,
+            TabularType::Dataset => lakekeeper::api::management::v1::TabularType::Dataset,
         }
     }
 }
@@ -1741,7 +1791,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             SELECT task_id, entity_id, scheduled_for
             FROM task ta
             JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
-            WHERE ta.entity_type in ('table', 'view', 'generic-table')
+            WHERE ta.entity_type in ('table', 'view', 'generic-table', 'dataset')
                 AND ta.warehouse_id = $2
                 AND ta.queue_name IN ('soft_deletion', 'tabular_expiration')
             FOR UPDATE OF ta
@@ -2070,6 +2120,7 @@ impl<'a, 'b> From<&'b TabularIdentBorrowed<'a>> for TabularType {
             TabularIdentBorrowed::Table(_) => TabularType::Table,
             TabularIdentBorrowed::View(_) => TabularType::View,
             TabularIdentBorrowed::GenericTable(_) => TabularType::GenericTable,
+            TabularIdentBorrowed::Dataset(_) => TabularType::Dataset,
         }
     }
 }
@@ -2080,6 +2131,7 @@ impl<'a> From<&'a TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
+            TabularId::Dataset(_) => TabularType::Dataset,
         }
     }
 }
@@ -2090,6 +2142,7 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
+            TabularId::Dataset(_) => TabularType::Dataset,
         }
     }
 }

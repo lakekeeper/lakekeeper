@@ -663,6 +663,18 @@ pub struct DynAppConfig {
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
+    /// Number of workers to spawn for folding dataset delta chains into
+    /// checkpoints. (default: 2)
+    ///
+    /// A single fold restates a dataset's whole file list and can run for
+    /// minutes on a large manifest, so these workers are long-running rather
+    /// than chatty.
+    pub task_dataset_checkpoint_workers: usize,
+    /// Number of workers to spawn for queued dataset imports. (default: 2)
+    ///
+    /// A single import lists an entire prefix and can run for minutes, so these
+    /// are long-running rather than chatty.
+    pub task_dataset_import_workers: usize,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -1357,6 +1369,8 @@ impl Default for DynAppConfig {
             task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
+            task_dataset_checkpoint_workers: 2,
+            task_dataset_import_workers: 2,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,

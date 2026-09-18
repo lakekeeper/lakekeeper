@@ -46,6 +46,7 @@
     "NamespaceRelation": [
       "can_accept_moved_namespace",
       "can_change_ownership",
+      "can_create_dataset",
       "can_create_generic_table",
       "can_create_namespace",
       "can_create_table",
@@ -60,6 +61,7 @@
       "can_grant_pass_grants",
       "can_grant_select",
       "can_include_in_list",
+      "can_list_datasets",
       "can_list_everything",
       "can_list_generic_tables",
       "can_list_namespaces",

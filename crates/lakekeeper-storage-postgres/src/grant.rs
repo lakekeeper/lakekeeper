@@ -40,9 +40,9 @@ use lakekeeper::{
     CONFIG,
     api::iceberg::v1::PaginationQuery,
     service::{
-        ApplyGrantsStoreError, CatalogBackendError, DatabaseIntegrityError, GenericTableId,
-        GrantLockTimeout, GrantSubtreeReadTimeout, GrantTargetNotFound, GrantUserNotFound,
-        InvalidPaginationToken, ListGrantsStoreError, NamespaceId, ProjectId,
+        ApplyGrantsStoreError, CatalogBackendError, DatabaseIntegrityError, DatasetId,
+        GenericTableId, GrantLockTimeout, GrantSubtreeReadTimeout, GrantTargetNotFound,
+        GrantUserNotFound, InvalidPaginationToken, ListGrantsStoreError, NamespaceId, ProjectId,
         RevokeSubtreeGrantsStoreError, TableId, TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
@@ -83,6 +83,7 @@ fn tabular_kind_of(resource: &GrantResource) -> Option<TabularType> {
         GrantResource::Table { .. } => Some(TabularType::Table),
         GrantResource::View { .. } => Some(TabularType::View),
         GrantResource::GenericTable { .. } => Some(TabularType::GenericTable),
+        GrantResource::Dataset { .. } => Some(TabularType::Dataset),
         GrantResource::Server
         | GrantResource::Project(_)
         | GrantResource::Warehouse(_)
@@ -100,7 +101,8 @@ impl StoredResourceType {
             GrantResource::Namespace { .. } => Self::Namespace,
             GrantResource::Table { .. }
             | GrantResource::View { .. }
-            | GrantResource::GenericTable { .. } => Self::Tabular,
+            | GrantResource::GenericTable { .. }
+            | GrantResource::Dataset { .. } => Self::Tabular,
             GrantResource::Tag(_) => Self::Tag,
         }
     }
@@ -319,6 +321,10 @@ impl GrantAssignmentRow {
                         warehouse_id,
                         view_id: ViewId::from(tabular_id),
                     },
+                    TabularType::Dataset => GrantResource::Dataset {
+                        warehouse_id,
+                        dataset_id: DatasetId::from(tabular_id),
+                    },
                     TabularType::GenericTable => GrantResource::GenericTable {
                         warehouse_id,
                         generic_table_id: GenericTableId::from(tabular_id),
@@ -432,6 +438,13 @@ impl ResourceColumns {
             } => {
                 columns.warehouse_id = Some(**warehouse_id);
                 columns.tabular_id = Some(**generic_table_id);
+            }
+            GrantResource::Dataset {
+                warehouse_id,
+                dataset_id,
+            } => {
+                columns.warehouse_id = Some(**warehouse_id);
+                columns.tabular_id = Some(**dataset_id);
             }
             GrantResource::Tag(tag_definition_id) => {
                 columns.tag_definition_id = Some(**tag_definition_id);
@@ -1403,6 +1416,14 @@ where
                 tabular_warehouses.push(**warehouse_id);
                 tabular_ids.push(**generic_table_id);
                 tabulars.insert((**warehouse_id, **generic_table_id), resource);
+            }
+            GrantResource::Dataset {
+                warehouse_id,
+                dataset_id,
+            } => {
+                tabular_warehouses.push(**warehouse_id);
+                tabular_ids.push(**dataset_id);
+                tabulars.insert((**warehouse_id, **dataset_id), resource);
             }
             GrantResource::Tag(tag_definition_id) => {
                 tag_ids.push(**tag_definition_id);

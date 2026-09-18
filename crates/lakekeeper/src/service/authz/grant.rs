@@ -33,9 +33,9 @@ use super::{
 use crate::{
     api::{RequestMetadata, iceberg::v1::PaginationQuery},
     service::{
-        ApplyGrantsStoreError, CatalogStore, GenericTableId, GenericTabularInfo,
-        NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId, TableInfo,
-        TagDefinition, TagDefinitionId, Transaction, ViewId, ViewInfo, WarehouseId,
+        ApplyGrantsStoreError, CatalogStore, DatasetId, DatasetTabularInfo, GenericTableId,
+        GenericTabularInfo, NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId,
+        TableInfo, TagDefinition, TagDefinitionId, Transaction, ViewId, ViewInfo, WarehouseId,
         events::{
             EventDispatcher, GrantsChangedEvent,
             types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource},
@@ -80,6 +80,7 @@ pub enum ResourceType {
     Table,
     View,
     GenericTable,
+    Dataset,
     /// Spelled `tag-definition` on the wire, matching the path segment tag definitions
     /// are addressed by, so every key of the vocabulary map names its own URL segment.
     /// The only spelling `kebab-case` does not already produce.
@@ -154,6 +155,10 @@ pub enum GrantResource {
         warehouse_id: WarehouseId,
         generic_table_id: GenericTableId,
     },
+    Dataset {
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+    },
     Tag(TagDefinitionId),
 }
 
@@ -168,6 +173,7 @@ impl GrantResource {
             GrantResource::Table { .. } => ResourceType::Table,
             GrantResource::View { .. } => ResourceType::View,
             GrantResource::GenericTable { .. } => ResourceType::GenericTable,
+            GrantResource::Dataset { .. } => ResourceType::Dataset,
             GrantResource::Tag(_) => ResourceType::Tag,
         }
     }
@@ -181,7 +187,8 @@ impl GrantResource {
             | GrantResource::Namespace { warehouse_id, .. }
             | GrantResource::Table { warehouse_id, .. }
             | GrantResource::View { warehouse_id, .. }
-            | GrantResource::GenericTable { warehouse_id, .. } => Some(*warehouse_id),
+            | GrantResource::GenericTable { warehouse_id, .. }
+            | GrantResource::Dataset { warehouse_id, .. } => Some(*warehouse_id),
             GrantResource::Server | GrantResource::Project(_) | GrantResource::Tag(_) => None,
         }
     }
@@ -223,6 +230,11 @@ pub enum GrantTarget<'a> {
         namespace: &'a NamespaceHierarchy,
         generic_table: &'a GenericTabularInfo,
     },
+    Dataset {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        dataset: &'a DatasetTabularInfo,
+    },
     Tag(&'a TagDefinition),
 }
 
@@ -263,6 +275,12 @@ impl GrantTarget<'_> {
                 warehouse_id: warehouse.warehouse_id,
                 generic_table_id: generic_table.tabular_id,
             },
+            GrantTarget::Dataset {
+                warehouse, dataset, ..
+            } => GrantResource::Dataset {
+                warehouse_id: warehouse.warehouse_id,
+                dataset_id: dataset.tabular_id,
+            },
             GrantTarget::Tag(definition) => GrantResource::Tag(definition.tag_definition_id),
         }
     }
@@ -277,6 +295,7 @@ impl GrantTarget<'_> {
             GrantTarget::Table { .. } => ResourceType::Table,
             GrantTarget::View { .. } => ResourceType::View,
             GrantTarget::GenericTable { .. } => ResourceType::GenericTable,
+            GrantTarget::Dataset { .. } => ResourceType::Dataset,
             GrantTarget::Tag(_) => ResourceType::Tag,
         }
     }

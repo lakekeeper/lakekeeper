@@ -1811,9 +1811,10 @@ macro_rules! variant_names_of {
 fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
     use crate::service::{
         authz::{
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            InstanceAdminAction,
         },
         events::context::{AuthnAction, FallbackAction, ManagementAction},
     };
@@ -1821,6 +1822,7 @@ fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
     variant_names_of!(
         AuthnAction,
         FallbackAction,
+        CatalogDatasetAction,
         CatalogGenericTableAction,
         CatalogNamespaceAction,
         CatalogProjectAction,

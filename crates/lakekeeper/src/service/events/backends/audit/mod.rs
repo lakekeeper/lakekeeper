@@ -331,6 +331,7 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
         GrantResource::GenericTable {
             generic_table_id, ..
         } => Some(generic_table_id.to_string()),
+        GrantResource::Dataset { dataset_id, .. } => Some(dataset_id.to_string()),
         GrantResource::Tag(tag_definition_id) => Some(tag_definition_id.to_string()),
     }
 }

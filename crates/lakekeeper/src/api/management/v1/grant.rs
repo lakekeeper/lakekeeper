@@ -63,17 +63,18 @@ use crate::{
     },
     service::{
         ArcRole, CachePolicy, CatalogGrantOps, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTagOps, CatalogWarehouseOps, GenericTableId, GrantRevokeBatchTooLarge,
+        CatalogTagOps, CatalogWarehouseOps, DatasetId, GenericTableId, GrantRevokeBatchTooLarge,
         GrantSubtreeTooLarge, ListGrantsStoreError, ListRolesError, NamespaceHierarchy,
         NamespaceId, NamespaceIdentOrId, ProjectId, ResolvedWarehouse, RoleId, SecretStore, State,
         TableId, TabularListFlags, TagDefinitionId, ViewId, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
             ActionDescriptor, AuthZCannotSeeNamespace, AuthZCannotSeeTag,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps, AuthZGrantActionForbidden,
-            AuthZGrantOps, AuthZProjectOps, AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden,
-            AuthZTagOps, AuthZViewOps, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogGenericTableAction, CatalogNamespaceAction,
+            AuthZCannotUseWarehouseId, AuthZDatasetOps, AuthZError, AuthZGenericTableOps,
+            AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps, AuthZServerOps,
+            AuthZTableOps, AuthZTagActionForbidden, AuthZTagOps, AuthZViewOps,
+            AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
             CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp,
             GrantResource, GrantRevokeCandidates, GrantRow, GrantSpec, GrantSubtreeFilter,
@@ -233,6 +234,15 @@ pub enum GrantResourceResponse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
+    #[cfg_attr(feature = "open-api", schema(title = "GrantResourceDataset"))]
+    Dataset {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "dataset-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        dataset_id: DatasetId,
+    },
     #[cfg_attr(feature = "open-api", schema(title = "GrantResourceTag"))]
     /// Spelled `tag-definition`, as everywhere else. `kebab-case` alone would render it
     /// `tag`, which matches neither `ResourceType` nor the URL segment.
@@ -270,6 +280,13 @@ impl From<GrantResource> for GrantResourceResponse {
             } => Self::View {
                 warehouse_id,
                 view_id,
+            },
+            GrantResource::Dataset {
+                warehouse_id,
+                dataset_id,
+            } => Self::Dataset {
+                warehouse_id,
+                dataset_id,
             },
             GrantResource::GenericTable {
                 warehouse_id,
@@ -2999,6 +3016,136 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
     }
 
+    async fn list_dataset_grants(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        query: ListGrantsQuery,
+        pagination: PaginationQuery,
+    ) -> Result<ListGrantsResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+        let principal = query.try_principal()?;
+        let is_self = is_self_read(principal.as_ref(), &request_metadata);
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+
+        let required = if is_self {
+            CatalogDatasetAction::IncludeInList
+        } else {
+            CatalogDatasetAction::ReadGrants
+        };
+        let mut event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            dataset_id,
+            required.clone(),
+        );
+        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        let event_ctx = event_ctx;
+        let authz_result = async {
+            let (warehouse, _, _) = authorizer
+                .load_and_authorize_dataset_operation::<C>(
+                    event_ctx.request_metadata(),
+                    event_ctx.user_provided_entity(),
+                    TABULAR_FLAGS,
+                    required,
+                    catalog_state.clone(),
+                )
+                .await?;
+            ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+        list_and_render::<A, C>(
+            &authorizer,
+            catalog_state,
+            event_ctx.request_metadata(),
+            GrantFilter::on(
+                GrantResource::Dataset {
+                    warehouse_id,
+                    dataset_id,
+                },
+                principal,
+            ),
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply a grant diff on a dataset.
+    async fn apply_dataset_grants(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        request: ApplyGrantsRequest,
+    ) -> Result<()> {
+        let project_id = request_metadata.require_project_id(None)?;
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let events = context.v1_state.events.clone();
+        let resource = GrantResource::Dataset {
+            warehouse_id,
+            dataset_id,
+        };
+
+        validate_request_shape(&request)?;
+        validate_write_privileges(&authorizer, ResourceType::Dataset, &request)?;
+        // Before the gate, and deliberately cannot fail: the authority check carries
+        // resolved grantees. See `resolve_grantee_roles`.
+        let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
+        let event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            events.clone(),
+            warehouse_id,
+            dataset_id,
+            ApplyGrants::of(&request),
+        );
+        let authz_result = async {
+            let (warehouse, namespace, dataset) =
+                crate::service::authz::fetch_warehouse_namespace_dataset_by_id::<C, A>(
+                    &authorizer,
+                    warehouse_id,
+                    dataset_id,
+                    TABULAR_FLAGS,
+                    catalog_state.clone(),
+                )
+                .await?;
+            ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
+            require_grant_authority(
+                &authorizer,
+                event_ctx.request_metadata(),
+                &GrantTarget::Dataset {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    dataset: &dataset,
+                },
+                &request,
+                &grantee_roles,
+            )
+            .await
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+        // After the gate: before it, the role lookup let an unauthorized caller probe
+        // which roles exist in a project.
+        validate_write_principals(&request, &project_id, &grantee_roles)?;
+
+        apply_and_emit::<A, C>(
+            &authorizer,
+            catalog_state,
+            &events,
+            event_ctx.request_metadata_arc(),
+            &resource,
+            &request,
+        )
+        .await
+    }
+
     /// Apply a grant diff on a generic table.
     async fn apply_generic_table_grants(
         warehouse_id: WarehouseId,
@@ -3553,6 +3700,70 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
+    async fn get_dataset_grantable_privileges(
+        warehouse_id: WarehouseId,
+        dataset_id: DatasetId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        query: GetGrantAccessQuery,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+        let for_user_api = query.try_principal()?;
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+
+        let mut event_ctx = APIEventContext::for_dataset(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            dataset_id,
+            IntrospectPermissions {},
+        );
+        set_for_user(&mut event_ctx, for_user_api.as_ref());
+        let event_ctx = event_ctx;
+
+        let authz_result = async {
+            let (warehouse, namespace, dataset) =
+                crate::service::authz::fetch_warehouse_namespace_dataset_by_id::<C, A>(
+                    &authorizer,
+                    warehouse_id,
+                    dataset_id,
+                    TABULAR_FLAGS,
+                    catalog_state.clone(),
+                )
+                .await?;
+            ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
+            let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
+            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
+                authorizer
+                    .load_and_authorize_dataset_operation::<C>(
+                        event_ctx.request_metadata(),
+                        event_ctx.user_provided_entity(),
+                        TABULAR_FLAGS,
+                        CatalogDatasetAction::ReadGrants,
+                        catalog_state.clone(),
+                    )
+                    .await?;
+            }
+            allowed_privileges(
+                &authorizer,
+                event_ctx.request_metadata(),
+                for_user,
+                &GrantTarget::Dataset {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    dataset: &dataset,
+                },
+            )
+            .await
+        }
+        .await;
+        let (_event_ctx, allowed) = event_ctx.emit_authz(authz_result)?;
+        Ok(ResourceGrantablePrivilegesResponse {
+            privileges: allowed,
+        })
+    }
+
     /// Which tag privileges the caller may administer on a tag definition.
     async fn get_tag_grantable_privileges(
         tag_definition_id: TagDefinitionId,
@@ -3663,6 +3874,13 @@ mod resource_type_wire_agreement {
                     generic_table_id: GenericTableId::from(uuid),
                 },
                 ResourceType::GenericTable,
+            ),
+            (
+                GrantResourceResponse::Dataset {
+                    warehouse_id: WarehouseId::new(uuid),
+                    dataset_id: DatasetId::from(uuid),
+                },
+                ResourceType::Dataset,
             ),
             (
                 GrantResourceResponse::Tag {

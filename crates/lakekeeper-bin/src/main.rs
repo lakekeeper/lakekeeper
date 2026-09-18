@@ -123,6 +123,9 @@ enum Commands {
     #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Generic Table API as yaml
     GenericTableOpenapi {},
+    #[cfg(feature = "open-api")]
+    /// Get the `OpenAPI` specification of the Dataset API as yaml
+    DatasetOpenapi {},
     /// OpenFGA authorizer maintenance operations.
     Openfga {
         #[command(subcommand)]
@@ -191,6 +194,8 @@ impl From<ReconcileModeArg> for lakekeeper_authz_openfga::ReconcileMode {
 }
 
 #[tokio::main]
+// One arm per subcommand; it grows with the CLI.
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -284,6 +289,11 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "open-api")]
         Some(Commands::GenericTableOpenapi {}) => {
             let doc = lakekeeper::api::data::v1::generic_tables::api_doc();
+            println!("{}", doc.to_yaml()?);
+        }
+        #[cfg(feature = "open-api")]
+        Some(Commands::DatasetOpenapi {}) => {
+            let doc = lakekeeper::api::data::v1::datasets::api_doc();
             println!("{}", doc.to_yaml()?);
         }
         None => {

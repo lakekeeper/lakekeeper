@@ -52,7 +52,8 @@
                 "role",
                 "user",
                 "server",
-                "generic-table"
+                "generic-table",
+                "dataset"
               ]
             }
           }
@@ -91,7 +92,8 @@
                       "role",
                       "user",
                       "server",
-                      "generic-table"
+                      "generic-table",
+                      "dataset"
                     ]
                   }
                 }

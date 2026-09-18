@@ -1078,11 +1078,11 @@ pub(crate) async fn drop_namespace(
             FROM tabular ta
             LEFT JOIN namespace_info ni ON ta.namespace_id = ni.namespace_id
             LEFT JOIN child_namespaces cn ON ta.namespace_id = cn.namespace_id
-            WHERE warehouse_id = $1 AND (metadata_location IS NOT NULL OR ta.typ = 'generic-table') AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
+            WHERE warehouse_id = $1 AND (metadata_location IS NOT NULL OR ta.typ IN ('generic-table', 'dataset')) AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.queue_name, t.status as task_status from task t
-            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table')
+            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table', 'dataset')
         )
         SELECT
             ni.protected AS "is_protected!",
@@ -1207,6 +1207,7 @@ pub(crate) async fn drop_namespace(
                         TabularType::Table => TabularId::Table(tabular_id.into()),
                         TabularType::View => TabularId::View(tabular_id.into()),
                         TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
+                        TabularType::Dataset => TabularId::Dataset(tabular_id.into()),
                     },
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,
@@ -1938,6 +1939,66 @@ pub mod tests {
         assert!(
             matches!(result, CatalogNamespaceDropError::NamespaceNotEmpty(_)),
             "expected NamespaceNotEmpty for namespace with generic-table child, got {result:?}"
+        );
+    }
+
+    // Non-recursive drop must fail when the namespace contains a dataset.
+    //
+    // A dataset has no metadata_location, so before the predicate named it
+    // explicitly the drop query did not see datasets at all: a namespace holding
+    // them read as empty and could be dropped out from under them. Guards the
+    // `IN ('generic-table', 'dataset')` branch in the drop_namespace SQL.
+    #[sqlx::test]
+    async fn test_cannot_drop_namespace_with_datasets(pool: sqlx::PgPool) {
+        use lakekeeper::service::{
+            CatalogDatasetOps as _, DatasetConstraints, DatasetCreation, DatasetId,
+            DatasetOwnership,
+        };
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ns_ident =
+            NamespaceIdent::from_vec(vec![format!("ns_{}", uuid::Uuid::now_v7())]).unwrap();
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ns_ident, None).await;
+        let namespace_id = ns.namespace_id();
+
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_dataset(
+            DatasetCreation {
+                dataset_id: DatasetId::from(uuid::Uuid::now_v7()),
+                namespace_id,
+                warehouse_id,
+                name: "ds".to_string(),
+                location: lakekeeper_io::Location::from_str(&format!(
+                    "memory://test/{warehouse_id}/ds"
+                ))
+                .unwrap(),
+                ownership: DatasetOwnership::Managed,
+                constraints: DatasetConstraints::default(),
+            },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
+        trx.commit().await.unwrap();
+
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags::default(),
+            trx.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(result, CatalogNamespaceDropError::NamespaceNotEmpty(_)),
+            "expected NamespaceNotEmpty for namespace with dataset child, got {result:?}"
         );
     }
 

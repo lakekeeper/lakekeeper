@@ -1,0 +1,75 @@
+module lakekeeper-lakekeeper_dataset
+
+type lakekeeper_dataset
+  relations
+    # ------------------ Relation Hierarchies ------------------
+    define parent: [namespace]
+
+    # ------------------ Special roles ------------------
+    define ownership: [user, role#assignee]
+
+    # ------------------ Assignable Privileges ------------------
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    # Split as on the namespace: bare name = granted here, `_effective` = implied.
+    define describe: [user, role#assignee]
+    define describe_effective: describe or ownership or select_effective or describe_effective from parent
+    define select: [user, role#assignee]
+    define select_effective: select or ownership or modify_effective or select_effective from parent
+    define modify: [user, role#assignee]
+    define modify_effective: modify or ownership or modify_effective from parent
+
+    # A grant on this object. A leaf, so there is nothing below to recurse into.
+    define visible_below: describe or select or modify or ownership
+    # Governance tag attachment. Independent of `modify` (separation of duties);
+    # inherits from the parent namespace.
+    define manage_tags: [user, role#assignee] or manage_tags from parent
+
+    # ------------------ Actions ------------------
+    define can_drop: modify_effective
+    define can_undrop: modify_effective
+    define can_read_data: select_effective
+    define can_get_metadata: describe_effective
+    define can_rename: modify_effective
+    define can_include_in_list: can_get_metadata
+    define can_set_protection: modify_effective
+    define can_get_tasks: describe_effective
+    define can_control_tasks: modify_effective
+    define can_manage_tags: manage_tags
+
+    # Versioning actions. Refs are cheap, disposable rows -- agent fleets create
+    # thousands -- so there are deliberately no per-ref objects: granularity below
+    # the dataset comes from the structural `protected` flag and from policies
+    # evaluated against ref name/type in the request context, neither of which
+    # needs tuples cleaned up when a branch is deleted.
+    #
+    # A commit only ever appends: it writes a new snapshot and moves one branch
+    # pointer forward, so it is `modify` like any other write.
+    define can_commit: modify_effective
+    # Creating and deleting branches and tags. Separate from `can_commit` so a
+    # producer can be allowed to append without being able to retag history.
+    define can_manage_refs: modify_effective
+    # Fast-forwarding a branch to a descendant snapshot: the publish step of
+    # write-audit-publish, and the only way changes reach a protected branch.
+    define can_promote: modify_effective
+    # Pointing a branch at an arbitrary non-descendant snapshot. Unlike promote
+    # this abandons history on the branch, so it is deliberately not reachable
+    # through the promote path and requires full grant authority.
+    define can_reset: manage_grants
+
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_grant_manage_tags or can_change_ownership
+
+    # GRANT Permissions
+    define can_grant_pass_grants: manage_grants
+    define can_grant_manage_grants: manage_grants
+    define can_grant_describe: manage_grants or (describe_effective and pass_grants)
+    define can_grant_select: manage_grants or (select_effective and pass_grants)
+    define can_grant_modify: manage_grants or (modify_effective and pass_grants)
+    define can_grant_manage_tags: manage_grants
+
+    # REVOKE Permissions
+    # Taking a privilege back is administration, never delegation
+    define can_revoke_describe: manage_grants
+    define can_revoke_modify: manage_grants
+    define can_revoke_select: manage_grants
+    define can_change_ownership: manage_grants

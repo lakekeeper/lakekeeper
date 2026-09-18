@@ -6,7 +6,7 @@ use lakekeeper::{
     api::iceberg::v1::PaginationQuery,
     service::{
         ApplyTagError, CatalogBackendError, CatalogCreateTagDefinitionRequest,
-        CreateTagDefinitionError, DeleteTagDefinitionError, EffectiveTagCandidate,
+        CreateTagDefinitionError, DatasetId, DeleteTagDefinitionError, EffectiveTagCandidate,
         EffectiveTagSource, GenericTableId, ListTagAttachmentsError, ListTagAttachmentsResponse,
         ListTagDefinitionsError, ListTagDefinitionsResponse, NamespaceId, ProjectIdNotFoundError,
         RemoveTagError, Result, TableId, TabularId, Tag, TagAttachmentFilter, TagDefinition,
@@ -839,6 +839,7 @@ fn reconstruct_target(
         Some(TabularType::Table) => TabularId::Table(TableId::new(tabular_id)),
         Some(TabularType::View) => TabularId::View(ViewId::new(tabular_id)),
         Some(TabularType::GenericTable) => TabularId::GenericTable(GenericTableId::new(tabular_id)),
+        Some(TabularType::Dataset) => TabularId::Dataset(DatasetId::new(tabular_id)),
         None => {
             return Err(CatalogBackendError::new_unexpected(unknown_enum(
                 "tabular type for tag target",

@@ -69,8 +69,8 @@ use lakekeeper::{
     api::iceberg::v1::{ListNamespacesQuery, NamespaceIdent, PageToken, PaginationQuery},
     service::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
-        ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, DatasetId, GenericTableId,
+        NamespaceId, ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
         authz::NamespaceParent, maintenance::MaintenanceLockGuard,
     },
 };
@@ -82,9 +82,9 @@ use crate::{
     FgaType,
     entities::OpenFgaEntity,
     tuples::{
-        hierarchy_tuples_for_generic_table, hierarchy_tuples_for_namespace,
-        hierarchy_tuples_for_project, hierarchy_tuples_for_role, hierarchy_tuples_for_table,
-        hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
+        hierarchy_tuples_for_dataset, hierarchy_tuples_for_generic_table,
+        hierarchy_tuples_for_namespace, hierarchy_tuples_for_project, hierarchy_tuples_for_role,
+        hierarchy_tuples_for_table, hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
     },
 };
 
@@ -265,6 +265,7 @@ struct CatalogIndex {
     tables: HashMap<TableId, (WarehouseId, NamespaceId)>,
     views: HashMap<ViewId, (WarehouseId, NamespaceId)>,
     generic_tables: HashMap<GenericTableId, (WarehouseId, NamespaceId)>,
+    datasets: HashMap<DatasetId, (WarehouseId, NamespaceId)>,
     roles: HashMap<lakekeeper::service::RoleId, ProjectId>,
 }
 
@@ -281,6 +282,7 @@ impl CatalogIndex {
             tables: HashMap::new(),
             views: HashMap::new(),
             generic_tables: HashMap::new(),
+            datasets: HashMap::new(),
             roles: HashMap::new(),
         };
 
@@ -371,6 +373,9 @@ impl CatalogIndex {
                     }
                     TabularId::GenericTable(g) => {
                         idx.generic_tables.insert(g, (warehouse_id, ns_id));
+                    }
+                    TabularId::Dataset(d) => {
+                        idx.datasets.insert(d, (warehouse_id, ns_id));
                     }
                 }
             }
@@ -504,6 +509,12 @@ impl CatalogIndex {
                     .map(GenericTableId::new)
                     .map(|g| self.generic_tables.contains_key(&g))
             }
+            FgaType::Dataset => {
+                let (_, d) = id.split_once('/')?;
+                parse_uuid(d)
+                    .map(DatasetId::new)
+                    .map(|d| self.datasets.contains_key(&d))
+            }
             // Tag definitions are managed via the create_tag/delete_tag hooks and are
             // not part of the catalog hierarchy index, so reconcile leaves them alone.
             FgaType::User | FgaType::Tag | FgaType::ModelVersion | FgaType::AuthModelId => None,
@@ -612,6 +623,11 @@ async fn write_missing_from_index(
                 "generic_table",
                 hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns),
             )
+            .await?;
+    }
+    for (ds_id, (wh, ns)) in &idx.datasets {
+        writer
+            .push("dataset", hierarchy_tuples_for_dataset(*wh, *ds_id, *ns))
             .await?;
     }
     for (role_id, project) in &idx.roles {
@@ -732,6 +748,11 @@ fn build_expected_set(idx: &CatalogIndex) -> HashSet<(String, String, String)> {
             push(t, &mut expected);
         }
     }
+    for (ds_id, (wh, ns)) in &idx.datasets {
+        for t in hierarchy_tuples_for_dataset(*wh, *ds_id, *ns) {
+            push(t, &mut expected);
+        }
+    }
     for (role_id, project) in &idx.roles {
         for t in hierarchy_tuples_for_role(project, *role_id) {
             push(t, &mut expected);
@@ -818,13 +839,14 @@ impl<'a> BatchWriter<'a> {
 
 fn log_index(idx: &CatalogIndex) {
     tracing::info!(
-        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} roles",
+        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} datasets, {} roles",
         idx.projects.len(),
         idx.warehouses.len(),
         idx.namespaces.len(),
         idx.tables.len(),
         idx.views.len(),
         idx.generic_tables.len(),
+        idx.datasets.len(),
         idx.roles.len()
     );
 }

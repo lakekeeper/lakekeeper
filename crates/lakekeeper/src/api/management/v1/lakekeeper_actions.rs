@@ -10,24 +10,26 @@ use crate::{
     api::{ApiContext, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTagOps, CatalogWarehouseOps, GenericTableId, NamespaceId, ProjectId, Result, RoleId,
-        SecretStore, State, TableId, TabularListFlags, TagDefinitionId, UserId, ViewId,
-        WarehouseStatus,
+        CatalogTagOps, CatalogWarehouseOps, DatasetId, GenericTableId, NamespaceId, ProjectId,
+        Result, RoleId, SecretStore, State, TableId, TabularListFlags, TagDefinitionId, UserId,
+        ViewId, WarehouseStatus,
         authn::UserIdRef,
         authz::{
-            ActionOnGenericTable, ActionOnTable, ActionOnView, AuthZCannotSeeGenericTable,
-            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeTag,
-            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps,
+            ActionOnDataset, ActionOnGenericTable, ActionOnTable, ActionOnView,
+            AuthZCannotSeeDataset, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace,
+            AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeTag, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZDatasetOps, AuthZError, AuthZGenericTableOps,
             AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
             AuthZTableOps, AuthZTagOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogNamespaceActionKind, CatalogProjectAction,
-            CatalogProjectActionKind, CatalogRoleAction, CatalogRoleActionKind,
-            CatalogServerAction, CatalogServerActionKind, CatalogTableAction,
-            CatalogTableActionKind, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogViewActionKind, CatalogWarehouseAction, CatalogWarehouseActionKind,
-            RequireProjectActionError, RequireRoleActionError, RequireTagActionError, RoleAssignee,
-            UserOrRole, UserOrRoleId, fetch_warehouse_namespace_generic_table_by_id,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogDatasetAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogNamespaceActionKind,
+            CatalogProjectAction, CatalogProjectActionKind, CatalogRoleAction,
+            CatalogRoleActionKind, CatalogServerAction, CatalogServerActionKind,
+            CatalogTableAction, CatalogTableActionKind, CatalogTagAction, CatalogUserAction,
+            CatalogViewAction, CatalogViewActionKind, CatalogWarehouseAction,
+            CatalogWarehouseActionKind, RequireProjectActionError, RequireRoleActionError,
+            RequireTagActionError, RoleAssignee, UserOrRole, UserOrRoleId,
+            fetch_warehouse_namespace_dataset_by_id, fetch_warehouse_namespace_generic_table_by_id,
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -140,6 +142,7 @@ action_response!(
     GetLakekeeperGenericTableActionsResponse,
     CatalogGenericTableAction
 );
+action_response!(GetLakekeeperDatasetActionsResponse, CatalogDatasetAction);
 action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 action_response!(GetLakekeeperTagActionsResponse, CatalogTagAction);
 
@@ -1123,6 +1126,120 @@ async fn authorize_get_generic_table_actions<C: CatalogStore>(
         return Err(
             AuthZCannotSeeGenericTable::new_forbidden(warehouse_id, generic_table_id).into(),
         );
+    }
+
+    Ok(allowed_actions)
+}
+
+pub(super) async fn get_allowed_dataset_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    context: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    query: GetAccessQuery,
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+) -> Result<Vec<CatalogDatasetAction>> {
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_dataset(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        warehouse_id,
+        dataset_id,
+        IntrospectPermissions {},
+    );
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_dataset_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        warehouse_id,
+        dataset_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_dataset_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    warehouse_id: WarehouseId,
+    dataset_id: DatasetId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogDatasetAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
+    let actions = CatalogDatasetAction::variants();
+    let can_see_permission = CatalogDatasetAction::IncludeInList;
+
+    let (warehouse, namespace, info) = fetch_warehouse_namespace_dataset_by_id::<C, _>(
+        &authorizer,
+        warehouse_id,
+        dataset_id,
+        TabularListFlags::all(),
+        catalog_state.clone(),
+    )
+    .await?;
+
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
+        &warehouse,
+        namespace,
+        &info,
+        AuthZCannotSeeDataset::new_forbidden(warehouse_id, dataset_id),
+        &authorizer,
+        catalog_state,
+    )
+    .await?;
+
+    let parents_map = namespace
+        .parents
+        .into_iter()
+        .map(|ns| (ns.namespace_id(), ns))
+        .collect();
+
+    let results = authorizer
+        .are_allowed_dataset_actions_vec(
+            request_metadata,
+            &warehouse,
+            &parents_map,
+            &actions
+                .iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnDataset {
+                            info: &info,
+                            action: action.clone(),
+                            user: for_user.as_ref(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await?
+        .into_allowed();
+
+    let mut can_see = false;
+    let allowed_actions = results
+        .iter()
+        .zip(actions)
+        .filter_map(|(allowed, action)| {
+            if *allowed {
+                if action == &can_see_permission {
+                    can_see = true;
+                }
+                Some(action.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !can_see {
+        return Err(AuthZCannotSeeDataset::new_forbidden(warehouse_id, dataset_id).into());
     }
 
     Ok(allowed_actions)

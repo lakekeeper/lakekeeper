@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_snapshot\n            (warehouse_id, dataset_id, snapshot_id, parent_snapshot_id, location, status, summary)\n        VALUES ($1, $2, $3, $4, $5, 'staging', $6)\n        RETURNING created_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "13114d028057266bc0644250284911fd5c31789cf903e544cb11d34c7c76a771"
+}

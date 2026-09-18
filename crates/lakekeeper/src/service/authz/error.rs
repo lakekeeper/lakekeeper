@@ -16,13 +16,14 @@ use crate::{
         SearchRolesError, TagNameNotFound, TagTargetNotFound, TaskNotFoundError, UpdateRoleError,
         UpdateTagDefinitionError,
         authz::{
-            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace,
-            AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZTableActionForbidden, AuthZUserActionForbidden,
-            AuthZWarehouseActionForbidden, RequireGenericTableActionError,
-            RequireNamespaceActionError, RequireProjectActionError, RequireRoleActionError,
-            RequireServerActionError, RequireTableActionError, RequireTabularActionsError,
-            RequireTagActionError, RequireViewActionError, RequireWarehouseActionError,
+            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeDataset, AuthZCannotSeeGenericTable,
+            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeTableLocation,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZTableActionForbidden,
+            AuthZUserActionForbidden, AuthZWarehouseActionForbidden, RequireDatasetActionError,
+            RequireGenericTableActionError, RequireNamespaceActionError, RequireProjectActionError,
+            RequireRoleActionError, RequireServerActionError, RequireTableActionError,
+            RequireTabularActionsError, RequireTagActionError, RequireViewActionError,
+            RequireWarehouseActionError,
         },
         error_chain_fmt,
         events::{
@@ -327,6 +328,8 @@ pub enum AuthZError {
     AuthZCannotSeeView(AuthZCannotSeeView),
     AuthZCannotSeeGenericTable(AuthZCannotSeeGenericTable),
     RequireGenericTableActionError(RequireGenericTableActionError),
+    AuthZCannotSeeDataset(AuthZCannotSeeDataset),
+    RequireDatasetActionError(RequireDatasetActionError),
     AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
     ProjectIdMissing(ProjectIdMissing),
     TaskNotFoundError(TaskNotFoundError),
@@ -429,6 +432,9 @@ impl From<RequireTabularActionsError> for AuthZError {
             RequireTabularActionsError::AuthZGenericTableActionForbidden(e) => {
                 RequireGenericTableActionError::from(e).into()
             }
+            RequireTabularActionsError::AuthZDatasetActionForbidden(e) => {
+                RequireDatasetActionError::from(e).into()
+            }
         }
     }
 }
@@ -451,6 +457,8 @@ delegate_authorization_failure_source!(AuthZError => {
     AuthZCannotSeeView,
     AuthZCannotSeeGenericTable,
     RequireGenericTableActionError,
+    AuthZCannotSeeDataset,
+    RequireDatasetActionError,
     AuthZCannotSeeTableLocation,
     ProjectIdMissing,
     TaskNotFoundError,

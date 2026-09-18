@@ -895,6 +895,18 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         })
                         .ok();
                 }
+                TabularId::Dataset(dataset_id) => {
+                    authorizer
+                        .delete_dataset(warehouse.warehouse_id, dataset_id)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                "Failed to delete dataset '{tabular_ident}' with id '{dataset_id}' from authorizer after recursive namespace drop: {}",
+                                err.error
+                            );
+                        })
+                        .ok();
+                }
             }
         }
 

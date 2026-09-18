@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE ancestry(snapshot_id, parent_snapshot_id, depth, is_checkpoint) AS (\n            SELECT snapshot_id, parent_snapshot_id, 0, is_checkpoint\n            FROM dataset_snapshot\n            WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n          UNION ALL\n            SELECT s.snapshot_id, s.parent_snapshot_id, a.depth + 1, s.is_checkpoint\n            FROM dataset_snapshot s\n            INNER JOIN ancestry a ON s.snapshot_id = a.parent_snapshot_id\n            WHERE s.warehouse_id = $1 AND NOT a.is_checkpoint\n        ),\n        newest AS (\n            SELECT DISTINCT ON (m.logical_key)\n                m.logical_key, m.physical_path, m.change, m.etag, m.size,\n                m.content_type, m.checksum, m.version_id, m.last_modified\n            FROM dataset_manifest_entry m\n            INNER JOIN ancestry a ON a.snapshot_id = m.snapshot_id\n            WHERE m.warehouse_id = $1\n            ORDER BY m.logical_key, a.depth ASC\n        )\n        INSERT INTO dataset_manifest_entry\n            (warehouse_id, snapshot_id, logical_key, physical_path, change,\n             etag, size, content_type, checksum, version_id, last_modified)\n        SELECT $1, $3, logical_key, physical_path, 'added',\n               etag, size, content_type, checksum, version_id, last_modified\n        FROM newest\n        WHERE change <> 'removed'\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7506da1698a125358fe48d077e05eac65c076062bd6d7029c3f5a8125a13a8a"
+}

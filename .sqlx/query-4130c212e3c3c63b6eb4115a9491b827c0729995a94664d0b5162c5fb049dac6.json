@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_snapshot\n        SET parent_snapshot_id = $3\n        WHERE warehouse_id = $1 AND snapshot_id = $2 AND status = 'staging'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4130c212e3c3c63b6eb4115a9491b827c0729995a94664d0b5162c5fb049dac6"
+}

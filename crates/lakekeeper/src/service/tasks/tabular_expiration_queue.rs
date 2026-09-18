@@ -10,7 +10,8 @@ use crate::{
     CancellationToken,
     api::{ErrorModel, Result, management::v1::DeleteKind},
     service::{
-        CatalogStore, CatalogTabularOps, DropTabularError, Transaction,
+        CatalogDatasetOps, CatalogStore, CatalogTabularOps, DatasetOwnership, DropTabularError,
+        Transaction,
         authz::Authorizer,
         tasks::{
             ScheduleTaskMetadata, SpecializedTask, TaskData, TaskEntity, TaskQueueName,
@@ -286,6 +287,47 @@ where
                 .inspect_err(|e| {
                     tracing::error!(
                         "Failed to delete generic table from authorizer in `{QN_STR}` task. {e}"
+                    );
+                })
+                .ok();
+            location
+        }
+        WarehouseTaskEntityId::Dataset { dataset_id } => {
+            // An imported dataset borrows its prefix, so its location must never
+            // reach the purge queue. The drop handler refuses purge for those, but
+            // a recursive namespace drop reaches this path without passing through
+            // it; on error the safe answer is the one that deletes nothing.
+            let ownership = C::load_dataset_ownership(warehouse_id, dataset_id, trx.transaction())
+                .await
+                .unwrap_or(DatasetOwnership::Imported);
+
+            let location = match C::drop_tabular(warehouse_id, dataset_id, true, trx.transaction())
+                .await
+            {
+                Err(DropTabularError::TabularNotFound(..)) => {
+                    tracing::warn!(
+                        "Dataset with id `{dataset_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
+                    );
+                    None
+                }
+                Err(e) => {
+                    return Err(e
+                            .append_detail(format!(
+                                "Failed to drop dataset with id `{dataset_id}` from catalog for `{QN_STR}` task."
+                            ))
+                            .into());
+                }
+                // Withheld for an imported dataset; the catalog and authorizer
+                // cleanup below still runs.
+                Ok(loc) => ownership.is_managed().then_some(loc),
+            };
+
+            authorizer
+                .delete_dataset(warehouse_id, dataset_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Failed to delete dataset from authorizer in `{QN_STR}` task. {e}"
                     );
                 })
                 .ok();

@@ -1685,6 +1685,9 @@ mod tests {
     /// the query started accepting `metadata_location IS NULL` rows for
     /// `typ = 'generic-table'`, the index predicate was not widened with it, and
     /// listing a namespace regressed to the plan from before the index existed.
+    /// Datasets have the same shape — no `metadata_location` by design — so they
+    /// are named here too. Postgres renders the two-element list as
+    /// `= ANY (ARRAY[...])`, which is why the pinned text reads that way.
     ///
     /// The column list is pinned for the same reason: the index only serves the
     /// query because `(warehouse_id, namespace_id)` are equality-matched and
@@ -1715,7 +1718,8 @@ mod tests {
             "CREATE INDEX tabular_warehouse_namespace_created_at_idx ON public.tabular \
              USING btree (warehouse_id, namespace_id, created_at, tabular_id) \
              WHERE ((deleted_at IS NULL) AND ((metadata_location IS NOT NULL) \
-             OR (typ = 'generic-table'::tabular_type)))",
+             OR (typ = ANY (ARRAY['generic-table'::tabular_type, \
+             'dataset'::tabular_type]))))",
             "the index behind list_tabulars changed. If you widened the `include_active` \
              branch of list_tabulars (src/tabular/mod.rs) to return more rows, widen this \
              index predicate to match and update this assertion — otherwise Postgres will \

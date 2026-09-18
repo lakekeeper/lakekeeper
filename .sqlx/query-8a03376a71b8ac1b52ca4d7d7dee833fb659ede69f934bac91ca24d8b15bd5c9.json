@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO dataset_manifest_entry\n                (warehouse_id, snapshot_id, logical_key, physical_path, change,\n                 etag, size, content_type)\n            SELECT $1, $2,\n                   'shard=' || lpad((i / 10000)::text, 5, '0')\n                            || '/img_' || lpad(i::text, 9, '0') || '.jpg',\n                   's3://bucket/data/img_' || i || '_v2',\n                   'added', md5((i * 7)::text), 8192, 'image/jpeg'\n            FROM generate_series($3::bigint, $4::bigint) AS i\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8a03376a71b8ac1b52ca4d7d7dee833fb659ede69f934bac91ca24d8b15bd5c9"
+}

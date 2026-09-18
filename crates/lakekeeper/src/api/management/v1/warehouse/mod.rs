@@ -42,10 +42,10 @@ use crate::{
         ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, GrantResource,
-            InstanceAdminAction, InstanceAdminAuthorizer, emit_bootstrap_grants_async,
-            write_bootstrap_grants,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            GrantResource, InstanceAdminAction, InstanceAdminAuthorizer,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         events::{
             APIEventContext,
@@ -2128,6 +2128,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
                                         CatalogGenericTableAction::IncludeInList,
+                                        CatalogDatasetAction::IncludeInList,
                                         None,
                                     ),
                                 ))

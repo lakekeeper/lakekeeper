@@ -11,11 +11,11 @@ use lakekeeper::{
     service::{
         authn::UserId,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GenericTableAction,
-            NamespaceAction, ProjectAction, RoleAction, ServerAction, TableAction, TagAction,
-            ViewAction, WarehouseAction,
+            ActionDescriptor, CatalogAction, CatalogDatasetAction, CatalogGenericTableAction,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+            CatalogTableAction, CatalogTagAction, CatalogViewAction, CatalogWarehouseAction,
+            DatasetAction, GenericTableAction, NamespaceAction, ProjectAction, RoleAction,
+            ServerAction, TableAction, TagAction, ViewAction, WarehouseAction,
         },
     },
 };
@@ -1369,6 +1369,8 @@ pub enum NamespaceRelation {
     CanListNamespaces,
     CanCreateGenericTable,
     CanListGenericTables,
+    CanCreateDataset,
+    CanListDatasets,
     CanListEverything,
     CanIncludeInList,
     CanManageTags,
@@ -1547,6 +1549,8 @@ pub(super) enum APINamespaceAction {
     CreateTable,
     CreateView,
     CreateGenericTable,
+    CreateDataset,
+    ListDatasets,
     CreateNamespace,
     Delete,
     /// May move this namespace elsewhere in the hierarchy.
@@ -1605,6 +1609,8 @@ impl ReducedRelation for APINamespaceAction {
             APINamespaceAction::CreateTable => NamespaceRelation::CanCreateTable,
             APINamespaceAction::CreateView => NamespaceRelation::CanCreateView,
             APINamespaceAction::CreateGenericTable => NamespaceRelation::CanCreateGenericTable,
+            APINamespaceAction::CreateDataset => NamespaceRelation::CanCreateDataset,
+            APINamespaceAction::ListDatasets => NamespaceRelation::CanListDatasets,
             APINamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
             APINamespaceAction::Delete => NamespaceRelation::CanDelete,
             APINamespaceAction::Move => NamespaceRelation::CanMove,
@@ -1652,6 +1658,8 @@ impl ReducedRelation for CatalogNamespaceAction {
                 NamespaceRelation::CanCreateGenericTable
             }
             CatalogNamespaceAction::ListGenericTables => NamespaceRelation::CanListGenericTables,
+            CatalogNamespaceAction::CreateDataset { .. } => NamespaceRelation::CanCreateDataset,
+            CatalogNamespaceAction::ListDatasets => NamespaceRelation::CanListDatasets,
             // Same permission as `APINamespaceAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogNamespaceAction::ReadGrants => NamespaceRelation::CanReadAssignments,
@@ -2621,6 +2629,103 @@ impl RevocableRelation for APIWarehouseRelation {
     }
 }
 
+// =================== Dataset Relations ===================
+
+#[derive(
+    Debug, Clone, Copy, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr, EnumIter,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum DatasetRelation {
+    // -- Hierarchical relations --
+    Parent,
+    // -- Direct relations --
+    Ownership,
+    PassGrants,
+    ManageGrants,
+    Describe,
+    Select,
+    Modify,
+    ManageTags,
+    // -- Actions --
+    CanDrop,
+    CanUndrop,
+    CanReadData,
+    CanGetMetadata,
+    CanRename,
+    CanIncludeInList,
+    CanGetTasks,
+    CanControlTasks,
+    CanSetProtection,
+    CanManageTags,
+    // -- Versioning actions --
+    CanCommit,
+    CanManageRefs,
+    CanPromote,
+    CanReset,
+    // -- Read assignments / grant actions --
+    CanReadAssignments,
+    CanGrantPassGrants,
+    CanGrantManageGrants,
+    CanGrantDescribe,
+    CanGrantSelect,
+    CanGrantModify,
+    CanGrantManageTags,
+    CanRevokeDescribe,
+    CanRevokeModify,
+    CanRevokeSelect,
+    CanChangeOwnership,
+}
+
+impl DatasetAction for DatasetRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanCommit)
+    }
+}
+impl CatalogAction for DatasetRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+impl OpenFgaRelation for DatasetRelation {}
+
+impl From<CatalogDatasetAction> for DatasetRelation {
+    fn from(action: CatalogDatasetAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl From<&CatalogDatasetAction> for DatasetRelation {
+    fn from(action: &CatalogDatasetAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl ReducedRelation for CatalogDatasetAction {
+    type OpenFgaRelation = DatasetRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            CatalogDatasetAction::Drop => DatasetRelation::CanDrop,
+            CatalogDatasetAction::Undrop => DatasetRelation::CanUndrop,
+            CatalogDatasetAction::ReadData => DatasetRelation::CanReadData,
+            CatalogDatasetAction::ManageTags => DatasetRelation::CanManageTags,
+            CatalogDatasetAction::GetMetadata => DatasetRelation::CanGetMetadata,
+            CatalogDatasetAction::Rename => DatasetRelation::CanRename,
+            CatalogDatasetAction::IncludeInList => DatasetRelation::CanIncludeInList,
+            CatalogDatasetAction::GetTasks => DatasetRelation::CanGetTasks,
+            CatalogDatasetAction::ControlTasks => DatasetRelation::CanControlTasks,
+            CatalogDatasetAction::SetProtection => DatasetRelation::CanSetProtection,
+            CatalogDatasetAction::Commit => DatasetRelation::CanCommit,
+            CatalogDatasetAction::ManageRefs => DatasetRelation::CanManageRefs,
+            CatalogDatasetAction::Promote => DatasetRelation::CanPromote,
+            CatalogDatasetAction::Reset => DatasetRelation::CanReset,
+            // Same permission as `APIDatasetAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogDatasetAction::ReadGrants => DatasetRelation::CanReadAssignments,
+        }
+    }
+}
+
 impl RevocableRelation for APINamespaceRelation {
     fn revoke_relation(&self) -> NamespaceRelation {
         match self {
@@ -2638,6 +2743,34 @@ impl RevocableRelation for APINamespaceRelation {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", schema(as=DatasetRelation))]
+pub(super) enum APIDatasetRelation {
+    Ownership,
+    PassGrants,
+    ManageGrants,
+    Describe,
+    Select,
+    Modify,
+    ManageTags,
+}
+impl GrantableRelation for APIDatasetRelation {
+    fn grant_relation(&self) -> DatasetRelation {
+        match self {
+            APIDatasetRelation::Ownership => DatasetRelation::CanChangeOwnership,
+            APIDatasetRelation::PassGrants => DatasetRelation::CanGrantPassGrants,
+            APIDatasetRelation::ManageGrants => DatasetRelation::CanGrantManageGrants,
+            APIDatasetRelation::Describe => DatasetRelation::CanGrantDescribe,
+            APIDatasetRelation::Select => DatasetRelation::CanGrantSelect,
+            APIDatasetRelation::Modify => DatasetRelation::CanGrantModify,
+            APIDatasetRelation::ManageTags => DatasetRelation::CanGrantManageTags,
+        }
+    }
+}
+
 impl RevocableRelation for APITableRelation {
     fn revoke_relation(&self) -> TableRelation {
         match self {
@@ -2650,6 +2783,22 @@ impl RevocableRelation for APITableRelation {
             | APITableRelation::PassGrants
             | APITableRelation::ManageGrants
             | APITableRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl ReducedRelation for APIDatasetRelation {
+    type OpenFgaRelation = DatasetRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APIDatasetRelation::Ownership => DatasetRelation::Ownership,
+            APIDatasetRelation::PassGrants => DatasetRelation::PassGrants,
+            APIDatasetRelation::ManageGrants => DatasetRelation::ManageGrants,
+            APIDatasetRelation::Describe => DatasetRelation::Describe,
+            APIDatasetRelation::Select => DatasetRelation::Select,
+            APIDatasetRelation::Modify => DatasetRelation::Modify,
+            APIDatasetRelation::ManageTags => DatasetRelation::ManageTags,
         }
     }
 }
@@ -2682,6 +2831,22 @@ impl RevocableRelation for APIGenericTableRelation {
             | APIGenericTableRelation::PassGrants
             | APIGenericTableRelation::ManageGrants
             | APIGenericTableRelation::ManageTags => self.grant_relation(),
+        }
+    }
+}
+
+impl RevocableRelation for APIDatasetRelation {
+    fn revoke_relation(&self) -> DatasetRelation {
+        match self {
+            // Delegable, so taking them back is administration.
+            APIDatasetRelation::Describe => DatasetRelation::CanRevokeDescribe,
+            APIDatasetRelation::Modify => DatasetRelation::CanRevokeModify,
+            APIDatasetRelation::Select => DatasetRelation::CanRevokeSelect,
+            // Never delegable, so one relation covers both directions.
+            APIDatasetRelation::Ownership
+            | APIDatasetRelation::PassGrants
+            | APIDatasetRelation::ManageGrants
+            | APIDatasetRelation::ManageTags => self.grant_relation(),
         }
     }
 }

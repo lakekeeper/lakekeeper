@@ -1,0 +1,75 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT name, typ as \"typ: DatasetRefTypeDb\", snapshot_id, protected\n        FROM dataset_ref\n        WHERE warehouse_id = $1 AND dataset_id = $2\n        ORDER BY name ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "typ: DatasetRefTypeDb",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_ref_type",
+            "kind": {
+              "Enum": [
+                "branch",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_ref",
+            "name": "protected"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "5d8df3e191b86bbe96c31ad8de5168618cf73bc98e37d747266a05c9203ae30b"
+}

@@ -4235,6 +4235,488 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a dataset
+      operationId: get_dataset_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperDatasetActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Dataset Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this dataset. Grants do not inherit.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the dataset; every other listing requires
+        the dataset's grant-read permission.
+      operationId: list_dataset_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the dataset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Dataset Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body.
+      operationId: apply_dataset_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a dataset [Preview]
+      description: This API may change in a backward-incompatible way in a future release.
+      operationId: get_dataset_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may administer, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may administer, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get Dataset Protection
+      description: Retrieves whether a dataset is protected from deletion.
+      operationId: get_dataset_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set Dataset Protection
+      description: Configures whether a dataset should be protected from deletion.
+      operationId: set_dataset_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Dataset protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Dataset Tags
+      description: Returns the tags applied to the dataset.
+      operationId: list_dataset_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the dataset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/dataset/{dataset_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Dataset Tag
+      description: Applies a tag to the dataset, or updates its value if already applied.
+      operationId: set_dataset_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Dataset Tag
+      description: |-
+        Removes a tag from the dataset. Succeeds without change if the tag is
+        not applied.
+      operationId: delete_dataset_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: dataset_id
+          in: path
+          description: Dataset ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
@@ -7343,6 +7825,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/dataset_checkpoint/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_dataset_checkpoint
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetDatasetCheckpointQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_dataset_checkpoint
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDatasetCheckpointQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/dataset_import/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_dataset_import
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetDatasetImportQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_dataset_import
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDatasetImportQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config:
     get:
       tags:
@@ -8927,6 +9531,10 @@ components:
             within a project and may not contain "/"
     CreateWarehouseResponse:
       $ref: '#/components/schemas/GetWarehouseResponse'
+    DatasetCheckpointQueueConfig:
+      type: object
+    DatasetImportQueueConfig:
+      type: object
     DeletedTabularResponse:
       type: object
       required:
@@ -9509,6 +10117,30 @@ components:
         - select
         - modify
         - manage_tags
+    GetDatasetCheckpointQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/DatasetCheckpointQueueConfig'
+    GetDatasetImportQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/DatasetImportQueueConfig'
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -9551,6 +10183,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GenericTableAssignment'
+    GetLakekeeperDatasetActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperDatasetAction'
     GetLakekeeperGenericTableActionsResponse:
       type: object
       required:
@@ -10076,6 +10717,23 @@ components:
           maxLength: 256
           minLength: 1
       additionalProperties: false
+    GrantResourceDataset:
+      type: object
+      required:
+        - warehouse-id
+        - dataset-id
+        - type
+      properties:
+        dataset-id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - dataset
+        warehouse-id:
+          type: string
+          format: uuid
     GrantResourceGenericTable:
       type: object
       required:
@@ -10131,6 +10789,7 @@ components:
         - $ref: '#/components/schemas/GrantResourceTable'
         - $ref: '#/components/schemas/GrantResourceView'
         - $ref: '#/components/schemas/GrantResourceGenericTable'
+        - $ref: '#/components/schemas/GrantResourceDataset'
         - $ref: '#/components/schemas/GrantResourceTag'
       description: |-
         The resource a grant is held on, as it appears in a response.
@@ -10141,6 +10800,7 @@ components:
       discriminator:
         propertyName: type
         mapping:
+          dataset: '#/components/schemas/GrantResourceDataset'
           generic-table: '#/components/schemas/GrantResourceGenericTable'
           namespace: '#/components/schemas/GrantResourceNamespace'
           project: '#/components/schemas/GrantResourceProject'
@@ -10423,6 +11083,176 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LakekeeperDatasetAction:
+      oneOf:
+        - $ref: '#/components/schemas/LakekeeperDatasetActionDrop'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionReadData'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionGetMetadata'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionRename'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionIncludeInList'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionUndrop'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionGetTasks'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionControlTasks'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionSetProtection'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionManageTags'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionReadGrants'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionCommit'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionManageRefs'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionPromote'
+        - $ref: '#/components/schemas/LakekeeperDatasetActionReset'
+      discriminator:
+        propertyName: action
+        mapping:
+          commit: '#/components/schemas/LakekeeperDatasetActionCommit'
+          control_tasks: '#/components/schemas/LakekeeperDatasetActionControlTasks'
+          drop: '#/components/schemas/LakekeeperDatasetActionDrop'
+          get_metadata: '#/components/schemas/LakekeeperDatasetActionGetMetadata'
+          get_tasks: '#/components/schemas/LakekeeperDatasetActionGetTasks'
+          include_in_list: '#/components/schemas/LakekeeperDatasetActionIncludeInList'
+          manage_refs: '#/components/schemas/LakekeeperDatasetActionManageRefs'
+          manage_tags: '#/components/schemas/LakekeeperDatasetActionManageTags'
+          promote: '#/components/schemas/LakekeeperDatasetActionPromote'
+          read_data: '#/components/schemas/LakekeeperDatasetActionReadData'
+          read_grants: '#/components/schemas/LakekeeperDatasetActionReadGrants'
+          rename: '#/components/schemas/LakekeeperDatasetActionRename'
+          reset: '#/components/schemas/LakekeeperDatasetActionReset'
+          set_protection: '#/components/schemas/LakekeeperDatasetActionSetProtection'
+          undrop: '#/components/schemas/LakekeeperDatasetActionUndrop'
+    LakekeeperDatasetActionCommit:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - commit
+    LakekeeperDatasetActionControlTasks:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - control_tasks
+    LakekeeperDatasetActionDrop:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - drop
+    LakekeeperDatasetActionGetMetadata:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - get_metadata
+    LakekeeperDatasetActionGetTasks:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - get_tasks
+    LakekeeperDatasetActionIncludeInList:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - include_in_list
+    LakekeeperDatasetActionManageRefs:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - manage_refs
+    LakekeeperDatasetActionManageTags:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - manage_tags
+    LakekeeperDatasetActionPromote:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - promote
+    LakekeeperDatasetActionReadData:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_data
+    LakekeeperDatasetActionReadGrants:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - read_grants
+    LakekeeperDatasetActionRename:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - rename
+    LakekeeperDatasetActionReset:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - reset
+    LakekeeperDatasetActionSetProtection:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - set_protection
+    LakekeeperDatasetActionUndrop:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - undrop
     LakekeeperGenericTableAction:
       oneOf:
         - $ref: '#/components/schemas/LakekeeperGenericTableActionDrop'
@@ -10576,6 +11406,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionListGenericTables'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionCreateDataset'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionListDatasets'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
@@ -10586,6 +11418,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
+          create_dataset: '#/components/schemas/LakekeeperNamespaceActionCreateDataset'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionCreateTable'
@@ -10593,6 +11426,7 @@ components:
           delete: '#/components/schemas/LakekeeperNamespaceActionDelete'
           get_metadata: '#/components/schemas/LakekeeperNamespaceActionGetMetadata'
           include_in_list: '#/components/schemas/LakekeeperNamespaceActionIncludeInList'
+          list_datasets: '#/components/schemas/LakekeeperNamespaceActionListDatasets'
           list_everything: '#/components/schemas/LakekeeperNamespaceActionListEverything'
           list_generic_tables: '#/components/schemas/LakekeeperNamespaceActionListGenericTables'
           list_namespaces: '#/components/schemas/LakekeeperNamespaceActionListNamespaces'
@@ -10628,6 +11462,48 @@ components:
           items:
             type: string
           description: Path the namespace is being moved from.
+    LakekeeperNamespaceActionCreateDataset:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - create_dataset
+        dataset_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Dataset ID, if externally provided.
+        location:
+          type:
+            - string
+            - 'null'
+          description: |-
+            User-supplied location. For imports this is an existing prefix the
+            dataset will borrow — the primary lever for path-based authorization
+            policy, e.g. restricting which prefixes may be registered.
+        managed:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Whether Lakekeeper owns an exclusive prefix (managed) or borrows an
+            existing one (imported). Policy-relevant: the two differ in whether
+            Lakekeeper may ever delete the underlying objects.
+        name:
+          type:
+            - string
+            - 'null'
+          description: Name of the dataset to create.
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
     LakekeeperNamespaceActionCreateGenericTable:
       type: object
       required:
@@ -10791,6 +11667,8 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindIncludeInList'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindListGenericTables'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindCreateDataset'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindListDatasets'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
@@ -10801,6 +11679,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
+          create_dataset: '#/components/schemas/LakekeeperNamespaceActionKindCreateDataset'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionKindCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateTable'
@@ -10808,6 +11687,7 @@ components:
           delete: '#/components/schemas/LakekeeperNamespaceActionKindDelete'
           get_metadata: '#/components/schemas/LakekeeperNamespaceActionKindGetMetadata'
           include_in_list: '#/components/schemas/LakekeeperNamespaceActionKindIncludeInList'
+          list_datasets: '#/components/schemas/LakekeeperNamespaceActionKindListDatasets'
           list_everything: '#/components/schemas/LakekeeperNamespaceActionKindListEverything'
           list_generic_tables: '#/components/schemas/LakekeeperNamespaceActionKindListGenericTables'
           list_namespaces: '#/components/schemas/LakekeeperNamespaceActionKindListNamespaces'
@@ -10829,6 +11709,15 @@ components:
           type: string
           enum:
             - accept_moved_namespace
+    LakekeeperNamespaceActionKindCreateDataset:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - create_dataset
     LakekeeperNamespaceActionKindCreateGenericTable:
       type: object
       required:
@@ -10892,6 +11781,15 @@ components:
           type: string
           enum:
             - include_in_list
+    LakekeeperNamespaceActionKindListDatasets:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - list_datasets
     LakekeeperNamespaceActionKindListEverything:
       type: object
       required:
@@ -11000,6 +11898,15 @@ components:
           type: string
           enum:
             - update_properties
+    LakekeeperNamespaceActionListDatasets:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - list_datasets
     LakekeeperNamespaceActionListEverything:
       type: object
       required:
@@ -13642,6 +14549,8 @@ components:
         - create_table
         - create_view
         - create_generic_table
+        - create_dataset
+        - list_datasets
         - create_namespace
         - delete
         - move
@@ -14295,6 +15204,7 @@ components:
         - table
         - view
         - generic-table
+        - dataset
         - tag-definition
     RevokeSubtreeGrantsRequest:
       type: object
@@ -15210,6 +16120,30 @@ components:
       enum:
         - admin
         - operator
+    SetDatasetCheckpointQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/DatasetCheckpointQueueConfig'
+    SetDatasetImportQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/DatasetImportQueueConfig'
     SetManagedAccessRequest:
       type: object
       required:
@@ -16072,12 +17006,27 @@ components:
         - $ref: '#/components/schemas/TabularIdentUuidTable'
         - $ref: '#/components/schemas/TabularIdentUuidView'
         - $ref: '#/components/schemas/TabularIdentUuidGenericTable'
+        - $ref: '#/components/schemas/TabularIdentUuidDataset'
       discriminator:
         propertyName: type
         mapping:
+          dataset: '#/components/schemas/TabularIdentUuidDataset'
           generic-table: '#/components/schemas/TabularIdentUuidGenericTable'
           table: '#/components/schemas/TabularIdentUuidTable'
           view: '#/components/schemas/TabularIdentUuidView'
+    TabularIdentUuidDataset:
+      type: object
+      required:
+        - id
+        - type
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - dataset
     TabularIdentUuidGenericTable:
       type: object
       required:
@@ -16124,6 +17073,7 @@ components:
         - table
         - view
         - generic-table
+        - dataset
     TagAssignment:
       oneOf:
         - $ref: '#/components/schemas/TagAssignmentOwnership'
@@ -16191,6 +17141,7 @@ components:
         - $ref: '#/components/schemas/TagAttachmentTargetTable'
         - $ref: '#/components/schemas/TagAttachmentTargetView'
         - $ref: '#/components/schemas/TagAttachmentTargetGenericTable'
+        - $ref: '#/components/schemas/TagAttachmentTargetDataset'
         - $ref: '#/components/schemas/TagAttachmentTargetColumn'
       description: |-
         The object a tag is attached to in a reverse-lookup listing. `type`
@@ -16199,6 +17150,7 @@ components:
         propertyName: type
         mapping:
           column: '#/components/schemas/TagAttachmentTargetColumn'
+          dataset: '#/components/schemas/TagAttachmentTargetDataset'
           generic-table: '#/components/schemas/TagAttachmentTargetGenericTable'
           namespace: '#/components/schemas/TagAttachmentTargetNamespace'
           table: '#/components/schemas/TagAttachmentTargetTable'
@@ -16223,6 +17175,23 @@ components:
           type: string
           enum:
             - column
+        warehouse-id:
+          type: string
+          format: uuid
+    TagAttachmentTargetDataset:
+      type: object
+      required:
+        - warehouse-id
+        - dataset-id
+        - type
+      properties:
+        dataset-id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - dataset
         warehouse-id:
           type: string
           format: uuid
@@ -16414,6 +17383,7 @@ components:
         - table
         - view
         - generic-table
+        - dataset
         - column
     TagSource:
       type: string
@@ -17438,14 +18408,30 @@ components:
         - $ref: '#/components/schemas/WarehouseTaskEntityFilterTable'
         - $ref: '#/components/schemas/WarehouseTaskEntityFilterView'
         - $ref: '#/components/schemas/WarehouseTaskEntityFilterGenericTable'
+        - $ref: '#/components/schemas/WarehouseTaskEntityFilterDataset'
         - $ref: '#/components/schemas/WarehouseTaskEntityFilterWarehouse'
       discriminator:
         propertyName: type
         mapping:
+          dataset: '#/components/schemas/WarehouseTaskEntityFilterDataset'
           generic-table: '#/components/schemas/WarehouseTaskEntityFilterGenericTable'
           table: '#/components/schemas/WarehouseTaskEntityFilterTable'
           view: '#/components/schemas/WarehouseTaskEntityFilterView'
           warehouse: '#/components/schemas/WarehouseTaskEntityFilterWarehouse'
+    WarehouseTaskEntityFilterDataset:
+      type: object
+      description: Get tasks for a specific dataset
+      required:
+        - dataset-id
+        - type
+      properties:
+        dataset-id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - dataset
     WarehouseTaskEntityFilterGenericTable:
       type: object
       description: Get tasks for a specific generic table
@@ -17505,12 +18491,27 @@ components:
         - $ref: '#/components/schemas/WarehouseTaskEntityIdTable'
         - $ref: '#/components/schemas/WarehouseTaskEntityIdView'
         - $ref: '#/components/schemas/WarehouseTaskEntityIdGenericTable'
+        - $ref: '#/components/schemas/WarehouseTaskEntityIdDataset'
       discriminator:
         propertyName: type
         mapping:
+          dataset: '#/components/schemas/WarehouseTaskEntityIdDataset'
           generic-table: '#/components/schemas/WarehouseTaskEntityIdGenericTable'
           table: '#/components/schemas/WarehouseTaskEntityIdTable'
           view: '#/components/schemas/WarehouseTaskEntityIdView'
+    WarehouseTaskEntityIdDataset:
+      type: object
+      required:
+        - dataset-id
+        - type
+      properties:
+        dataset-id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - dataset
     WarehouseTaskEntityIdGenericTable:
       type: object
       required:

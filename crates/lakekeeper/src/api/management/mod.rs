@@ -2,6 +2,7 @@
 
 pub mod v1 {
     pub mod check;
+    pub mod dataset;
     pub mod generic_table;
     pub mod grant;
     pub mod lakekeeper_actions;
@@ -31,6 +32,7 @@ pub mod v1 {
         routing::{delete, get, post, put},
     };
     use axum_extra::extract::Query;
+    use dataset::DatasetManagementService as _;
     use generic_table::GenericTableManagementService as _;
     use grant::{
         ApplyGrantsRequest, GetGrantAccessQuery, GrantablePrivilegesResponse, ListGrantsQuery,
@@ -43,11 +45,12 @@ pub mod v1 {
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use lakekeeper_actions::{
-        GetLakekeeperGenericTableActionsResponse, GetLakekeeperNamespaceActionsResponse,
-        GetLakekeeperProjectActionsResponse, GetLakekeeperRoleActionsResponse,
-        GetLakekeeperServerActionsResponse, GetLakekeeperTableActionsResponse,
-        GetLakekeeperTagActionsResponse, GetLakekeeperUserActionsResponse,
-        GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        GetLakekeeperDatasetActionsResponse, GetLakekeeperGenericTableActionsResponse,
+        GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
+        GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
+        GetLakekeeperTableActionsResponse, GetLakekeeperTagActionsResponse,
+        GetLakekeeperUserActionsResponse, GetLakekeeperViewActionsResponse,
+        GetLakekeeperWarehouseActionsResponse, get_allowed_dataset_actions,
         get_allowed_generic_table_actions, get_allowed_namespace_actions,
         get_allowed_project_actions, get_allowed_role_actions, get_allowed_server_actions,
         get_allowed_table_actions, get_allowed_tag_actions, get_allowed_user_actions,
@@ -159,8 +162,8 @@ pub mod v1 {
         },
         request_metadata::RequestMetadata,
         service::{
-            Actor, CatalogStore, CreateOrUpdateUserResponse, GenericTableId, NamespaceId, RoleId,
-            SecretStore, State, TableId, TabularId, TagDefinitionId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, DatasetId, GenericTableId,
+            NamespaceId, RoleId, SecretStore, State, TableId, TabularId, TagDefinitionId, ViewId,
             authn::UserId,
             authz::Authorizer,
             tasks::{TaskId, TaskQueueName},
@@ -1612,6 +1615,107 @@ pub mod v1 {
         .map(|()| StatusCode::NO_CONTENT)
     }
 
+    /// List Dataset Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this dataset. Grants do not inherit.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the dataset; every other listing requires
+    /// the dataset's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListDatasetGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the dataset", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_dataset_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(WarehouseId, DatasetId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_dataset_grants(
+            warehouse_id,
+            dataset_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Dataset Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyDatasetGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_dataset_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(WarehouseId, DatasetId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_dataset_grants(
+            warehouse_id,
+            dataset_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// Get Grantable Privileges on a dataset [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetDatasetGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_dataset_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(WarehouseId, DatasetId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_dataset_grantable_privileges(
+            warehouse_id,
+            dataset_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
     /// List Generic Table Grants [Preview]
     ///
     /// This API may change in a backward-incompatible way in a future release.
@@ -2095,6 +2199,97 @@ pub mod v1 {
     ) -> Result<ListTagsResponse> {
         ApiServer::<C, A, S>::list_view_tags(warehouse_id, view_id, api_context, metadata, query)
             .await
+    }
+
+    /// Set Dataset Tag
+    ///
+    /// Applies a tag to the dataset, or updates its value if already applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetDatasetTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_dataset_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id, tag_name)): Path<(WarehouseId, DatasetId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_dataset_tag(
+            warehouse_id,
+            dataset_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Dataset Tag
+    ///
+    /// Removes a tag from the dataset. Succeeds without change if the tag is
+    /// not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteDatasetTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_dataset_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id, tag_name)): Path<(WarehouseId, DatasetId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_dataset_tag(
+            warehouse_id,
+            dataset_id,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Dataset Tags
+    ///
+    /// Returns the tags applied to the dataset.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListDatasetTags.path(),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("dataset_id" = Uuid, Path, description = "Dataset ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the dataset", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_dataset_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(WarehouseId, DatasetId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_dataset_tags(
+            warehouse_id,
+            dataset_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
     }
 
     /// Set Generic Table Tag
@@ -3536,6 +3731,96 @@ pub mod v1 {
         ))
     }
 
+    /// Get allowed actions for a dataset
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetDatasetActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("dataset_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperDatasetActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_dataset_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(WarehouseId, DatasetId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperDatasetActionsResponse>)> {
+        let relations = get_allowed_dataset_actions::<A, C, S>(
+            api_context,
+            metadata,
+            query,
+            warehouse_id,
+            dataset_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperDatasetActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
+    /// Get Dataset Protection
+    ///
+    /// Retrieves whether a dataset is protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetDatasetProtection.path(),
+        params(("warehouse_id" = Uuid,),("dataset_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_dataset_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_dataset_protection(
+            DatasetId::from(dataset_id),
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Set Dataset Protection
+    ///
+    /// Configures whether a dataset should be protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetDatasetProtection.path(),
+        params(("warehouse_id" = Uuid,),("dataset_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse, description = "Dataset protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_dataset_protection<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, dataset_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::set_dataset_protection(
+            DatasetId::from(dataset_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Get allowed actions for a generic table
     #[cfg_attr(feature = "open-api", utoipa::path(
     get,
@@ -4511,6 +4796,7 @@ pub mod v1 {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
                 TabularId::GenericTable(_) => TabularType::GenericTable,
+                TabularId::Dataset(_) => TabularType::Dataset,
             }
         }
     }
@@ -4523,6 +4809,7 @@ pub mod v1 {
         Table,
         View,
         GenericTable,
+        Dataset,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
@@ -4624,6 +4911,10 @@ pub mod v1 {
                     get(get_view_grantable_privileges),
                 )
                 .route(
+                    ManagementV1Endpoint::GetDatasetGrantablePrivileges.path_in_management_v1(),
+                    get(get_dataset_grantable_privileges),
+                )
+                .route(
                     ManagementV1Endpoint::GetGenericTableGrantablePrivileges
                         .path_in_management_v1(),
                     get(get_generic_table_grantable_privileges),
@@ -4677,6 +4968,10 @@ pub mod v1 {
                     get(list_view_grants).post(apply_view_grants),
                 )
                 .route(
+                    ManagementV1Endpoint::ListDatasetGrants.path_in_management_v1(),
+                    get(list_dataset_grants).post(apply_dataset_grants),
+                )
+                .route(
                     ManagementV1Endpoint::ListGenericTableGrants.path_in_management_v1(),
                     get(list_generic_table_grants).post(apply_generic_table_grants),
                 )
@@ -4715,6 +5010,14 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListViewTags.path_in_management_v1(),
                     get(list_view_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetDatasetTag.path_in_management_v1(),
+                    put(set_dataset_tag).delete(delete_dataset_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListDatasetTags.path_in_management_v1(),
+                    get(list_dataset_tags),
                 )
                 .route(
                     ManagementV1Endpoint::SetGenericTableTag.path_in_management_v1(),
@@ -4882,6 +5185,14 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetGenericTableActions.path_in_management_v1(),
                     get(get_generic_table_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetDatasetActions.path_in_management_v1(),
+                    get(get_dataset_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetDatasetProtection.path_in_management_v1(),
+                    get(get_dataset_protection).post(set_dataset_protection),
                 )
                 .route(
                     ManagementV1Endpoint::GetGenericTableProtection.path_in_management_v1(),

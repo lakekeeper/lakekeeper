@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO dataset_ref (warehouse_id, dataset_id, name, typ, snapshot_id)\n        VALUES ($1, $2, 'main', 'branch', NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ce6b2df7bdacc9fb7dcf47209f69cf5a150bf39dd2e3266fe4a892a7004ce2a8"
+}

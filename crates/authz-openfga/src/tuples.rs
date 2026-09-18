@@ -15,8 +15,8 @@
 use lakekeeper::{
     ProjectId, WarehouseId,
     service::{
-        Actor, GenericTableId, NamespaceId, RoleId, TableId, TabularId, TagDefinitionId, ViewId,
-        authz::NamespaceParent,
+        Actor, DatasetId, GenericTableId, NamespaceId, RoleId, TableId, TabularId, TagDefinitionId,
+        ViewId, authz::NamespaceParent,
     },
 };
 use openfga_client::client::TupleKey;
@@ -24,8 +24,8 @@ use openfga_client::client::TupleKey;
 use crate::{
     entities::OpenFgaEntity,
     relations::{
-        GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation,
-        TableRelation, TagRelation, ViewRelation, WarehouseRelation,
+        DatasetRelation, GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation,
+        ServerRelation, TableRelation, TagRelation, ViewRelation, WarehouseRelation,
     },
 };
 
@@ -194,6 +194,37 @@ pub(crate) fn ownership_tuples_for_generic_table(
     )]
 }
 
+/// Hierarchy tuples for a dataset: `namespace ↔ dataset`.
+pub(crate) fn hierarchy_tuples_for_dataset(
+    warehouse: WarehouseId,
+    dataset: DatasetId,
+    parent_namespace: NamespaceId,
+) -> Vec<TupleKey> {
+    let parent_id = parent_namespace.to_openfga();
+    let this_id = (warehouse, dataset).to_openfga();
+    vec![
+        tuple(
+            parent_id.clone(),
+            DatasetRelation::Parent.to_string(),
+            this_id.clone(),
+        ),
+        tuple(this_id, NamespaceRelation::Child.to_string(), parent_id),
+    ]
+}
+
+/// Ownership tuple for a dataset.
+pub(crate) fn ownership_tuples_for_dataset(
+    actor: &Actor,
+    warehouse: WarehouseId,
+    dataset: DatasetId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        actor.to_openfga(),
+        DatasetRelation::Ownership.to_string(),
+        (warehouse, dataset).to_openfga(),
+    )]
+}
+
 /// Hierarchy tuples for a view: `namespace ↔ view`.
 pub(crate) fn hierarchy_tuples_for_view(
     warehouse: WarehouseId,
@@ -239,6 +270,9 @@ pub(crate) fn hierarchy_tuples_for_tabular(
         TabularId::View(view) => hierarchy_tuples_for_view(warehouse, view, parent_namespace),
         TabularId::GenericTable(generic_table) => {
             hierarchy_tuples_for_generic_table(warehouse, generic_table, parent_namespace)
+        }
+        TabularId::Dataset(dataset) => {
+            hierarchy_tuples_for_dataset(warehouse, dataset, parent_namespace)
         }
     }
 }

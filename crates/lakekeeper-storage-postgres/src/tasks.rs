@@ -9,7 +9,7 @@ use lakekeeper::{
         tasks::TaskStatus,
     },
     service::{
-        ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
+        ArcProjectId, DatabaseIntegrityError, DatasetId, TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
@@ -45,6 +45,7 @@ enum TaskEntityTypeDB {
     Table,
     View,
     GenericTable,
+    Dataset,
     Project,
     Warehouse,
 }
@@ -54,6 +55,7 @@ impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
         match entity_id {
             WarehouseTaskEntityId::Table { .. } => Self::Table,
             WarehouseTaskEntityId::View { .. } => Self::View,
+            WarehouseTaskEntityId::Dataset { .. } => Self::Dataset,
             WarehouseTaskEntityId::GenericTable { .. } => Self::GenericTable,
         }
     }
@@ -82,7 +84,10 @@ fn task_entity_from_db(
     entity_name: Option<Vec<String>>,
 ) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
-        TaskEntityTypeDB::View | TaskEntityTypeDB::Table | TaskEntityTypeDB::GenericTable => {
+        TaskEntityTypeDB::View
+        | TaskEntityTypeDB::Table
+        | TaskEntityTypeDB::GenericTable
+        | TaskEntityTypeDB::Dataset => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
                     DatabaseIntegrityError::new("WarehouseId is missing for tabular scoped task.")
@@ -99,6 +104,9 @@ fn task_entity_from_db(
                 },
                 TaskEntityTypeDB::Table => WarehouseTaskEntityId::Table {
                     table_id: TableId::from(entity_id),
+                },
+                TaskEntityTypeDB::Dataset => WarehouseTaskEntityId::Dataset {
+                    dataset_id: DatasetId::from(entity_id),
                 },
                 TaskEntityTypeDB::GenericTable => WarehouseTaskEntityId::GenericTable {
                     generic_table_id: lakekeeper::service::GenericTableId::from(entity_id),
@@ -294,6 +302,9 @@ pub(crate) async fn queue_task_batch(
                     }),
                     TaskEntityTypeDB::GenericTable => Some(WarehouseTaskEntityId::GenericTable {
                         generic_table_id: record.entity_id.unwrap().into(),
+                    }),
+                    TaskEntityTypeDB::Dataset => Some(WarehouseTaskEntityId::Dataset {
+                        dataset_id: record.entity_id.unwrap().into(),
                     }),
                     TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,
                 },
