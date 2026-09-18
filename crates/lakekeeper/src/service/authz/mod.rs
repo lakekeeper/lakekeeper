@@ -836,15 +836,17 @@ pub struct GrantSubtreeShape {
 
 /// What a subtree grant operation covers.
 ///
-/// `of` describes a concrete request and is what every enforced check carries: Lakekeeper
-/// never authorizes a real subtree listing or revoke with `any`. `any` is the
+/// `request` describes a concrete call — the resource kinds it reaches, how far its range
+/// extends, the privileges it covers and the principal it is narrowed to — and is what
+/// every enforced check carries: Lakekeeper never authorizes a real subtree listing or
+/// revoke with `any`. `any` is the
 /// base-capability form, used for permission introspection and for "may this principal
 /// run subtree operations here at all?" queries. An authorizer that refuses `any` removes
 /// the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
 /// succeed.
 // The base case is a named value, so an authorizer is never silently asked to allow an
-// unspecified subtree operation: a policy that fences on the concrete shape gates `of`
-// and never matches `any`.
+// unspecified subtree operation: a policy that fences on the concrete shape gates
+// `request` and never matches `any`.
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -995,10 +997,10 @@ pub enum CatalogWarehouseAction {
     /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
     /// covers this one resource; granted separately because it enumerates the subtree.
     ///
-    /// `scope` states what the listing covers — the kinds it reaches, how far its range
-    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
-    /// access review and still refuse a full enumeration. A real listing is checked with
-    /// the `of` form; permission introspection uses `any`.
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration. A real
+    /// listing is checked with the `request` form; permission introspection uses `any`.
     ReadSubtreeGrants {
         scope: GrantSubtreeScope,
     },
@@ -1264,10 +1266,10 @@ pub enum CatalogNamespaceAction {
     /// `ReadGrants`, which covers this one resource; granted separately because it
     /// enumerates the subtree.
     ///
-    /// `scope` states what the listing covers — the kinds it reaches, how far its range
-    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
-    /// access review and still refuse a full enumeration. A real listing is checked with
-    /// the `of` form; permission introspection uses `any`.
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration. A real
+    /// listing is checked with the `request` form; permission introspection uses `any`.
     ReadSubtreeGrants {
         scope: GrantSubtreeScope,
     },
