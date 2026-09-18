@@ -3050,10 +3050,10 @@ async fn test_check_phase_has_no_side_effects(pool: PgPool) {
     .await
     .unwrap();
 
-    // A Table-scoped definition, to drive the check phase to its *end*: blocking an
-    // action aborts at the authorizer call, leaving everything after it unexercised.
-    // A scope mismatch is the last step of `check_set_tag_on_target`, so it refuses
-    // only after the whole phase has run.
+    // A Table-scoped definition, to drive the check phase *past* the authorizer
+    // call: blocking an action aborts at that call, leaving the rest of the phase
+    // unexercised. `check_set_tag_on_target` validates the scope only after that
+    // call, so the request below is issued while `tag:Apply` is still permitted.
     HidingServer::create_tag_definition(
         CreateTagDefinitionRequest {
             name: "purity.table-only".to_string(),
@@ -3067,6 +3067,20 @@ async fn test_check_phase_has_no_side_effects(pool: PgPool) {
     )
     .await
     .unwrap();
+
+    let err = HidingServer::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "purity.table-only".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .expect_err("a Table-scoped definition must not attach to a warehouse");
+    // Pin the refusal to the scope check: a denial here would mean the request
+    // stopped at the authorizer, proving nothing about the rest of the phase.
+    assert_eq!(err.error.r#type, "TagScopeNotAllowed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
 
     // Deny only the mutating tag actions, so the read-backs below still work.
     authz.block_action("tag:Apply");
@@ -3095,18 +3109,6 @@ async fn test_check_phase_has_no_side_effects(pool: PgPool) {
     HidingServer::delete_tag_definition(ctx.clone(), request_metadata_with_project(pid), def.id)
         .await
         .expect_err("Delete is denied, so the check phase must refuse");
-
-    // Refused by the *last* step of `check_set_tag_on_target`, after the authorizer
-    // call — so unlike the three above, this drives the whole check phase.
-    HidingServer::set_warehouse_tag(
-        warehouse.warehouse_id,
-        "purity.table-only".to_string(),
-        SetTagRequest { value: None },
-        ctx.clone(),
-        request_metadata_with_project(pid),
-    )
-    .await
-    .expect_err("a Table-scoped definition must not attach to a warehouse");
 
     // Nothing above reached an `apply_*`, so the catalog must be untouched.
     let definitions = HidingServer::list_tag_definitions(

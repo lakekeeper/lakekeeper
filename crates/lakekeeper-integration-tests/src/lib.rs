@@ -213,8 +213,15 @@ pub use lakekeeper_storage_postgres::test_utils::{
 /// are captured.
 #[derive(Debug, Default)]
 pub struct CapturingAuthzListener {
-    succeeded: std::sync::Mutex<Vec<lakekeeper::service::events::AuthorizationSucceededEvent>>,
-    failed: std::sync::Mutex<Vec<lakekeeper::service::events::AuthorizationFailedEvent>>,
+    /// Both event vectors live under one lock so a count pair is a snapshot of a
+    /// single instant: a dispatch cannot land between reading one and the other.
+    events: std::sync::Mutex<CapturedAuthzEvents>,
+}
+
+#[derive(Debug, Default)]
+struct CapturedAuthzEvents {
+    succeeded: Vec<lakekeeper::service::events::AuthorizationSucceededEvent>,
+    failed: Vec<lakekeeper::service::events::AuthorizationFailedEvent>,
 }
 
 impl std::fmt::Display for CapturingAuthzListener {
@@ -229,7 +236,7 @@ impl lakekeeper::service::events::EventListener for CapturingAuthzListener {
         &self,
         event: lakekeeper::service::events::AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
-        self.succeeded.lock().unwrap().push(event);
+        self.events.lock().unwrap().succeeded.push(event);
         Ok(())
     }
 
@@ -237,32 +244,26 @@ impl lakekeeper::service::events::EventListener for CapturingAuthzListener {
         &self,
         event: lakekeeper::service::events::AuthorizationFailedEvent,
     ) -> anyhow::Result<()> {
-        self.failed.lock().unwrap().push(event);
+        self.events.lock().unwrap().failed.push(event);
         Ok(())
     }
 }
 
 impl CapturingAuthzListener {
+    /// The succeeded and failed counts as of one instant, read under a single
+    /// lock acquisition.
     #[must_use]
-    pub fn succeeded_count(&self) -> usize {
-        self.succeeded.lock().unwrap().len()
-    }
-
-    #[must_use]
-    pub fn failed_count(&self) -> usize {
-        self.failed.lock().unwrap().len()
+    pub fn counts(&self) -> (usize, usize) {
+        let events = self.events.lock().unwrap();
+        (events.succeeded.len(), events.failed.len())
     }
 
     /// Both counts, after letting the dispatch settle.
     ///
     /// Events are dispatched from a spawned task, so wait until each count has
     /// reached what the caller expects, then drain the run queue so a *surplus*
-    /// emit is caught rather than raced past. The two counts are read under
-    /// separate locks, so this is not an atomic snapshot; what makes the surplus
-    /// check sound is that the caller asserts *both* dimensions after the drain.
-    /// Reading one count after separately settling the other only works by
-    /// accident of call adjacency, and becomes a race the moment a statement is
-    /// inserted between them or the runtime gains threads.
+    /// emit is caught rather than raced past. Both counts come from one lock
+    /// acquisition, so the returned pair is a snapshot of a single instant.
     ///
     /// Assert on the tuple (`assert_eq!(l.settled_counts(2, 0).await, (2, 0))`)
     /// so both dimensions are pinned to exact values.
@@ -273,15 +274,14 @@ impl CapturingAuthzListener {
         expected_failed: usize,
     ) -> (usize, usize) {
         for _ in 0..100 {
-            if self.succeeded_count() >= expected_succeeded
-                && self.failed_count() >= expected_failed
-            {
+            let (succeeded, failed) = self.counts();
+            if succeeded >= expected_succeeded && failed >= expected_failed {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        (self.succeeded_count(), self.failed_count())
+        self.counts()
     }
 
     /// The failure reasons recorded so far, in order — so a test can pin *why* a
@@ -290,9 +290,10 @@ impl CapturingAuthzListener {
     /// Does not settle on its own; call it after [`Self::settled_counts`].
     #[must_use]
     pub fn failure_reasons(&self) -> Vec<lakekeeper::service::events::AuthorizationFailureReason> {
-        self.failed
+        self.events
             .lock()
             .unwrap()
+            .failed
             .iter()
             .map(|e| e.failure_reason.clone())
             .collect()
