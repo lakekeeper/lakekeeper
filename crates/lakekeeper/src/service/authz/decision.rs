@@ -92,8 +92,7 @@ impl From<bool> for AuthorizationDecision {
 // log renders this type through `valuable`, which ignores `serde` attributes: it emits the
 // Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
 // unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
-// never an absent field. See "Optional fields" in the audit-log section of
-// `docs/docs/developer-guide.md`.
+// never an absent field, unlike the hand-written `visit` impls elsewhere in the record.
 #[derive(
     Clone,
     Debug,

@@ -119,6 +119,36 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
+/// The `action_name` of the defensive row emitted when an event reaches the audit log
+/// with no action at all.
+///
+/// A one-variant enum rather than a string literal so the value reaches the wire-value
+/// manifest: `action_name` is the field carrying most of the format's vocabulary, and a
+/// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
+/// names the same condition on the entity side of the same row.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum FallbackAction {
+    Unknown,
+}
+
+impl FallbackAction {
+    /// The value as it reaches the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
@@ -1594,7 +1624,7 @@ fn synthesise_authorizations(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| ActionDescriptor {
-                    action_name: "unknown",
+                    action_name: FallbackAction::Unknown.as_str(),
                     context: Vec::new(),
                 }),
             entity: entities

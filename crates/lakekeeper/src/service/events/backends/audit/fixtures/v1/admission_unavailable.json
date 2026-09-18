@@ -9,6 +9,7 @@
   "outcome": "unavailable",
   "context": {
     "gate": "fixture_gate",
+    "denied_by": null,
     "status": 503,
     "error_type": "ExternalEnforceUnavailable",
     "message": "Permission service is unreachable",

@@ -511,6 +511,7 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
 /// because that is the shape every `event_source="audit"` operational record
 /// promises. `error_id` correlates with what the caller was handed, and
 /// `request_id` is repeated out of the span so the record stands alone.
+#[derive(valuable::Valuable)]
 struct AdmissionRejectedContext<'a> {
     gate: &'a str,
     denied_by: Option<&'a str>,
@@ -523,39 +524,6 @@ struct AdmissionRejectedContext<'a> {
     message: &'a str,
     error_id: String,
     request_id: String,
-}
-
-// Hand-written rather than derived so that `denied_by` is *omitted* when the gate
-// named no rule, instead of reaching the wire as `null`. The audit format omits a
-// field rather than emitting it empty, and a consumer testing for the key's presence
-// would read a `null` as "a rule decided this" — see `GrantContextValue`, which
-// drops its optional ids the same way.
-impl valuable::Valuable for AdmissionRejectedContext<'_> {
-    fn as_value(&self) -> valuable::Value<'_> {
-        valuable::Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn valuable::Visit) {
-        use valuable::Value;
-        visit.visit_entry(Value::String("gate"), Value::String(self.gate));
-        if let Some(rule) = self.denied_by {
-            visit.visit_entry(Value::String("denied_by"), Value::String(rule));
-        }
-        visit.visit_entry(Value::String("status"), Value::U16(self.status));
-        visit.visit_entry(Value::String("error_type"), Value::String(self.error_type));
-        visit.visit_entry(Value::String("message"), Value::String(self.message));
-        visit.visit_entry(Value::String("error_id"), Value::String(&self.error_id));
-        visit.visit_entry(Value::String("request_id"), Value::String(&self.request_id));
-    }
-}
-
-impl valuable::Mappable for AdmissionRejectedContext<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // Exact, matching `visit` above. `serde_json` ignores the hint, but a
-        // length-prefixed serializer would emit a corrupt frame on a wrong one.
-        let len = 6 + usize::from(self.denied_by.is_some());
-        (len, Some(len))
-    }
 }
 
 fn record_gate_duration(

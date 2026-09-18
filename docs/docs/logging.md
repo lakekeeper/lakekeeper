@@ -163,8 +163,8 @@ The `context` object on an authorization event is a flat string-to-string map th
 | Key                        | Description                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------------|
 | `invoked-by`               | The higher-level operation this authorization was performed on behalf of, when the check is not directly caused by the API call — currently `register_table_overwrite`, for the drop authorized as part of overwriting a registered table |
-| `self-provisioning`        | `"true"` when a user record was created by the authenticated caller for themselves rather than by an administrator |
-| `self-read`                | `"true"` when the caller is reading their own grants rather than another principal's          |
+| `self-provisioning`        | `"true"` when a user record was created by the authenticated caller for themselves rather than by an administrator. Always present on that endpoint, `"true"` or `"false"` — do not read its presence as `true` |
+| `self-read`                | `"true"` when the caller is reading their own grants rather than another principal's. Always present on the endpoints that set it, `"true"` or `"false"` — do not read its presence as `true` |
 | `queue_name`               | The task queue the request addressed                                                          |
 | `entity_id`                | Identifier of the entity the task acts on                                                     |
 
@@ -289,18 +289,18 @@ The first three fields are the **scope** — the same value the authorizer is as
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
-| `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Omitted when the request named none, which means every privilege |
+| `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
 | `allow-partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
 | `dry-run`        | String | `"true"` when the client asked only which grants would be revoked. A dry run changes nothing, so a record carrying it is not evidence of a revocation |
 | `created-before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
 
-`privileges` and `created-before` are omitted when the request does not narrow on them, as the general rule above requires. `allow-partial` and `dry-run` are the exception: they are always present, `"true"` or `"false"`, unlike `force`, `purge` and `recursive` on the actions above, which appear only when true. Each of those two changes what the request covered rather than filtering it, so an absence would have to be read as a default rather than as "not asked for".
+Only `created-before` is omitted when the request does not narrow on it. `privileges` is emitted as `[]`, and `allow-partial` and `dry-run` are always present as `"true"` or `"false"` — all three departing from the omit-when-empty rule stated above for action context. Do not infer a field's behaviour here from another field's; read each row.
 
 **These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry-run` requests, nothing is.
 
 #### Per-decision breakdown (`authorizations`)
 
-Every authorization event carries an `authorizations` array with **at least one entry**. For ordinary single-check API calls the array has exactly one entry, synthesised from the event's top-level fields. For batch-style endpoints (e.g. `/management/v1/action/batch-check` and the various `get_*_actions` introspection endpoints) the array contains one entry per inner check, in request order.
+Every authorization event carries an `authorizations` array with **at least one entry**. For ordinary single-check API calls the array has exactly one entry, synthesised from the event's top-level fields. For `/management/v1/action/batch-check` the array contains one entry per inner check, in request order. The `get_*_actions` introspection endpoints are **not** in that group: they emit a single synthesised entry for the `introspect_permissions` action, whatever the answer contains — the actions a principal holds are in the response body, not in this array.
 
 This means audit consumers can use **one query path** for both single and batch events: iterate `authorizations[]` and read the per-entry `allowed` flag, instead of switching between top-level `decision` and a per-batch breakdown.
 
@@ -513,7 +513,7 @@ Emitted for operations that produce no authorization decision of their own — L
 |----------------|--------|----------------------------------------------------|
 | `event_source` | String | Always `"audit"`                                   |
 | `operation`    | String | Machine-readable name of the operation (e.g., `"ldap_resolve_roles"`) |
-| `actor`        | Object | Same shape as authorization events, and the same four shapes: `{"actor_type": "principal", "principal": "oidc~…"}` is the common one, but `assumed-role` adds a nested `assumed_role` object, while `anonymous` and `lakekeeper-internal` carry `actor_type` alone. Read `actor_type` before reading `principal` — the four shapes and their fields are tabulated under [Authorization Events](#authorization-events). Which shapes a given operation can produce depends on how it obtains the actor: records raised while serving a request render the request's resolved actor and so can produce any of them, whereas those naming a user directly (`ldap_resolve_roles`, `grant_created`) are always `principal` |
+| `actor`        | Object | Same shape as authorization events, and the same four shapes: `{"actor_type": "principal", "principal": "oidc~…"}` is the common one, but `assumed-role` adds a nested `assumed_role` object, while `anonymous` and `lakekeeper-internal` carry `actor_type` alone. Read `actor_type` before reading `principal` — the four shapes and their fields are tabulated under [Authorization Events](#authorization-events). Which shapes a given operation can produce depends on how it obtains the actor. `admission_decided` and the grant records (`grant_created`, `grant_revoked`) render the request's resolved actor, so any of the shapes can appear — for an assumed-role caller the `assumed_role` object is where the acting identity is, and `principal` alone under-reports it. Only operations that name a user directly rather than taking it from the request are always `principal` |
 | `outcome`      | String | Result of the operation. Component-specific; see individual operation docs below |
 | `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
 
@@ -562,7 +562,7 @@ This record names the principal. The error response does not, because responses 
 | Context field | Description |
 |---------------|-------------|
 | `gate`        | Which gate decided. Useful when you run more than one |
-| `denied_by`   | The gate's rule that decided it. Omitted entirely — not `null` — when the gate named none, as a fail-closed rejection does |
+| `denied_by`   | The gate's rule that decided it. Present as `null` — not absent — when the gate named none, as a fail-closed rejection does. Test the value, not the key |
 | `status`      | `403` or `503`, as a JSON **number** rather than a string, matching `error.code` on authorization events |
 | `error_type`  | The gate's error type, e.g. `ExternalEnforceForbidden` |
 | `message`     | The gate's own wording, as the caller received it. What separates two rejections sharing an `error_type` — the same gate failing closed on a missing precondition rather than on an unreachable upstream. Not to be confused with the envelope `message` at the top level of every log line |

@@ -708,8 +708,41 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
         return 1
 
     baseline = baseline_at("HEAD")
+    # Tolerant at the merge base: the branch that INTRODUCES the baseline file has none to
+    # compare against, which is not a baseline being moved. `baseline_at` is strict because
+    # a baseline missing at HEAD beside a declared AUDIT_FORMAT is unrecoverable.
+    try:
+        base_baseline = baseline_at(merge_base)
+        base_has_baseline = True
+    except SystemExit:
+        base_baseline = None
+        base_has_baseline = False
     head_fragments = fragments_at("HEAD")
     base_fragments = fragments_at(merge_base)
+
+    # The baseline is what the required version is computed FROM, so reading it only at HEAD
+    # makes both sides of that comparison move together: a branch that edits it moves the
+    # version every record carries and still reports OK. The one branch allowed to move it is
+    # the release, which sets it to what the fragments it consumes implied and clears them.
+    if base_has_baseline and baseline != base_baseline:
+        release_shape = (
+            baseline == required_version(base_baseline, highest(base_fragments.values()))
+            and not head_fragments
+        )
+        if not release_shape:
+            print(
+                f"::error::{BASELINE_PATH} moved from {show(base_baseline)} to "
+                f"{show(baseline)} on this branch. The baseline is the version the most "
+                f"recent release shipped and is what AUDIT_FORMAT is computed from, so "
+                f"editing it silently redefines the version every audit record carries."
+            )
+            print(
+                "::notice::Only the release recipe moves it — `just audit-format-release "
+                "<version>`, which also clears the fragments it consumed. If this came from a "
+                "merge or a rebase across a release commit, restore the baseline from the "
+                "branch you are targeting."
+            )
+            return 1
     # What THIS branch contributes: a fragment it adds, or one whose level it raises. Adequacy
     # is judged against these rather than against every unreleased fragment, because a `major`
     # left by an earlier pull request in the same cycle would otherwise excuse this one
@@ -738,10 +771,29 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 
     shape_kind = classify_change(merge_base, "HEAD")
     detected_level = REQUIRED_LEVEL.get(shape_kind)
+    # With no baseline there is no released format, so a shape verdict describes the
+    # difference between two unreleased states. Demanding a fragment for it while the
+    # bootstrap guard below rejects the tree for carrying one would leave no state of the
+    # tree that passes, so the demand is suppressed until the first release sets a baseline.
+    bootstrap = baseline is None
+    if bootstrap:
+        detected_level = None
     print(
         f"Verdict:    format {shape_kind}"
         + (f", needs a fragment of at least `{detected_level}`" if detected_level else "")
+        + (
+            " — no baseline yet, so nothing has been released for it to differ from and no "
+            "fragment is required"
+            if bootstrap and shape_kind in REQUIRED_LEVEL
+            else ""
+        )
     )
+
+    # Before the release-branch return: these two verdicts exist because the comparison
+    # could not decide, and that is exactly what a human has to be told on the branch
+    # where the format is frozen. Returning first replaced them with an unqualified OK.
+    if shape_kind in DEFERRALS:
+        print(f"::warning::{DEFERRALS[shape_kind]}")
 
     if base_branch is not None and base_branch.startswith("rel-"):
         return check_release_branch(
@@ -760,9 +812,6 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             f"Delete them and describe the audit log in the release notes as a new feature."
         )
         return 1
-
-    if shape_kind in DEFERRALS:
-        print(f"::warning::{DEFERRALS[shape_kind]}")
 
     # A pull request that only WITHDRAWS fragments is undoing a change no release has
     # carried, so the comparison's verdict describes the removal of something consumers never

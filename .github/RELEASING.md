@@ -68,9 +68,13 @@ NOTES=site/docs/about/release-notes.md
    version does not say what moved.
 
    The second command also prints a row for the release table in `docs/docs/logging.md`
-   when the format moved. Add it. Forgetting the whole step is self-detecting rather than
-   silent: the baseline stays stale, so the next cycle computes the wrong required version
-   and every pull request fails the check.
+   when the format moved. Add it.
+
+   Forgetting the step is **not** reliably self-detecting. Nothing reads a git tag or the
+   `released_in` field back, so a stale baseline is only noticed when the next cycle's
+   highest fragment level exceeds the forgotten one's — pull requests onto `main` stay green
+   otherwise. The first pull request targeting a `rel-*` branch does fail, because the freeze
+   compares the declared version against the baseline. Treat the step as unchecked.
 
 5. **Commit `$NOTES` to `main`** (a normal commit; the site redeploys from it). Do **not**
    edit it inside the release-please PR — release-please force-regenerates that branch on

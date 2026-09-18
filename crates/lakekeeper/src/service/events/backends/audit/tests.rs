@@ -15,8 +15,8 @@ use crate::{
         },
         authn::UserId,
         authz::{
-            ActionDescriptor, CatalogAction as _, CatalogTableAction, DeterminingFactor,
-            PolicyEffect,
+            ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogTableAction,
+            DeterminingFactor, PolicyEffect,
         },
         events::context::{
             ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
@@ -333,7 +333,13 @@ fn fixture_read_action() -> ActionDescriptor {
 /// An action carrying context, so the fixtures pin that nesting too.
 fn fixture_action_with_context() -> ActionDescriptor {
     ActionDescriptor::builder()
-        .action_name("update_table_properties")
+        .action_name(
+            CatalogNamespaceAction::UpdateProperties {
+                removed_properties: Arc::new(Vec::new()),
+                updated_properties: Arc::new(std::collections::BTreeMap::new()),
+            }
+            .into(),
+        )
         .context_string(ActionContextKey::Name, "orders")
         .context_list(
             ActionContextKey::RemovedProperties,
@@ -409,18 +415,12 @@ fn fixture_detailed_authorization() -> Authorization {
         action: fixture_read_action(),
         entity: fixture_namespace_entity(),
         allowed: Some(false),
-        determined_by: vec![
-            DeterminingFactor::Policy {
-                policy_id: "policy-42".to_string(),
-                name: Some("deny-stale-namespaces".to_string()),
-                effect: PolicyEffect::Forbid,
-                source: Some("cedar".to_string()),
-            },
-            DeterminingFactor::SystemAuthority {
-                source: None,
-                reason: None,
-            },
-        ],
+        determined_by: vec![DeterminingFactor::Policy {
+            policy_id: "policy-42".to_string(),
+            name: Some("deny-stale-namespaces".to_string()),
+            effect: PolicyEffect::Forbid,
+            source: Some("cedar".to_string()),
+        }],
     }
 }
 
@@ -1073,8 +1073,8 @@ fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// `operation` and `outcome` must reach the wire from [`AuditOperation`] and
-/// [`AuditOutcome`], never from a literal.
+/// `operation`, `outcome` and `action_name` must reach the wire from an enum, never from a
+/// literal.
 ///
 /// This is the one wire value the type system cannot protect. Every other one is a
 /// variant of a closed enum reached through an exhaustive `match`, so a new value
@@ -1089,7 +1089,7 @@ fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// because the hole is this crate's: an external crate owning its vocabulary is the
 /// supported case, and it commits its own manifest.
 #[test]
-fn no_production_code_names_an_operation_or_outcome_with_a_literal() {
+fn no_production_code_names_a_wire_value_with_a_literal() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_sources(&src, &mut files);
@@ -1121,7 +1121,7 @@ fn no_production_code_names_an_operation_or_outcome_with_a_literal() {
             })
             .collect();
         let bytes = stripped.as_bytes();
-        for name in ["operation", "outcome"] {
+        for name in ["operation", "outcome", "action_name"] {
             let mut from = 0;
             while let Some(found) = stripped[from..].find(name) {
                 let at = from + found;
@@ -1143,8 +1143,12 @@ fn no_production_code_names_an_operation_or_outcome_with_a_literal() {
                 while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
                     i += 1;
                 }
-                if bytes.get(i) != Some(&b'=') || bytes.get(i + 1) == Some(&b'=') {
-                    continue;
+                // `=` for a builder/field assignment, `:` for a struct literal. `==` is a
+                // comparison, not an assignment.
+                match bytes.get(i) {
+                    Some(&b'=') if bytes.get(i + 1) != Some(&b'=') => {}
+                    Some(&b':') if bytes.get(i + 1) != Some(&b':') => {}
+                    _ => continue,
                 }
                 i += 1;
                 while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
@@ -1768,11 +1772,12 @@ fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
             CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
         },
-        events::context::{AuthnAction, ManagementAction},
+        events::context::{AuthnAction, FallbackAction, ManagementAction},
     };
 
     variant_names_of!(
         AuthnAction,
+        FallbackAction,
         CatalogGenericTableAction,
         CatalogNamespaceAction,
         CatalogProjectAction,
@@ -1932,7 +1937,9 @@ fn every_action_enum_variant_has_a_derived_name() {
 /// The five fields Lakekeeper names itself in `snake_case`, whose shape is part of the wire
 /// format: dashboards and alerting rules match these values as literals.
 ///
-/// Every other field is excluded for a stated reason, so the list accounts for all eleven.
+/// Every other field is excluded for a stated reason, so the list accounts for all thirteen.
+/// `update-kinds` and `root_level` are action-context VALUES rather than field names: the
+/// first is kebab-case, and the second is checked here.
 /// `entity_type`, `actor_type` and `resource_type` are kebab-case (`generic-table`,
 /// `assumed-role`), and `determined_by`, `effect` and `failure_reason` reach the wire as Rust
 /// variant names through `valuable`, which is `PascalCase`. Asserting one shape across all of
@@ -1953,6 +1960,7 @@ fn the_values_lakekeeper_names_itself_are_lower_snake_case() {
         "operation",
         "outcome",
         "privilege_source",
+        "root_level",
     ];
 
     let manifest = derived_wire_values();

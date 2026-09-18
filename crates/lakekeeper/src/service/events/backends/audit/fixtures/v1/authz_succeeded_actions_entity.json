@@ -6,7 +6,7 @@
       "action_name": "read_data"
     },
     {
-      "action_name": "update_table_properties",
+      "action_name": "update_properties",
       "name": "orders",
       "removed-properties": [
         "stale.key"

@@ -1762,14 +1762,8 @@ impl APIEventActions for RevokeSubtreeGrants {
                 ActionContextKey::AllowPartial,
                 self.allow_partial.to_string(),
             )
+            .context_list(ActionContextKey::Privileges, self.privileges.clone())
             .context_string(ActionContextKey::DryRun, self.dry_run.to_string());
-        // Omitted rather than emitted as `[]`, which is the rule every other list-valued
-        // context field follows: an absent filter and an empty one both mean "every
-        // privilege", so `[]` would be a second spelling of the same thing.
-        if !self.privileges.is_empty() {
-            descriptor =
-                descriptor.context_list(ActionContextKey::Privileges, self.privileges.clone());
-        }
         if let Some(created_before) = &self.created_before {
             descriptor =
                 descriptor.context_string(ActionContextKey::CreatedBefore, created_before.clone());

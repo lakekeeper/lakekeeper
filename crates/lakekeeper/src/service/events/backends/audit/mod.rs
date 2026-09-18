@@ -183,8 +183,7 @@ impl Valuable for Authorization {
     }
 
     /// Optional fields are omitted when `None`, not emitted as `null`. Other parts of the
-    /// record do the opposite; see "Optional fields" in the audit-log section of
-    /// `docs/docs/developer-guide.md`.
+    /// record do the opposite; the encoding is not yet unified across the format.
     ///
     /// [`Mappable::size_hint`] below hand-counts the same four conditions and must be kept
     /// in step with this body.
@@ -403,8 +402,7 @@ macro_rules! audit_log {
 /// are the authenticated facts on the same event.
 ///
 /// A top-level `tracing` field, so it is always recorded: `None` becomes `null`, never an
-/// absent field. See "Optional fields" in the audit-log section of
-/// `docs/docs/developer-guide.md`.
+/// absent field — unlike the hand-written `visit` impls, which omit an absent optional.
 fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
     request_metadata.user_agent().map(UserAgent::as_str)
 }
@@ -1150,10 +1148,8 @@ pub mod contract {
         }
 
         // `failure_reason` is externally tagged today, so the definitive-denial rule below
-        // reads the variant from the object's key. Re-encoding it — as a plain string, say,
-        // which the audit log section of `docs/docs/developer-guide.md` lists as an open
-        // issue for the next major version — would make `as_object` return `None` and
-        // silently retire that rule. The re-encoding itself is loud (the fixture diff shows
+        // reads the variant from the object's key. Re-encoding it — as a plain string, say —
+        // would make `as_object` return `None` and silently retire that rule. The re-encoding itself is loud (the fixture diff shows
         // it); losing the rule with it would not be. So trip here, and make whoever
         // re-encodes it teach the rule again rather than drop it.
         let Some(tagged) = reason.as_object() else {

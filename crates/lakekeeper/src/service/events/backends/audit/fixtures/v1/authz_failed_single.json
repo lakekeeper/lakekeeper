@@ -54,12 +54,6 @@
             },
             "source": "cedar"
           }
-        },
-        {
-          "SystemAuthority": {
-            "source": null,
-            "reason": null
-          }
         }
       ]
     }

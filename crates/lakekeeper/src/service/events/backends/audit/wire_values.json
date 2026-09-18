@@ -147,6 +147,9 @@
       "update_storage",
       "use"
     ],
+    "FallbackAction": [
+      "unknown"
+    ],
     "InstanceAdminAction": [
       "set_warehouse_managed_by"
     ],
