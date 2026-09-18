@@ -4,8 +4,10 @@
 derived:
 
 ```text
-AUDIT_FORMAT = released.json  raised once by  the highest level in unreleased/
+AUDIT_FORMAT = released.json
 ```
+
+raised once by the highest level in unreleased/
 
 So a release raises the audit format version at most once however many changes it
 carries, and a major change absorbs every minor change in the same cycle.
