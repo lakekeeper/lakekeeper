@@ -1284,6 +1284,17 @@ impl S3Profile {
             .unwrap_or(AWS_COMMERCIAL_PARTITION)
     }
 
+    /// Whether the vended-credential policy must name an explicit `Principal`.
+    ///
+    /// AWS prohibits the `Principal` element in session policies, and stores whose
+    /// STS mirrors AWS accept its absence. S3-compatible vendors that expose STS on
+    /// a separately configured endpoint (Yandex Object Storage) instead reject any
+    /// attached policy whose statements omit it, so a non-AWS flavor together with
+    /// an explicit `sts-endpoint` is the distinguishing signal.
+    fn sts_policy_needs_explicit_principal(&self) -> bool {
+        !matches!(self.flavor, S3Flavor::Aws) && self.sts_endpoint.is_some()
+    }
+
     fn get_sts_policy_string(
         &self,
         table_location: &Location,
@@ -1345,6 +1356,20 @@ impl S3Profile {
                 "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
                 "Resource": kms_key_arn,
             }));
+        }
+
+        // Some S3-compatible stores that expose STS on a separate endpoint (Yandex
+        // Object Storage) reject any attached policy whose statements omit an
+        // explicit `Principal` — both at `AssumeRole` time and on every subsequent
+        // data-plane request (`MalformedPolicy: required field missed: principal
+        // should be specified`). AWS itself forbids `Principal` in session policies,
+        // and stores whose STS mirrors AWS (MinIO, StorageGRID) accept its absence,
+        // so this is only emitted when the profile routes STS to a separately
+        // configured endpoint on a non-AWS flavor.
+        if self.sts_policy_needs_explicit_principal() {
+            for statement in &mut statements {
+                statement["Principal"] = json!("*");
+            }
         }
 
         let policy = json!({
@@ -3615,6 +3640,94 @@ pub(crate) mod test {
             panic!("TableAccess Resource must be a scalar string, got: {resource}")
         });
         assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
+    }
+
+    #[test]
+    fn policy_string_includes_principal_for_s3_compat_with_separate_sts_endpoint() {
+        // Yandex Object Storage rejects any attached policy whose statements lack an
+        // explicit `Principal`, both at AssumeRole time and on every follow-up
+        // data-plane request, so an `s3-compat` profile with a separate `sts-endpoint`
+        // must carry `"Principal": "*"` in every statement.
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .sts_endpoint("https://sts.yandexcloud.net".parse().unwrap())
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/wh/ns/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        let statements = parsed["Statement"].as_array().unwrap();
+        assert!(!statements.is_empty());
+        for statement in statements {
+            assert_eq!(
+                statement["Principal"],
+                json!("*"),
+                "every statement must carry an explicit Principal, got: {statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_string_omits_principal_for_aws_even_with_sts_endpoint() {
+        // AWS session policies prohibit the `Principal` element (AssumeRole fails
+        // with `MalformedPolicy`), even when STS is reached through a custom
+        // endpoint such as a VPC endpoint.
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws:iam::123456789012:role/lakekeeper-sts".to_string())
+            .sts_endpoint("https://sts.us-east-1.amazonaws.com".parse().unwrap())
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/wh/ns/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        for statement in parsed["Statement"].as_array().unwrap() {
+            assert!(
+                statement.get("Principal").is_none(),
+                "AWS session policies must not carry a Principal, got: {statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_string_omits_principal_for_s3_compat_without_sts_endpoint() {
+        // Stores whose STS mirrors AWS (MinIO, StorageGRID) accept a session policy
+        // without `Principal`, and their STS shares the S3 endpoint, so the common
+        // `s3-compat` configuration keeps the policy unchanged.
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/wh/ns/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        for statement in parsed["Statement"].as_array().unwrap() {
+            assert!(
+                statement.get("Principal").is_none(),
+                "policy must stay unchanged for s3-compat without a separate STS endpoint, got: {statement}"
+            );
+        }
     }
 
     fn govcloud_profile() -> S3Profile {
