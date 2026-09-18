@@ -76,7 +76,11 @@ NOTES=site/docs/about/release-notes.md
    otherwise. The first pull request targeting a `rel-*` branch does fail, because the freeze
    compares the declared version against the baseline. Treat the step as unchecked.
 
-5. **Commit `$NOTES` to `main`** (a normal commit; the site redeploys from it). Do **not**
+5. **Commit `$NOTES` to `main` together with everything step 4 changed** — the moved
+   baseline in `audit-format/released.json`, the deleted `audit-format/unreleased/*.md`
+   fragments, and the release-table row in `docs/docs/logging.md`. Leaving any of them
+   uncommitted is the omission step 4 warns is not reliably self-detecting. (A normal
+   commit; the site redeploys from it.) Do **not**
    edit it inside the release-please PR — release-please force-regenerates that branch on
    every push to `main` and would clobber the change.
 6. **Set the GitHub Release body** from the new section:

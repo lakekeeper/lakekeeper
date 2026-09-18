@@ -1073,6 +1073,58 @@ fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// Blank out whole-line comments, keeping every byte position so line numbers stay true.
+///
+/// Only a line that *starts* with `//` is blanked, never the tail of a line after one.
+/// Blanking from the first `//` anywhere would also blank everything after a `//` inside a
+/// string literal — a URL, a path, a regex — and hide a real assignment sitting after it on
+/// the same line. Erring the other way costs at most a false positive on a trailing comment
+/// that happens to spell a wire-value assignment, which fails loudly and is reworded in the
+/// comment; a false negative in a backstop is silent, which is the failure this guard exists
+/// to prevent.
+///
+/// Whole-line comments have to be skipped because the macro's doc comments show callers the
+/// literal an external crate would pass, and emit nothing themselves.
+fn code_only(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.trim_start().starts_with("//") {
+                format!("{}\n", " ".repeat(line.len()))
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect()
+}
+
+/// The comment handling in [`code_only`] is the guard's only blind spot, so pin both
+/// directions: a comment stays hidden, and code after a string containing `//` does not.
+#[test]
+fn code_only_hides_comments_without_hiding_code_after_a_slashed_string() {
+    let hidden = |line: &str| !code_only(line).contains("operation = \"");
+    assert!(
+        hidden("// operation = \"x\","),
+        "a whole-line comment must stay hidden"
+    );
+    assert!(
+        hidden("    /// operation = \"x\","),
+        "an indented doc comment too"
+    );
+    assert!(
+        !hidden("let u = \"https://x.test\"; operation = \"x\","),
+        "a `//` inside a string must not hide the assignment after it"
+    );
+    assert!(
+        !hidden("error_type: \"a//b\", operation = \"x\","),
+        "nor a `//` inside any other string"
+    );
+    assert_eq!(
+        code_only("// hi\ncode\n").lines().count(),
+        2,
+        "line count and therefore line numbers must survive"
+    );
+}
+
 /// `operation`, `outcome` and `action_name` must reach the wire from an enum, never from a
 /// literal.
 ///
@@ -1110,16 +1162,7 @@ fn no_production_code_names_a_wire_value_with_a_literal() {
         }
         let text = std::fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
-        // Blank out line comments, keeping every byte position so the line numbers below
-        // stay true. Doc comments show callers the macro's shape, including the literal an
-        // external crate would pass, and emit nothing themselves.
-        let stripped: String = text
-            .lines()
-            .map(|line| match line.find("//") {
-                Some(at) => format!("{}{}\n", &line[..at], " ".repeat(line.len() - at)),
-                None => format!("{line}\n"),
-            })
-            .collect();
+        let stripped = code_only(&text);
         let bytes = stripped.as_bytes();
         for name in ["operation", "outcome", "action_name"] {
             let mut from = 0;
@@ -1943,9 +1986,9 @@ fn every_action_enum_variant_has_a_derived_name() {
 /// The five fields Lakekeeper names itself in `snake_case`, whose shape is part of the wire
 /// format: dashboards and alerting rules match these values as literals.
 ///
-/// Every other field is excluded for a stated reason, so the list accounts for all thirteen.
-/// `update-kinds` and `root_level` are action-context VALUES rather than field names: the
-/// first is kebab-case, and the second is checked here.
+/// Every other field is excluded for a stated reason, so the list accounts for all fourteen.
+/// `update-kinds`, `root_level` and `privilege_scope` are action-context VALUES rather than
+/// field names: the first is kebab-case, and the other two are checked here.
 /// `entity_type`, `actor_type` and `resource_type` are kebab-case (`generic-table`,
 /// `assumed-role`), and `determined_by`, `effect` and `failure_reason` reach the wire as Rust
 /// variant names through `valuable`, which is `PascalCase`. Asserting one shape across all of
