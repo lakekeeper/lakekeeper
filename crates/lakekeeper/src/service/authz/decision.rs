@@ -72,15 +72,20 @@ impl From<bool> for AuthorizationDecision {
 
 /// A single factor that contributed to an authorization decision.
 ///
-/// Discriminated by `type` in the management API, and by a single-key wrapper in the audit
-/// log: `policy` / `Policy` names a policy the authorizer matched, `system-authority` /
-/// `SystemAuthority` records that a built-in authority tier decided the request. Further
-/// kinds may be added, so treat an unrecognised one as an opaque factor rather than an error.
-///
-/// Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
-/// diagnostics) add a variant without breaking existing consumers.
+/// Discriminated by `type`: `policy` names a policy the authorizer matched, and
+/// `system-authority` records that a built-in authority tier decided the request. The
+/// schema is a closed `oneOf` over those two, so a further kind is a schema change a
+/// generated client has to be rebuilt for rather than one it absorbs on its own.
 // Deliberately a plain comment, not a doc comment: `utoipa` copies doc comments into the
-// public OpenAPI schema, and the audit rendering below is internal to this repository.
+// public OpenAPI schema, and what follows is internal to this repository.
+//
+// Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
+// diagnostics) add a variant here without restructuring the type.
+//
+// The audit log is the rendering where the kind set is genuinely open: that log's
+// contract tells consumers to treat an unrecognised value as opaque, so a new variant
+// costs them nothing. The management API schema above is closed and makes no such
+// promise — do not restate the audit-log tolerance there.
 //
 // The two renderings differ, deliberately. The `serde` attributes below govern the
 // management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
