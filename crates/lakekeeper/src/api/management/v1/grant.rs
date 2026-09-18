@@ -77,10 +77,10 @@ use crate::{
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
             CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp,
             GrantResource, GrantRevokeCandidates, GrantRow, GrantSpec, GrantSubtreeFilter,
-            GrantSubtreePrincipal, GrantSubtreeRoot, GrantSubtreeScope, GrantSubtreeShape,
-            GrantTarget, PrivilegeDescriptor, RequireTagActionError, ResourceType,
-            RoleAssignee as AuthzRoleAssignee, SubtreeResourceTypes, UserOrRole as AuthzUserOrRole,
-            UserOrRoleId,
+            GrantSubtreePrincipal, GrantSubtreePrivileges, GrantSubtreeRoot, GrantSubtreeScope,
+            GrantSubtreeShape, GrantTarget, PrivilegeDescriptor, RequireTagActionError,
+            ResourceType, RoleAssignee as AuthzRoleAssignee, SubtreePrivilegeNames,
+            SubtreeResourceTypes, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -1208,16 +1208,37 @@ fn subtree_listing_filter(
 /// means "every kind under here" to the store, and a policy reading it as "no kind"
 /// would allow the widest request of all.
 fn subtree_scope(root: GrantSubtreeRoot, filter: &GrantSubtreeFilter) -> GrantSubtreeScope {
-    let warehouse_level =
-        matches!(root, GrantSubtreeRoot::Warehouse { .. }) && filter.include_root_level;
-    let requested: BTreeSet<ResourceType> = filter.resource_types.iter().copied().collect();
+    // Destructured without `..`, so a narrowing added to the filter is a compile error
+    // here rather than one the scope quietly stops describing.
+    let GrantSubtreeFilter {
+        include_root_level,
+        principal,
+        privileges: filter_privileges,
+        resource_types,
+        // Widens what a listing discloses, and is always true for a revoke. Left out
+        // because a policy that fenced on it would refuse a revoke on a term the revoke
+        // does not honour.
+        include_soft_deleted: _,
+        // Bounds a multi-call revoke so it terminates. It is how the operation runs, not
+        // what it reaches.
+        created_before: _,
+    } = filter;
+    let warehouse_level = matches!(root, GrantSubtreeRoot::Warehouse { .. }) && *include_root_level;
+    let requested: BTreeSet<ResourceType> = resource_types.iter().copied().collect();
     // Naming no kind means every kind the root covers, which is what the fallback is.
     let resource_types =
         SubtreeResourceTypes::new(requested).unwrap_or_else(|_| covered_kinds(warehouse_level));
-    GrantSubtreeScope::Of(GrantSubtreeShape {
+    // Naming no privilege means every privilege a matching grant carries, which is the
+    // widest form and so is carried as the named case rather than an empty list.
+    let privileges = SubtreePrivilegeNames::new(filter_privileges.iter().cloned().collect())
+        .map_or(GrantSubtreePrivileges::Every {}, |names| {
+            GrantSubtreePrivileges::Only { names }
+        });
+    GrantSubtreeScope::Request(GrantSubtreeShape {
         resource_types,
-        root_level: filter.include_root_level.into(),
-        principal: match filter.principal.as_ref() {
+        root_level: (*include_root_level).into(),
+        privileges,
+        principal: match principal.as_ref() {
             Some(principal) => GrantSubtreePrincipal::One(UserOrRole::from(principal)),
             None => GrantSubtreePrincipal::Every {},
         },
@@ -3719,11 +3740,38 @@ mod tests {
             serde_json::from_value(serde_json::json!({})).expect("an empty revoke body is valid");
         assert_eq!(
             subtree_scope(warehouse_root(), &subtree_filter(&request)),
-            GrantSubtreeScope::Of(GrantSubtreeShape {
+            GrantSubtreeScope::Request(GrantSubtreeShape {
                 resource_types: kinds(WAREHOUSE_SUBTREE_KINDS),
                 root_level: RootLevelGrants::Included,
+                privileges: GrantSubtreePrivileges::Every {},
                 principal: GrantSubtreePrincipal::Every {},
             })
+        );
+    }
+
+    /// A request narrowed to privileges says which, so a policy can permit clearing read
+    /// access while refusing to clear the privileges that administer it. Naming none is
+    /// the widest form and is carried as such by the test above.
+    #[test]
+    fn the_scope_states_which_privileges_a_request_reaches() {
+        let request: RevokeSubtreeGrantsRequest =
+            serde_json::from_value(serde_json::json!({ "privilege": ["select", "describe"] }))
+                .expect("a revoke body naming privileges is valid");
+        let GrantSubtreeScope::Request(shape) =
+            subtree_scope(warehouse_root(), &subtree_filter(&request))
+        else {
+            panic!("a concrete request carries a concrete scope");
+        };
+        assert_eq!(
+            shape.privileges,
+            GrantSubtreePrivileges::Only {
+                names: SubtreePrivilegeNames::new(
+                    ["describe".to_string(), "select".to_string()]
+                        .into_iter()
+                        .collect()
+                )
+                .expect("non-empty privileges"),
+            }
         );
     }
 
@@ -3737,9 +3785,10 @@ mod tests {
                 .expect("a revoke body naming include-root-level is valid");
         assert_eq!(
             subtree_scope(warehouse_root(), &subtree_filter(&request)),
-            GrantSubtreeScope::Of(GrantSubtreeShape {
+            GrantSubtreeScope::Request(GrantSubtreeShape {
                 resource_types: kinds(NAMESPACE_SUBTREE_KINDS),
                 root_level: RootLevelGrants::Excluded,
+                privileges: GrantSubtreePrivileges::Every {},
                 principal: GrantSubtreePrincipal::Every {},
             })
         );
@@ -3783,10 +3832,17 @@ mod tests {
             unfiltered.contains(&("principal".to_string(), "every".to_string())),
             "covering every principal is stated, never left out: {unfiltered:?}"
         );
+        assert!(
+            unfiltered.contains(&("privilege_scope".to_string(), "every".to_string()))
+                && unfiltered.contains(&("narrowed_privileges".to_string(), "[]".to_string())),
+            "reaching every privilege is stated in the scope, and the set holds the \
+             narrowing rather than the answer: {unfiltered:?}"
+        );
 
         let narrowed = context(&serde_json::json!({
             "principal": {"user": "oidc~alice"},
             "resource-type": ["table"],
+            "privilege": ["select", "describe"],
             "include-root-level": false,
         }));
         assert!(
@@ -3794,6 +3850,14 @@ mod tests {
                 && narrowed.contains(&("root_level".to_string(), "excluded".to_string()))
                 && narrowed.contains(&("principal".to_string(), "user:oidc~alice".to_string())),
             "a narrowed request records exactly its narrowing: {narrowed:?}"
+        );
+        assert!(
+            narrowed.contains(&("privilege_scope".to_string(), "only".to_string()))
+                && narrowed.contains(&(
+                    "narrowed_privileges".to_string(),
+                    "[describe, select]".to_string()
+                )),
+            "and the privileges it is narrowed to: {narrowed:?}"
         );
     }
 
@@ -3813,9 +3877,10 @@ mod tests {
         let principal = UserOrRoleId::from(&alice());
         assert_eq!(
             subtree_scope(root, &subtree_listing_filter(&query, Some(principal))),
-            GrantSubtreeScope::Of(GrantSubtreeShape {
+            GrantSubtreeScope::Request(GrantSubtreeShape {
                 resource_types: kinds(&[ResourceType::Table]),
                 root_level: RootLevelGrants::Included,
+                privileges: GrantSubtreePrivileges::Every {},
                 principal: GrantSubtreePrincipal::One(alice()),
             })
         );
