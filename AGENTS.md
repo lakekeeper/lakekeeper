@@ -54,6 +54,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Use workspace dependencies (`{ workspace = true }`) — don't add versions directly.
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
+- Describe current behavior in comments: no "rather than", "instead of", "no longer", "previously", and no plan or task labels. Version changelogs are exempt — stating the delta is their purpose.
 - Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
 
 ## Architecture

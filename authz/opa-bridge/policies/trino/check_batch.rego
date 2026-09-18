@@ -34,11 +34,12 @@ _broad_access_request_id := object.get(input.context, "queryId", "")
 
 # --- Fast path: warehouse-level `list_everything` ---
 #
-# `can_list_everything` on a warehouse is defined as `describe` in the FGA
-# model, which propagates `describe from parent` to every namespace/table and
-# implies `can_get_metadata` on each. So it's semantically safe to short-circuit
-# FilterTables/FilterColumns/FilterSchemas. SelectFromColumns needs `read_data`
-# (= `select`, NOT implied by `describe`) and must stay on the slow path.
+# `can_list_everything` on a warehouse is defined as `describe_effective` in the
+# FGA model, which propagates `describe_effective from parent` to every
+# namespace/table and implies `can_get_metadata` on each. So it's semantically
+# safe to short-circuit FilterTables/FilterColumns/FilterSchemas.
+# SelectFromColumns needs `read_data` (= `select_effective`, NOT implied by
+# `describe_effective`) and must stay on the slow path.
 _warehouse_broad contains catalog_name if {
 	some catalog_name in _managed_catalog_names
 	trino_catalog := catalog_config_by_name[catalog_name]
