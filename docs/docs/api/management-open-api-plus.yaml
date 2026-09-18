@@ -45,7 +45,7 @@ paths:
         required: true
       responses:
         '200':
-          description: Batch check results
+          description: Batch check results, one per request item and in request order
           content:
             application/json:
               schema:
@@ -293,6 +293,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/cedar/break-glass-status:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Report whether the caller can still repair authorization for a project.
+      description: |-
+        Answers whether a break-glass request would be honored for the requested
+        project. Intended for clients deciding whether to offer a break-glass
+        affordance to a caller whose ordinary requests are being denied.
+
+        This reports the break-glass path only. Instance admins can also repair a
+        project, and that is reported by `is-instance-admin` on
+        `/management/v1/whoami` — a property of the caller rather than of a project,
+        so it is not repeated here.
+
+        The answer is a boolean, not a list of actions: which actions break-glass
+        opens is not part of this contract and may change.
+
+        The reported status is project-scoped. Break-glass availability for
+        individual warehouses is not reported.
+
+        Available to any authenticated caller. No permission is required, because
+        the callers who need this answer are exactly the ones whose requests are
+        being denied.
+      operationId: break_glass_status
+      parameters:
+        - name: project-id
+          in: query
+          description: |-
+            The project to report break-glass status for.
+            If omitted, the project from the `x-project-id` header is used, or the
+            server's default project if neither is set.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Break-glass status for the requested project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreakGlassStatusResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/cedar/entity-sources:
     get:
       tags:
@@ -310,8 +360,22 @@ paths:
     post:
       tags:
         - permissions-cedar
-      summary: Get active Cedar policies
-      operationId: list_cedar_policies
+      summary: 'Deprecated: use `…/server-policy-list` (same request and response).'
+      description: |-
+        The path this route had before the rename, still served: same action, same
+        permissions, same request and response bodies as
+        `POST /management/v1/permissions/cedar/server-policy-list`.
+
+        Without a source filter the result includes the predefined-policies tier,
+        which `server-policy-sources` (formerly `policy-sources`) does not list. Its
+        policies are attributed to the well-known source id
+        `00000000-0000-0000-0000-00000094edef`; pass that id in `source-filter` to
+        select them, or the ids from `server-policy-sources` to exclude them.
+
+        This does not include the policies stored for individual projects and
+        warehouses through the interactive API; list those per scope with
+        `GET .../project/policies` or `GET .../warehouse/{warehouse_id}/policies`.
+      operationId: list_cedar_policies_deprecated
       requestBody:
         content:
           application/json:
@@ -325,19 +389,378 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetCedarPoliciesResponse'
+      deprecated: true
   /management/v1/permissions/cedar/policy-sources:
     get:
       tags:
         - permissions-cedar
-      summary: Get information about active cedar policy sources
-      operationId: list_cedar_policy_sources
+      summary: 'Deprecated: use `…/server-policy-sources` (same request and response).'
+      description: |-
+        The path this route had before the rename, still served: same action, same
+        permissions, same response body as
+        `GET /management/v1/permissions/cedar/server-policy-sources`.
+
+        Lists the sources the server policies come from (files, Kubernetes
+        `ConfigMaps`). The predefined-policies tier is not a configured source and is
+        not listed here, although its policies do appear in unfiltered
+        `server-policy-list` (formerly `policy-list`) results; select them there by
+        their well-known source id.
+      operationId: list_cedar_policy_sources_deprecated
       responses:
         '200':
-          description: Active cedar policy sources
+          description: Active server policy sources
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListCedarPolicySourcesResponse'
+      deprecated: true
+  /management/v1/permissions/cedar/project/policies:
+    get:
+      tags:
+        - permissions-cedar
+      summary: List a Project's Cedar Policies
+      description: |-
+        Lists every Cedar policy stored for the requested project, full content
+        included. A scope holds at most `LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE`
+        policies, so the listing is unpaginated: one consistent snapshot.
+        Requires permission to list the project's Cedar policies.
+      operationId: list_project_scope_policies
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: The project's stored Cedar policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopePoliciesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The listing could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - permissions-cedar
+      summary: Apply a Project's Cedar Policies
+      description: |-
+        Creates, updates and deletes the requested Cedar policies for the project
+        in one transaction; every policy must parse and the whole batch must
+        strict-validate, naming the offending one otherwise. `dry-run: true`
+        previews without writing.
+
+        `replace: true` makes `writes` the whole desired state: every stored policy
+        they do not name is deleted in the same transaction and reported in
+        `changed`, and a dry run previews those deletions like any other change.
+        `deletes` is then refused, and `writes: []` empties the scope.
+
+        Requires permission to apply the project's Cedar policies, and
+        `x-break-glass: <reason>` from an instance admin.
+      operationId: apply_project_scope_policies
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: x-break-glass
+          in: header
+          description: 'Required for an instance admin: a reason for the change, recorded on the audit event. Refused as `CedarInstanceAdminNeedsBreakGlass` when an instance admin sends none.'
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyScopePoliciesRequest'
+            examples:
+              incremental:
+                summary: Write one policy and delete another, leaving the rest alone
+                value:
+                  writes:
+                    - name: allow-all
+                      description: everything, for illustration
+                      policy:
+                        effect: permit
+                        principal:
+                          op: All
+                        action:
+                          op: All
+                        resource:
+                          op: All
+                  deletes:
+                    - retired-policy
+                  if-scope-version: 7
+              replace:
+                summary: State the scope's whole policy set; anything else stored is deleted
+                value:
+                  writes:
+                    - name: allow-all
+                      description: everything, for illustration
+                      policy:
+                        effect: permit
+                        principal:
+                          op: All
+                        action:
+                          op: All
+                        resource:
+                          op: All
+                  replace: true
+                  if-scope-version: 7
+        required: true
+      responses:
+        '200':
+          description: What changed, or — under dry-run — what would change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyScopePoliciesResponse'
+        '400':
+          description: 'The request is malformed: empty (`CedarPolicyNoChanges`), a `replace` that also names `deletes` (`CedarPolicyReplaceWithDeletes`), over the configured per-scope cap (`CedarPolicyTooManyChanges`), a name is invalid (`CedarPolicyNameInvalid`), missing (`CedarPolicyNameMissing`), asked about twice (`CedarPolicyDuplicateName`) or reserved (`CedarPolicyNameReserved`), a description is invalid (`CedarPolicyDescriptionInvalid`), an envelope value disagrees with the policy''s own annotation (`CedarPolicyAnnotationMismatch`), a policy contains a NUL character (`CedarPolicyContainsNul`), a policy is over the per-policy size cap (`CedarPolicyTooLarge`), a `policy` carries Cedar source text rather than EST JSON (`CedarPolicyIsSourceText`), a policy does not parse or validate (`CedarPolicyValidationFailed`), the apply would leave the scope over its configured ceiling (`CedarPolicyScopeLimitExceeded`), or the store refuses a value in the request (`CedarPolicyInvalidInput`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '403':
+          description: The caller may not apply this project's Cedar policies (`ProjectActionForbidden`), or an instance admin sent no `x-break-glass` reason (`CedarInstanceAdminNeedsBreakGlass`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: The project does not exist (`ProjectNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A concurrent writer held this scope's Cedar-policy lock past the lock timeout (`CedarPolicyContention`), or the scope has changed since the `if-scope-version` the request named (`CedarPolicyVersionMismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store or its refresh loop is disabled (`CedarPolicyChangesUnavailable`, 501), or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/cedar/project/policies/{name}:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Get a Project's Cedar Policy
+      description: |-
+        Reads one Cedar policy stored for the requested project through this API,
+        by name. Requires permission to read the project's Cedar policies.
+      operationId: get_project_scope_policy
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: name
+          in: path
+          description: Policy name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The stored policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopePolicyEntry'
+        '404':
+          description: No policy is stored under this name in this scope (`CedarPolicyNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The policy could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/cedar/project/predefined-policies:
+    get:
+      tags:
+        - permissions-cedar
+      summary: List Predefined Policies of a Project
+      description: |-
+        Lists the predefined policies with their enablement for the requested
+        project. Policies are enabled or disabled per scope, never edited; a
+        disabled policy stays listed. Requires permission to list the project's
+        Cedar policies.
+      operationId: list_project_predefined_policies
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: The predefined policies and their enablement for the project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredefinedPoliciesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The listing could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - permissions-cedar
+      summary: Set Predefined Policies of a Project
+      description: |-
+        Enables or disables predefined policies for the requested project, and
+        returns the project's full listing as of the write. Idempotent: repeating a
+        request re-applies the same decisions and changes nothing, including a
+        retired-row cleanup (`enabled: true` for a policy this server no longer
+        provides) whose row an earlier attempt already removed. Requires permission
+        to switch the project's predefined policies, asked once per entry with the
+        policy and the direction in context — so a policy of yours can allow
+        switching one off without allowing switching it back on. Deciding a
+        predefined policy is policy management, and it stays recoverable through
+        break-glass like any other policy repair.
+
+        The first decision recorded for a scope curates it: from then on the scope
+        holds its own row per policy, and a policy shipped by a later release starts
+        disabled there until it is switched on.
+      operationId: set_project_predefined_policies
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPredefinedPoliciesRequest'
+        required: true
+      responses:
+        '200':
+          description: The predefined policies and their enablement after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredefinedPoliciesResponse'
+        '409':
+          description: Another change to this scope's predefined policies committed first; the request applied nothing — retry it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store, its refresh loop is disabled, or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - permissions-cedar
+      summary: Reset Predefined Policies of a Project
+      description: |-
+        Drops every decision the project has recorded about predefined policies,
+        putting it back on the provided defaults: every policy enabled, and a policy
+        added later enabled with it. Retired rows are dropped too. Requires
+        permission to reset the project's predefined policies. It is its own action,
+        so a policy can allow switching one predefined policy while withholding this;
+        the `manage_policies` privilege carries both.
+      operationId: reset_project_predefined_policies
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: The project follows the provided defaults again
+        '409':
+          description: Another change to this scope's predefined policies committed first; the request applied nothing — retry it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store, its refresh loop is disabled, or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/cedar/resolve-entities:
     post:
       tags:
@@ -387,6 +810,399 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetCedarSchemaResponse'
+  /management/v1/permissions/cedar/server-policy-list:
+    post:
+      tags:
+        - permissions-cedar
+      summary: Get active Cedar policies
+      description: |-
+        Without a source filter the result includes the predefined-policies tier,
+        which `server-policy-sources` (formerly `policy-sources`) does not list. Its
+        policies are attributed to the well-known source id
+        `00000000-0000-0000-0000-00000094edef`; pass that id in `source-filter` to
+        select them, or the ids from `server-policy-sources` to exclude them.
+
+        This does not include the policies stored for individual projects and
+        warehouses through the interactive API; list those per scope with
+        `GET .../project/policies` or `GET .../warehouse/{warehouse_id}/policies`.
+      operationId: list_cedar_policies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListCedarPoliciesQuery'
+        required: true
+      responses:
+        '200':
+          description: Active policies that match the query
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetCedarPoliciesResponse'
+  /management/v1/permissions/cedar/server-policy-sources:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Get information about active server policy sources
+      description: |-
+        Lists the sources the server policies come from (files, Kubernetes
+        `ConfigMaps`). The predefined-policies tier is not a configured source and is
+        not listed here, although its policies do appear in unfiltered
+        `server-policy-list` (formerly `policy-list`) results; select them there by
+        their well-known source id.
+      operationId: list_cedar_policy_sources
+      responses:
+        '200':
+          description: Active server policy sources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCedarPolicySourcesResponse'
+  /management/v1/permissions/cedar/warehouse/{warehouse_id}/policies:
+    get:
+      tags:
+        - permissions-cedar
+      summary: List a Warehouse's Cedar Policies
+      description: |-
+        Lists every Cedar policy stored for the requested warehouse, full content
+        included. A scope holds at most `LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE`
+        policies, so the listing is unpaginated: one consistent snapshot. The
+        warehouse evaluates its project's policies too, so the listing also carries
+        the project's `project-scope-version`.
+        Requires permission to list the warehouse's Cedar policies.
+      operationId: list_warehouse_scope_policies
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The warehouse's stored Cedar policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopePoliciesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The listing could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - permissions-cedar
+      summary: Apply a Warehouse's Cedar Policies
+      description: |-
+        Creates, updates and deletes the requested Cedar policies for the
+        warehouse in one transaction; every policy must parse and the whole batch
+        must strict-validate, naming the offending one otherwise. `dry-run: true`
+        previews without writing.
+
+        `replace: true` makes `writes` the whole desired state: every stored policy
+        they do not name is deleted in the same transaction and reported in
+        `changed`, and a dry run previews those deletions like any other change.
+        `deletes` is then refused, and `writes: []` empties the scope.
+
+        Requires permission to apply the warehouse's Cedar policies, and
+        `x-break-glass: <reason>` from an instance admin.
+      operationId: apply_warehouse_scope_policies
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-break-glass
+          in: header
+          description: 'Required for an instance admin: a reason for the change, recorded on the audit event. Refused as `CedarInstanceAdminNeedsBreakGlass` when an instance admin sends none.'
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyScopePoliciesRequest'
+            examples:
+              incremental:
+                summary: Write one policy and delete another, leaving the rest alone
+                value:
+                  writes:
+                    - name: allow-all
+                      description: everything, for illustration
+                      policy:
+                        effect: permit
+                        principal:
+                          op: All
+                        action:
+                          op: All
+                        resource:
+                          op: All
+                  deletes:
+                    - retired-policy
+                  if-scope-version: 7
+              replace:
+                summary: State the scope's whole policy set; anything else stored is deleted
+                value:
+                  writes:
+                    - name: allow-all
+                      description: everything, for illustration
+                      policy:
+                        effect: permit
+                        principal:
+                          op: All
+                        action:
+                          op: All
+                        resource:
+                          op: All
+                  replace: true
+                  if-scope-version: 7
+        required: true
+      responses:
+        '200':
+          description: What changed, or — under dry-run — what would change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyScopePoliciesResponse'
+        '400':
+          description: 'The request is malformed: empty (`CedarPolicyNoChanges`), a `replace` that also names `deletes` (`CedarPolicyReplaceWithDeletes`), over the configured per-scope cap (`CedarPolicyTooManyChanges`), a name is invalid (`CedarPolicyNameInvalid`), missing (`CedarPolicyNameMissing`), asked about twice (`CedarPolicyDuplicateName`) or reserved (`CedarPolicyNameReserved`), a description is invalid (`CedarPolicyDescriptionInvalid`), an envelope value disagrees with the policy''s own annotation (`CedarPolicyAnnotationMismatch`), a policy contains a NUL character (`CedarPolicyContainsNul`), a policy is over the per-policy size cap (`CedarPolicyTooLarge`), a `policy` carries Cedar source text rather than EST JSON (`CedarPolicyIsSourceText`), a policy does not parse or validate (`CedarPolicyValidationFailed`), the apply would leave the scope over its configured ceiling (`CedarPolicyScopeLimitExceeded`), or the store refuses a value in the request (`CedarPolicyInvalidInput`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '403':
+          description: The caller may not apply this warehouse's Cedar policies (`WarehouseActionForbidden`), or an instance admin sent no `x-break-glass` reason (`CedarInstanceAdminNeedsBreakGlass`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: The warehouse (or its project) does not exist (`WarehouseNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A concurrent writer held this scope's Cedar-policy lock past the lock timeout (`CedarPolicyContention`), or the scope has changed since the `if-scope-version` the request named (`CedarPolicyVersionMismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store or its refresh loop is disabled (`CedarPolicyChangesUnavailable`, 501), or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/cedar/warehouse/{warehouse_id}/policies/{name}:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Get a Warehouse's Cedar Policy
+      description: |-
+        Reads one Cedar policy stored for the requested warehouse through this
+        API, by name. Requires permission to read the warehouse's Cedar policies.
+      operationId: get_warehouse_scope_policy
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: path
+          description: Policy name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The stored policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopePolicyEntry'
+        '404':
+          description: No policy is stored under this name in this scope (`CedarPolicyNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The policy could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/cedar/warehouse/{warehouse_id}/predefined-policies:
+    get:
+      tags:
+        - permissions-cedar
+      summary: List Predefined Policies of a Warehouse
+      description: |-
+        Lists the predefined policies a warehouse decides, with their enablement
+        for the requested warehouse. A warehouse narrows its project: a policy its
+        project disabled is reported disabled here too (`disabled-by: project`) and
+        cannot be re-enabled at the warehouse. Policies that apply to
+        the project itself, and those about tags, are decided per project and are not
+        listed here. Requires permission to list the warehouse's Cedar policies.
+      operationId: list_warehouse_predefined_policies
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The predefined policies and their enablement for the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredefinedPoliciesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: The listing could not be read because of a backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - permissions-cedar
+      summary: Set Predefined Policies of a Warehouse
+      description: |-
+        Enables or disables predefined policies for the requested warehouse, and
+        returns the warehouse's full listing as of the write. Only the policies a
+        warehouse decides — the ones its listing reports — can be named: a policy
+        decided per project is refused here. A warehouse can only narrow its project:
+        enabling a policy its project disabled records the decision but does not put
+        the policy in force. Idempotent: repeating a request re-applies the same
+        decisions and changes nothing, including a retired-row cleanup (`enabled:
+        true` for a policy this server no longer provides) whose row an earlier
+        attempt already removed. Requires permission to switch the warehouse's
+        predefined policies, asked once per entry with the policy and the direction
+        in context.
+
+        The first decision recorded for a scope curates it: from then on the scope
+        holds its own row per policy, and a policy shipped by a later release starts
+        disabled there until it is switched on.
+      operationId: set_warehouse_predefined_policies
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPredefinedPoliciesRequest'
+        required: true
+      responses:
+        '200':
+          description: The predefined policies and their enablement after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredefinedPoliciesResponse'
+        '409':
+          description: Another change to this scope's predefined policies committed first; the request applied nothing — retry it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store, its refresh loop is disabled, or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - permissions-cedar
+      summary: Reset Predefined Policies of a Warehouse
+      description: |-
+        Drops every decision the warehouse has recorded about predefined policies, so
+        it follows its project again. Its project's decisions are untouched. Requires
+        permission to reset the warehouse's predefined policies. It is its own action,
+        so a policy can allow switching one predefined policy while withholding this;
+        the `manage_policies` privilege carries both.
+      operationId: reset_warehouse_predefined_policies
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The warehouse follows its project again
+        '409':
+          description: Another change to this scope's predefined policies committed first; the request applied nothing — retry it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: 'The change could not be applied: the server has no writable policy store, its refresh loop is disabled, or a backend failure occurred.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/check:
     post:
       tags:
@@ -8089,6 +8905,79 @@ components:
           description: Grants to create. Counts against the shared 100-entry limit with `deletes`.
           maxItems: 100
       additionalProperties: false
+    ApplyScopePoliciesRequest:
+      type: object
+      description: |-
+        Creates, updates and deletes to apply to one scope's Cedar policies, in
+        one transaction. At least one of `writes` or `deletes` must be non-empty,
+        unless `replace` is set.
+      properties:
+        deletes:
+          type: array
+          items:
+            type: string
+          description: |-
+            Names of policies to delete. Idempotent: a name with no stored policy
+            is not an error. Counts against
+            `LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE` entries per request,
+            separately from `writes`. Must be absent or empty under `replace`,
+            which already states what the scope holds afterwards.
+        dry-run:
+          type: boolean
+          description: |-
+            Validate and report what this request would change, without changing
+            anything.
+        if-scope-version:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            The `scope-version` this request was built from, making the apply
+            conditional. When the scope has moved on since, nothing is applied and
+            the request is refused.
+        replace:
+          type: boolean
+          description: |-
+            Treat `writes` as the scope's whole desired state: every stored policy
+            they do not name (ignoring case) is deleted in the same transaction and
+            reported in `changed` as a `delete`. `writes: []` with this set empties
+            the scope. Defaults to `false`, which leaves every policy the request
+            does not name alone. Sending `deletes` alongside is refused.
+
+            Send it with `dry-run: true` first: the preview names exactly which
+            policies the replace would delete. Send it with `if-scope-version` to
+            avoid deleting what a concurrent writer added between the listing this
+            desired state was built from and the apply — without one, a policy
+            created since that listing is not in `writes` and is therefore removed.
+          default: false
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScopePolicyUpsert'
+          description: Policies to create or update.
+      additionalProperties: false
+    ApplyScopePoliciesResponse:
+      type: object
+      description: What an apply changed, or would change under `dry-run`.
+      required:
+        - scope-version
+        - changed
+      properties:
+        changed:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScopePolicyChange'
+          description: |-
+            Every create, every update that actually changed the policy, its
+            description or its name's casing, and every delete that removed a row —
+            or, under `dry-run`, what would. The order is unspecified.
+        scope-version:
+          type: integer
+          format: int64
+          description: |-
+            The scope's policy-state version after this write, a freshness token for a
+            client's own cache. Under `dry-run`, the version read before the write.
     AzCredential:
       oneOf:
         - type: object
@@ -8172,6 +9061,16 @@ components:
               description: |-
                 Type of the user performing bootstrap. Optional. If not provided
                 the server will try to parse the type from the provided token.
+    BreakGlassStatusResponse:
+      type: object
+      required:
+        - break-glass-available
+      properties:
+        break-glass-available:
+          type: boolean
+          description: |-
+            Whether break-glass is available to the caller for the requested project:
+            an explicit break-glass request would be honored.
     CatalogActionCheckItem:
       type: object
       description: A single check item with optional identity override
@@ -8331,10 +9230,24 @@ components:
       properties:
         allowed:
           type: boolean
+          description: Whether the checked identity may perform the operation.
+        determined-by:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeterminingFactor'
+          description: |-
+            What determined this decision: the policies that matched, each with its
+            identifier, optional name and source, or a system-authority override.
+
+            Absent when the configured authorizer produces no per-decision
+            diagnostics.
         id:
           type:
             - string
             - 'null'
+          description: |-
+            Echoes the `id` of the corresponding request item. Absent when the
+            request item carried none — match by position instead.
     CedarEffectFilter:
       type: string
       enum:
@@ -8378,6 +9291,7 @@ components:
       required:
         - source-id
         - policy-count
+        - tier
         - config
       properties:
         config:
@@ -8392,6 +9306,17 @@ components:
           type: string
           format: uuid
           description: Unique identifier for the policy source.
+        tier:
+          $ref: '#/components/schemas/CedarPolicyTier'
+          description: The policy tier the policies of this source belong to.
+    CedarPolicyTier:
+      type: string
+      description: Which tier of the policy hierarchy a Cedar policy belongs to.
+      enum:
+        - predefined
+        - server
+        - project
+        - warehouse
     CedarPrincipalConstraintPattern:
       type: object
       description: |-
@@ -9137,6 +10062,88 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    DeterminingFactor:
+      oneOf:
+        - $ref: '#/components/schemas/DeterminingFactorPolicy'
+        - $ref: '#/components/schemas/DeterminingFactorSystemAuthority'
+      description: |-
+        A single factor that contributed to an authorization decision.
+
+        Discriminated by `type`: `policy` names a policy the authorizer matched,
+        `system-authority` records that a built-in authority tier decided the
+        request. Further kinds may be added, so treat an unrecognised `type` as an
+        opaque factor rather than an error.
+      discriminator:
+        propertyName: type
+        mapping:
+          policy: '#/components/schemas/DeterminingFactorPolicy'
+          system-authority: '#/components/schemas/DeterminingFactorSystemAuthority'
+    DeterminingFactorPolicy:
+      type: object
+      description: |-
+        A policy that determined the decision, surfaced by a policy-based
+        authorizer.
+      required:
+        - policy-id
+        - effect
+        - type
+      properties:
+        effect:
+          $ref: '#/components/schemas/PolicyEffect'
+          description: Whether the policy permits or forbids.
+        name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing name the author gave the policy (e.g. a `@name` or
+            `@id` annotation). Neither required nor guaranteed unique; absent
+            when the author provided none.
+        policy-id:
+          type: string
+          description: |-
+            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
+            `PolicyId`). Always present.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque origin of the policy (e.g. a policy-source identifier).
+            Absent when the authorizer cannot attribute a source.
+        type:
+          type: string
+          enum:
+            - policy
+    DeterminingFactorSystemAuthority:
+      type: object
+      description: |-
+        An allow contributed by a built-in/system authority tier that takes
+        precedence over normal authored policy — e.g. a recovery mechanism that
+        lets a privileged system role act despite a policy that would otherwise
+        forbid it. Its presence means the verdict rested on built-in authority
+        rather than on a configured policy.
+      required:
+        - type
+      properties:
+        reason:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Human-facing reason the tier applied (e.g. an administrator
+            lockout-recovery grant). Absent when the authorizer gives none.
+        source:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Opaque, authorizer-assigned identifier of the built-in authority
+            tier that granted the action. Absent when none can be attributed.
+        type:
+          type: string
+          enum:
+            - system-authority
     EndpointMode:
       oneOf:
         - $ref: '#/components/schemas/EndpointModeDefault'
@@ -13935,6 +14942,127 @@ components:
         - grant_manage_grants
         - grant_manage_tags
         - change_ownership
+    PolicyEffect:
+      type: string
+      description: Whether a determining policy permits or forbids.
+      enum:
+        - permit
+        - forbid
+    PredefinedPoliciesResponse:
+      type: object
+      description: The predefined policies and their enablement for the requested scope.
+      required:
+        - predefined-policies-enabled
+        - curated
+        - policies
+      properties:
+        curated:
+          type: boolean
+          description: |-
+            Whether the scope this listing is for — the warehouse when one is
+            addressed, otherwise the project — has decided anything itself. A scope
+            that has not (`false`) adds nothing of its own: a project then follows the
+            provided defaults, while a warehouse follows its project, which may be
+            curated and may therefore still report policies out of force here. The
+            first write curates the scope, materializing one stored row for every
+            policy this listing reports, after which a policy added later starts out
+            disabled for it (`new-since-curated`).
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PredefinedPolicyStatus'
+          description: |-
+            The predefined policies in the order the server provides them, then the
+            scope's retired rows by id. A warehouse listing carries only the policies
+            a warehouse decides; the remaining ones are decided per project.
+        predefined-policies-enabled:
+          type: boolean
+          description: |-
+            Whether the server evaluates the predefined policies at all. Mirrors
+            `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED` — operator
+            configuration, not changeable through this API. When `false` no listed
+            policy is in force regardless of its `enabled`; stored decisions are kept
+            and apply again once re-enabled.
+    PredefinedPolicyChange:
+      type: object
+      description: One requested enablement change.
+      required:
+        - id
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+          description: |-
+            Whether the policy should be in force for this scope.
+
+            For a retired id — one this server no longer provides but the scope still
+            has a row for — `true` deletes that row instead of enabling anything, and
+            repeating that request once the row is gone succeeds and changes nothing,
+            so a retried removal is safe. `false` for an id the server does not
+            provide is refused, as is `true` for one that does not even start with the
+            reserved `predefined-` prefix: it names nothing to decide.
+        id:
+          type: string
+          description: Stable key of the policy, e.g. `predefined-grants-table-select`.
+    PredefinedPolicyDisabledBy:
+      type: string
+      description: Why a predefined policy is not in force for the requested scope.
+      enum:
+        - project
+        - warehouse
+        - new-since-curated
+    PredefinedPolicyStatus:
+      type: object
+      description: One predefined policy and its enablement for the requested scope.
+      required:
+        - id
+        - description
+        - enabled
+      properties:
+        description:
+          type: string
+          description: What this policy allows, in plain language.
+        disabled-by:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PredefinedPolicyDisabledBy'
+              description: |-
+                Why the policy is not in force, when it is not. Absent for a retired row,
+                which allows nothing because the server no longer provides the policy.
+        enabled:
+          type: boolean
+          description: |-
+            Whether the policy is in force for the requested scope: enabled here and,
+            for a warehouse, in its project too.
+        id:
+          type: string
+          description: |-
+            Stable key of the policy, e.g. `predefined-grants-table-select`. A key is
+            never renamed or reused.
+        retired:
+          type: boolean
+          description: |-
+            True for a stored setting whose policy the running server no longer
+            provides. It has no effect, and is listed after the policies the server
+            does provide so you can clean it up.
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When this policy was last decided in the scope being listed. Absent while
+            that scope has no stored row for the policy — including when the decision
+            was made by an enclosing scope, whose stamp is not reported here.
+        updated-by:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Who last decided this policy in the scope being listed, from the same row
+            as `updated-at`: the acting principal's display form as recorded at write
+            time (e.g. `Principal(<user-id>)`, or the assumed-role form). Intended
+            for audit display, not a stable user-id key.
     PrivilegeDescriptor:
       type: object
       description: One grantable privilege, as published by an authorizer for discovery.
@@ -14965,6 +16093,144 @@ components:
           type: string
           format: uuid
           description: The id of the newly scheduled task.
+    ScopePoliciesResponse:
+      type: object
+      description: A scope's stored Cedar policies.
+      required:
+        - policies
+        - scope-version
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScopePolicyEntry'
+          description: The scope's stored policies, ordered by name (case-insensitive).
+        project-scope-version:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            The parent project's policy-state version as of this listing, on a
+            warehouse listing only. A warehouse evaluates its project's policies
+            together with its own, so a client diffing a warehouse watches this
+            version as well as `scope-version` — a project policy changing moves
+            only this one.
+        scope-version:
+          type: integer
+          format: int64
+          description: |-
+            The scope's policy-state version as of this listing: a freshness token
+            for a client's own cache to invalidate on.
+    ScopePolicyChange:
+      type: object
+      description: One policy an apply created, updated or deleted.
+      required:
+        - id
+        - name
+        - op
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |-
+            Server-assigned id of the row this entry names. Under `dry-run`, a
+            `create`'s id is discarded with the preview; the real apply assigns its own.
+        name:
+          type: string
+          description: The policy's name.
+        op:
+          $ref: '#/components/schemas/ScopePolicyChangeOp'
+          description: What happened to it.
+    ScopePolicyChangeOp:
+      type: string
+      description: What happened to one named policy in an apply.
+      enum:
+        - create
+        - update
+        - delete
+    ScopePolicyEntry:
+      type: object
+      description: One stored Cedar policy of a project or a warehouse.
+      required:
+        - id
+        - name
+        - policy
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: When the policy was first created.
+        description:
+          type:
+            - string
+            - 'null'
+          description: Free-text note about the policy.
+        id:
+          type: string
+          format: uuid
+          description: Server-assigned, stable id of the policy.
+        name:
+          type: string
+          description: The policy's name, case-insensitive-unique within this scope.
+        policy:
+          type: object
+          description: |-
+            The policy itself, as Cedar's EST JSON
+            (<https://docs.cedarpolicy.com/policies/json-format.html>), carrying
+            `annotations.id` and (when stored) `annotations.description` equal to
+            `name`/`description` above.
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the policy was last updated. Absent when it has never been
+            updated since it was created.
+    ScopePolicyUpsert:
+      type: object
+      description: |-
+        One requested create or update of a scope's Cedar policy, by name: an
+        existing row is updated in place, an absent one inserted with a fresh id.
+      required:
+        - policy
+      properties:
+        description:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Free-text note, at most 4096 characters, no control or format
+            characters. May instead (or also, if identical) come from
+            `annotations.description`. Omitting it — or sending `""` — on an update
+            clears the stored note, unless the policy's own
+            `annotations.description` still carries one.
+        name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            The policy's name within this scope, unique ignoring case. 1 to 128
+            characters, no leading or trailing whitespace, no control or format
+            characters, none of `/ \ % # ?`, not exactly `.` or `..`, and not
+            starting with `predefined-` (that prefix names a predefined policy).
+            May be omitted when the policy's own EST carries `annotations.id`,
+            which then names it instead; supplying both requires a match ignoring
+            case, and this field's own casing is the one stored. Counts against
+            `LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE` entries per request.
+        policy:
+          type: object
+          description: |-
+            The policy itself, as Cedar's EST JSON — the format
+            <https://docs.cedarpolicy.com/policies/json-format.html> describes.
+            `cedar translate-policy --direction cedar-to-json` renders Cedar source
+            as JSON; send one policy's value from the `staticPolicies` object it
+            prints, and a `@id`/`@description` annotation on the source carries
+            through as `annotations.id`/`annotations.description`. One EST policy
+            object, never Cedar source text: a JSON string here is refused.
+      additionalProperties: false
     SearchRoleRequest:
       type: object
       required:
@@ -15135,6 +16401,7 @@ components:
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
         - queues
+        - managed-role-providers
         - license-status
       properties:
         authz-backend:
@@ -15189,6 +16456,34 @@ components:
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
+        managed-role-providers:
+          type: array
+          items:
+            type: string
+          description: |-
+            Role-provider namespaces whose roles are maintained by a configured role
+            provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
+            appears here are the provider's to maintain: creating one, or renaming,
+            re-describing, rebinding, or deleting an existing one, is rejected with
+            `ManagedRoleImmutable` so provider sync cannot be clobbered.
+
+            This is live server configuration, not a property of the namespace
+            string. A provider removed from config drops out of the list, and the
+            roles it left behind become renamable and deletable again so they can be
+            cleaned up.
+
+            Empty when no role provider is configured. Two namespaces never appear,
+            and a client gating on this list must handle both itself: `lakekeeper`,
+            which is always writable, and the reserved `system`, whose roles reject
+            the same mutations with `SystemRoleImmutable`.
+
+            **Membership is gated differently — do not derive it from this list.**
+            Adding or removing a role's members requires the `lakekeeper` namespace
+            (or `system`, for an instance admin); every other namespace is refused
+            with `RoleNotManuallyAssignable` whether or not it appears here. So an
+            orphaned role from a since-removed provider is renamable and deletable
+            but still not assignable — gate member editing on
+            `provider-id == "lakekeeper"`, not on absence from this list.
         queues:
           type: array
           items:
@@ -15231,6 +16526,25 @@ components:
       properties:
         managed-access:
           type: boolean
+    SetPredefinedPoliciesRequest:
+      type: object
+      description: Enablement changes to apply to one scope's predefined policies.
+      required:
+        - changes
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PredefinedPolicyChange'
+          description: |-
+            The changes to apply; at least one is required, and no more than one per
+            policy the scope decides plus a small allowance for retired-row cleanups.
+            A warehouse decides only the policies its listing reports: naming one that
+            is decided per project is refused. A policy not named keeps its stored
+            state, except on the first write to an uncurated scope: any change —
+            `enabled: true` included — curates the scope, materializing one row for
+            every policy the scope decides, enabled unless this request disables it.
+            Repeating an id keeps the last occurrence.
     SetProtectionRequest:
       type: object
       required:
