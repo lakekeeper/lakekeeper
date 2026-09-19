@@ -23,6 +23,7 @@ use crate::{
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
+        events::context::ActionContextKey,
     },
 };
 
@@ -296,22 +297,22 @@ impl std::fmt::Display for ContextValue {
 #[derive(Clone, Debug, typed_builder::TypedBuilder)]
 #[builder(mutators(
     #[allow(unreachable_pub)]
-    pub fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
+    pub fn context_map(&mut self, key: ActionContextKey, map: impl Into<BTreeMap<String, String>>) {
         self.context.push((key, ContextValue::Map(map.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
+    pub fn context_list(&mut self, key: ActionContextKey, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_string(&mut self, key: &'static str, value: impl Into<String>) {
+    pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
     }
     /// Append the context a value describes about itself.
     #[allow(unreachable_pub)]
     pub fn context_pairs(
         &mut self,
-        pairs: impl IntoIterator<Item = (&'static str, ContextValue)>,
+        pairs: impl IntoIterator<Item = (ActionContextKey, ContextValue)>,
     ) {
         self.context.extend(pairs);
     }
@@ -319,7 +320,7 @@ impl std::fmt::Display for ContextValue {
 pub struct ActionDescriptor {
     pub action_name: &'static str,
     #[builder(via_mutators)]
-    pub context: Vec<(&'static str, ContextValue)>,
+    pub context: Vec<(ActionContextKey, ContextValue)>,
 }
 
 impl ActionDescriptor {
@@ -358,6 +359,8 @@ impl ActionDescriptor {
     Serialize,
     Deserialize,
     VariantArray,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperUserAction))]
@@ -390,6 +393,7 @@ impl CatalogAction for CatalogUserAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -441,10 +445,10 @@ impl CatalogAction for CatalogServerAction {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
             if let Some(pid) = project_id {
-                b = b.context_string("project_id", pid.to_string());
+                b = b.context_string(ActionContextKey::ProjectId, pid.to_string());
             }
         }
         b.build()
@@ -461,6 +465,7 @@ impl CatalogAction for CatalogServerAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
@@ -528,15 +533,38 @@ impl CatalogProjectAction {
     }
 }
 impl CatalogAction for CatalogProjectAction {
+    // A wildcard arm here would silently accept a future variant and emit nothing for
+    // it, which is the whole failure this listing exists to prevent. Denied rather than
+    // left to review: see the audit log section of docs/docs/developer-guide.md.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::CreateWarehouse { name: Some(n) }
             | Self::CreateRole { name: Some(n) }
             | Self::CreateTag { name: Some(n) } => {
-                b = b.context_string("name", n.clone());
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
-            _ => {}
+            // Actions that contribute no audit context. Listed explicitly rather than
+            // matched with `_`, so that adding an action forces a decision about what
+            // its audit record should carry instead of silently emitting nothing.
+            Self::CreateTag { .. }
+            | Self::CreateWarehouse { .. }
+            | Self::Delete { .. }
+            | Self::Rename { .. }
+            | Self::GetMetadata { .. }
+            | Self::ListWarehouses { .. }
+            | Self::IncludeInList { .. }
+            | Self::CreateRole { .. }
+            | Self::ListRoles { .. }
+            | Self::SearchRoles { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::GetProjectTasks { .. }
+            | Self::ControlProjectTasks { .. }
+            | Self::ListTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -577,7 +605,15 @@ pub enum SourceSystemTarget {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
@@ -642,8 +678,14 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string("requested_provider_id", target.provider_id.to_string());
-            b = b.context_string("requested_source_id", target.source_id.to_string());
+            b = b.context_string(
+                ActionContextKey::RequestedProviderId,
+                target.provider_id.to_string(),
+            );
+            b = b.context_string(
+                ActionContextKey::RequestedSourceId,
+                target.source_id.to_string(),
+            );
         }
         b.build()
     }
@@ -651,9 +693,22 @@ impl CatalogAction for CatalogRoleAction {
 
 /// Whether a subtree grant operation extends to the addressed resource itself, alongside
 /// everything below it. Set from the request's `include-root-level`.
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum RootLevelGrants {
     /// The request's range extends to the addressed resource itself. The kinds it
     /// actually reaches are in `resource_types`; a kind filter can still exclude the
@@ -675,12 +730,13 @@ impl From<bool> for RootLevelGrants {
 
 impl RootLevelGrants {
     /// The label used on the wire and in action context.
+    ///
+    /// Derived through `strum`, not spelled out: the value is committed to a wire-value
+    /// manifest, and a hand-written arm would let a renamed variant keep the old literal
+    /// while the manifest recorded the new one.
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Included => "included",
-            Self::Excluded => "excluded",
-        }
+        self.into()
     }
 }
 
@@ -732,6 +788,113 @@ impl From<SubtreeResourceTypes> for BTreeSet<ResourceType> {
     }
 }
 
+/// A narrowed privilege set that named no privilege.
+#[derive(Debug, thiserror::Error)]
+#[error("A narrowed subtree scope must name at least one privilege")]
+pub struct NoSubtreePrivileges;
+
+/// The privileges a narrowed subtree grant operation reaches. Always at least one.
+// The same newtype guard as the resource kinds: an empty list means "every privilege" to
+// the store, and a policy reading it as "no privilege" would let the widest request past.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeSet<String>", into = "BTreeSet<String>")]
+pub struct SubtreePrivilegeNames(BTreeSet<String>);
+
+impl SubtreePrivilegeNames {
+    /// The privileges in scope.
+    ///
+    /// # Errors
+    /// When `privileges` is empty.
+    pub fn new(privileges: BTreeSet<String>) -> std::result::Result<Self, NoSubtreePrivileges> {
+        if privileges.is_empty() {
+            return Err(NoSubtreePrivileges);
+        }
+        Ok(Self(privileges))
+    }
+
+    /// The privileges, in a stable order.
+    #[must_use]
+    pub fn as_set(&self) -> &BTreeSet<String> {
+        &self.0
+    }
+}
+
+impl TryFrom<BTreeSet<String>> for SubtreePrivilegeNames {
+    type Error = NoSubtreePrivileges;
+
+    fn try_from(privileges: BTreeSet<String>) -> std::result::Result<Self, Self::Error> {
+        Self::new(privileges)
+    }
+}
+
+impl From<SubtreePrivilegeNames> for BTreeSet<String> {
+    fn from(privileges: SubtreePrivilegeNames) -> Self {
+        privileges.0
+    }
+}
+
+/// Which privileges a subtree grant operation covers.
+// Both cases are named for the reason the principal's are: the widest case has to be a
+// value a policy reads, never an absence it infers.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSubtreePrivileges {
+    /// Every privilege a matching grant can carry, including privileges this server's
+    /// authorizer no longer publishes. A request naming none takes this form.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrivilegesEvery"))]
+    Every {},
+    /// Only the privileges named here.
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrivilegesOnly"))]
+    Only {
+        /// Every privilege the request reaches, and never empty. Spelled `names` so the
+        /// wire form does not read `privileges.only.privileges`.
+        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>, min_items = 1))]
+        names: SubtreePrivilegeNames,
+    },
+}
+
+/// The `privilege_scope` label: whether a subtree request reaches every privilege or only
+/// the ones it narrows to.
+///
+/// Its own enum rather than a literal at the emission site so the two values reach the
+/// wire-value manifest and a rename fails `check-audit-format`, as `RootLevelGrants` does
+/// for `root_level`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum PrivilegeScope {
+    Every,
+    Only,
+}
+
+impl PrivilegeScope {
+    /// The label as it reaches the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+impl GrantSubtreePrivileges {
+    /// Which of the two cases this is, as the label the action context carries.
+    #[must_use]
+    pub fn scope(&self) -> PrivilegeScope {
+        match self {
+            Self::Every {} => PrivilegeScope::Every,
+            Self::Only { .. } => PrivilegeScope::Only,
+        }
+    }
+}
+
 /// Which principals' grants a subtree operation covers.
 // Both cases are named and one of them is always on the wire: an omitted field would
 // encode the widest case as an absence, and a policy engine that errors on a missing
@@ -760,28 +923,34 @@ pub struct GrantSubtreeShape {
     pub resource_types: SubtreeResourceTypes,
     /// Whether the request's range extends to the addressed resource itself.
     pub root_level: RootLevelGrants,
+    /// Which privileges the request reaches: every privilege a matching grant can carry,
+    /// or the named set it is narrowed to. A revoke removes only what this covers, so a
+    /// policy can leave an administrative privilege standing while clearing the rest.
+    pub privileges: GrantSubtreePrivileges,
     /// Whether the request covers every principal, or one named principal.
     pub principal: GrantSubtreePrincipal,
 }
 
 /// What a subtree grant operation covers.
 ///
-/// `of` describes a concrete request and is what every enforced check carries: Lakekeeper
-/// never authorizes a real subtree listing or revoke with `any`. `any` is the
+/// `request` describes a concrete call — the resource kinds it reaches, how far its range
+/// extends, the privileges it covers and the principal it is narrowed to — and is what
+/// every enforced check carries: Lakekeeper never authorizes a real subtree listing or
+/// revoke with `any`. `any` is the
 /// base-capability form, used for permission introspection and for "may this principal
 /// run subtree operations here at all?" queries. An authorizer that refuses `any` removes
 /// the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
 /// succeed.
 // The base case is a named value, so an authorizer is never silently asked to allow an
-// unspecified subtree operation: a policy that fences on the concrete shape gates `of`
-// and never matches `any`.
+// unspecified subtree operation: a policy that fences on the concrete shape gates
+// `request` and never matches `any`.
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GrantSubtreeScope {
     /// Concrete request shape.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeOf"))]
-    Of(GrantSubtreeShape),
+    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeRequest"))]
+    Request(GrantSubtreeShape),
     /// No specific request — the base-capability form.
     #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeAny"))]
     Any {},
@@ -791,13 +960,25 @@ impl GrantSubtreeScope {
     /// The scope as action context, so a policy-based authorizer can fence on it. `any`
     /// carries none: it describes no request.
     #[must_use]
-    pub fn context(&self) -> Vec<(&'static str, ContextValue)> {
-        let Self::Of(shape) = self else {
-            return Vec::new();
-        };
+    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
+        match self {
+            Self::Request(shape) => shape.context(),
+            Self::Any {} => Vec::new(),
+        }
+    }
+}
+
+impl GrantSubtreeShape {
+    /// The shape as action context. Every member is stated, so an authorizer reading one
+    /// never has to infer the widest case from a value it did not find.
+    ///
+    /// Public because an authorizer that builds its own request context from a concrete
+    /// shape needs it without going back through [`GrantSubtreeScope`].
+    #[must_use]
+    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
         // Principals are prefixed by kind, matching the wire discriminator, so a user id
         // and a role id that coincide stay distinguishable.
-        let principal = match &shape.principal {
+        let principal = match &self.principal {
             GrantSubtreePrincipal::Every {} => "every".to_string(),
             GrantSubtreePrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
             GrantSubtreePrincipal::One(AuthzUserOrRole::Role(assignee)) => {
@@ -806,10 +987,9 @@ impl GrantSubtreeScope {
         };
         vec![
             (
-                "resource_types",
+                ActionContextKey::ResourceTypes,
                 ContextValue::List(
-                    shape
-                        .resource_types
+                    self.resource_types
                         .as_set()
                         .iter()
                         .map(|kind| kind.as_str().to_string())
@@ -817,10 +997,28 @@ impl GrantSubtreeScope {
                 ),
             ),
             (
-                "root_level",
-                ContextValue::String(shape.root_level.as_str().to_string()),
+                ActionContextKey::RootLevel,
+                ContextValue::String(self.root_level.as_str().to_string()),
             ),
-            ("principal", ContextValue::String(principal)),
+            (ActionContextKey::Principal, ContextValue::String(principal)),
+            // Unlike the members above, the widest privilege case cannot be written out:
+            // an empty filter matches privileges this authorizer no longer publishes, so
+            // there is no list to expand it into. `privilege_scope` carries it instead,
+            // and the set below is named for what it holds — the narrowing, empty when
+            // there is none — so that reading it alone cannot pass for the whole answer.
+            (
+                ActionContextKey::PrivilegeScope,
+                ContextValue::String(self.privileges.scope().as_str().to_string()),
+            ),
+            (
+                ActionContextKey::NarrowedPrivileges,
+                ContextValue::List(match &self.privileges {
+                    GrantSubtreePrivileges::Every {} => Vec::new(),
+                    GrantSubtreePrivileges::Only { names } => {
+                        names.as_set().iter().cloned().collect()
+                    }
+                }),
+            ),
         ]
     }
 }
@@ -835,6 +1033,7 @@ impl GrantSubtreeScope {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
@@ -890,10 +1089,10 @@ pub enum CatalogWarehouseAction {
     /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
     /// covers this one resource; granted separately because it enumerates the subtree.
     ///
-    /// `scope` states what the listing covers — the kinds it reaches, how far its range
-    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
-    /// access review and still refuse a full enumeration. A real listing is checked with
-    /// the `of` form; permission introspection uses `any`.
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration. A real
+    /// listing is checked with the `request` form; permission introspection uses `any`.
     ReadSubtreeGrants {
         scope: GrantSubtreeScope,
     },
@@ -1003,24 +1202,48 @@ impl CatalogWarehouseAction {
     }
 }
 impl CatalogAction for CatalogWarehouseAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
-                b = b.context_list("source", source.as_ref().clone());
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
                 b = b.context_pairs(scope.context());
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::Delete { .. }
+            | Self::UpdateStorage { .. }
+            | Self::GetMetadata { .. }
+            | Self::GetConfig { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::Use { .. }
+            | Self::IncludeInList { .. }
+            | Self::Deactivate { .. }
+            | Self::Activate { .. }
+            | Self::Rename { .. }
+            | Self::ListDeletedTabulars { .. }
+            | Self::ModifySoftDeletion { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetAllTasks { .. }
+            | Self::ControlAllTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::SetFormatVersionPolicy { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1036,6 +1259,7 @@ impl CatalogAction for CatalogWarehouseAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
@@ -1159,10 +1383,10 @@ pub enum CatalogNamespaceAction {
     /// `ReadGrants`, which covers this one resource; granted separately because it
     /// enumerates the subtree.
     ///
-    /// `scope` states what the listing covers — the kinds it reaches, how far its range
-    /// extends, and the principal it is narrowed to — so a policy can allow a narrow
-    /// access review and still refuse a full enumeration. A real listing is checked with
-    /// the `of` form; permission introspection uses `any`.
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration. A real
+    /// listing is checked with the `request` form; permission introspection uses `any`.
     ReadSubtreeGrants {
         scope: GrantSubtreeScope,
     },
@@ -1242,6 +1466,11 @@ impl CatalogNamespaceAction {
     }
 }
 impl CatalogAction for CatalogNamespaceAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
+    // Long because the no-context variants are listed exhaustively rather than
+    // collapsed into a wildcard. That listing is the point, so the length is not a
+    // signal to split the function.
+    #[allow(clippy::too_many_lines)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1251,13 +1480,13 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(tid) = table_id {
-                    b = b.context_string("table_id", tid.to_string());
+                    b = b.context_string(ActionContextKey::TableId, tid.to_string());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateGenericTable {
@@ -1268,27 +1497,27 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(gtid) = generic_table_id {
-                    b = b.context_string("generic_table_id", gtid.to_string());
+                    b = b.context_string(ActionContextKey::GenericTableId, gtid.to_string());
                 }
                 if let Some(f) = format {
-                    b = b.context_string("format", f.clone());
+                    b = b.context_string(ActionContextKey::Format, f.clone());
                 }
                 if let Some(bl) = base_location {
-                    b = b.context_string("base_location", bl.clone());
+                    b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::UpdateProperties {
@@ -1296,10 +1525,16 @@ impl CatalogAction for CatalogNamespaceAction {
                 updated_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Delete {
@@ -1308,34 +1543,45 @@ impl CatalogAction for CatalogNamespaceAction {
                 recursive,
             } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
                 if *recursive {
-                    b = b.context_string("recursive", "true");
+                    b = b.context_string(ActionContextKey::Recursive, "true");
                 }
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
             Self::AcceptMovedNamespace { source } if !source.is_empty() => {
-                b = b.context_list("source", source.as_ref().clone());
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::Move { destination, force } => {
                 // The destination is the whole point of the decision for a policy engine:
                 // it determines which subtree's grants the moved namespace inherits.
                 if !destination.is_empty() {
-                    b = b.context_list("destination", destination.as_ref().clone());
+                    b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
                 }
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
                 b = b.context_pairs(scope.context());
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::ListTables { .. }
+            | Self::ListViews { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::SetProtection { .. }
+            | Self::IncludeInList { .. }
+            | Self::ListGenericTables { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1351,6 +1597,7 @@ impl CatalogAction for CatalogNamespaceAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
@@ -1431,6 +1678,7 @@ impl CatalogTableAction {
     }
 }
 impl CatalogAction for CatalogTableAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1441,20 +1689,26 @@ impl CatalogAction for CatalogTableAction {
                 update_kinds,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
                 if !target_refs.is_empty() {
                     b = b.context_list(
-                        "target-refs",
+                        ActionContextKey::TargetRefs,
                         target_refs.iter().cloned().collect::<Vec<_>>(),
                     );
                 }
                 if !update_kinds.is_empty() {
                     b = b.context_list(
-                        "update-kinds",
+                        ActionContextKey::UpdateKinds,
                         update_kinds
                             .iter()
                             .map(ToString::to_string)
@@ -1464,13 +1718,24 @@ impl CatalogAction for CatalogTableAction {
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::WriteData { .. }
+            | Self::ReadData { .. }
+            | Self::GetMetadata { .. }
+            | Self::Rename { .. }
+            | Self::IncludeInList { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1486,6 +1751,7 @@ impl CatalogAction for CatalogTableAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
@@ -1551,6 +1817,7 @@ impl CatalogViewAction {
     }
 }
 impl CatalogAction for CatalogViewAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1559,21 +1826,37 @@ impl CatalogAction for CatalogViewAction {
                 removed_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::Select { .. }
+            | Self::IncludeInList { .. }
+            | Self::Rename { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1589,6 +1872,7 @@ impl CatalogAction for CatalogViewAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperGenericTableAction))]
@@ -1640,7 +1924,15 @@ impl CatalogAction for CatalogGenericTableAction {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTagAction))]
@@ -3244,7 +3536,7 @@ pub mod tests {
             .action_descriptor()
             .context
             .into_iter()
-            .map(|(k, v)| (k, v.to_string()))
+            .map(|(k, v)| (k.as_str(), v.to_string()))
             .collect();
         // Ordering is deterministic: refs sort lexically, kinds sort by variant.
         assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
@@ -3254,8 +3546,9 @@ pub mod tests {
         );
     }
 
-    /// Locks the wire shape of the ref/kind fields — kinds serialize as their
-    /// kebab-case Iceberg action names — since the enterprise Cedar layer parses it.
+    /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
+    /// Iceberg action names. This is a serialized contract that authorizers parse, so a
+    /// change here is a change to their input, not an internal rename.
     #[test]
     fn test_catalog_table_action_commit_with_refs_and_kinds_serde() {
         let action = CatalogTableAction::Commit {
@@ -3358,14 +3651,19 @@ pub mod tests {
             )
             .expect("non-empty kinds"),
             root_level: RootLevelGrants::Excluded,
+            privileges: GrantSubtreePrivileges::Only {
+                names: SubtreePrivilegeNames::new(["select".to_string()].into_iter().collect())
+                    .expect("non-empty privileges"),
+            },
             principal: GrantSubtreePrincipal::One(AuthzUserOrRole::User(
                 UserId::try_from("oidc~alice").expect("valid user id"),
             )),
         };
         let of = serde_json::json!({
-            "of": {
+            "request": {
                 "resource_types": ["namespace", "table"],
                 "root_level": "excluded",
+                "privileges": {"only": {"names": ["select"]}},
                 "principal": {"one": {"user": "oidc~alice"}},
             }
         });
@@ -3376,7 +3674,7 @@ pub mod tests {
         for (action, expected) in [
             (
                 CatalogWarehouseAction::ReadSubtreeGrants {
-                    scope: GrantSubtreeScope::Of(shape.clone()),
+                    scope: GrantSubtreeScope::Request(shape.clone()),
                 },
                 serde_json::json!({"action": "read_subtree_grants", "scope": of}),
             ),
@@ -3402,7 +3700,7 @@ pub mod tests {
             ),
             (
                 CatalogNamespaceAction::RevokeSubtreeGrants {
-                    scope: GrantSubtreeScope::Of(shape.clone()),
+                    scope: GrantSubtreeScope::Request(shape.clone()),
                 },
                 serde_json::json!({"action": "revoke_subtree_grants", "scope": of}),
             ),

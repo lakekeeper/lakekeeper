@@ -10,6 +10,13 @@ license = { workspace = true }
 description = "Extensions for Apache Iceberg Rust"
 keywords = ["iceberg", "rest", "extension"]
 
+[package.metadata.cargo-machete]
+# `strum` is used only through `strum_macros` derives: `VariantNames` and `EnumCount`
+# expand to `impl ::strum::VariantNames` / `::strum::EnumCount`, so the crate is required
+# to compile even though no source file here names `strum::`. cargo-machete scans source
+# text and cannot see the expansion.
+ignored = ["strum"]
+
 [lib]
 
 [features]
@@ -26,6 +33,7 @@ pastey = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
+strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
@@ -43,3 +51,9 @@ lakekeeper-io = { path = "../io", default-features = false, features = [
 ] }
 lazy_static = { workspace = true }
 tokio = { workspace = true }
+
+[lints.rust]
+# See the `compile_error!` in src/lib.rs: `tracing_unstable` is set repo-wide in
+# `.cargo/config.toml` and in CI. Declare it so the guard does not itself trip
+# `unexpected_cfgs` under `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tracing_unstable)'] }

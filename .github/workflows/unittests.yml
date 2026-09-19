@@ -34,6 +34,7 @@ jobs:
       - test
       - msrv-check
       - unused-deps
+      - check-audit-format
     steps:
       - run: exit 0
 
@@ -329,7 +330,7 @@ jobs:
 
       - name: Migrate database
         run: |
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           sqlx database create
@@ -340,7 +341,7 @@ jobs:
       - name: Setup vault
         run: |
           export VAULT_ADDR=http://localhost:8200
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt update && sudo apt install gpg wget
           wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
           gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
@@ -440,3 +441,67 @@ jobs:
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  check-audit-format:
+    name: audit log format change is recorded
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Only a pull request has a merge base to compare against; this workflow also runs on
+    # pushes and manual dispatches, where there is nothing to gate. The condition sits on
+    # the steps rather than on the job: a skipped job skips everything that `needs` it,
+    # which would stop `tests-pass` reporting on pushes to main. With no job-level
+    # condition the job runs, does nothing, and succeeds.
+    #
+    # Nothing here reads the pull request title or body. What a format change owes is a
+    # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
+    # read and the release recipe can assemble. A description gate could do neither.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          # The base commit has to be present to diff against it. The default shallow
+          # fetch does not include it.
+          fetch-depth: 0
+      - name: Check the change is recorded and AUDIT_FORMAT is the version it implies
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The branch this pull request targets. A `rel-*` branch freezes the audit log
+          # format: a patch that moved it would give one version number two meanings, one
+          # per release line, with no way for a consumer to tell them apart.
+          BASE_BRANCH: ${{ github.base_ref }}
+        run: |
+          python3 .github/scripts/check-audit-format.py "${BASE_SHA}" --base-branch "${BASE_BRANCH}"
+      - name: Self-test the checker
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/check-audit-format.py --self-test
+      - name: Audit records are emitted from one site that stamps the version
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          # Every audit record must go through `__audit_emit!`, which stamps
+          # `audit_format`. Counted tree-wide: the macro is `#[macro_export]`ed and
+          # `tracing::info!` is callable anywhere, so a second site can appear in any
+          # crate. Comments are skipped — the AUDIT_FORMAT docs quote both needles.
+          hits() { git grep -nE "$1" -- '*.rs' | grep -vE ':[0-9]+:[[:space:]]*//' || true; }
+
+          EMISSIONS="$(hits 'event_source[[:space:]]*=[[:space:]]*"audit"')"
+          STAMPS="$(hits 'audit_format[[:space:]]*=')"
+          N_EMISSIONS="$(printf '%s' "${EMISSIONS}" | grep -c . || true)"
+          N_STAMPS="$(printf '%s' "${STAMPS}" | grep -c . || true)"
+
+          STATUS=0
+          if [ "${N_EMISSIONS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that emits \`event_source = \"audit\"\`, found ${N_EMISSIONS}. Route every audit record through \`__audit_emit!\`, which is what stamps \`audit_format\`; a second site can silently omit the version."
+            printf '%s\n' "${EMISSIONS}" >&2
+            STATUS=1
+          fi
+          if [ "${N_STAMPS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that sets \`audit_format\`, found ${N_STAMPS}."
+            printf '%s\n' "${STAMPS}" >&2
+            STATUS=1
+          fi
+          exit "${STATUS}"

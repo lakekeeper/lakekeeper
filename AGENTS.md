@@ -54,6 +54,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Use workspace dependencies (`{ workspace = true }`) — don't add versions directly.
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
+- Describe current behavior in comments: no "rather than", "instead of", "no longer", "previously", and no plan or task labels. Version changelogs are exempt — stating the delta is their purpose.
 - Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
 
 ## Architecture
@@ -65,6 +66,16 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Hot authz path: may tolerate cache lag.
 - After any write: invalidate the local replica's in-memory cache immediately.
 - Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
+
+## Audit Log
+
+Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format" — it has the decision table, the registration lists, and what each check does and does not cover.
+
+- `AUDIT_FORMAT` is derived from `audit-format/`. Write a fragment; never edit a version number.
+- Never pass a string literal to `action_name`, `operation` or `outcome` — it reaches no manifest, so a later rename breaks consumers silently. Add an enum variant and emit `Variant::as_str()`.
+- Never add a `_ =>` arm to an `as_str` or `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
+- Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.
+- Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
 
 ## Rules
 

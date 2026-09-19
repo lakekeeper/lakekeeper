@@ -35,7 +35,10 @@ use axum_prometheus::metrics;
 use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
 
-use crate::request_metadata::{RequestMetadata, TokenRoles};
+use crate::{
+    request_metadata::{RequestMetadata, TokenRoles},
+    service::events::backends::audit::{AuditOperation, AuditOutcome},
+};
 
 /// Histogram of each gate's evaluation time, labelled by `gate` and `outcome`.
 /// Its `_count` series is also the authoritative rejection rate: admission
@@ -115,10 +118,14 @@ impl RejectionKind {
     /// `unavailable` is the fail-closed outcome, kept distinct from `forbidden`
     /// so an outage of an upstream a gate depends on shows up as an outage
     /// rather than as a wave of denials.
-    fn label(self) -> &'static str {
+    ///
+    /// Returns the enum rather than the string so that the value reaches the
+    /// wire-value manifest: a rename then fails `check-audit-format` instead of
+    /// silently breaking every consumer matching on it.
+    fn label(self) -> AuditOutcome {
         match self {
-            Self::Forbidden => "forbidden",
-            Self::Unavailable { .. } => "unavailable",
+            Self::Forbidden => AuditOutcome::Forbidden,
+            Self::Unavailable { .. } => AuditOutcome::Unavailable,
         }
     }
 }
@@ -173,6 +180,19 @@ impl AdmissionRejection {
     #[must_use]
     pub fn denied_by(mut self, rule: impl Into<Cow<'static, str>>) -> Self {
         self.denied_by = Some(rule.into());
+        self
+    }
+
+    /// Pin the `error_id`, which is otherwise a fresh uuid per rejection.
+    ///
+    /// For tests that compare a whole emitted audit record against a committed
+    /// one: the id reaches the record, so a random one per run would make that
+    /// comparison impossible. Never used in production, where the whole point
+    /// of the id is being unique to one rejection.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_error_id(mut self, error_id: Uuid) -> Self {
+        self.error_id = error_id;
         self
     }
 
@@ -435,9 +455,9 @@ impl AdmissionGates {
                     // without the actor — and, for a fail-closed `503`, repeat
                     // it at ERROR as an internal error this server did not have.
                     crate::audit_operation!(
-                        operation = "admission_decided",
+                        operation = AuditOperation::AdmissionDecided.as_str(),
                         actor = ctx.metadata.audit_actor(),
-                        outcome = rejection.kind.label(),
+                        outcome = rejection.kind.label().as_str(),
                         context = AdmissionRejectedContext {
                             gate: gate.name(),
                             denied_by: rejection.deciding_rule(),
@@ -481,7 +501,7 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
     match result {
         Ok(GateDecision::Admitted(_)) => "admitted",
         Ok(GateDecision::NotApplicable) => "skipped",
-        Err(rejection) => rejection.kind.label(),
+        Err(rejection) => rejection.kind.label().as_str(),
     }
 }
 

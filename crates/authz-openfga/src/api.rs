@@ -302,6 +302,34 @@ struct GetTagAssignmentsResponse {
     assignments: Vec<TagAssignment>,
 }
 
+/// The `action_name` values the assignment endpoints emit.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+// The shared `Update` prefix is not redundant naming: each variant's wire value is the
+// full `update_<resource>_assignments` string a consumer matches on, so trimming the
+// prefix would rename nine audit log values.
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum AssignmentAction {
+    UpdateTagAssignments,
+    UpdateServerAssignments,
+    UpdateProjectAssignments,
+    UpdateWarehouseAssignments,
+    UpdateNamespaceAssignments,
+    UpdateTableAssignments,
+    UpdateViewAssignments,
+    UpdateGenericTableAssignments,
+    UpdateRoleAssignments,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -315,7 +343,7 @@ impl APIEventActions for UpdateTagAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_tag_assignments")
+                .action_name(AssignmentAction::UpdateTagAssignments.into())
                 .build(),
         ]
     }
@@ -334,7 +362,7 @@ impl APIEventActions for UpdateServerAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_server_assignments")
+                .action_name(AssignmentAction::UpdateServerAssignments.into())
                 .build(),
         ]
     }
@@ -353,7 +381,7 @@ impl APIEventActions for UpdateProjectAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_project_assignments")
+                .action_name(AssignmentAction::UpdateProjectAssignments.into())
                 .build(),
         ]
     }
@@ -372,7 +400,7 @@ impl APIEventActions for UpdateWarehouseAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_warehouse_assignments")
+                .action_name(AssignmentAction::UpdateWarehouseAssignments.into())
                 .build(),
         ]
     }
@@ -391,7 +419,7 @@ impl APIEventActions for UpdateNamespaceAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_namespace_assignments")
+                .action_name(AssignmentAction::UpdateNamespaceAssignments.into())
                 .build(),
         ]
     }
@@ -410,7 +438,7 @@ impl APIEventActions for UpdateTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_table_assignments")
+                .action_name(AssignmentAction::UpdateTableAssignments.into())
                 .build(),
         ]
     }
@@ -429,7 +457,7 @@ impl APIEventActions for UpdateViewAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_view_assignments")
+                .action_name(AssignmentAction::UpdateViewAssignments.into())
                 .build(),
         ]
     }
@@ -448,7 +476,7 @@ impl APIEventActions for UpdateGenericTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_generic_table_assignments")
+                .action_name(AssignmentAction::UpdateGenericTableAssignments.into())
                 .build(),
         ]
     }
@@ -467,7 +495,7 @@ impl APIEventActions for UpdateRoleAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_role_assignments")
+                .action_name(AssignmentAction::UpdateRoleAssignments.into())
                 .build(),
         ]
     }
@@ -3030,7 +3058,7 @@ mod tests {
                 ArcProjectId, ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
-                events::{AuthorizationSucceededEvent, EventListener},
+                events::EventListener,
             },
             tokio,
         };
@@ -4016,49 +4044,6 @@ mod tests {
             );
         }
 
-        /// Records every `authorization_succeeded` event it receives.
-        #[derive(Debug, Default)]
-        struct CapturingListener {
-            succeeded: std::sync::Mutex<Vec<AuthorizationSucceededEvent>>,
-        }
-
-        impl std::fmt::Display for CapturingListener {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "CapturingListener")
-            }
-        }
-
-        #[lakekeeper::async_trait::async_trait]
-        impl EventListener for CapturingListener {
-            async fn authorization_succeeded(
-                &self,
-                event: AuthorizationSucceededEvent,
-            ) -> anyhow::Result<()> {
-                self.succeeded.lock().unwrap().push(event);
-                Ok(())
-            }
-        }
-
-        impl CapturingListener {
-            fn count(&self) -> usize {
-                self.succeeded.lock().unwrap().len()
-            }
-
-            /// Events are dispatched from a spawned task, so give it a moment to
-            /// land before asserting. Waits for `expected` events, then waits a
-            /// little longer so surplus emits are caught rather than raced past.
-            async fn settled_count(&self, expected: usize) -> usize {
-                for _ in 0..100 {
-                    if self.count() >= expected {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                self.count()
-            }
-        }
-
         /// The authorization check must not touch OpenFGA state.
         ///
         /// Endpoints emit the audit event between the check and the write, so a
@@ -4236,7 +4221,8 @@ mod tests {
                 .await;
 
             // Attach after setup so only the two calls below are captured.
-            let listener = Arc::new(CapturingListener::default());
+            let listener =
+                Arc::new(lakekeeper_integration_tests::CapturingAuthzListener::default());
             ctx.v1_state
                 .events
                 .append(listener.clone() as Arc<dyn EventListener>)
@@ -4258,8 +4244,8 @@ mod tests {
             .await
             .expect("first assignment update succeeds");
             assert_eq!(
-                listener.settled_count(1).await,
-                1,
+                listener.settled_counts(1, 0).await,
+                (1, 0),
                 "the successful call must be audited exactly once"
             );
 
@@ -4273,8 +4259,8 @@ mod tests {
             .expect_err("re-writing an existing tuple must fail");
 
             assert_eq!(
-                listener.settled_count(2).await,
-                2,
+                listener.settled_counts(2, 0).await,
+                (2, 0),
                 "the second authorization attempt must be audited exactly once even \
                  though the write that followed it failed: {write_error:?}"
             );

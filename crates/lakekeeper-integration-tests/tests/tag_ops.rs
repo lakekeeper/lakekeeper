@@ -40,12 +40,12 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CatalogNamespaceOps as _, GenericTableId, NamespaceId, State, TableId, TagScope, TagSource,
-        TagValueKind, ViewId, authz::AllowAllAuthorizer,
+        TagValueKind, ViewId, authz::AllowAllAuthorizer, events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, TestWarehouseResponse, create_generic_table, create_view, memory_io_profile,
-    random_request_metadata,
+    CapturingAuthzListener, SetupTestCatalog, TestWarehouseResponse, create_generic_table,
+    create_view, memory_io_profile, random_request_metadata,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -2714,4 +2714,441 @@ async fn tag_actions_request(
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+// ==================== Audit ordering ====================
+
+/// A write that fails *after* authorization succeeded must still record the
+/// authorization outcome as a success — the write failure is not an
+/// authorization failure.
+///
+/// The second request is identical to the first, so `require_project_action`
+/// passes again while the catalog rejects the duplicate definition name — a
+/// write failure reachable only once authorization has already been decided.
+#[sqlx::test]
+async fn test_create_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = &warehouse.project_id;
+
+    // Attach after setup so only the two calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let create = || {
+        create_def(
+            &ctx,
+            project_id,
+            "audit.order",
+            vec![TagScope::Table],
+            TagValueKind::Marker,
+            None,
+        )
+    };
+
+    create().await.expect("first create succeeds");
+    assert_eq!(
+        listener.settled_counts(1, 0).await,
+        (1, 0),
+        "the successful call must be audited exactly once"
+    );
+
+    let write_error = create()
+        .await
+        .expect_err("re-creating the same definition must fail");
+
+    assert_eq!(
+        listener.settled_counts(2, 0).await,
+        (2, 0),
+        "the second authorization attempt must be audited as a success even though \
+         the write that followed it failed: {write_error:?}"
+    );
+}
+
+/// Same contract on the update path: renaming onto an existing definition name
+/// is rejected by the write, after `require_tag_action` has already allowed the
+/// update.
+#[sqlx::test]
+async fn test_update_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let pid = &warehouse.project_id;
+
+    create_def(
+        &ctx,
+        pid,
+        "audit.taken",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    let victim = create_def(
+        &ctx,
+        pid,
+        "audit.renamable",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error = Server::update_tag_definition(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        victim.id,
+        UpdateTagDefinitionRequest {
+            name: "audit.taken".to_string(),
+            description: None,
+            scope: vec![TagScope::Table],
+            add_allowed_values: None,
+        },
+    )
+    .await
+    .expect_err("renaming onto an existing name must fail");
+
+    assert_eq!(
+        listener.settled_counts(1, 0).await,
+        (1, 0),
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+}
+
+/// Same contract on the delete path: the in-use rejection comes from the delete
+/// statement, after `require_tag_action` has already allowed the delete.
+#[sqlx::test]
+async fn test_delete_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let pid = &warehouse.project_id;
+
+    let def = create_def(
+        &ctx,
+        pid,
+        "audit.in-use",
+        vec![TagScope::Warehouse],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    Server::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "audit.in-use".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error =
+        Server::delete_tag_definition(ctx.clone(), request_metadata_with_project(pid), def.id)
+            .await
+            .expect_err("deleting an attached definition must fail");
+
+    assert_eq!(
+        listener.settled_counts(1, 0).await,
+        (1, 0),
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+}
+
+/// Seed a reserved-namespace definition directly through the store. The API
+/// refuses to create one (`is_reserved_tag_name` on the request), so the guard
+/// that protects an *existing* reserved definition is otherwise unreachable.
+async fn seed_reserved_definition(
+    ctx: &Ctx,
+    project_id: &ProjectId,
+    name: &str,
+) -> lakekeeper::service::TagDefinitionId {
+    use lakekeeper::service::{
+        CatalogCreateTagDefinitionRequest, CatalogStore, CatalogTagOps as _, TagDefinitionId,
+        TagValueSpec, Transaction as _,
+    };
+    let tag_definition_id = TagDefinitionId::new_random();
+    let scope = vec![TagScope::Table];
+    let request = CatalogCreateTagDefinitionRequest::builder()
+        .tag_definition_id(tag_definition_id)
+        .name(name)
+        .description(None)
+        .scope(&scope)
+        .value_spec(TagValueSpec::Marker)
+        .build();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::create_tag_definition(project_id, request, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    tag_definition_id
+}
+
+/// The reserved-namespace guard refuses a definition the authorizer already
+/// allowed the action on, so it is audited as a denial — not an "allowed" record
+/// for a change that never happened. The guard lives in
+/// `check_tag_definition_mutable`, shared by update and delete.
+///
+/// A reserved definition stays *readable*, which is why the guard is not in
+/// `check_tag_definition_action`; the final read below pins that.
+#[sqlx::test]
+async fn test_reserved_tag_definition_guards_audit_as_denials(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let pid = &warehouse.project_id;
+    let def_id = seed_reserved_definition(&ctx, pid, "system.classification").await;
+
+    // Attach after setup so only the calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let update_err = Server::update_tag_definition(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def_id,
+        UpdateTagDefinitionRequest {
+            // Deliberately a NON-reserved target: renaming *into* a reserved
+            // namespace is refused pre-authz on the request, which would never
+            // reach the guard on the resolved definition that this test pins.
+            name: "audit.renamed".to_string(),
+            description: Some("edited".to_string()),
+            scope: vec![TagScope::Table],
+            add_allowed_values: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(update_err.error.r#type, "ReservedTagNamespace");
+    assert_eq!(
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "update: the reserved namespace is the authorization outcome — one denial, no success"
+    );
+
+    let delete_err =
+        Server::delete_tag_definition(ctx.clone(), request_metadata_with_project(pid), def_id)
+            .await
+            .unwrap_err();
+    assert_eq!(delete_err.error.r#type, "ReservedTagNamespace");
+    assert_eq!(
+        listener.settled_counts(0, 2).await,
+        (0, 2),
+        "delete: same guard, same single-denial verdict"
+    );
+
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 2],
+        "a deliberate refusal is `ActionForbidden`, not an internal-catalog-error non-verdict"
+    );
+
+    // The guard is mutation-only: reading a reserved definition still succeeds,
+    // and is audited as the allowed attempt it is.
+    let read = Server::get_tag_definition(ctx.clone(), request_metadata_with_project(pid), def_id)
+        .await
+        .expect("a reserved definition must stay readable");
+    assert_eq!(read.name, "system.classification");
+    assert_eq!(
+        listener.settled_counts(1, 2).await,
+        (1, 2),
+        "the read is permitted and recorded as a success"
+    );
+}
+
+/// The check phase must write nothing.
+///
+/// This is the contract the whole check/apply split exists to hold: a `check_*`
+/// that also wrote would commit the change *before* the attempt was audited,
+/// which is the ordering bug this design prevents. The regression tests above
+/// pin the event *label* on a failing write; nothing else pins that the
+/// authorization phase is side-effect free, so an edit slipping a write back
+/// into a `check_*` would leave the suite green.
+///
+/// Driven black-box through an authorizer that denies the tag actions: each
+/// handler below runs its check phase, is refused inside it, and must leave the
+/// catalog byte-identical. The authorizer is the only thing that can halt a
+/// request between the check and the write, so this is where the boundary is
+/// observable from outside.
+#[sqlx::test]
+async fn test_check_phase_has_no_side_effects(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    type HidingCtx = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+    type HidingServer = ApiServer<PostgresBackend, HidingAuthorizer, SecretsState>;
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse): (HidingCtx, _) = SetupTestCatalog::builder()
+        .pool(pool)
+        .storage_profile(memory_io_profile())
+        .authorizer(authz.clone())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let pid = &warehouse.project_id;
+
+    // Fixture built while everything is still permitted.
+    let def = HidingServer::create_tag_definition(
+        CreateTagDefinitionRequest {
+            name: "purity.marker".to_string(),
+            description: None,
+            scope: vec![TagScope::Warehouse],
+            value_kind: TagValueKind::Marker,
+            allowed_values: None,
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Attached while still permitted. Without this the refused Remove below has
+    // nothing to delete, so a rogue write in its check phase would delete nothing
+    // and the final assertion would hold either way — a vacuous leg.
+    let _attached = HidingServer::create_tag_definition(
+        CreateTagDefinitionRequest {
+            name: "purity.attached".to_string(),
+            description: None,
+            scope: vec![TagScope::Warehouse],
+            value_kind: TagValueKind::Marker,
+            allowed_values: None,
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    HidingServer::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "purity.attached".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // A Table-scoped definition, to drive the check phase *past* the authorizer
+    // call: blocking an action aborts at that call, leaving the rest of the phase
+    // unexercised. `check_set_tag_on_target` validates the scope only after that
+    // call, so the request below is issued while `tag:Apply` is still permitted.
+    HidingServer::create_tag_definition(
+        CreateTagDefinitionRequest {
+            name: "purity.table-only".to_string(),
+            description: None,
+            scope: vec![TagScope::Table],
+            value_kind: TagValueKind::Marker,
+            allowed_values: None,
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    let err = HidingServer::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "purity.table-only".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .expect_err("a Table-scoped definition must not attach to a warehouse");
+    // Pin the refusal to the scope check: a denial here would mean the request
+    // stopped at the authorizer, proving nothing about the rest of the phase.
+    assert_eq!(err.error.r#type, "TagScopeNotAllowed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+
+    // Deny only the mutating tag actions, so the read-backs below still work.
+    authz.block_action("tag:Apply");
+    authz.block_action("tag:Remove");
+    authz.block_action("tag:Delete");
+
+    HidingServer::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "purity.marker".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .expect_err("Apply is denied, so the check phase must refuse");
+
+    HidingServer::delete_warehouse_tag(
+        warehouse.warehouse_id,
+        "purity.attached".to_string(),
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .expect_err("Remove is denied, so the check phase must refuse");
+
+    HidingServer::delete_tag_definition(ctx.clone(), request_metadata_with_project(pid), def.id)
+        .await
+        .expect_err("Delete is denied, so the check phase must refuse");
+
+    // Nothing above reached an `apply_*`, so the catalog must be untouched.
+    let definitions = HidingServer::list_tag_definitions(
+        ctx.clone(),
+        ListTagDefinitionsQuery {
+            page_token: None,
+            page_size: None,
+            name: None,
+        },
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    let mut names = definitions
+        .tag_definitions
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["purity.attached", "purity.marker", "purity.table-only"],
+        "a refused delete must not remove the definition"
+    );
+
+    let tags = HidingServer::list_warehouse_tags(
+        warehouse.warehouse_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery { effective: None },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        tags.tags
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["purity.attached"],
+        "a refused apply must not attach a tag and a refused remove must not detach \
+         one — the check phase writes nothing"
+    );
 }

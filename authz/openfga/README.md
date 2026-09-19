@@ -4,6 +4,41 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.12`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
+
+Supersedes `v4.11`, which reached no release. `v4.11` carried the subtree grant relations; `v4.12` adds the privilege split on top. A store already provisioned with `v4.11` from a `main` build must see a higher version to pick up the new relations, hence the bump. `v4.11` is no longer registered; stores on it migrate straight to `v4.12`.
+
+### Subtree grant relations
+
+`warehouse`, `namespace`:
+
+- Add `can_read_subtree_assignments` and `can_revoke_subtree_assignments`, both from `manage_grants`. Reading or revoking every grant in a subtree is administration-grade, and `manage_grants` is the relation whose reach is the subtree. These arrived with `v4.11` and are listed here because `v4.12` is the first released version to carry them.
+
+### Split privileges
+
+`project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- `describe`, `select`, `modify`, and `create` where the level has it, now hold only what was granted on the object itself — they are `[user, role#assignee]` and nothing more. Existing tuples are already exactly this, which is why nothing has to be rewritten. The tabular types have no `create`.
+- A `_effective` twin for each carries what the grant implies: the weaker privileges it subsumes, plus what flows down from the parent. A project sits at the top of the privilege hierarchy, so its twins add only the subsumed privileges. Their definitions are the former bodies of the bare relations. Every action reads the `_effective` twin, so what an action authorizes is unchanged.
+
+A `Check` issued directly against OpenFGA for a bare privilege answers "granted on this object" where it previously answered "holds it here"; the previous answer is `<privilege>_effective`. Grants written and listed through Lakekeeper are unaffected, because those name the stored relation. Nothing Lakekeeper checks names a bare privilege — every check goes through a `can_*` action.
+
+### Visibility
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- New `visible_below`: a grant on this object or anywhere below it. It reads the bare privilege relations plus `ownership` and recurses downward, so each object it reaches contributes only its own stored tuples and none of them re-ask the question of their parent.
+- `warehouse.can_get_metadata` and `namespace.can_get_metadata` now read `describe_effective or visible_below from …`. `project.can_get_metadata` reads `describe_effective or visible_below from warehouse or admin from server`, which also bounds the cost of listing the warehouses in a project.
+
+Bottom-up visibility is unchanged: a principal granted `select` on one deep table still reaches `can_use`, `can_get_config` and the listings above it. What changes is the cost. Previously each descendant re-resolved `describe from parent` back up to the project, so a check that had to visit every object in a warehouse paid a full upward walk per object. The bare relations carry no inheritance, so each visit is now local; whatever a descendant inherits from above is already answered by `describe_effective` on the object being checked.
+
 ## `v4.10`
 
 ```text

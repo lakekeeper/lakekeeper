@@ -8977,10 +8977,10 @@ components:
       description: |-
         A single factor that contributed to an authorization decision.
 
-        Discriminated by `type`: `policy` names a policy the authorizer matched,
-        `system-authority` records that a built-in authority tier decided the
-        request. Further kinds may be added, so treat an unrecognised `type` as an
-        opaque factor rather than an error.
+        Discriminated by `type`: `policy` names a policy the authorizer matched, and
+        `system-authority` records that a built-in authority tier decided the request. The
+        schema is a closed `oneOf` over those two, so a further kind is a schema change a
+        generated client has to be rebuilt for rather than one it absorbs on its own.
       discriminator:
         propertyName: type
         mapping:
@@ -10270,15 +10270,51 @@ components:
               $ref: '#/components/schemas/UserOrRole'
               description: The single principal the request is narrowed to.
       description: Which principals' grants a subtree operation covers.
+    GrantSubtreePrivileges:
+      oneOf:
+        - type: object
+          title: GrantSubtreePrivilegesEvery
+          description: |-
+            Every privilege a matching grant can carry, including privileges this server's
+            authorizer no longer publishes. A request naming none takes this form.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: |-
+                Every privilege a matching grant can carry, including privileges this server's
+                authorizer no longer publishes. A request naming none takes this form.
+        - type: object
+          title: GrantSubtreePrivilegesOnly
+          description: Only the privileges named here.
+          required:
+            - only
+          properties:
+            only:
+              type: object
+              description: Only the privileges named here.
+              required:
+                - names
+              properties:
+                names:
+                  type: array
+                  items:
+                    type: string
+                  description: |-
+                    Every privilege the request reaches, and never empty. Spelled `names` so the
+                    wire form does not read `privileges.only.privileges`.
+                  minItems: 1
+      description: Which privileges a subtree grant operation covers.
     GrantSubtreeScope:
       oneOf:
         - type: object
-          title: GrantSubtreeScopeOf
+          title: GrantSubtreeScopeRequest
           description: Concrete request shape.
           required:
-            - of
+            - request
           properties:
-            of:
+            request:
               $ref: '#/components/schemas/GrantSubtreeShape'
               description: Concrete request shape.
         - type: object
@@ -10293,8 +10329,10 @@ components:
       description: |-
         What a subtree grant operation covers.
 
-        `of` describes a concrete request and is what every enforced check carries: Lakekeeper
-        never authorizes a real subtree listing or revoke with `any`. `any` is the
+        `request` describes a concrete call — the resource kinds it reaches, how far its range
+        extends, the privileges it covers and the principal it is narrowed to — and is what
+        every enforced check carries: Lakekeeper never authorizes a real subtree listing or
+        revoke with `any`. `any` is the
         base-capability form, used for permission introspection and for "may this principal
         run subtree operations here at all?" queries. An authorizer that refuses `any` removes
         the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
@@ -10305,11 +10343,18 @@ components:
       required:
         - resource_types
         - root_level
+        - privileges
         - principal
       properties:
         principal:
           $ref: '#/components/schemas/GrantSubtreePrincipal'
           description: Whether the request covers every principal, or one named principal.
+        privileges:
+          $ref: '#/components/schemas/GrantSubtreePrivileges'
+          description: |-
+            Which privileges the request reaches: every privilege a matching grant can carry,
+            or the named set it is narrowed to. A revoke removes only what this covers, so a
+            policy can leave an administrative privilege standing while clearing the rest.
         resource_types:
           type: array
           items:
@@ -11058,10 +11103,10 @@ components:
         `ReadGrants`, which covers this one resource; granted separately because it
         enumerates the subtree.
 
-        `scope` states what the listing covers — the kinds it reaches, how far its range
-        extends, and the principal it is narrowed to — so a policy can allow a narrow
-        access review and still refuse a full enumeration. A real listing is checked with
-        the `of` form; permission introspection uses `any`.
+        `scope` states what the listing covers — the resource kinds it reaches, how far its
+        range extends, the privileges it covers, and the principal it is narrowed to — so a
+        policy can allow a narrow access review and still refuse a full enumeration. A real
+        listing is checked with the `request` form; permission introspection uses `any`.
       required:
         - scope
         - action
@@ -13070,10 +13115,10 @@ components:
         every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
         covers this one resource; granted separately because it enumerates the subtree.
 
-        `scope` states what the listing covers — the kinds it reaches, how far its range
-        extends, and the principal it is narrowed to — so a policy can allow a narrow
-        access review and still refuse a full enumeration. A real listing is checked with
-        the `of` form; permission introspection uses `any`.
+        `scope` states what the listing covers — the resource kinds it reaches, how far its
+        range extends, the privileges it covers, and the principal it is narrowed to — so a
+        policy can allow a narrow access review and still refuse a full enumeration. A real
+        listing is checked with the `request` form; permission introspection uses `any`.
       required:
         - scope
         - action

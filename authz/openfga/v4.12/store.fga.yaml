@@ -216,6 +216,34 @@ tuples:
   - user: user:namespace_1_delegator
     relation: pass_grants
     object: namespace:namespace_1
+  # A principal holding `describe` on warehouse_1 and nothing else.
+  - user: user:warehouse_1_describe_only
+    relation: describe
+    object: warehouse:warehouse_1
+  # One holder per remaining privilege, so every leg of `visible_below` has a
+  # source that no other fixture supplies.
+  - user: user:warehouse_1_select_only
+    relation: select
+    object: warehouse:warehouse_1
+  - user: user:warehouse_1_create_only
+    relation: create
+    object: warehouse:warehouse_1
+  - user: user:warehouse_1_modify_only
+    relation: modify
+    object: warehouse:warehouse_1
+  - user: user:namespace_1_describe_only
+    relation: describe
+    object: namespace:namespace_1
+  - user: user:namespace_1_modify_only
+    relation: modify
+    object: namespace:namespace_1
+  - user: user:namespace_1_2_create_only
+    relation: create
+    object: namespace:namespace_1_2
+  - user: user:view_1_modify_only
+    relation: modify
+    object: lakekeeper_view:warehouse_1/view_1
+
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -1641,3 +1669,321 @@ tests:
           can_revoke_describe: false
           can_revoke_modify: false
           can_revoke_select: false
+
+  - name: warehouse describe alone reaches use, config and listing
+    # A warehouse-level `describe` held alone, reaching every navigation action
+    # above and below it. The only place the `describe` leg of
+    # `warehouse.visible_below` is exercised on its own.
+    check:
+      - user: user:warehouse_1_describe_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_use: true
+          can_get_config: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_list_namespaces: true
+          can_list_everything: true
+          can_list_deleted_tabulars: true
+          can_get_task_queue_config: true
+          # describe carries navigation only, never data or administration.
+          can_create_namespace: false
+          can_delete: false
+          can_modify_task_queue_config: false
+          can_grant_describe: false
+      - user: user:warehouse_1_describe_only
+        object: project:project_1
+        assertions:
+          # Visibility bubbles up from the warehouse grant.
+          can_get_metadata: true
+          can_include_in_list: true
+          can_list_warehouses: true
+          can_create_warehouse: false
+      - user: user:warehouse_1_describe_only
+        object: namespace:namespace_1
+        assertions:
+          # and flows down to everything inside.
+          can_get_metadata: true
+          can_list_tables: true
+          can_list_everything: true
+          can_create_table: false
+      - user: user:warehouse_1_describe_only
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_get_metadata: true
+          can_include_in_list: true
+          can_read_data: false
+          can_commit: false
+
+  - name: granted privileges are direct, effective privileges include what is implied
+    # Pins the split: the bare relation answers "granted on this object", the
+    # `_effective` twin answers "holds it here". Grant listings read the bare
+    # relation, so a rewrite that collapsed the two would silently widen them.
+    check:
+      - user: user:warehouse_1_describe_only
+        object: warehouse:warehouse_1
+        assertions:
+          describe: true            # granted right here
+          describe_effective: true
+          select: false
+          select_effective: false
+      - user: user:warehouse_1_describe_only
+        object: namespace:namespace_1
+        assertions:
+          describe: false           # nothing was granted on the namespace
+          describe_effective: true  # it is inherited from the warehouse
+          visible_below: false      # and inheritance never makes a descendant a source
+      - user: user:warehouse_1_describe_only
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          describe: false
+          describe_effective: true
+          visible_below: false
+      - user: user:namespace_1_1_owner
+        object: namespace:namespace_1_1
+        assertions:
+          # Ownership is held on the object, so it is a visibility source even
+          # though no privilege relation was written for this principal.
+          describe: false
+          describe_effective: true
+          visible_below: true
+      - user: user:select_table_3
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # A directly granted `select` implies describe, and is a source.
+          select: true
+          describe: false
+          describe_effective: true
+          visible_below: true
+      - user: user:select_table_3
+        object: warehouse:warehouse_1
+        assertions:
+          # Nothing granted at the warehouse, but a grant below makes it visible.
+          describe: false
+          describe_effective: false
+          visible_below: true
+          can_use: true
+          can_get_config: true
+
+  - name: every grantable privilege is a visibility source at its own level
+    # Each leg of `visible_below` on its own: a principal holding exactly one
+    # privilege stays visible in the listings above the object it was granted on.
+    check:
+      - user: user:warehouse_1_describe_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+      - user: user:warehouse_1_select_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+      - user: user:warehouse_1_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+      - user: user:warehouse_1_modify_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+      - user: user:warehouse_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+      # The warehouse legs carry the project listing: this is the only path by
+      # which a warehouse-level grant reaches `project.can_get_metadata`.
+      - user: user:warehouse_1_select_only
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+          can_list_warehouses: true
+      - user: user:warehouse_1_create_only
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+      - user: user:warehouse_1_modify_only
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+      - user: user:warehouse_1_owner
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+          can_list_warehouses: true
+          can_create_warehouse: false
+      - user: user:namespace_1_describe_only
+        object: namespace:namespace_1
+        assertions:
+          visible_below: true
+      - user: user:namespace_1_delegator
+        object: namespace:namespace_1
+        assertions:
+          visible_below: true
+      - user: user:namespace_1_modify_only
+        object: namespace:namespace_1
+        assertions:
+          visible_below: true
+      - user: user:namespace_1_2_create_only
+        object: namespace:namespace_1_2
+        assertions:
+          visible_below: true
+      - user: user:namespace_1_1_owner
+        object: namespace:namespace_1_1
+        assertions:
+          visible_below: true
+      - user: user:namespace_1_describe_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_get_metadata: true
+      - user: user:namespace_1_delegator
+        object: warehouse:warehouse_1
+        assertions:
+          can_get_metadata: true
+      - user: user:namespace_1_modify_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_get_metadata: true
+      - user: user:select_table_3
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          visible_below: true
+      - user: user:warehouse_2/table_2_2_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          visible_below: true
+      - user: user:warehouse_2/table_2_2_owner
+        object: namespace:namespace_2_2
+        assertions:
+          visible_below: true
+          describe_effective: false
+          can_get_metadata: true
+      - user: user:view_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          visible_below: true
+      - user: user:select_generic_table_1
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          visible_below: true
+
+  - name: modify on a view implies select and describe and bubbles up
+    # A direct `modify` on a view exercises `lakekeeper_view`'s split relations
+    # and the visibility it propagates to every ancestor.
+    check:
+      - user: user:view_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          modify: true
+          select: false
+          describe: false
+          modify_effective: true
+          select_effective: true
+          describe_effective: true
+          visible_below: true
+          can_commit: true
+          can_select: true
+          can_get_metadata: true
+      - user: user:view_1_modify_only
+        object: namespace:namespace_1_2
+        assertions:
+          visible_below: true
+          describe_effective: false
+          can_get_metadata: true
+          can_list_views: true
+          can_create_view: false
+      - user: user:view_1_modify_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+          can_use: true
+          can_get_config: true
+      - user: user:view_1_modify_only
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+          can_list_warehouses: true
+      - user: user:view_1_modify_only
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # A sibling under the same namespace: nothing flows sideways.
+          describe_effective: false
+          visible_below: false
+          can_get_metadata: false
+
+  - name: create alone below the warehouse is a visibility source
+    # A direct `create` on a namespace exercises `create_effective`, the
+    # `describe_effective` it implies, and visibility at every ancestor.
+    check:
+      - user: user:namespace_1_2_create_only
+        object: namespace:namespace_1_2
+        assertions:
+          create: true
+          describe: false
+          describe_effective: true
+          visible_below: true
+          can_create_table: true
+          can_get_metadata: true
+      - user: user:namespace_1_2_create_only
+        object: namespace:namespace_1_1
+        assertions:
+          visible_below: true
+          describe_effective: false
+          can_get_metadata: true
+          can_list_namespaces: true
+          can_create_namespace: false
+      - user: user:namespace_1_2_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+          describe_effective: false
+          can_get_metadata: true
+          can_use: true
+          can_list_everything: false
+      - user: user:namespace_1_2_create_only
+        object: namespace:namespace_1
+        assertions:
+          # A sibling subtree: nothing flows sideways.
+          visible_below: false
+          can_get_metadata: false
+      - user: user:namespace_1_2_create_only
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # `create` implies `describe` on the namespace, which flows down to its
+          # contents; the grant itself stays on the namespace.
+          describe_effective: true
+          visible_below: false
+          can_get_metadata: true
+          can_read_data: false
+
+  - name: a project grant flows down as effective only, never as a stored grant
+    # Grant listings read the bare relation, so inheritance must never populate it.
+    check:
+      - user: user:project_1_data_admin
+        object: project:project_1
+        assertions:
+          describe: false
+          describe_effective: true
+          create: false
+          create_effective: true
+      - user: user:project_1_data_admin
+        object: warehouse:warehouse_1
+        assertions:
+          describe: false
+          describe_effective: true
+          visible_below: false
+          can_get_metadata: true
+          can_list_everything: true
+          can_create_namespace: true
+      - user: user:project_1_data_admin
+        object: namespace:namespace_1_2
+        assertions:
+          describe: false
+          describe_effective: true
+          visible_below: false
+          can_get_metadata: true
+      - user: user:project_1_data_admin
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          describe: false
+          describe_effective: true
+          visible_below: false
+          can_get_metadata: true

@@ -101,7 +101,7 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
     /// Full bypass including data-plane actions.
@@ -676,13 +676,18 @@ pub struct RequestMetadataTestBuilder {
     /// middleware. Lets tests exercise the audit log's `user_agent` field.
     #[builder(default, setter(strip_option))]
     pub user_agent: Option<UserAgent>,
+    /// Fixed request id. Random by default, as in production; set it where a
+    /// test compares a whole emitted record against a committed one, which a
+    /// fresh uuid per run would make impossible.
+    #[builder(default = Uuid::now_v7())]
+    pub request_id: Uuid,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
         Self {
-            request_id: Uuid::now_v7(),
+            request_id: b.request_id,
             authentication: b.authentication,
             base_url: b.base_url,
             actor: b.actor.into(),

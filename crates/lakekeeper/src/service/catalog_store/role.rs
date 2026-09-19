@@ -387,6 +387,19 @@ impl From<SystemRoleImmutable> for ErrorModel {
     }
 }
 
+// The resource authorizer already allowed the action; this invariant is the
+// decision that refused it, so it is recorded as an authorization failure rather
+// than a bare error response. Mirrors `WarehouseSpecLocked`.
+impl AuthorizationFailureSource for SystemRoleImmutable {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
 // Raised on a membership write (`POST /role/{id}/members`, `DELETE
 // /role/{id}/members/{type}/{id}`) against a catalog-managed system role when the
 // caller is not an instance admin. System-role membership is provisioning, not
@@ -498,15 +511,25 @@ impl From<ManagedRoleImmutable> for ErrorModel {
     }
 }
 
+// As for `SystemRoleImmutable`: the provider owns this role, so the refusal is
+// the authorization outcome and belongs on the authorization stream.
+impl AuthorizationFailureSource for ManagedRoleImmutable {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
     pub enum DeleteRoleError,
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFoundInProject,
-        SystemRoleImmutable,
-        ManagedRoleImmutable
+        RoleIdNotFoundInProject
     ]
 }
 
@@ -519,8 +542,6 @@ define_transparent_error! {
         RoleSourceIdConflict,
         RoleNameAlreadyExists,
         RoleIdNotFoundInProject,
-        SystemRoleImmutable,
-        ManagedRoleImmutable,
     ]
 }
 

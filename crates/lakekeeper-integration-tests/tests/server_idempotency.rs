@@ -32,7 +32,7 @@ use lakekeeper::{
         GenericTableFormat, State, UserId,
         authn::Actor,
         authz::AllowAllAuthorizer,
-        events::{EventListener, IdempotentReplayEvent},
+        events::{EventListener, IdempotentReplayEvent, context::EntityField},
         idempotency::IdempotencyKey,
     },
 };
@@ -383,17 +383,24 @@ fn describe(event: &IdempotentReplayEvent) -> String {
         .entities
         .first()
         .expect("a replay names the entity the caller asked about");
-    // Ordered by specificity: a tabular entity also carries `namespace`.
-    let target = ["table", "view", "generic-table", "namespace"]
-        .into_iter()
-        .find_map(|key| {
-            entity
-                .fields
-                .iter()
-                .find(|field| field.key == key)
-                .map(|field| field.value.clone())
-        })
-        .expect("a replay names its target");
+    // Ordered by specificity: a tabular entity also carries `namespace`. The keys are
+    // `EntityField` variants rather than strings, so a renamed wire name cannot silently
+    // stop matching here.
+    let target = [
+        EntityField::Table,
+        EntityField::View,
+        EntityField::GenericTable,
+        EntityField::Namespace,
+    ]
+    .into_iter()
+    .find_map(|key| {
+        entity
+            .fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(|field| field.value.clone())
+    })
+    .expect("a replay names its target");
     let descriptor = event
         .actions
         .first()
@@ -409,7 +416,7 @@ fn describe(event: &IdempotentReplayEvent) -> String {
     } else {
         format!("{}[{}]", descriptor.action_name, flags.join(","))
     };
-    format!("{}:{action}:{target}", entity.entity_type)
+    format!("{}:{action}:{target}", entity.entity_type.as_str())
 }
 
 fn generic_table_request(name: &str) -> CreateGenericTableRequest {
