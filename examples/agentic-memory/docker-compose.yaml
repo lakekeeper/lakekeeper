@@ -226,6 +226,10 @@ services:
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      # Embeddings are configured separately: chat and embeddings are not always the
+      # same service, and Anthropic serves no embedding endpoint at all.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
     volumes:
       - ./:/work
     working_dir: /work

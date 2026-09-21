@@ -182,10 +182,19 @@ Airgapped by default. The provider sits behind two calls — `chat()` and `embed
 pointing it elsewhere is config, not code:
 
 ```bash
-LLM_PROVIDER=anthropic LLM_API_KEY=... CHAT_MODEL=claude-sonnet-5 ./up.sh
 LLM_PROVIDER=openai LLM_API_KEY=... LLM_BASE_URL=https://api.deepseek.com/v1 \
   CHAT_MODEL=deepseek-chat ./up.sh
+
+# Chat and embeddings are configured separately, because they are not always the same
+# service — and Anthropic serves no embedding endpoint at all, so it must be told:
+LLM_PROVIDER=anthropic LLM_API_KEY=sk-ant-... CHAT_MODEL=claude-sonnet-5 \
+  EMBED_BASE_URL=https://api.openai.com/v1 EMBED_API_KEY=sk-... ./up.sh
 ```
+
+`LLM_*` is the chat endpoint, `EMBED_*` the embedding one. They fall back to each other
+only for an OpenAI-compatible provider, where one host genuinely serves both APIs. One
+variable for both would mean pointing the chat client at an embeddings host to satisfy
+the embedder — which sends the chat provider's key somewhere it does not belong.
 
 **The governance story is model-independent** — the catalog decides access before a model
 is involved at all. One asymmetry to respect: the chat model can change freely, the

@@ -5,10 +5,16 @@ at Claude or any OpenAI-compatible endpoint (DeepSeek, vLLM, Together, a local
 llama.cpp server) by setting env — nothing else changes.
 
     LLM_PROVIDER=ollama                      CHAT_MODEL=qwen2.5:3b     # default
-    LLM_PROVIDER=anthropic  LLM_API_KEY=...  CHAT_MODEL=claude-sonnet-5
-                            LLM_BASE_URL=...   # embeddings only; Anthropic serves none
     LLM_PROVIDER=openai     LLM_API_KEY=...  CHAT_MODEL=deepseek-chat \\
                             LLM_BASE_URL=https://api.deepseek.com/v1
+
+Chat and embeddings are configured separately, because they are not always the same
+service. `LLM_*` is the chat endpoint; `EMBED_*` is the embedding one. They only default
+to each other where one service genuinely serves both APIs — an OpenAI-compatible host.
+Anthropic serves no embedding endpoint at all, so it has to be told:
+
+    LLM_PROVIDER=anthropic  LLM_API_KEY=sk-ant-...  CHAT_MODEL=claude-sonnet-5 \\
+      EMBED_BASE_URL=https://api.openai.com/v1  EMBED_API_KEY=sk-...
 
 **The governance story does not depend on any of this.** The catalog decides access at
 credential vending, before a model is involved at all, so swapping providers changes
@@ -32,6 +38,11 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or ""
 LLM_API_KEY = os.environ.get("LLM_API_KEY") or ""
+# Embeddings, configured in their own right. Reusing the chat variables would mean
+# pointing the chat client at an embeddings host to satisfy the embedder, which sends
+# the chat provider's key somewhere it does not belong.
+EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL") or ""
+EMBED_API_KEY = os.environ.get("EMBED_API_KEY") or ""
 
 TIMEOUT = 180
 
@@ -114,6 +125,26 @@ def _openai_chat(prompt: str, system: str | None, max_tokens: int) -> str:
 # --------------------------------------------------------------------- embeddings
 
 
+def _embedding_endpoint() -> tuple[str, str]:
+    """Where embeddings live, and the credential for it.
+
+    Explicit `EMBED_*` always wins. Otherwise the chat settings are reused only for an
+    OpenAI-compatible provider, where one host really does serve both APIs. Anthropic
+    serves no embedding endpoint, so rather than quietly posting an Anthropic key to
+    `api.openai.com`, it asks to be told.
+    """
+    if EMBED_BASE_URL:
+        return EMBED_BASE_URL.rstrip("/"), EMBED_API_KEY or LLM_API_KEY
+    if PROVIDER in ("openai", "openai-compatible"):
+        return (LLM_BASE_URL or "https://api.openai.com/v1").rstrip("/"), LLM_API_KEY
+    raise RuntimeError(
+        f"LLM_PROVIDER={PROVIDER} serves no embedding endpoint. Set EMBED_BASE_URL and "
+        "EMBED_API_KEY to an OpenAI-compatible embeddings service, or leave EMBED_MODEL "
+        "on Ollama. Not reusing LLM_BASE_URL: that is the chat endpoint, and pointing it "
+        "at an embeddings host would send the chat provider's key there too."
+    )
+
+
 class Embedder:
     """Turns text into vectors and names the model it used.
 
@@ -138,19 +169,10 @@ class Embedder:
             r.raise_for_status()
             return [float(v) for v in r.json()["embedding"]]
 
-        # Anthropic serves no embedding endpoint at all. Falling through to OpenAI's
-        # default would send an Anthropic key to a third party, so insist on being told
-        # where embeddings actually live.
-        if PROVIDER == "anthropic" and not LLM_BASE_URL:
-            raise RuntimeError(
-                "LLM_PROVIDER=anthropic has no embedding endpoint. Set LLM_BASE_URL (and "
-                "LLM_API_KEY) to an OpenAI-compatible embeddings service, or keep "
-                "EMBED_MODEL on Ollama. Refusing to send the Anthropic key to "
-                "api.openai.com."
-            )
+        base, key = _embedding_endpoint()
         r = requests.post(
-            f"{LLM_BASE_URL or 'https://api.openai.com/v1'}/embeddings",
-            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+            f"{base}/embeddings",
+            headers={"Authorization": f"Bearer {key}"},
             json={"model": self.model, "input": text},
             timeout=TIMEOUT,
         )
@@ -172,7 +194,14 @@ def _unit(vector: list[float]) -> list[float]:
 
 def describe() -> str:
     """One line naming what is actually answering, for the notebooks to print."""
-    where = {"ollama": OLLAMA_URL, "anthropic": "api.anthropic.com"}.get(
-        PROVIDER, LLM_BASE_URL or "openai-compatible endpoint"
+    chat_at = {"ollama": OLLAMA_URL, "anthropic": LLM_BASE_URL or "api.anthropic.com"}.get(
+        PROVIDER, LLM_BASE_URL or "api.openai.com"
     )
-    return f"{PROVIDER}: chat={CHAT_MODEL}, embed={EMBED_MODEL} via {where}"
+    if PROVIDER == "ollama":
+        embed_at = OLLAMA_URL
+    else:
+        try:
+            embed_at = _embedding_endpoint()[0]
+        except RuntimeError:
+            embed_at = "UNSET — see EMBED_BASE_URL"
+    return f"{PROVIDER}: chat={CHAT_MODEL} via {chat_at} · embed={EMBED_MODEL} via {embed_at}"
