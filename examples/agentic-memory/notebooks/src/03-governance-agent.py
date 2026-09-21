@@ -36,7 +36,7 @@ print('governance agent authenticated as', mlib.agent_user_id(GOVERNANCE))
 # %% [markdown]
 # ## Seed a realistic queue
 #
-# Eight proposals from two agents: five ordinary, two worth a look, and one that reads like
+# Eight more proposals from two agents: five ordinary, two worth a look, and one that reads like
 # a compromised agent trying to smuggle a procedure past review.
 
 # %%
@@ -74,8 +74,9 @@ print(f'{len(SEED)} proposals filed across two agents')
 
 # %%
 policy = MemoryStore(gov, NS_POLICY, entries_table=POLICY_TABLE)
-rules = review.load_rules(policy)
-print(f'loaded {len(rules)} rules from {NS_POLICY}.{POLICY_TABLE}/{review.POLICY_FILE}')
+rules, rules_version = review.load_rules(policy)
+print(f'loaded {len(rules)} rules (policy v{rules_version}) '
+      f'from {NS_POLICY}.{POLICY_TABLE}/{review.POLICY_FILE}')
 print()
 for r in rules:
     print(f'  [{r.severity.label:8s}] {r.name:22s} {r.why}')
@@ -101,7 +102,11 @@ print(review.report(verdicts))
 
 # %% [markdown]
 # That is the whole point of the exercise: peter now reads **one** skill carefully instead
-# of eight, and the one he reads is the one that matters.
+# of nine, and the one he reads is the one that matters.
+
+# (Nine, not eight: notebook 01 left a proposal of its own in agent-a's queue. The
+# governance agent sees everything filed, not only what this notebook seeded — which is
+# rather the point of pointing it at the queues rather than at a list.)
 #
 # ## It cannot act on any of it
 #
@@ -182,7 +187,8 @@ class Reviewer:
         decisions.record(catalog, NS_SKILLS,
                          decision=decision,
                          verdict=by_key[f'{proposed.name}@{proposed.version}'],
-                         decided_by=me, reason=reason)
+                         decided_by=me, reason=reason,
+                         rules_version=rules_version)
 
     def approve(self, proposed):
         result = self._for(proposed).approve(proposed)

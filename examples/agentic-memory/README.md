@@ -36,7 +36,7 @@ and a human reviewer promotes one. Nothing in the agent code enforces any of it.
 | An agent approves its own skill | **denied** — no write credentials for `skills.approved` |
 | An agent reads another's proposal queue | **404** — its grant covers only its own queue |
 | The reviewer promotes the skill | one grant apart; the agent can then load it |
-| A governance agent triages every queue | reads across scopes neither agent can; ranks 8 proposals to *5 ok · 2 warning · 1 critical* |
+| A governance agent triages every queue | reads across scopes neither agent can; ranks the queue to *ok · warning · critical* and puts the worst first |
 | That agent tries to approve | **denied** — triage decides reading order, not outcomes |
 | That agent tries to weaken its own rules | **denied** — the rule set is governed data, `select` only |
 | Every decision | appends a row to `skills.decisions` — an Iceberg table an auditor can query |
@@ -169,8 +169,8 @@ Then open **JupyterLab** and work through `notebooks/` in order.
 2. **`01-agent-learns.ipynb`** — both agents run the same graph, remember what they learn,
    recall it by meaning, and draft a skill for review.
 3. **`02-governed.ipynb`** — the denials, the promotion, and the audit trail.
-4. **`03-governance-agent.ipynb`** — a governance agent triages eight proposals down to
-   *5 ok · 2 warning · 1 critical* so the reviewer reads the one that matters — and is
+4. **`03-governance-agent.ipynb`** — a governance agent triages the whole queue so the
+   reviewer reads the one proposal that matters — and is
    itself refused both the ability to approve and the ability to weaken its own rules.
 
 Edit notebooks through `build_notebooks.py` (they are generated, so diffs stay readable)

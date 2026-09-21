@@ -17,6 +17,8 @@ Two pieces of friction are deliberate, and they are the same idea at two scales:
 
 from __future__ import annotations
 
+from html import escape
+
 import ipywidgets as widgets
 from IPython.display import display
 from pylakekeeper.agents import ProposedSkill
@@ -69,26 +71,33 @@ class Row:
 
     def widget(self) -> widgets.VBox:
         v = self.verdict
+        # Everything below is attacker-controlled: a proposal's name, its version, the
+        # excerpt the rules matched. Interpolating it raw would let a crafted skill inject
+        # markup or script into the reviewer's browser — which would make the review UI a
+        # delivery mechanism for the thing it exists to catch.
+        name, version = escape(v.name), escape(v.version)
+        proposer = escape(v.proposer.split("~")[-1][:22])
         header = widgets.HBox(
             [
                 _badge(self.severity),
                 widgets.HTML(
-                    f"<b>{v.name}</b> "
-                    f'<span style="color:#888">@{v.version} · '
-                    f'by {v.proposer.split("~")[-1][:22]}</span>'
+                    f"<b>{name}</b> "
+                    f'<span style="color:#888">@{version} · by {proposer}</span>'
                 ),
                 self.status,
             ],
             layout=widgets.Layout(align_items="center"),
         )
-        detail = [widgets.HTML(f'<i style="color:#666">{v.summary}</i>')] if v.summary else []
+        detail = (
+            [widgets.HTML(f'<i style="color:#666">{escape(v.summary)}</i>')] if v.summary else []
+        )
         for f in v.findings:
             detail.append(
                 widgets.HTML(
                     f'<div style="font-size:12px;color:{_COLOUR[f.severity.label]}">'
-                    f"&nbsp;&nbsp;<b>{f.rule}</b> — {f.why}</div>"
+                    f"&nbsp;&nbsp;<b>{escape(f.rule)}</b> — {escape(f.why)}</div>"
                     f'<div style="font-size:11px;color:#888;font-family:monospace">'
-                    f"&nbsp;&nbsp;&nbsp;&nbsp;…{f.excerpt[:100]}…</div>"
+                    f"&nbsp;&nbsp;&nbsp;&nbsp;…{escape(f.excerpt[:100])}…</div>"
                 )
             )
         controls = widgets.HBox([self.show, self.approve, self.reject, self.reason])

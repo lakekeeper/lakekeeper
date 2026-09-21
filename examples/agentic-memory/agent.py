@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from pylakekeeper import NotFoundError
 from pylakekeeper.agents import MemoryStore, SkillStore
 
 import llm
@@ -56,15 +57,25 @@ class Agent:
     def _recall(self, state: AgentState) -> AgentState:
         """Search every scope this agent may read, and let the catalog filter.
 
-        `search_many` attempts a vend per scope: the ones this principal is not granted
-        return 404 and drop out. The agent never enumerates its own permissions — it asks
-        for everything it knows about and the catalog answers by refusing.
+        This is what `MemoryStore.search_many` does internally, written out so the
+        notebook can show *which* scopes refused. The agent never enumerates its own
+        permissions — it asks every scope it knows about and the catalog answers by
+        refusing, which arrives as a 404 because a table you may not read is not admitted
+        to exist.
+
+        Denial is recorded from that refusal, not from an empty result: a scope this agent
+        may read but has not written to yet returns nothing, and that is not a denial.
         """
         scopes = [s for s in (self.memory, self.shared) if s is not None]
-        hits = MemoryStore.search_many(scopes, state["task"], k=4)
-        self.denied = [
-            s.scope for s in scopes if not any(h.scope == s.scope for h in hits)
-        ]
+        hits, denied = [], []
+        for scope in scopes:
+            try:
+                hits.extend(scope.search(state["task"], k=4))
+            except NotFoundError:
+                denied.append(scope.scope)
+        hits.sort(key=lambda h: h.distance)
+        hits = hits[:4]
+        self.denied = denied
         return {
             "recalled": [
                 {"path": h.path, "text": h.text, "scope": h.scope, "distance": h.distance}

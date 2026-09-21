@@ -26,6 +26,7 @@ Notebooks are generated: edit the sources, never the `.ipynb`.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,7 +56,17 @@ def parse(text: str) -> list[dict]:
                 line[2:] if line.startswith("# ") else ("" if line == "#" else line)
                 for line in body.split("\n")
             )
-        cell = {"cell_type": kind, "metadata": {}, "source": body.splitlines(keepends=True)}
+        # nbformat 4.5+ wants an id per cell and warns without one; a future version
+        # makes it an error. Derive it from position and content so a rebuild that
+        # changes nothing produces a byte-identical file — a random id would make every
+        # regeneration a diff.
+        digest = hashlib.sha256(f"{len(cells)}:{body}".encode()).hexdigest()[:8]
+        cell = {
+            "cell_type": kind,
+            "id": f"{kind[:2]}-{len(cells):02d}-{digest}",
+            "metadata": {},
+            "source": body.splitlines(keepends=True),
+        }
         if kind == "code":
             cell["execution_count"] = None
             cell["outputs"] = []

@@ -128,6 +128,11 @@ def rules_as_policy(rules: list[Rule] | None = None) -> dict:
     }
 
 
+def policy_version(document: dict) -> int:
+    """The rule set's version, as recorded on every decision it informed."""
+    return int(document.get("version", 0))
+
+
 def rules_from_policy(document: dict) -> list[Rule]:
     """Parse a policy document into executable rules."""
     by_label = {s.label: s for s in Severity}
@@ -144,18 +149,23 @@ def rules_from_policy(document: dict) -> list[Rule]:
     return parsed
 
 
-def load_rules(policy_store=None) -> list[Rule]:  # noqa: ANN001 - a MemoryStore-like reader
-    """Read the governed rule set, falling back to the built-in one.
+def load_rules(policy_store=None) -> tuple[list[Rule], int]:  # noqa: ANN001
+    """Read the governed rule set and its version.
 
     `policy_store` is anything with `.get(path) -> str`; a `MemoryStore` scoped to
     `governance.policy` satisfies it. A principal without `select` there raises, and that
     is the correct outcome — triage with unknown rules is worse than no triage.
+
+    The version comes back with the rules because a decision is only interpretable
+    alongside the rule set that informed it. Recording a constant instead would make
+    `rules_version` look like an answer while being a decoration.
     """
     if policy_store is None:
-        return list(DEFAULT_RULES)
+        return list(DEFAULT_RULES), 0
     import json as _json
 
-    return rules_from_policy(_json.loads(policy_store.get(POLICY_FILE)))
+    document = _json.loads(policy_store.get(POLICY_FILE))
+    return rules_from_policy(document), policy_version(document)
 
 
 @dataclass

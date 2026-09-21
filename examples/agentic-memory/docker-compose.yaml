@@ -22,6 +22,8 @@ services:
   silo:
     image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
     environment:
+      # The MINIO_* names are not a leftover: Silo is a fork and keeps MinIO's
+      # configuration surface, so these are the variables it actually reads.
       MINIO_ROOT_USER: silo-root-user
       MINIO_ROOT_PASSWORD: silo-root-password
       MINIO_API_CORS_ALLOW_ORIGIN: "*"

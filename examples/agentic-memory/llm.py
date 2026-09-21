@@ -6,6 +6,7 @@ llama.cpp server) by setting env — nothing else changes.
 
     LLM_PROVIDER=ollama                      CHAT_MODEL=qwen2.5:3b     # default
     LLM_PROVIDER=anthropic  LLM_API_KEY=...  CHAT_MODEL=claude-sonnet-5
+                            LLM_BASE_URL=...   # embeddings only; Anthropic serves none
     LLM_PROVIDER=openai     LLM_API_KEY=...  CHAT_MODEL=deepseek-chat \\
                             LLM_BASE_URL=https://api.deepseek.com/v1
 
@@ -137,8 +138,16 @@ class Embedder:
             r.raise_for_status()
             return [float(v) for v in r.json()["embedding"]]
 
-        # Anthropic serves no embedding endpoint, so an OpenAI-compatible one is used
-        # for both remote providers. Set LLM_BASE_URL/LLM_API_KEY accordingly.
+        # Anthropic serves no embedding endpoint at all. Falling through to OpenAI's
+        # default would send an Anthropic key to a third party, so insist on being told
+        # where embeddings actually live.
+        if PROVIDER == "anthropic" and not LLM_BASE_URL:
+            raise RuntimeError(
+                "LLM_PROVIDER=anthropic has no embedding endpoint. Set LLM_BASE_URL (and "
+                "LLM_API_KEY) to an OpenAI-compatible embeddings service, or keep "
+                "EMBED_MODEL on Ollama. Refusing to send the Anthropic key to "
+                "api.openai.com."
+            )
         r = requests.post(
             f"{LLM_BASE_URL or 'https://api.openai.com/v1'}/embeddings",
             headers={"Authorization": f"Bearer {LLM_API_KEY}"},

@@ -78,7 +78,20 @@ def _assign(admin_token: str, path: str, user_id: str, privilege: str, revoke: b
     r = requests.post(f"{MANAGEMENT_URL}/v1/permissions/{path}/assignments",
                       headers=auth(admin_token), json=body, timeout=15)
     if r.status_code not in OK:
-        raise RuntimeError(f"assignment failed: {r.status_code} {r.text}")
+        # Granting what someone already holds is a 409, and revoking what they never had
+        # is a 404. Neither is a failure of intent — the desired state is the state — and
+        # treating them as errors would make re-running the setup notebook fail on a
+        # warehouse that already exists.
+        kind = ""
+        try:
+            kind = r.json().get("error", {}).get("type", "")
+        except ValueError:
+            pass
+        harmless = (not revoke and kind == "TupleAlreadyExistsError") or (
+            revoke and r.status_code == 404
+        )
+        if not harmless:
+            raise RuntimeError(f"assignment failed: {r.status_code} {r.text}")
     return r.status_code
 
 

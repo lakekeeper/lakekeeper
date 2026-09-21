@@ -7,7 +7,8 @@
 # %%
 import sys; sys.path.insert(0, '/work')
 import mlib, grants, llm
-from mlib import NS_AGENT_A, NS_AGENT_B, NS_SHARED, NS_SKILLS, AGENT_A, AGENT_B
+from mlib import (NS_AGENT_A, NS_AGENT_B, NS_SHARED, NS_SKILLS,
+                  AGENT_A, AGENT_B, GOVERNANCE)
 from pylakekeeper import Client, ClientCredentials, NotFoundError
 from pylakekeeper.agents import MemoryStore, SkillStore
 
@@ -32,12 +33,17 @@ a_client, b_client = client_for(AGENT_A), client_for(AGENT_B)
 shared_a = MemoryStore(a_client, NS_SHARED, embed=embedder)
 shared_b = MemoryStore(b_client, NS_SHARED, embed=embedder)
 
-# agent-a can read the shared tier but not write it: `select`, not `modify`.
-try:
-    shared_a.put('memories/house-style.md', 'Always quote distances in kilometres.')
-    print('agent-a WROTE shared memory (unexpected)')
-except Exception as exc:
-    print('agent-a cannot write shared memory:', type(exc).__name__)
+# Both agents see the same shared tier — one place, not a file per process.
+print('agent-a sees:', shared_a.list())
+print('agent-b sees:', shared_b.list(), ' <- the same objects, read under its own identity')
+
+# But neither may write it: they hold `select` there, not `modify`.
+for label, store in (('agent-a', shared_a), ('agent-b', shared_b)):
+    try:
+        store.put('memories/house-style.md', 'Always quote distances in kilometres.')
+        print(f'{label} WROTE shared memory (unexpected)')
+    except Exception as exc:
+        print(f'{label} cannot write shared memory:', type(exc).__name__)
 
 # %% [markdown]
 # ## 2 · Scope isolation
@@ -117,15 +123,25 @@ print('agent-a can load it:', a_skills.load(queued[0].name).name)
 # anyone else's, which is the point: oversight that is itself accountable.
 
 # %%
-PETER = peter.token
-gov_ns = mlib.namespace_id(PETER, 'agent_memory')
-print('peter holds ownership of agent_memory (he created it), so he reads across scopes:')
+# The governance principal, granted `select` on the whole agent_memory namespace in
+# notebook 00 — not peter, and not a back channel. Same authorizer, different identity.
+gov_client = client_for(GOVERNANCE)
+print('governance reads across every scope:')
 for ns in (NS_AGENT_A, NS_AGENT_B, NS_SHARED):
-    store = MemoryStore(peter_client, ns, embed=embedder)
+    store = MemoryStore(gov_client, ns, embed=embedder)
     try:
         print(f'  {ns:28s} {len(store.list())} entries')
     except Exception as exc:
         print(f'  {ns:28s} denied ({type(exc).__name__})')
+
+# And it is not a skeleton key: it can read memory and still cannot publish a skill.
+try:
+    SkillStore(gov_client, NS_SKILLS, proposer=mlib.agent_user_id(AGENT_A)).approve(
+        SkillStore(gov_client, NS_SKILLS, proposer=mlib.agent_user_id(AGENT_A))
+        .list_proposed()[0])
+    print('governance APPROVED a skill (unexpected!)')
+except Exception as exc:
+    print('  and cannot approve anything:', type(exc).__name__)
 
 # %% [markdown]
 # ## 6 · The receipt

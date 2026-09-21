@@ -6,13 +6,15 @@
 #
 # Ports can be overridden when something already holds the defaults — a natively
 # running Lakekeeper takes 8181 and 9000:
-#   LK_PORT=8185 S3_PORT=9010 JUPYTER_PORT=8890 KEYCLOAK_PORT=30085 ./up.sh
+#   LK_PORT=8185 S3_PORT=9010 S3_CONSOLE_PORT=9011 JUPYTER_PORT=8890 \
+#     KEYCLOAK_PORT=30085 ./up.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
 HOST="${1:-localhost}"
 LK_PORT="${LK_PORT:-8181}"
 S3_PORT="${S3_PORT:-9000}"
+S3_CONSOLE_PORT="${S3_CONSOLE_PORT:-9001}"
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-30080}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
@@ -57,7 +59,8 @@ fi
 { printf 'KEYCLOAK_BROWSER_URL=%s\n' "$KEYCLOAK_BROWSER_URL"
   printf 'S3_ENDPOINT=%s\n' "$S3_ENDPOINT"; } > .env
 
-export LK_PORT S3_PORT JUPYTER_PORT KEYCLOAK_PORT OLLAMA_PORT CHAT_MODEL EMBED_MODEL
+export LK_PORT S3_PORT S3_CONSOLE_PORT JUPYTER_PORT KEYCLOAK_PORT OLLAMA_PORT
+export CHAT_MODEL EMBED_MODEL
 
 COMPOSE=(docker compose)
 command -v docker >/dev/null 2>&1 || COMPOSE=(podman compose)
@@ -104,7 +107,7 @@ cat <<EOF
     Lakekeeper   http://localhost:${LK_PORT}   (S3 endpoint ${S3_ENDPOINT}, so the
                  console can list data files from your browser)
     Keycloak     ${KEYCLOAK_BROWSER_URL}   (peter / iceberg)
-    Silo console http://localhost:$(( S3_PORT + 1 ))
+    Silo console http://localhost:${S3_CONSOLE_PORT}
 
   Work through notebooks/ in order. 00-setup has one interactive step: peter
   approves a device-code login in your browser.

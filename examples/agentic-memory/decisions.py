@@ -81,10 +81,15 @@ def record(
     decision: str,
     verdict,  # noqa: ANN001 - review.Verdict
     decided_by: str,
+    rules_version: int,
     reason: str = "",
-    rules_version: int = 1,
 ) -> None:
-    """Append one decision. Iceberg arbitrates the commit, so concurrent reviewers are safe."""
+    """Append one decision. Iceberg arbitrates the commit, so concurrent reviewers are safe.
+
+    `rules_version` is required rather than defaulted: a decision recorded against an
+    assumed version is worse than one recorded against none, because it reads as an answer.
+    Take it from `review.load_rules`, which returns it alongside the rules.
+    """
     import pyarrow as pa
 
     table = catalog.load_table(f"{namespace}.{TABLE}")
