@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.6](https://github.com/lakekeeper/lakekeeper/compare/v0.13.5...v0.13.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* **api:** mark responses private and vary on the request identity ([#1947](https://github.com/lakekeeper/lakekeeper/issues/1947)) ([cc162fe](https://github.com/lakekeeper/lakekeeper/commit/cc162fea205c271ea7f89a07f8b0b02cc0d1a5a1))
+* **catalog:** advertise idempotency-key-lifetime as a top-level field ([#1952](https://github.com/lakekeeper/lakekeeper/issues/1952)) ([ab3da0a](https://github.com/lakekeeper/lakekeeper/commit/ab3da0aa5454d49be468dd7cddadef3bd8e71edd))
+* **catalog:** parse data-access as a list, don't panic on non-ASCII ([#1948](https://github.com/lakekeeper/lakekeeper/issues/1948)) ([ab82331](https://github.com/lakekeeper/lakekeeper/commit/ab82331d210ca9ca3cca6c36b55843e928cad4a2))
+* **ci:** drop the accidental site/versions gitlink and ignore the path ([8789c93](https://github.com/lakekeeper/lakekeeper/commit/8789c9327472fa28ca54ddf3d59688eae3b2b919))
+* **io:** connection reuse, connect timeouts and batch-delete memory ([#2022](https://github.com/lakekeeper/lakekeeper/issues/2022)) ([83b79d1](https://github.com/lakekeeper/lakekeeper/commit/83b79d1cce95dfe81f97916d3a130b7bbf286667))
+* **s3:** don't vend a credential-less `storage-credentials` entry ([#1923](https://github.com/lakekeeper/lakekeeper/issues/1923)) ([29c53e3](https://github.com/lakekeeper/lakekeeper/commit/29c53e3204cd0c620271b3fb3abbf2d0d1151f0a))
+* **s3:** sign ListObjectsV2 for prefixes inside a table location ([#1925](https://github.com/lakekeeper/lakekeeper/issues/1925)) ([6945456](https://github.com/lakekeeper/lakekeeper/commit/694545655f40d79f5105591046bf9052931abfba))
+
+
+### Miscellaneous Chores
+
+* Release-as 0.13.6 ([2434f2a](https://github.com/lakekeeper/lakekeeper/commit/2434f2aefa88a6f73dbdf0db3104dda813e56417))
+
 ## [0.13.5](https://github.com/lakekeeper/lakekeeper/compare/v0.13.4...v0.13.5) (2026-09-15)
 
 
