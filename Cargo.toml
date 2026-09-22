@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/alloc",
+    "crates/audit-macros",
     "crates/authz-openfga",
     "crates/iceberg-ext",
     "crates/io",
@@ -119,6 +120,7 @@ hyper-util = { version = "0.1.20", features = [
     "tokio",
 ] }
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "aa04094683f84db8fa82daed716efc0f78d1936d" }
+inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"
 # `limes` pulls k8s-openapi transitively without picking a Kubernetes version.
@@ -143,7 +145,9 @@ moka = { version = "^0.12", features = ["future"] }
 pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
+proc-macro2 = "1.0"
 quick-xml = { version = "0.41", features = ["serialize"] }
+quote = "1.0"
 rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
@@ -161,6 +165,7 @@ reqwest = { version = "0.12.28", default-features = false, features = [
 ] }
 reqwest-middleware = "0.4"
 reqwest-retry = "0.8"
+schemars = { version = "1.2", features = ["derive"] }
 semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
@@ -184,6 +189,7 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 ] }
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
 tempfile = "3.20"
 thiserror = "2.0.0"
 tikv-jemalloc-ctl = "0.6"
