@@ -19,6 +19,7 @@ use crate::{
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
+    audit::{AnyWireStr, audit_part},
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
@@ -42,9 +43,10 @@ use crate::{
 /// A field that can appear on an `entity` object in an audit record.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// that require every field to be documented, and `#[audit_part]` derives every wire name
+/// from the variant, so a new variant cannot reach the wire unnamed.
+#[audit_part(field = "entity-key")]
+#[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
     ServerId,
@@ -68,33 +70,12 @@ pub enum EntityField {
 }
 
 impl EntityField {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
+    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
+    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
+    /// usable in const context.
     #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ServerId => "server-id",
-            Self::ProjectId => "project-id",
-            Self::WarehouseId => "warehouse-id",
-            Self::Namespace => "namespace",
-            Self::NamespaceId => "namespace-id",
-            Self::Table => "table",
-            Self::TableId => "table-id",
-            Self::TableLocation => "table-location",
-            Self::View => "view",
-            Self::ViewId => "view-id",
-            Self::TaskId => "task-id",
-            Self::RoleId => "role-id",
-            Self::RoleSourceId => "role-source-id",
-            Self::RoleProviderId => "role-provider-id",
-            Self::UserId => "user-id",
-            Self::GenericTable => "generic-table",
-            Self::GenericTableId => "generic-table-id",
-            Self::TagDefinitionId => "tag-definition-id",
-        }
+        self.as_wire().text()
     }
 }
 
@@ -119,6 +100,29 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
+/// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
+///
+/// Values are strings the handler chooses. A key declared here is declared in Lakekeeper's
+/// audit schema; another emitter declares its own enum with `#[audit_part(field =
+/// "context-key")]`. No key may spell the name of a core field of any shape.
+#[audit_part(field = "context-key")]
+#[audit(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
+pub enum HandlerContextKey {
+    /// Whether the user creation was the caller provisioning itself.
+    SelfProvisioning,
+    /// Which operation invoked this one, when a handler acts on behalf of another.
+    InvokedBy,
+    /// The task queue an operation addressed.
+    #[audit(rename = "queue_name")]
+    QueueName,
+    /// The id of the entity a task operation addressed.
+    #[audit(rename = "entity_id")]
+    EntityId,
+    /// Whether a grant read asked about the caller's own grants.
+    SelfRead,
+}
+
 /// The `action_name` of the defensive row emitted when an event reaches the audit log
 /// with no action at all.
 ///
@@ -127,15 +131,9 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
 /// names the same condition on the entity side of the same row.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum FallbackAction {
     Unknown,
@@ -144,17 +142,18 @@ pub enum FallbackAction {
 impl FallbackAction {
     /// The value as it reaches the wire.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
+    pub const fn as_str(self) -> &'static str {
+        self.as_wire().text()
     }
 }
 
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// that require every field to be documented, and `#[audit_part]` derives every wire name
+/// from the variant, so a new variant cannot reach the wire unnamed.
+#[audit_part(field = "entity_type")]
+#[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityType {
     Server,
@@ -172,27 +171,12 @@ pub enum EntityType {
 }
 
 impl EntityType {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
+    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
+    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
+    /// usable in const context.
     #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Server => "server",
-            Self::Project => "project",
-            Self::Warehouse => "warehouse",
-            Self::Namespace => "namespace",
-            Self::Table => "table",
-            Self::View => "view",
-            Self::Task => "task",
-            Self::Role => "role",
-            Self::User => "user",
-            Self::GenericTable => "generic-table",
-            Self::Tag => "tag",
-            Self::Unknown => "unknown",
-        }
+        self.as_wire().text()
     }
 }
 
@@ -214,11 +198,14 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 ///
 /// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
 /// space enumerable, so the tests can require every field to be documented and covered,
-/// and the wildcard-free match below makes a new field a build failure rather than an
-/// undocumented field in the log.
+/// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
+/// unnamed.
+#[audit_part(field = "action-key")]
+#[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
     AllowPartial,
+    #[audit(rename = "base_location")]
     BaseLocation,
     CreatedBefore,
     Deletes,
@@ -226,23 +213,32 @@ pub enum ActionContextKey {
     DryRun,
     Force,
     Format,
+    #[audit(rename = "generic_table_id")]
     GenericTableId,
     Name,
+    #[audit(rename = "narrowed_privileges")]
     NarrowedPrivileges,
     Principal,
     Principals,
+    #[audit(rename = "privilege_scope")]
     PrivilegeScope,
     Privileges,
+    #[audit(rename = "project_id")]
     ProjectId,
     Properties,
     Purge,
     Recursive,
     RemovedProperties,
+    #[audit(rename = "requested_provider_id")]
     RequestedProviderId,
+    #[audit(rename = "requested_source_id")]
     RequestedSourceId,
+    #[audit(rename = "resource_types")]
     ResourceTypes,
+    #[audit(rename = "root_level")]
     RootLevel,
     Source,
+    #[audit(rename = "table_id")]
     TableId,
     TargetRefs,
     UpdateKinds,
@@ -251,45 +247,12 @@ pub enum ActionContextKey {
 }
 
 impl ActionContextKey {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
+    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
+    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
+    /// usable in const context.
     #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AllowPartial => "allow-partial",
-            Self::BaseLocation => "base_location",
-            Self::CreatedBefore => "created-before",
-            Self::Deletes => "deletes",
-            Self::Destination => "destination",
-            Self::DryRun => "dry-run",
-            Self::Force => "force",
-            Self::Format => "format",
-            Self::GenericTableId => "generic_table_id",
-            Self::Name => "name",
-            Self::NarrowedPrivileges => "narrowed_privileges",
-            Self::Principal => "principal",
-            Self::Principals => "principals",
-            Self::PrivilegeScope => "privilege_scope",
-            Self::Privileges => "privileges",
-            Self::ProjectId => "project_id",
-            Self::Properties => "properties",
-            Self::Purge => "purge",
-            Self::Recursive => "recursive",
-            Self::RemovedProperties => "removed-properties",
-            Self::RequestedProviderId => "requested_provider_id",
-            Self::RequestedSourceId => "requested_source_id",
-            Self::ResourceTypes => "resource_types",
-            Self::RootLevel => "root_level",
-            Self::Source => "source",
-            Self::TableId => "table_id",
-            Self::TargetRefs => "target-refs",
-            Self::UpdateKinds => "update-kinds",
-            Self::UpdatedProperties => "updated-properties",
-            Self::Writes => "writes",
-        }
+        self.as_wire().text()
     }
 }
 
@@ -753,15 +716,9 @@ impl_user_provided_entity!(
 /// Actions named per endpoint rather than per resource permission, for the handlers that
 /// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum ManagementAction {
     SearchUsers,
@@ -779,15 +736,9 @@ pub enum ManagementAction {
 /// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
 /// enum rather than a literal.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum AuthnAction {
     AssumeRole,
@@ -798,7 +749,7 @@ impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchUsers.into())
+                .action_name(ManagementAction::SearchUsers.as_wire())
                 .build(),
         ]
     }
@@ -810,7 +761,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListProjects.into())
+                .action_name(ManagementAction::ListProjects.as_wire())
                 .build(),
         ]
     }
@@ -822,7 +773,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchTabulars.into())
+                .action_name(ManagementAction::SearchTabulars.as_wire())
                 .build(),
         ]
     }
@@ -834,7 +785,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::IntrospectPermissions.into())
+                .action_name(ManagementAction::IntrospectPermissions.as_wire())
                 .build(),
         ]
     }
@@ -846,7 +797,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::GetTaskDetails.into())
+                .action_name(ManagementAction::GetTaskDetails.as_wire())
                 .build(),
         ]
     }
@@ -856,7 +807,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListTasks.into())
+                .action_name(ManagementAction::ListTasks.as_wire())
                 .build(),
         ]
     }
@@ -866,7 +817,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ControlTasks.into())
+                .action_name(ManagementAction::ControlTasks.as_wire())
                 .build(),
         ]
     }
@@ -876,7 +827,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ScheduleTask.into())
+                .action_name(ManagementAction::ScheduleTask.as_wire())
                 .build(),
         ]
     }
@@ -1351,8 +1302,14 @@ where
         &self.dispatcher
     }
 
-    pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.extra_context.insert(key.into(), value.into());
+    /// Record a key on this event's `context` object.
+    ///
+    /// The key is a value of a vocabulary enum declared with `#[audit_part(field =
+    /// "context-key")]`, so it is declared in its emitter's schema and cannot be a literal.
+    /// Lakekeeper's own keys are [`HandlerContextKey`].
+    pub fn push_extra_context(&mut self, key: impl Into<AnyWireStr>, value: impl Into<String>) {
+        self.extra_context
+            .insert(key.into().text().to_string(), value.into());
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to
@@ -1637,7 +1594,7 @@ fn synthesise_authorizations(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| ActionDescriptor {
-                    action_name: FallbackAction::Unknown.as_str(),
+                    action_name: FallbackAction::Unknown.as_wire().into(),
                     context: Vec::new(),
                 }),
             entity: entities

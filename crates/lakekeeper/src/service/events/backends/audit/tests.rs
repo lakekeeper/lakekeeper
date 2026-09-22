@@ -8,6 +8,7 @@ use valuable::{Valuable, Value, Visit};
 use super::{contract::contract_fields, *};
 use crate::{
     WarehouseId,
+    audit::AnyWireStr,
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
@@ -121,7 +122,9 @@ where
 fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
     let entities = Arc::new(EventEntities::one(EntityDescriptor::new(EntityType::Table)));
     let actions = Arc::new(vec![
-        ActionDescriptor::builder().action_name("read_data").build(),
+        ActionDescriptor::builder()
+            .action_name(AnyWireStr::literal_for_tests("read_data"))
+            .build(),
     ]);
     AuthorizationSucceededEvent {
         request_metadata: Arc::new(request_metadata),
@@ -327,7 +330,9 @@ fn fixture_namespace_entity() -> EntityDescriptor {
 }
 
 fn fixture_read_action() -> ActionDescriptor {
-    ActionDescriptor::builder().action_name("read_data").build()
+    ActionDescriptor::builder()
+        .action_name(AnyWireStr::literal_for_tests("read_data"))
+        .build()
 }
 
 /// An action carrying context, so the fixtures pin that nesting too.
@@ -338,7 +343,7 @@ fn fixture_action_with_context() -> ActionDescriptor {
                 removed_properties: Arc::new(Vec::new()),
                 updated_properties: Arc::new(std::collections::BTreeMap::new()),
             }
-            .into(),
+            .as_wire(),
         )
         .context_string(ActionContextKey::Name, "orders")
         .context_list(
@@ -351,7 +356,7 @@ fn fixture_action_with_context() -> ActionDescriptor {
 /// A create action, carrying the client-requested name and id.
 fn fixture_create_table_action() -> ActionDescriptor {
     ActionDescriptor::builder()
-        .action_name("create_table")
+        .action_name(AnyWireStr::literal_for_tests("create_table"))
         .context_string(ActionContextKey::Name, "orders")
         .context_string(ActionContextKey::TableId, FIXTURE_TABLE_ID)
         .build()
@@ -362,7 +367,7 @@ fn fixture_create_table_action() -> ActionDescriptor {
 /// pins the other.
 fn fixture_drop_action() -> ActionDescriptor {
     ActionDescriptor::builder()
-        .action_name("drop")
+        .action_name(AnyWireStr::literal_for_tests("drop"))
         .context_string(ActionContextKey::Force, "true")
         .context_string(ActionContextKey::Purge, "true")
         .build()
@@ -1582,7 +1587,7 @@ fn sample(determined_by: Vec<DeterminingFactor>) -> Authorization {
         id: None,
         for_principal: None,
         action: ActionDescriptor {
-            action_name: "read",
+            action_name: AnyWireStr::literal_for_tests("read"),
             context: Vec::new(),
         },
         entity: EntityDescriptor::new(EntityType::Table),
@@ -2127,8 +2132,8 @@ fn the_wire_tag_helpers_agree_with_the_variant_names() {
 }
 
 /// The manifest is generated from [`strum::VariantNames`], but what a consumer reads is
-/// what `IntoStaticStr` puts on the wire. Two derives, one string — pin them to each
-/// other, for a variant that carries data and for a unit variant.
+/// what `as_wire()` puts on the wire. Two derivations, one string — pin them to each other,
+/// for a variant that carries data and for a unit variant.
 #[test]
 fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
     use crate::service::authz::CatalogTableAction;
@@ -2139,7 +2144,7 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
         force: true,
         purge: true,
     };
-    let on_the_wire = <&'static str>::from(&carries_data);
+    let on_the_wire = carries_data.as_wire().text();
     assert_eq!(on_the_wire, "drop");
     assert!(
         variants.contains(&on_the_wire),
@@ -2149,7 +2154,7 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
     );
 
     let unit = CatalogTableAction::ReadData;
-    let on_the_wire = <&'static str>::from(&unit);
+    let on_the_wire = unit.as_wire().text();
     assert_eq!(on_the_wire, "read_data");
     assert!(
         variants.contains(&on_the_wire),
@@ -2357,4 +2362,78 @@ fn an_audit_event_without_a_break_glass_claim_omits_the_field() {
     });
 
     assert_eq!(event.get("break_glass"), None);
+}
+
+/// `#[audit_part]` derives every wire value from the variant name and the enum's rename rule;
+/// the manifest derives the same values from `strum` and from `as_str`. The two must agree for
+/// every registered enum, or `as_wire()` would put a string on the wire that the manifest does
+/// not pin. Every owner the manifest lists for a registered field must also be registered, so a
+/// vocabulary enum cannot fall out of the registry unnoticed.
+#[test]
+fn registered_wire_values_agree_with_the_manifest_derivation() {
+    use crate::{
+        Lakekeeper,
+        audit::{Kind, Registration},
+    };
+    fn short_type_name(full: &str) -> String {
+        let tail = full.rsplit("::").next().unwrap_or(full);
+        tail.split('<').next().unwrap_or(tail).to_string()
+    }
+
+    // The manifest fields whose owners are registered in this crate. The remaining manifest
+    // fields (`determined_by`, `effect`, `resource_type`, `update_kinds`, `root_level`,
+    // `privilege_scope`) render through `valuable` derives and are typed in a later phase.
+    const REGISTERED_FIELDS: &[&str] = &[
+        "action_name",
+        "actor_type",
+        "decision",
+        "operation",
+        "outcome",
+        "entity_type",
+        "privilege_source",
+        "failure_reason",
+    ];
+
+    Registration::require_registry();
+
+    let manifest = derived_wire_values();
+    let mut compared = 0usize;
+    for reg in Registration::for_emitter::<Lakekeeper>().filter(|r| r.kind == Kind::Enum) {
+        let Some(field) = reg.wire_field else {
+            continue;
+        };
+        if !REGISTERED_FIELDS.contains(&field) {
+            continue;
+        }
+        let owner = short_type_name((reg.type_name)());
+        let expected = manifest
+            .get(field)
+            .and_then(|owners| owners.get(&owner))
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| {
+                panic!("{owner} is registered for `{field}` but the manifest has no such owner")
+            });
+        let expected: Vec<&str> = expected
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let mut registered: Vec<&str> = reg.wire_values.to_vec();
+        registered.sort_unstable();
+        assert_eq!(registered, expected, "wire values of {owner} (`{field}`)");
+        compared += 1;
+    }
+
+    let manifested_owners: usize = REGISTERED_FIELDS
+        .iter()
+        .map(|field| {
+            manifest
+                .get(field)
+                .and_then(serde_json::Value::as_object)
+                .map_or(0, serde_json::Map::len)
+        })
+        .sum();
+    assert_eq!(
+        compared, manifested_owners,
+        "every owner the manifest lists for {REGISTERED_FIELDS:?} must be a registered enum"
+    );
 }

@@ -98,6 +98,7 @@ impl OpenFgaEntity for UserOrRole {
 }
 
 /// Role Relations in the `OpenFGA` schema
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -106,7 +107,6 @@ impl OpenFgaEntity for UserOrRole {
     Hash,
     Eq,
     PartialEq,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -139,7 +139,9 @@ impl From<CatalogRoleAction> for RoleRelation {
 impl OpenFgaRelation for RoleRelation {}
 impl CatalogAction for RoleRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
@@ -284,6 +286,7 @@ impl ReducedRelation for CatalogRoleAction {
 }
 
 /// Tag (governance tag definition) Relations in the `OpenFGA` schema
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -292,7 +295,6 @@ impl ReducedRelation for CatalogRoleAction {
     Hash,
     Eq,
     PartialEq,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -324,7 +326,9 @@ impl From<CatalogTagAction> for TagRelation {
 impl OpenFgaRelation for TagRelation {}
 impl CatalogAction for TagRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
@@ -419,6 +423,7 @@ impl ReducedRelation for APITagRelation {
 }
 
 /// Server Relations in the `OpenFGA` schema
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -427,7 +432,6 @@ impl ReducedRelation for APITagRelation {
     Hash,
     Eq,
     PartialEq,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -452,7 +456,9 @@ pub enum ServerRelation {
 impl ServerAction for ServerRelation {}
 impl CatalogAction for ServerRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl OpenFgaRelation for ServerRelation {}
@@ -609,6 +615,7 @@ impl ReducedRelation for OpenFGAServerAction {
     }
 }
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -617,7 +624,6 @@ impl ReducedRelation for OpenFGAServerAction {
     Hash,
     Eq,
     PartialEq,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -666,7 +672,9 @@ pub enum ProjectRelation {
 }
 impl CatalogAction for ProjectRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl ProjectAction for ProjectRelation {}
@@ -939,6 +947,7 @@ impl ReducedRelation for OpenFGAProjectAction {
     }
 }
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -947,7 +956,6 @@ impl ReducedRelation for OpenFGAProjectAction {
     Hash,
     Eq,
     PartialEq,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1020,7 +1028,9 @@ impl WarehouseAction for WarehouseRelation {
 }
 impl CatalogAction for WarehouseRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
@@ -1328,6 +1338,7 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     }
 }
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -1336,7 +1347,6 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     Eq,
     PartialEq,
     strum_macros::Display,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1397,7 +1407,9 @@ pub enum NamespaceRelation {
 impl OpenFgaRelation for NamespaceRelation {}
 impl CatalogAction for NamespaceRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl NamespaceAction for NamespaceRelation {
@@ -1682,6 +1694,7 @@ impl ReducedRelation for OpenFGANamespaceAction {
     }
 }
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -1690,7 +1703,6 @@ impl ReducedRelation for OpenFGANamespaceAction {
     Eq,
     PartialEq,
     strum_macros::Display,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1740,7 +1752,9 @@ impl TableAction for TableRelation {
 }
 impl CatalogAction for TableRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl OpenFgaRelation for TableRelation {}
@@ -1984,6 +1998,7 @@ impl ReducedRelation for OpenFGATableAction {
     }
 }
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -1992,7 +2007,6 @@ impl ReducedRelation for OpenFGATableAction {
     Eq,
     PartialEq,
     strum_macros::Display,
-    IntoStaticStr,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -2041,7 +2055,9 @@ impl ViewAction for ViewRelation {
 }
 impl CatalogAction for ViewRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl OpenFgaRelation for ViewRelation {}
@@ -2284,6 +2300,7 @@ impl ReducedRelation for OpenFGAViewAction {
 
 // =================== Generic Table Relations ===================
 
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -2292,7 +2309,6 @@ impl ReducedRelation for OpenFGAViewAction {
     Eq,
     PartialEq,
     strum_macros::Display,
-    IntoStaticStr,
     EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
@@ -2343,7 +2359,9 @@ impl GenericTableAction for GenericTableRelation {
 }
 impl CatalogAction for GenericTableRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 impl OpenFgaRelation for GenericTableRelation {}
@@ -2937,7 +2955,8 @@ mod audit_wire_values {
         let descriptor = RoleRelation::CanAssume.action_descriptor();
         assert_eq!(descriptor.action_name, "can_assume");
         assert!(
-            <RoleRelation as strum::VariantNames>::VARIANTS.contains(&descriptor.action_name),
+            <RoleRelation as strum::VariantNames>::VARIANTS
+                .contains(&descriptor.action_name.text()),
             "`RoleRelation::CanAssume` reaches the wire as `{}`, which is not among the \
              derived names the manifest is built from.",
             descriptor.action_name
@@ -2946,7 +2965,7 @@ mod audit_wire_values {
         // The assignment endpoints reach the wire by a different route — a hand-built
         // `ActionDescriptor` rather than `impl CatalogAction` — so pin that one too.
         let assignment = AssignmentAction::UpdateTagAssignments;
-        let name: &'static str = assignment.into();
+        let name: &'static str = assignment.as_wire().text();
         assert_eq!(name, "update_tag_assignments");
         assert!(
             <AssignmentAction as strum::VariantNames>::VARIANTS.contains(&name),
