@@ -69,7 +69,7 @@ fn privileges_from_actions<A: CatalogAction>(
     actions
         .iter()
         .filter_map(|action| {
-            let name = action.action_descriptor().action_name;
+            let name = action.action_descriptor().action_name.text();
             (name != READ_GRANTS_ACTION).then(|| PrivilegeDescriptor {
                 name: name.to_string(),
                 display_name: name.replace('_', " "),

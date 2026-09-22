@@ -1,11 +1,13 @@
 use std::fmt::Display;
 
+use crate::audit::audit_part;
+
 pub mod emitter;
 pub mod part;
 pub mod render;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
-pub use part::{AUDIT_TARGET, AuditPart, Kind, Registration, WireStr, enabled};
+pub use part::{AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled};
 pub use render::AuditJson;
 use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
@@ -89,9 +91,8 @@ const _: () = assert!(
 );
 
 /// The `actor_type` value on every audit record.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
-)]
+#[audit_part(field = "actor_type")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ActorType {
     Anonymous,
@@ -101,9 +102,8 @@ pub enum ActorType {
 }
 
 /// The `decision` value on an authorization record.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
-)]
+#[audit_part(field = "decision")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 pub enum Decision {
     Allowed,
@@ -117,9 +117,8 @@ pub enum Decision {
 /// responsible for its own vocabulary — see the audit log section of
 /// `docs/docs/developer-guide.md`. What the enum does is bring Lakekeeper's own operations
 /// under the same rename check as everything else it emits.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
-)]
+#[audit_part(field = "operation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOperation {
     AdmissionDecided,
@@ -130,9 +129,8 @@ pub enum AuditOperation {
 
 /// The `outcome` value on the operational records this crate emits. Open to other crates in
 /// the same way [`AuditOperation`] is.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, strum_macros::IntoStaticStr, strum_macros::VariantNames,
-)]
+#[audit_part(field = "outcome")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOutcome {
     Success,
@@ -154,8 +152,8 @@ macro_rules! wire_value_as_str {
             /// `tracing` macro fields, where the target type is not known and inference for
             /// `Into` fails.
             #[must_use]
-            pub fn as_str(self) -> &'static str {
-                self.into()
+            pub const fn as_str(self) -> &'static str {
+                self.as_wire().text()
             }
         }
     )+};
@@ -646,7 +644,7 @@ impl Valuable for ActionDescriptor {
     fn visit(&self, visit: &mut dyn Visit) {
         visit.visit_entry(
             Value::String("action_name"),
-            Value::String(self.action_name),
+            Value::String(self.action_name.text()),
         );
         for (key, value) in &self.context {
             visit.visit_entry(Value::String(key.as_str()), value.as_value());

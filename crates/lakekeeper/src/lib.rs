@@ -101,8 +101,8 @@ pub mod audit {
     pub use lakekeeper_audit_macros::audit_part;
 
     pub use crate::service::events::backends::audit::{
-        AUDIT_TARGET, AuditEmitter, AuditJson, AuditPart, Kind, Registration, WireStr, enabled,
-        is_emitter_name, is_major_minor,
+        AUDIT_TARGET, AnyWireStr, AuditEmitter, AuditJson, AuditPart, Kind, Registration, WireStr,
+        enabled, is_emitter_name, is_major_minor,
     };
 }
 

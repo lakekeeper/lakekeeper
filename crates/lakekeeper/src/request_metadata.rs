@@ -101,6 +101,8 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
+#[crate::audit::audit_part(field = "privilege_source")]
+#[audit(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
@@ -114,13 +116,10 @@ pub enum PrivilegeSource {
 }
 
 impl PrivilegeSource {
+    /// The value as it reaches the wire.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Internal => "internal",
-            Self::InstanceAdmin => "instance_admin",
-            Self::Authorizer => "authorizer",
-        }
+    pub const fn as_str(self) -> &'static str {
+        self.as_wire().text()
     }
 }
 

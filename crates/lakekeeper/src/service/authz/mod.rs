@@ -7,7 +7,7 @@ use axum::Router;
 use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::EnumString;
 
 use super::{
     CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
@@ -19,6 +19,7 @@ use crate::{
         iceberg::v1::{PaginationQuery, Result},
         management::v1::check::UserOrRole as AuthzUserOrRole,
     },
+    audit::{AnyWireStr, audit_part},
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
@@ -265,6 +266,8 @@ where
     fn action_descriptor(&self) -> ActionDescriptor;
 }
 
+#[audit_part]
+#[serde(untagged)]
 #[derive(Clone, Debug)]
 pub enum ContextValue {
     /// A set of key-value pairs (e.g. properties, `updated_properties`).
@@ -318,7 +321,10 @@ impl std::fmt::Display for ContextValue {
     }
 ))]
 pub struct ActionDescriptor {
-    pub action_name: &'static str,
+    /// The wire value of the action: a variant of a vocabulary enum declared with
+    /// `#[audit_part(field = "action_name")]`, from any emitter.
+    #[builder(setter(into))]
+    pub action_name: AnyWireStr,
     #[builder(via_mutators)]
     pub context: Vec<(ActionContextKey, ContextValue)>,
 }
@@ -346,6 +352,7 @@ impl ActionDescriptor {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -355,7 +362,6 @@ impl ActionDescriptor {
     strum_macros::Display,
     EnumIter,
     EnumString,
-    IntoStaticStr,
     Serialize,
     Deserialize,
     VariantArray,
@@ -379,10 +385,13 @@ pub enum CatalogUserAction {
 
 impl CatalogAction for CatalogUserAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -392,7 +401,6 @@ impl CatalogAction for CatalogUserAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -442,7 +450,7 @@ impl CatalogServerAction {
 }
 impl CatalogAction for CatalogServerAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
                 b = b.context_string(ActionContextKey::Name, n.clone());
@@ -455,6 +463,7 @@ impl CatalogAction for CatalogServerAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -464,7 +473,6 @@ impl CatalogAction for CatalogServerAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -538,7 +546,7 @@ impl CatalogAction for CatalogProjectAction {
     // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateWarehouse { name: Some(n) }
             | Self::CreateRole { name: Some(n) }
@@ -604,6 +612,7 @@ pub enum SourceSystemTarget {
     Any,
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -611,7 +620,6 @@ pub enum SourceSystemTarget {
     PartialEq,
     Serialize,
     Deserialize,
-    IntoStaticStr,
     strum_macros::EnumCount,
     strum_macros::VariantNames,
 )]
@@ -673,7 +681,7 @@ impl CatalogRoleAction {
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::UpdateSourceSystem {
             target: SourceSystemTarget::To(target),
         } = self
@@ -1023,6 +1031,7 @@ impl GrantSubtreeShape {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1032,7 +1041,6 @@ impl GrantSubtreeShape {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1204,7 +1212,7 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
@@ -1249,6 +1257,7 @@ impl CatalogAction for CatalogWarehouseAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1258,7 +1267,6 @@ impl CatalogAction for CatalogWarehouseAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1472,7 +1480,7 @@ impl CatalogAction for CatalogNamespaceAction {
     // signal to split the function.
     #[allow(clippy::too_many_lines)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateTable {
                 name,
@@ -1587,6 +1595,7 @@ impl CatalogAction for CatalogNamespaceAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1596,7 +1605,6 @@ impl CatalogAction for CatalogNamespaceAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1680,7 +1688,7 @@ impl CatalogTableAction {
 impl CatalogAction for CatalogTableAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Commit {
                 updated_properties,
@@ -1741,6 +1749,7 @@ impl CatalogAction for CatalogTableAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1750,7 +1759,6 @@ impl CatalogAction for CatalogTableAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1819,7 +1827,7 @@ impl CatalogViewAction {
 impl CatalogAction for CatalogViewAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Commit {
                 updated_properties,
@@ -1862,6 +1870,7 @@ impl CatalogAction for CatalogViewAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1871,7 +1880,6 @@ impl CatalogAction for CatalogViewAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1919,10 +1927,13 @@ impl CatalogGenericTableAction {
 }
 impl CatalogAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -1930,7 +1941,6 @@ impl CatalogAction for CatalogGenericTableAction {
     PartialEq,
     Serialize,
     Deserialize,
-    IntoStaticStr,
     strum_macros::EnumCount,
     strum_macros::VariantNames,
 )]
@@ -1975,7 +1985,9 @@ impl CatalogTagAction {
 }
 impl CatalogAction for CatalogTagAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 

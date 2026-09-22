@@ -47,12 +47,14 @@ pub struct Registration {
     pub emitter_type: fn() -> &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
-    /// The type's schema name.
-    pub schema_name: fn() -> Cow<'static, str>,
-    /// The type's JSON Schema.
-    pub schema: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
+    /// The type's schema name. `None` for a vocabulary enum, whose schema is its value list.
+    pub schema_name: Option<fn() -> Cow<'static, str>>,
+    /// The type's JSON Schema. `None` for a vocabulary enum.
+    pub schema: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
     /// For a vocabulary enum, the wire field its values belong to.
     pub wire_field: Option<&'static str>,
+    /// For a vocabulary enum, every value it can put on the wire. Empty otherwise.
+    pub wire_values: &'static [&'static str],
 }
 
 inventory::collect!(Registration);
@@ -101,6 +103,7 @@ impl fmt::Debug for Registration {
             .field("emitter_name", &self.emitter_name)
             .field("defining_crate", &self.defining_crate)
             .field("wire_field", &self.wire_field)
+            .field("wire_values", &self.wire_values)
             .finish_non_exhaustive()
     }
 }
@@ -169,6 +172,85 @@ impl<E: AuditEmitter> schemars::JsonSchema for WireStr<E> {
     }
 }
 
+/// A wire value whose emitter is known only by name: what a core field that accepts values
+/// from several emitters holds, such as `action_name`. Obtainable only from a [`WireStr`],
+/// so it still cannot be a literal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AnyWireStr {
+    text: &'static str,
+    emitter: &'static str,
+}
+
+impl AnyWireStr {
+    /// The value as written to the wire.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        self.text
+    }
+
+    /// `AuditEmitter::NAME` of the emitter whose vocabulary the value belongs to.
+    #[must_use]
+    pub const fn emitter(self) -> &'static str {
+        self.emitter
+    }
+
+    /// A value from nowhere, for tests that build descriptors by hand. Attributed to
+    /// `lakekeeper`.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub const fn literal_for_tests(text: &'static str) -> Self {
+        Self {
+            text,
+            emitter: "lakekeeper",
+        }
+    }
+}
+
+impl<E: AuditEmitter> From<WireStr<E>> for AnyWireStr {
+    fn from(value: WireStr<E>) -> Self {
+        Self {
+            text: value.text,
+            emitter: E::NAME,
+        }
+    }
+}
+impl PartialEq<str> for AnyWireStr {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+impl PartialEq<&str> for AnyWireStr {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+impl fmt::Debug for AnyWireStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AnyWireStr<{}>({:?})", self.emitter, self.text)
+    }
+}
+impl fmt::Display for AnyWireStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.text)
+    }
+}
+impl Serialize for AnyWireStr {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.text)
+    }
+}
+impl schemars::JsonSchema for AnyWireStr {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AnyWireStr")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string" })
+    }
+}
+
 /// The `tracing` target of every audit record. Independent of module paths, so operators can
 /// filter on it: `RUST_LOG=warn,lakekeeper::audit=info` keeps audit lines and quiets the rest.
 pub const AUDIT_TARGET: &str = "lakekeeper::audit";
@@ -195,14 +277,20 @@ mod tests {
 
     /// A vocabulary enum declared the way any crate declares one.
     #[audit_part(field = "probe_outcome")]
-    #[serde(rename_all = "snake_case")]
+    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ProbeOutcome {
         /// Everything went fine.
         AllGood,
         /// Renamed explicitly.
-        #[serde(rename = "x-y")]
+        #[audit(rename = "x-y")]
         Renamed,
+        /// Carries data; only the name reaches the wire.
+        #[allow(dead_code)]
+        WithData {
+            /// Ignored by the wire value.
+            n: u8,
+        },
     }
 
     /// A part declared the way any crate declares one.
@@ -220,9 +308,17 @@ mod tests {
         let good: WireStr<Lakekeeper> = ProbeOutcome::AllGood.as_wire();
         assert_eq!(good.text(), "all_good");
         assert_eq!(ProbeOutcome::Renamed.as_wire().text(), "x-y");
-        assert_eq!(ProbeOutcome::WIRE_VARIANTS.len(), 2);
+        assert_eq!(
+            ProbeOutcome::WithData { n: 1 }.as_wire().text(),
+            "with_data"
+        );
+        assert_eq!(ProbeOutcome::WIRE_VARIANTS.len(), 3);
+        assert_eq!(ProbeOutcome::WIRE_NAMES, ["all_good", "x-y", "with_data"]);
         assert_eq!(serde_json::to_value(good).expect("serializes"), "all_good");
         assert_eq!(good.to_string(), "all_good");
+        let any: AnyWireStr = good.into();
+        assert_eq!(any, "all_good");
+        assert_eq!(any.emitter(), "lakekeeper");
     }
 
     #[test]
@@ -237,6 +333,8 @@ mod tests {
         let outcome = by_name("ProbeOutcome");
         assert_eq!(outcome.kind, Kind::Enum);
         assert_eq!(outcome.wire_field, Some("probe_outcome"));
+        assert_eq!(outcome.wire_values, ["all_good", "x-y", "with_data"]);
+        assert!(outcome.schema.is_none());
         assert_eq!(outcome.emitter_name, "lakekeeper");
         assert_eq!(outcome.defining_crate, "lakekeeper");
         assert!((outcome.emitter_type)().ends_with("Lakekeeper"));
@@ -244,6 +342,7 @@ mod tests {
         let part = by_name("ProbePart");
         assert_eq!(part.kind, Kind::Part);
         assert_eq!(part.wire_field, None);
+        assert!(part.wire_values.is_empty());
 
         let no_context = by_name("NoContext");
         assert_eq!(no_context.kind, Kind::Context);
@@ -260,11 +359,14 @@ mod tests {
             })
             .expect("registered");
         let mut generator = schemars::SchemaGenerator::default();
-        let schema = (reg.schema)(&mut generator);
+        let schema = (reg.schema.expect("a part has a schema"))(&mut generator);
         let json = schema.to_value();
         assert_eq!(json["properties"]["name"]["description"], "The only field.");
         assert_eq!(json["required"], serde_json::json!(["name"]));
-        assert_eq!((reg.schema_name)(), "ProbePart");
+        assert_eq!(
+            (reg.schema_name.expect("a part has a schema name"))(),
+            "ProbePart"
+        );
     }
 
     #[test]
