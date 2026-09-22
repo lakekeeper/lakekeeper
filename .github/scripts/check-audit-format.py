@@ -480,6 +480,41 @@ def schema_at(rev: str) -> dict | None:
     return schema
 
 
+def emitter_of(schema: dict) -> tuple[str | None, str | None]:
+    """The emitter a schema document names, as `(name, format)`.
+
+    `(None, None)` when the document carries no stamp, which is not an error: a record-shape
+    summary has none, because it describes what was observed rather than what one emitter
+    declares.
+    """
+    stamp = schema.get("x-audit-emitter")
+    if not isinstance(stamp, dict):
+        return (None, None)
+    name, version = stamp.get("name"), stamp.get("format")
+    return (
+        name if isinstance(name, str) else None,
+        version if isinstance(version, str) else None,
+    )
+
+
+def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str | None, str, str]:
+    """Refuse to compare two schemas that describe different emitters.
+
+    A verdict across emitters is meaningless: they carry different vocabularies, are governed
+    by whoever ships them, and move on their own release cycles. Every definition of the one
+    would read as removed and every definition of the other as added. Returns the emitter's
+    name and the two formats, for printing.
+    """
+    base_name, base_format = emitter_of(base)
+    head_name, head_format = emitter_of(head)
+    if base_name and head_name and base_name != head_name:
+        raise CheckFailed(
+            f"::error::{whence} was given schemas of two different emitters, `{base_name}` "
+            f"and `{head_name}`. Compare a schema with its own predecessor."
+        )
+    return (head_name or base_name, base_format or "?", head_format or "?")
+
+
 def _type_of(spec: object) -> str:
     """The comparable type of a property: its JSON type, `$ref`, or the shape of its variants."""
     if not isinstance(spec, dict):
@@ -680,8 +715,12 @@ def compare_schemas(base_path: str, head_path: str) -> int:
     except (OSError, json.JSONDecodeError) as error:
         print(f"::error::cannot read the schemas: {error}")
         return 1
+    name, base_format, head_format = require_same_emitter(base, head, "--compare-schemas")
     kind, reasons = classify_schema(base, head)
     print(f"Comparing:  {base_path} -> {head_path}")
+    if name:
+        moved = "" if base_format == head_format else f" -> {head_format}"
+        print(f"Emitter:    `{name}`, format {base_format}{moved}")
     for reason in reasons:
         print(f"  {reason}")
     if not reasons:
@@ -760,6 +799,12 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
     if base_schema is None:
         print(f"Schema:     {SCHEMA_PATH} introduced on this branch; nothing to compare it with")
         return shape_kind
+    name, base_format, head_format = require_same_emitter(
+        base_schema, head_schema, "the schema comparison"
+    )
+    if name:
+        moved = "" if base_format == head_format else f" -> {head_format}"
+        print(f"Schema:     emitter `{name}`, format {base_format}{moved}")
     schema_kind, reasons = classify_schema(base_schema, head_schema)
     for reason in reasons:
         print(f"Schema:     {reason}")
@@ -908,6 +953,18 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
         f"this branch adds {len(contributed)}, withdraws {len(withdrawn)}"
     )
     print(f"Version:    {show(head_version)} declared, {show(required)} required")
+
+    # The schema is generated from the constant, so the two disagree only when the file was
+    # hand-edited or never regenerated. Either way a consumer would read a format the records
+    # do not carry.
+    committed_schema = schema_at("HEAD")
+    if committed_schema is not None and head_version is not None:
+        _, stamped = emitter_of(committed_schema)
+        if stamped is not None and stamped != show(head_version):
+            raise CheckFailed(
+                f"::error::{SCHEMA_PATH} is stamped format {stamped}, but AUDIT_FORMAT is "
+                f"{show(head_version)}. Run `just update-audit-schema`."
+            )
 
     shape_kind = classify_change(merge_base, "HEAD")
     detected_level = REQUIRED_LEVEL.get(shape_kind)
@@ -1752,6 +1809,30 @@ def self_test() -> int:
     })
     masking_kind, masking_reasons = classify_schema(masking_base, masking_head)
     check("schema: a rename is breaking while another owner still emits the name", masking_kind, "breaking")
+
+    # ── the emitter stamp ──
+    stamped = {"x-audit-emitter": {"name": "lakekeeper", "format": "1.0"}, "$defs": {}}
+    other = {"x-audit-emitter": {"name": "lakekeeper-plus", "format": "1.0"}, "$defs": {}}
+    unstamped = {"$defs": {}}
+    check("stamp: read", emitter_of(stamped), ("lakekeeper", "1.0"))
+    check("stamp: absent is not an error", emitter_of(unstamped), (None, None))
+    check("stamp: a malformed stamp reads as absent",
+          emitter_of({"x-audit-emitter": "lakekeeper"}), (None, None))
+    check("stamp: the same emitter compares",
+          require_same_emitter(stamped, stamped, "t"), ("lakekeeper", "1.0", "1.0"))
+    # An unstamped document is a record summary; it claims no emitter, so it blocks nothing.
+    check("stamp: one side unstamped still compares",
+          require_same_emitter(unstamped, stamped, "t"), ("lakekeeper", "?", "1.0"))
+    refused = False
+    try:
+        require_same_emitter(stamped, other, "t")
+    except CheckFailed:
+        refused = True
+    check("stamp: two emitters are refused", refused, True)
+    # The check that the committed schema agrees with the constant it was generated from.
+    check("stamp: a format the constant does not declare is caught",
+          emitter_of({"x-audit-emitter": {"name": "lakekeeper", "format": "2.0"}})[1] != show((1, 0)),
+          True)
 
     # ── record families and the shape summary ──
     check("family: decision names an authorization record",
