@@ -113,6 +113,7 @@ utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 valuable = { workspace = true, features = ["derive"] }
+valuable-serde = { workspace = true }
 veil = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 

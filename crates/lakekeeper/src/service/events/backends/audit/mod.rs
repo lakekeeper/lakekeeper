@@ -2,26 +2,25 @@ use std::fmt::Display;
 
 use crate::audit::audit_part;
 
+pub mod assemble;
 pub mod emitter;
 pub mod part;
+pub mod parts;
 pub mod render;
+pub mod shapes;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
 pub use part::{AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled};
+pub use parts::{
+    ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityRecord, ErrorRecord,
+    GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord, UserSubjectRecord,
+};
 pub use render::AuditJson;
-use valuable::{Listable, Mappable, Valuable, Value, Visit};
+pub use shapes::{AuthorizationRecord, OperationRecord, ReplayRecord};
 
-use crate::{
-    audit_operation,
-    request_metadata::{RequestMetadata, UserAgent},
-    service::{
-        authn::{Actor, InternalActor},
-        authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
-        events::{
-            Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
-            GrantsChangedEvent, IdempotentReplayEvent, context::EntityDescriptor,
-        },
-    },
+use crate::service::events::{
+    AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener, GrantsChangedEvent,
+    IdempotentReplayEvent,
 };
 
 /// Wire-format version of every `event_source = "audit"` record, emitted
@@ -160,273 +159,11 @@ macro_rules! wire_value_as_str {
 }
 wire_value_as_str!(ActorType, Decision, AuditOperation, AuditOutcome);
 
-/// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
-/// `Listable` for it without an orphan-rule violation. Borrowed because the
-/// audit emit path holds the Vec via `Arc`.
-struct AuthorizationsList<'a>(&'a [Authorization]);
-
-impl Valuable for AuthorizationsList<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Listable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        for entry in self.0 {
-            visit.visit_value(entry.as_value());
-        }
-    }
-}
-
-impl Listable for AuthorizationsList<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.0.len(), Some(self.0.len()))
-    }
-}
-
-impl Valuable for Authorization {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    /// Optional fields are omitted when `None`, not emitted as `null`. Other parts of the
-    /// record do the opposite; the encoding is not yet unified across the format.
-    ///
-    /// [`Mappable::size_hint`] below hand-counts the same four conditions and must be kept
-    /// in step with this body.
-    fn visit(&self, visit: &mut dyn Visit) {
-        if let Some(id) = &self.id {
-            visit.visit_entry(Value::String("id"), Value::String(id));
-        }
-        if let Some(principal) = &self.for_principal {
-            let wrapped = UserOrRoleIdValue(principal);
-            visit.visit_entry(Value::String("for-principal"), wrapped.as_value());
-        }
-        visit.visit_entry(Value::String("action"), self.action.as_value());
-        visit.visit_entry(Value::String("entity"), self.entity.as_value());
-        if let Some(allowed) = self.allowed {
-            visit.visit_entry(Value::String("allowed"), Value::Bool(allowed));
-        }
-        if !self.determined_by.is_empty() {
-            let determined_by = DeterminingFactorsList(&self.determined_by);
-            visit.visit_entry(Value::String("determined_by"), determined_by.as_value());
-        }
-    }
-}
-
-impl Mappable for Authorization {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = 2
-            + usize::from(self.id.is_some())
-            + usize::from(self.for_principal.is_some())
-            + usize::from(self.allowed.is_some())
-            + usize::from(!self.determined_by.is_empty());
-        (len, Some(len))
-    }
-}
-
-/// Newtype around `[DeterminingFactor]` so we can implement `Valuable` /
-/// `Listable` for it without an orphan-rule violation, mirroring
-/// [`AuthorizationsList`].
-struct DeterminingFactorsList<'a>(&'a [DeterminingFactor]);
-
-impl Valuable for DeterminingFactorsList<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Listable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        for entry in self.0 {
-            visit.visit_value(entry.as_value());
-        }
-    }
-}
-
-impl Listable for DeterminingFactorsList<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.0.len(), Some(self.0.len()))
-    }
-}
-
-/// Render `UserOrRoleId` as a single-key map (`{"user": "..."}` or
-/// `{"role": "..."}`) for the `for-principal` field of an `Authorization`.
-struct UserOrRoleIdValue<'a>(&'a UserOrRoleId);
-
-impl Valuable for UserOrRoleIdValue<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        match self.0 {
-            UserOrRoleId::User(id) => {
-                let s = id.to_string();
-                visit.visit_entry(Value::String("user"), Value::String(&s));
-            }
-            UserOrRoleId::Role(id) => {
-                let s = id.to_string();
-                visit.visit_entry(Value::String("role"), Value::String(&s));
-            }
-        }
-    }
-}
-
-impl Mappable for UserOrRoleIdValue<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (1, Some(1))
-    }
-}
-
-/// A grant's full `(principal, privilege, resource)` triple, as audit context.
+/// The audit backend: renders events into audit records and writes them as log lines.
 ///
-/// Grants are hard-deleted and carry no history, so a revocation's triple exists
-/// nowhere else once the row is gone — the event has to be self-contained.
-struct GrantContextValue<'a> {
-    principal: &'a UserOrRoleId,
-    privilege: &'a str,
-    resource: &'a GrantResource,
-}
-
-impl Valuable for GrantContextValue<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(
-            Value::String("principal"),
-            UserOrRoleIdValue(self.principal).as_value(),
-        );
-        visit.visit_entry(Value::String("privilege"), Value::String(self.privilege));
-        visit.visit_entry(
-            Value::String("resource_type"),
-            Value::String(self.resource.resource_type().as_str()),
-        );
-        // Identifies the exact resource. Server grants name no id — the resource type
-        // is the whole identity — so the field is omitted rather than emitted empty.
-        let resource_id = grant_resource_id(self.resource);
-        if let Some(id) = resource_id.as_deref() {
-            visit.visit_entry(Value::String("resource_id"), Value::String(id));
-        }
-        let warehouse_id = self.resource.warehouse_id().map(|id| id.to_string());
-        if let Some(id) = warehouse_id.as_deref() {
-            visit.visit_entry(Value::String("warehouse_id"), Value::String(id));
-        }
-    }
-}
-
-impl Mappable for GrantContextValue<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // Exact, matching `visit` above. A range is tolerated by `serde_json`, which
-        // ignores the hint, but a length-prefixed serializer would emit a corrupt frame.
-        let len = 3
-            + usize::from(grant_resource_id(self.resource).is_some())
-            + usize::from(self.resource.warehouse_id().is_some());
-        (len, Some(len))
-    }
-}
-
-/// The id identifying the exact resource, or `None` for a server grant.
-fn grant_resource_id(resource: &GrantResource) -> Option<String> {
-    match resource {
-        GrantResource::Server => None,
-        GrantResource::Project(project_id) => Some(project_id.to_string()),
-        GrantResource::Warehouse(warehouse_id) => Some(warehouse_id.to_string()),
-        GrantResource::Namespace { namespace_id, .. } => Some(namespace_id.to_string()),
-        GrantResource::Table { table_id, .. } => Some(table_id.to_string()),
-        GrantResource::View { view_id, .. } => Some(view_id.to_string()),
-        GrantResource::GenericTable {
-            generic_table_id, ..
-        } => Some(generic_table_id.to_string()),
-        GrantResource::Tag(tag_definition_id) => Some(tag_definition_id.to_string()),
-    }
-}
-
-/// The one `tracing::info!` that emits an audit record.
-///
-/// Every audit event routes through here, so `event_source` and `audit_format` are
-/// stamped in exactly one place. Spelling them at each call site instead is what made
-/// the version field a convention that a test had to police by reading this file — a
-/// new emission path could simply omit it.
-///
-/// `#[doc(hidden)] #[macro_export]` rather than a private `macro_rules!`: the exported
-/// [`audit_operation`] expands in the caller's crate and so has to be able to name this
-/// macro there. It is not part of the public API.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __audit_emit {
-    ({ $($fields:tt)* }, $msg:literal) => {
-        $crate::tracing::info!(
-            event_source = "audit",
-            audit_format = $crate::service::events::backends::audit::AUDIT_FORMAT,
-            $($fields)*
-            $msg
-        )
-    };
-}
-
-/// Emits an audit record, using singular field names (`action`/`entity`) when only one
-/// item is present and plural (`actions`/`entities`) otherwise.
-macro_rules! audit_log {
-    ($actions:expr, $entities:expr, { $($common:tt)* }, $msg:literal) => {{
-        let __actions = $actions;
-        let __entities = $entities;
-        // A `tracing` field name has to be a literal ident at the invocation, and the
-        // name is singular when one item was checked and plural otherwise, so the four
-        // combinations cannot be collapsed into one call here. What they no longer do is
-        // repeat `event_source` and `audit_format` — every arm funnels into
-        // `__audit_emit!`, which is the only place an audit record is emitted.
-        match (__actions.len() == 1, __entities.entities.len() == 1) {
-            (true, true) => $crate::__audit_emit!({
-                action = tracing::field::valuable(&__actions[0].as_value()),
-                entity = tracing::field::valuable(&__entities.entities[0].as_value()),
-                $($common)*
-            }, $msg),
-            (true, false) => $crate::__audit_emit!({
-                action = tracing::field::valuable(&__actions[0].as_value()),
-                entities = tracing::field::valuable(&__entities.as_value()),
-                $($common)*
-            }, $msg),
-            (false, true) => $crate::__audit_emit!({
-                actions = tracing::field::valuable(&__actions.as_value()),
-                entity = tracing::field::valuable(&__entities.entities[0].as_value()),
-                $($common)*
-            }, $msg),
-            (false, false) => $crate::__audit_emit!({
-                actions = tracing::field::valuable(&__actions.as_value()),
-                entities = tracing::field::valuable(&__entities.as_value()),
-                $($common)*
-            }, $msg),
-        }
-    }};
-}
-
-/// The `User-Agent` header for the `user_agent` audit field, or `None` when the
-/// caller sent none.
-///
-/// Recorded verbatim and **unverified**: any caller can set the header to any
-/// value, including one naming another client. `actor` and `privilege_source`
-/// are the authenticated facts on the same event.
-///
-/// A top-level `tracing` field, so it is always recorded: `None` becomes `null`, never an
-/// absent field — unlike the hand-written `visit` impls, which omit an absent optional.
-fn user_agent_value(request_metadata: &RequestMetadata) -> Option<&str> {
-    request_metadata.user_agent().map(UserAgent::as_str)
-}
-
-/// The request's `Idempotency-Key`, or `None` when the caller sent none — which
-/// `valuable` renders as JSON `null`.
-///
-/// On every authorization record, not only the replay one: a replay is matched
-/// on the key alone, so without the key on both sides a retry can be tied to the
-/// request that did the work only by content and timing — which fails in exactly
-/// the cases that matter, where the retry named a different target or different
-/// flags.
-fn idempotency_key_value(request_metadata: &RequestMetadata) -> Option<String> {
-    request_metadata
-        .idempotency_key()
-        .map(|key| key.as_uuid().to_string())
-}
-
+/// One method per event kind it records. Each assembles the record's shape from the event
+/// ([`assemble`]) and calls the shape's `emit()`; nothing else in this crate writes an audit
+/// record.
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -439,53 +176,7 @@ impl Display for AuditEventListener {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
-        let authorizations = AuthorizationsList(&event.authorizations);
-        let user_agent = user_agent_value(&event.request_metadata);
-        // Recorded verbatim and unverified: the field says the caller claimed an
-        // emergency override and why, not that one was granted. Passed as a bare
-        // `Option` rather than through `valuable`, so that `None` records nothing
-        // and the field is absent from ordinary events instead of adding a `null`
-        // to every authorization check. Unlike `user_agent`, absent and null
-        // would mean the same thing here, so the null buys nothing.
-        let break_glass = event.request_metadata.break_glass_reason();
-        let idempotency_key = idempotency_key_value(&event.request_metadata);
-        let idempotency_key = idempotency_key.as_deref();
-        if event.extra_context.is_empty() {
-            audit_log!(
-                &*event.actions,
-                &*event.entities,
-                {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
-                    privilege_source = event.request_metadata.privilege_source().as_str(),
-                    user_agent = tracing::field::valuable(&user_agent),
-                    break_glass = break_glass,
-                    failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
-                    error = tracing::field::valuable(&event.error.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
-                    idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = Decision::Denied.as_str(),
-                },
-                "Authorization failed event"
-            );
-        } else {
-            audit_log!(
-                &*event.actions,
-                &*event.entities,
-                {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
-                    privilege_source = event.request_metadata.privilege_source().as_str(),
-                    user_agent = tracing::field::valuable(&user_agent),
-                    break_glass = break_glass,
-                    failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
-                    error = tracing::field::valuable(&event.error.as_value()),
-                    context = tracing::field::valuable(&event.extra_context.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
-                    idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = Decision::Denied.as_str(),
-                },
-                "Authorization failed event"
-            );
-        }
+        assemble::authorization_failed(&event).emit();
         Ok(())
     }
 
@@ -497,34 +188,36 @@ impl EventListener for AuditEventListener {
     /// reconstruction of current access need. A revoked grant is hard-deleted, so its
     /// record here is the only remaining evidence the access ever existed.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
-        let actor = event.request_metadata.internal_actor();
+        let actor = ActorRecord::from_request(&event.request_metadata);
         // One record per triple, not one per request: the batch is a dispatch
         // optimisation, while the audit trail is answered per grant.
         for spec in &event.removed {
-            audit_operation!(
-                operation = AuditOperation::GrantRevoked.as_str(),
-                actor = actor,
-                outcome = AuditOutcome::Success.as_str(),
-                context = GrantContextValue {
-                    principal: &spec.principal,
-                    privilege: &spec.privilege,
-                    resource: &spec.resource,
-                },
-                "Grant revoked"
-            );
+            OperationRecord::new(
+                AuditOperation::GrantRevoked.as_wire(),
+                actor.clone(),
+                AuditOutcome::Success.as_wire(),
+            )
+            .context(GrantContextRecord::new(
+                &spec.principal,
+                &spec.privilege,
+                &spec.resource,
+            ))
+            .message("Grant revoked")
+            .emit();
         }
         for spec in &event.created {
-            audit_operation!(
-                operation = AuditOperation::GrantCreated.as_str(),
-                actor = actor,
-                outcome = AuditOutcome::Success.as_str(),
-                context = GrantContextValue {
-                    principal: &spec.principal,
-                    privilege: &spec.privilege,
-                    resource: &spec.resource,
-                },
-                "Grant created"
-            );
+            OperationRecord::new(
+                AuditOperation::GrantCreated.as_wire(),
+                actor.clone(),
+                AuditOutcome::Success.as_wire(),
+            )
+            .context(GrantContextRecord::new(
+                &spec.principal,
+                &spec.privilege,
+                &spec.resource,
+            ))
+            .message("Grant created")
+            .emit();
         }
         Ok(())
     }
@@ -533,49 +226,7 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
-        let authorizations = AuthorizationsList(&event.authorizations);
-        let user_agent = user_agent_value(&event.request_metadata);
-        // Recorded verbatim and unverified: the field says the caller claimed an
-        // emergency override and why, not that one was granted. Passed as a bare
-        // `Option` rather than through `valuable`, so that `None` records nothing
-        // and the field is absent from ordinary events instead of adding a `null`
-        // to every authorization check. Unlike `user_agent`, absent and null
-        // would mean the same thing here, so the null buys nothing.
-        let break_glass = event.request_metadata.break_glass_reason();
-        let idempotency_key = idempotency_key_value(&event.request_metadata);
-        let idempotency_key = idempotency_key.as_deref();
-        if event.extra_context.is_empty() {
-            audit_log!(
-                &*event.actions,
-                &*event.entities,
-                {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
-                    privilege_source = event.request_metadata.privilege_source().as_str(),
-                    user_agent = tracing::field::valuable(&user_agent),
-                    break_glass = break_glass,
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
-                    idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = Decision::Allowed.as_str(),
-                },
-                "Authorization succeeded event"
-            );
-        } else {
-            audit_log!(
-                &*event.actions,
-                &*event.entities,
-                {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
-                    privilege_source = event.request_metadata.privilege_source().as_str(),
-                    user_agent = tracing::field::valuable(&user_agent),
-                    break_glass = break_glass,
-                    context = tracing::field::valuable(&event.extra_context.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
-                    idempotency_key = tracing::field::valuable(&idempotency_key),
-                    decision = Decision::Allowed.as_str(),
-                },
-                "Authorization succeeded event"
-            );
-        }
+        assemble::authorization_succeeded(&event).emit();
         Ok(())
     }
 
@@ -587,335 +238,10 @@ impl EventListener for AuditEventListener {
     /// no authorization ran, because the mutation had already happened and
     /// there was nothing left to permit. `operation` and `outcome` are the
     /// positive markers that say so.
-    ///
-    /// No `context`: no handler records extra context before the idempotency
-    /// check, so unlike the arms above there is nothing to render.
     async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
-        let user_agent = user_agent_value(&event.request_metadata);
-        let idempotency_key = event.idempotency_key.as_uuid().to_string();
-        audit_log!(
-            &*event.actions,
-            &*event.entities,
-            {
-                actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
-                privilege_source = event.request_metadata.privilege_source().as_str(),
-                user_agent = tracing::field::valuable(&user_agent),
-                operation = AuditOperation::IdempotentReplay.as_str(),
-                idempotency_key = idempotency_key.as_str(),
-                outcome = AuditOutcome::Replayed.as_str(),
-            },
-            "Idempotent replay served"
-        );
+        assemble::replay(&event).emit();
         Ok(())
     }
-}
-
-impl Valuable for EntityDescriptor {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(
-            Value::String("entity_type"),
-            Value::String(self.entity_type.as_str()),
-        );
-        for field in &self.fields {
-            visit.visit_entry(
-                Value::String(field.key.as_str()),
-                Value::String(&field.value),
-            );
-        }
-    }
-}
-
-impl Mappable for EntityDescriptor {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.fields.len() + 1;
-        (len, Some(len))
-    }
-}
-
-impl Valuable for ActionDescriptor {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(
-            Value::String("action_name"),
-            Value::String(self.action_name.text()),
-        );
-        for (key, value) in &self.context {
-            visit.visit_entry(Value::String(key.as_str()), value.as_value());
-        }
-    }
-}
-
-impl Mappable for ActionDescriptor {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = 1 + self.context.len();
-        (len, Some(len))
-    }
-}
-
-impl Valuable for ContextValue {
-    fn as_value(&self) -> Value<'_> {
-        match self {
-            Self::Map(map) => map.as_value(),
-            Self::List(list) => list.as_value(),
-            Self::String(s) => Value::String(s),
-        }
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        match self {
-            Self::Map(map) => map.visit(visit),
-            Self::List(list) => list.visit(visit),
-            Self::String(s) => s.visit(visit),
-        }
-    }
-}
-
-#[allow(clippy::struct_field_names)]
-struct AssumedRoleValue {
-    role_id: String,
-    provider_id: String,
-    source_id: String,
-}
-
-impl Valuable for AssumedRoleValue {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(Value::String("role_id"), Value::String(&self.role_id));
-        visit.visit_entry(
-            Value::String("provider_id"),
-            Value::String(&self.provider_id),
-        );
-        visit.visit_entry(Value::String("source_id"), Value::String(&self.source_id));
-    }
-}
-
-impl Mappable for AssumedRoleValue {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (3, Some(3))
-    }
-}
-
-impl Valuable for Actor {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        match self {
-            Actor::Anonymous => {
-                visit.visit_entry(
-                    Value::String("actor_type"),
-                    Value::String(ActorType::Anonymous.as_str()),
-                );
-            }
-            Actor::Principal(user_id) => {
-                let user_id = user_id.to_string();
-                visit.visit_entry(
-                    Value::String("actor_type"),
-                    Value::String(ActorType::Principal.as_str()),
-                );
-                visit.visit_entry(Value::String("principal"), Value::String(&user_id));
-            }
-            Actor::Role {
-                principal,
-                assumed_role,
-            } => {
-                let principal = principal.to_string();
-                let role_value = AssumedRoleValue {
-                    role_id: assumed_role.id.to_string(),
-                    provider_id: assumed_role.provider_id().to_string(),
-                    source_id: assumed_role.source_id().to_string(),
-                };
-                visit.visit_entry(
-                    Value::String("actor_type"),
-                    Value::String(ActorType::AssumedRole.as_str()),
-                );
-                visit.visit_entry(Value::String("principal"), Value::String(&principal));
-                visit.visit_entry(Value::String("assumed_role"), role_value.as_value());
-            }
-        }
-    }
-}
-
-impl Mappable for Actor {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = match self {
-            Actor::Anonymous => 1,
-            Actor::Principal(_) => 2,
-            Actor::Role { .. } => 3,
-        };
-        (len, Some(len))
-    }
-}
-
-impl Valuable for InternalActor {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        match self {
-            InternalActor::LakekeeperInternal => {
-                visit.visit_entry(
-                    Value::String("actor_type"),
-                    Value::String(ActorType::LakekeeperInternal.as_str()),
-                );
-            }
-            InternalActor::External(actor) => actor.visit(visit),
-        }
-    }
-}
-
-impl Mappable for InternalActor {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            InternalActor::LakekeeperInternal => (1, Some(1)),
-            InternalActor::External(actor) => actor.size_hint(),
-        }
-    }
-}
-
-// ============================================================================
-// Operational audit helpers
-// ============================================================================
-
-/// Borrowed actor value for **operational** audit events raised while serving a
-/// request.
-///
-/// Renders the request's resolved actor exactly as authorization audit events
-/// render it, assumed role included. Obtain one from
-/// [`RequestMetadata::audit_actor`](crate::api::RequestMetadata::audit_actor),
-/// and prefer it over [`AuditPrincipal`] wherever a `RequestMetadata` is in
-/// hand: for an assumed-role caller the two shapes differ, and records that
-/// disagree about the actor cannot be correlated into one request.
-#[derive(Debug)]
-pub struct AuditActor<'a>(pub(crate) &'a InternalActor);
-
-impl Valuable for AuditActor<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        self.0.visit(visit);
-    }
-}
-
-impl Mappable for AuditActor<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
-    }
-}
-
-/// Borrowed actor value for **operational** audit events.
-///
-/// Produces the same JSON shape as [`Actor::Principal`]:
-/// ```json
-/// {"actor_type": "principal", "principal": "oidc~user@example.com"}
-/// ```
-/// but without requiring an owned `Arc<UserId>`.
-///
-/// Use this with [`audit_operation!`] for non-authz events that contain user
-/// identity (PII), such as role resolution, token introspection, etc.
-#[derive(Debug)]
-pub struct AuditPrincipal<'a>(pub &'a crate::service::authn::UserId);
-
-impl Valuable for AuditPrincipal<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        visit.visit_entry(
-            Value::String("actor_type"),
-            Value::String(ActorType::Principal.as_str()),
-        );
-        let principal = self.0.to_string();
-        visit.visit_entry(Value::String("principal"), Value::String(&principal));
-    }
-}
-
-impl Mappable for AuditPrincipal<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (2, Some(2))
-    }
-}
-
-/// Emit an audit `tracing::info!` event for a **non-authz** operation that
-/// touches user identity (PII).
-///
-/// Enforces the operational audit schema:
-/// ```json
-/// {
-///   "event_source": "audit",
-///   "operation":    "<operation name>",
-///   "actor":        { "actor_type": "principal", "principal": "oidc~…" },
-///   "outcome":      "<outcome>",
-///   "context":      { … }   // optional
-/// }
-/// ```
-///
-/// This is the counterpart to the authz-focused `audit_log!` macro. Use it
-/// whenever there is no `decision = "allowed"|"denied"` to emit — e.g. for
-/// role resolution, user lookup, or token enrichment.
-///
-/// The exception is a record that must carry `action`/`entity`, which this
-/// macro cannot express: use `audit_log!` and mark the record with
-/// `operation`/`outcome` instead, as `idempotent_replay_served` does.
-///
-/// # Examples
-/// ```rust,ignore
-/// use lakekeeper::audit_operation;
-/// use lakekeeper::service::events::backends::audit::AuditPrincipal;
-///
-/// // Without context
-/// audit_operation!(
-///     operation = "ldap_resolve_roles",
-///     actor     = AuditPrincipal(user_id),
-///     outcome   = "success",
-///     "LDAP role resolution complete"
-/// );
-///
-/// // With context (any type implementing `Valuable`)
-/// #[derive(valuable::Valuable)]
-/// struct Ctx<'a> { provider_id: &'a str, role_count: usize }
-///
-/// audit_operation!(
-///     operation = "ldap_resolve_roles",
-///     actor     = AuditPrincipal(user_id),
-///     outcome   = "success",
-///     context   = Ctx { provider_id: "ldap", role_count: 3 },
-///     "LDAP role resolution complete"
-/// );
-/// ```
-#[macro_export]
-macro_rules! audit_operation {
-    (
-        operation = $op:expr,
-        actor     = $actor:expr,
-        outcome   = $outcome:expr,
-        $(context = $ctx:expr,)?
-        $msg:literal $(,)?
-    ) => {
-        $crate::__audit_emit!({
-            operation = $op,
-            actor = $crate::tracing::field::valuable(&$actor),
-            outcome = $outcome,
-            // `context` is optional; the `$(...)?` group emits the field only when the
-            // caller passed one, which is what keeps the field absent rather than null.
-            $(context = $crate::tracing::field::valuable(&$ctx),)?
-        }, $msg)
-    };
 }
 
 /// Rules that hold for every audit record, whatever produced it.

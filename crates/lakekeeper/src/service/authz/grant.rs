@@ -54,6 +54,7 @@ use crate::{
 /// tables, views and generic tables are one kind to a catalog that already records
 /// which of the three an id refers to — so this deliberately carries no storage
 /// mapping.
+#[crate::audit::audit_part(field = "resource_type")]
 #[derive(
     Debug,
     Clone,
@@ -67,7 +68,6 @@ use crate::{
     Deserialize,
     strum::VariantArray,
     strum::EnumString,
-    strum::IntoStaticStr,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -91,11 +91,11 @@ pub enum ResourceType {
 impl ResourceType {
     /// The label used on the wire.
     ///
-    /// Derived from the variant names, so this spelling and `serde`'s cannot drift apart
-    /// silently — the round-trip test below pins that they agree.
+    /// Derived from the variant names by `#[audit_part]`, so this spelling and `serde`'s
+    /// cannot drift apart silently — the round-trip test below pins that they agree.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
+    pub const fn as_str(self) -> &'static str {
+        self.as_wire().text()
     }
 
     #[must_use]

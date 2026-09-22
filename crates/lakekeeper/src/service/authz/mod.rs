@@ -268,7 +268,7 @@ where
 
 #[audit_part]
 #[serde(untagged)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextValue {
     /// A set of key-value pairs (e.g. properties, `updated_properties`).
     Map(BTreeMap<String, String>),
