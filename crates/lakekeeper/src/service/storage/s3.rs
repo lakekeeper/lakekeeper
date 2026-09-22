@@ -1731,15 +1731,26 @@ fn aliyun_percent_encode(input: &str) -> String {
 
 /// Build an `S3Storage` client from vended-credentials properties.
 ///
-/// Reads region, endpoint, path-style-access, and the temporary credentials
-/// (access key id, secret access key, session token) from the iceberg-format
-/// `TableProperties` previously produced by `generate_table_config`.
+/// Reads region, endpoint, path-style-access, the temporary credentials
+/// (access key id, secret access key, session token) and the SSE-KMS key from the
+/// iceberg-format `TableProperties` previously produced by `generate_table_config`.
+///
+/// When the config advertises `s3.sse.type = kms`, the client sets SSE-KMS with `s3.sse.key`
+/// on every write, the way a client honouring the vended config does. The downscoped
+/// session policy vended with the credentials grants KMS on that one key only, so a write
+/// that names no key is encrypted with the bucket's default key and is refused by the
+/// session policy wherever the bucket default differs from the warehouse key; naming the
+/// key keeps the credential validation write inside the policy it was vended with.
 pub(super) async fn lakekeeper_io_from_vended_table_config(
     config: &TableProperties,
 ) -> Result<S3Storage, CredentialsError> {
     let region = config.get_prop_opt::<s3::Region>().unwrap_or_default();
     let endpoint = config.get_prop_opt::<s3::Endpoint>();
     let path_style_access = config.get_prop_opt::<s3::PathStyleAccess>();
+    let aws_kms_key_arn = match config.get_prop_opt::<s3::SseType>().as_deref() {
+        Some("kms") => config.get_prop_opt::<s3::SseKey>(),
+        _ => None,
+    };
 
     let auth = match (
         config.get_prop_opt::<s3::AccessKeyId>(),
@@ -1770,6 +1781,7 @@ pub(super) async fn lakekeeper_io_from_vended_table_config(
         .region(region)
         .endpoint(endpoint)
         .path_style_access(path_style_access)
+        .aws_kms_key_arn(aws_kms_key_arn)
         .build();
     Ok(settings.get_storage_client(auth.as_ref()).await)
 }
@@ -1942,6 +1954,45 @@ pub(crate) mod test {
                 .expect("failed to start Tokio runtime")
                 .block_on(f)
         }
+    }
+
+    /// The client the credential validation writes with names the warehouse KMS key the
+    /// vended config advertises; without an SSE-KMS advertisement, or with another SSE
+    /// type, it names none and S3 applies the bucket default.
+    #[tokio::test]
+    async fn test_vended_io_names_the_advertised_sse_kms_key() {
+        let key_arn = "arn:aws:kms:us-east-2:123456789012:key/00000000-0000-4000-8000-000000000000";
+        let creds = |config: &mut TableProperties| {
+            config.insert(&s3::Region("us-east-2".to_string()));
+            config.insert(&s3::AccessKeyId("AKIAEXAMPLE".to_string()));
+            config.insert(&s3::SecretAccessKey("secret".to_string()));
+            config.insert(&s3::SessionToken("token".to_string()));
+        };
+
+        let mut with_kms = TableProperties::default();
+        creds(&mut with_kms);
+        with_kms.insert(&s3::SseType("kms".to_string()));
+        with_kms.insert(&s3::SseKey(key_arn.to_string()));
+        let io = lakekeeper_io_from_vended_table_config(&with_kms)
+            .await
+            .expect("vended config with SSE-KMS builds a client");
+        assert_eq!(io.aws_kms_key_arn().map(String::as_str), Some(key_arn));
+
+        let mut without_sse = TableProperties::default();
+        creds(&mut without_sse);
+        let io = lakekeeper_io_from_vended_table_config(&without_sse)
+            .await
+            .expect("vended config without SSE builds a client");
+        assert_eq!(io.aws_kms_key_arn(), None);
+
+        let mut other_sse = TableProperties::default();
+        creds(&mut other_sse);
+        other_sse.insert(&s3::SseType("AES256".to_string()));
+        other_sse.insert(&s3::SseKey(key_arn.to_string()));
+        let io = lakekeeper_io_from_vended_table_config(&other_sse)
+            .await
+            .expect("vended config with another SSE type builds a client");
+        assert_eq!(io.aws_kms_key_arn(), None);
     }
 
     #[test]
