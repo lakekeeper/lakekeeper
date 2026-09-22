@@ -76,6 +76,7 @@ Before changing any record carrying `"event_source": "audit"`, read `docs/docs/d
 - Never add a `_ =>` arm to an `as_str` or `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
 - Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.
 - Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
+- The audit type registry (`#[audit_part]`) exists in debug builds only. Registry and schema tests, and `just update-audit-schema`, run in the dev profile; with `--release` the registry is empty and `Registration::require_registry()` fails with that message.
 
 ## Rules
 

@@ -1,5 +1,12 @@
 use std::fmt::Display;
 
+pub mod emitter;
+pub mod part;
+pub mod render;
+
+pub use emitter::{AuditEmitter, is_emitter_name};
+pub use part::{AUDIT_TARGET, AuditPart, Kind, Registration, WireStr, enabled};
+pub use render::AuditJson;
 use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 use crate::{
@@ -49,7 +56,8 @@ pub const AUDIT_FORMAT: &str = "1.0";
 
 /// Whether `s` is exactly `MAJOR.MINOR`. Hand-rolled over bytes because `==` on `&str` is
 /// not const-evaluable (rust-lang/rust#143874).
-const fn is_major_minor(s: &str) -> bool {
+#[must_use]
+pub const fn is_major_minor(s: &str) -> bool {
     let b = s.as_bytes();
     let mut dots = 0usize;
     let mut digits_in_part = 0usize;
