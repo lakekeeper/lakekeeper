@@ -454,21 +454,22 @@ impl AdmissionGates {
                     // error-response line, which would otherwise repeat this
                     // without the actor — and, for a fail-closed `503`, repeat
                     // it at ERROR as an internal error this server did not have.
-                    crate::audit_operation!(
-                        operation = AuditOperation::AdmissionDecided.as_str(),
-                        actor = ctx.metadata.audit_actor(),
-                        outcome = rejection.kind.label().as_str(),
-                        context = AdmissionRejectedContext {
-                            gate: gate.name(),
-                            denied_by: rejection.deciding_rule(),
-                            status: rejection.kind.status(),
-                            error_type: rejection.error_type,
-                            message: rejection.message.as_ref(),
-                            error_id: rejection.error_id.to_string(),
-                            request_id: ctx.metadata.request_id().to_string(),
-                        },
-                        "Request rejected by admission gate"
-                    );
+                    crate::audit::OperationRecord::new(
+                        AuditOperation::AdmissionDecided.as_wire(),
+                        crate::audit::ActorRecord::from_request(ctx.metadata),
+                        rejection.kind.label().as_wire(),
+                    )
+                    .context(AdmissionRejectedContext {
+                        gate: gate.name(),
+                        denied_by: rejection.deciding_rule(),
+                        status: rejection.kind.status(),
+                        error_type: rejection.error_type,
+                        message: rejection.message.as_ref(),
+                        error_id: rejection.error_id.to_string(),
+                        request_id: ctx.metadata.request_id().to_string(),
+                    })
+                    .message("Request rejected by admission gate")
+                    .emit();
                     // A gate failing closed is an outage of something this
                     // server depends on, not a decision about the caller, and
                     // it needs a level that survives `RUST_LOG=warn` — which
@@ -511,18 +512,25 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
 /// because that is the shape every `event_source="audit"` operational record
 /// promises. `error_id` correlates with what the caller was handed, and
 /// `request_id` is repeated out of the span so the record stands alone.
-#[derive(valuable::Valuable)]
+#[crate::audit::audit_part(context)]
 struct AdmissionRejectedContext<'a> {
+    /// The gate that rejected the request.
     gate: &'a str,
+    /// The rule of the gate that decided, when the gate names one.
     denied_by: Option<&'a str>,
+    /// The HTTP status the caller received.
     status: u16,
+    /// The error type the caller received.
     error_type: &'a str,
     /// The gate's own wording. Suppressing the error-response line takes this
     /// with it, and it is what separates two rejections that share a type —
     /// a gate failing closed on a missing precondition from the same gate
     /// failing closed on an unreachable upstream.
     message: &'a str,
+    /// The id the caller can quote to correlate with this record.
     error_id: String,
+    /// The request this rejection belongs to, repeated out of the span so the record stands
+    /// alone.
     request_id: String,
 }
 

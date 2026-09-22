@@ -307,8 +307,7 @@ impl EntityDescriptor {
 }
 
 /// The full set of entities involved in an event
-#[derive(Clone, Debug, valuable::Valuable)]
-#[valuable(transparent)]
+#[derive(Clone, Debug)]
 pub struct EventEntities {
     pub entities: Vec<EntityDescriptor>,
 }

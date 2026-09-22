@@ -11,6 +11,8 @@ pub trait AuditEmitter: 'static {
     const NAME: &'static str;
     /// `MAJOR.MINOR`. Derived from the emitter's fragments by the checker, never edited by hand.
     const FORMAT: &'static str;
+    /// The `context` an operation record of this emitter carries when it carries none.
+    type NoContext: super::part::AuditPart<Emitter = Self>;
 }
 
 /// Whether `s` is a valid emitter name: non-empty, lowercase ASCII letters, digits and `-`,
@@ -48,6 +50,7 @@ macro_rules! declare_audit_emitter {
         impl $crate::audit::AuditEmitter for $ty {
             const NAME: &'static str = $name;
             const FORMAT: &'static str = $format;
+            type NoContext = NoContext;
         }
 
         const _: () = {

@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::TableUpdateKind;
-use valuable::{Valuable, Value, Visit};
 
 use super::{contract::contract_fields, *};
 use crate::{
@@ -14,15 +13,19 @@ use crate::{
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, GateDecision,
         },
-        authn::UserId,
+        authn::{Actor, UserId},
         authz::{
             ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogTableAction,
-            DeterminingFactor, PolicyEffect,
+            DeterminingFactor, GrantResource, PolicyEffect, UserOrRoleId,
         },
-        events::context::{
-            ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
-            FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-            FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
+        events::{
+            Authorization,
+            context::{
+                ActionContextKey, EntityDescriptor, EntityField, EntityType, EventEntities,
+                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
+                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
+                UserProvidedEntity as _, UserProvidedTable,
+            },
         },
         idempotency::IdempotencyKey,
     },
@@ -1403,25 +1406,41 @@ fn the_capture_helper_omits_envelope_keys_production_omits() {
     );
 }
 
-/// The context-free form of [`audit_operation`].
+/// The context-free form of an operation record.
 ///
-/// Nothing in this repository emits an operational audit event without context, and
-/// the macro's own example is marked `ignore` so it is never compiled — so without
-/// this test the optional-context arm has no coverage at all, and a change to it
-/// would compile and ship unnoticed. Also pins that omitting the context omits the
-/// field rather than emitting it as null.
+/// Nothing in this repository emits an operation record without context, so without this
+/// test the `None` path of `OperationRecord::emit` would have no coverage. Also pins that
+/// omitting the context omits the field rather than emitting it as null.
 #[test]
 fn an_operational_audit_record_without_context_omits_the_context_key() {
+    /// A test-only operation vocabulary; registered under `lakekeeper`, filtered out of the
+    /// manifest agreement test by its `tests` module path.
+    #[crate::audit::audit_part(field = "operation")]
+    #[audit(rename_all = "snake_case")]
+    #[derive(Clone, Copy)]
+    enum ProbeOperation {
+        /// The probe.
+        ProbeOperation,
+    }
+    #[crate::audit::audit_part(field = "outcome")]
+    #[audit(rename_all = "snake_case")]
+    #[derive(Clone, Copy)]
+    enum ProbeOutcome {
+        /// Fine.
+        Success,
+    }
+
     let user_id =
         crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id");
 
     let record = emit_and_capture_one(|| async {
-        audit_operation!(
-            operation = "probe_operation",
-            actor = AuditPrincipal(&user_id),
-            outcome = "success",
-            "probe"
-        );
+        crate::audit::OperationRecord::new(
+            ProbeOperation::ProbeOperation.as_wire(),
+            crate::audit::ActorRecord::principal(&user_id),
+            ProbeOutcome::Success.as_wire(),
+        )
+        .message("probe")
+        .emit();
         Ok(())
     });
 
@@ -1430,10 +1449,14 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
         Some("probe_operation"),
     );
     assert!(
-        record.get("context").is_none(),
-        "an operation emitted without context must omit the key entirely, not emit \
-         null: {record}"
+        !record
+            .as_object()
+            .expect("a record is an object")
+            .contains_key("context"),
+        "an absent context must be absent, not null: {record}"
     );
+    assert_eq!(record["actor"]["principal"], "oidc~alice");
+    assert_eq!(record["outcome"], "success");
 }
 
 /// Every committed fixture satisfies the format contract.
@@ -1473,48 +1496,31 @@ fn an_audit_event_without_a_user_agent_records_null() {
     );
 }
 
-/// Records key/value pairs, flattening a nested map into `key=value` pairs joined
-/// by `,` so a whole context can be asserted with one exact comparison.
-#[derive(Default)]
-struct EntryCollector {
-    entries: Vec<(String, String)>,
-}
-
-impl Visit for EntryCollector {
-    fn visit_value(&mut self, _value: Value<'_>) {}
-    fn visit_entry(&mut self, key: Value<'_>, value: Value<'_>) {
-        let Value::String(key) = key else { return };
-        let rendered = match value {
-            Value::String(s) => s.to_string(),
-            Value::Mappable(m) => {
-                let mut inner = EntryCollector::default();
-                m.visit(&mut inner);
-                inner
-                    .entries
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }
-            other => format!("{other:?}"),
-        };
-        self.entries.push((key.to_string(), rendered));
-    }
-}
-
+/// The grant context as `(key, rendered value)` pairs in wire order, a nested object
+/// flattened to `k=v` pairs joined by `,`, so a whole context can be asserted at once.
 fn grant_context(
     principal: &UserOrRoleId,
     privilege: &str,
     resource: &GrantResource,
 ) -> Vec<(String, String)> {
-    let mut collector = EntryCollector::default();
-    GrantContextValue {
-        principal,
-        privilege,
-        resource,
+    fn render(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| format!("{k}={}", render(v)))
+                .collect::<Vec<_>>()
+                .join(","),
+            other => other.to_string(),
+        }
     }
-    .visit(&mut collector);
-    collector.entries
+    let json = AuditJson::of(&GrantContextRecord::new(principal, privilege, resource));
+    json.value()
+        .as_object()
+        .expect("a grant context is an object")
+        .iter()
+        .map(|(k, v)| (k.clone(), render(v)))
+        .collect()
 }
 
 /// A revoked grant is hard-deleted, so this context is the only surviving record of
@@ -1567,19 +1573,15 @@ fn a_server_grant_context_omits_the_id_and_warehouse() {
     );
 }
 
-/// Records the top-level fields an `Authorization` emits when visited.
-#[derive(Default)]
-struct KeyCollector {
-    keys: Vec<String>,
-}
-
-impl Visit for KeyCollector {
-    fn visit_value(&mut self, _value: Value<'_>) {}
-    fn visit_entry(&mut self, key: Value<'_>, _value: Value<'_>) {
-        if let Value::String(k) = key {
-            self.keys.push(k.to_string());
-        }
-    }
+/// The top-level keys a decision entry emits, in wire order.
+fn decision_keys(authorization: &Authorization) -> Vec<String> {
+    AuditJson::of(&assemble::decision(authorization))
+        .value()
+        .as_object()
+        .expect("a decision entry is an object")
+        .keys()
+        .cloned()
+        .collect()
 }
 
 fn sample(determined_by: Vec<DeterminingFactor>) -> Authorization {
@@ -1604,22 +1606,16 @@ fn determined_by_emitted_when_present() {
         effect: PolicyEffect::Permit,
         source: None,
     }]);
-    let mut collector = KeyCollector::default();
-    auth.visit(&mut collector);
     assert_eq!(
-        collector.keys,
+        decision_keys(&auth),
         vec!["action", "entity", "allowed", "determined_by"],
     );
-    assert_eq!(auth.size_hint().0, collector.keys.len());
 }
 
 #[test]
 fn determined_by_absent_when_empty() {
     let auth = sample(Vec::new());
-    let mut collector = KeyCollector::default();
-    auth.visit(&mut collector);
-    assert_eq!(collector.keys, vec!["action", "entity", "allowed"]);
-    assert_eq!(auth.size_hint().0, collector.keys.len());
+    assert_eq!(decision_keys(&auth), vec!["action", "entity", "allowed"]);
 }
 
 /// Every rule in [`contract`] is only ever run against records that satisfy it: all nine
@@ -1933,7 +1929,7 @@ fn derived_wire_values() -> serde_json::Value {
             sorted_strings(
                 <ResourceType as strum::VariantArray>::VARIANTS
                     .iter()
-                    .map(<&'static str>::from),
+                    .map(|r| r.as_str()),
             ),
         )]),
         // `update-kinds` is an action-context VALUE, not a field: the field is pinned by
@@ -2404,6 +2400,9 @@ fn registered_wire_values_agree_with_the_manifest_derivation() {
         };
         if !REGISTERED_FIELDS.contains(&field) {
             continue;
+        }
+        if (reg.type_name)().contains("::tests::") {
+            continue; // test-only probes are registered too, and pin nothing in the manifest
         }
         let owner = short_type_name((reg.type_name)());
         let expected = manifest
