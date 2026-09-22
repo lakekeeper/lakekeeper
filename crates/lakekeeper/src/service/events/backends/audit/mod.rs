@@ -6,8 +6,14 @@ pub mod assemble;
 pub mod emitter;
 pub mod part;
 pub mod parts;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod reference;
 pub mod render;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod schema;
 pub mod shapes;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod validate;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
 pub use part::{AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled};
@@ -48,8 +54,8 @@ use crate::service::events::{
 ///
 /// One counter covers both audit families, authorization and operational. Separate
 /// counters would be worse for the operational family: its `context` is supplied by
-/// whoever calls the exported [`audit_operation`] macro, including crates outside this
-/// repository, so no version stamped here could describe those shapes accurately.
+/// whoever builds an [`OperationRecord`], including crates outside this repository, so no
+/// version stamped here could describe those shapes accurately.
 ///
 /// See the audit-log section of `docs/docs/developer-guide.md` for what to do when
 /// the format changes, and `docs/docs/logging.md` for the consumer-facing contract.
@@ -111,11 +117,11 @@ pub enum Decision {
 
 /// The `operation` value on the operational records this crate emits.
 ///
-/// This does not close the `operation` space. [`audit_operation`] is exported and takes any
-/// expression, so a crate outside this repository names its own operations and is
-/// responsible for its own vocabulary — see the audit log section of
-/// `docs/docs/developer-guide.md`. What the enum does is bring Lakekeeper's own operations
-/// under the same rename check as everything else it emits.
+/// This does not close the `operation` space. [`OperationRecord`] takes any `WireStr` of its
+/// emitter, so a crate outside this repository names its own operations and is responsible
+/// for its own vocabulary — see the audit log section of `docs/docs/developer-guide.md`. What
+/// the enum does is bring Lakekeeper's own operations under the same rename check as
+/// everything else it emits.
 #[audit_part(field = "operation")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
@@ -518,130 +524,6 @@ pub mod contract {
         }
 
         out
-    }
-
-    // ── wire-value manifests ────────────────────────────────────────────────────
-    //
-    // A record's FIELDS are pinned by the committed fixtures: a field that moves changes the
-    // shape, and the shape comparison sees it. Its VALUES are not — `action_name`,
-    // `entity_type`, `decision` and the rest are strings, so renaming one leaves the shape
-    // identical while breaking every consumer that switches on it. A manifest closes that:
-    // each crate commits the values its types can emit, and `check-audit-format` diffs the
-    // committed file across the merge base.
-    //
-    // The helpers are public because the vocabulary is not all in this crate. `CatalogAction`
-    // is a public trait with a blanket `APIEventActions` impl, so an authorizer — the
-    // in-repo OpenFGA one, or one out of tree — contributes names Lakekeeper cannot
-    // enumerate. Such a crate owns its own manifest and verifies it with the same rule, by
-    // calling these; see `crates/authz-openfga/src/relations.rs` for the worked
-    // example.
-
-    /// A wire-value manifest flattened to `(field, owner, value)` triples.
-    ///
-    /// The manifest is `{ "<wire field>": { "<owning type>": ["<value>", ...] } }`. Keyed by
-    /// owner and not just by field because verbs are shared.
-    #[must_use]
-    pub fn manifest_entries(manifest: &serde_json::Value) -> BTreeSet<(String, String, String)> {
-        let mut entries = BTreeSet::new();
-        let Some(fields) = manifest.as_object() else {
-            return entries;
-        };
-        for (field, owners) in fields {
-            let Some(owners) = owners.as_object() else {
-                continue;
-            };
-            for (owner, values) in owners {
-                for value in values.as_array().into_iter().flatten() {
-                    if let Some(value) = value.as_str() {
-                        entries.insert((field.clone(), owner.clone(), value.to_string()));
-                    }
-                }
-            }
-        }
-        entries
-    }
-
-    fn describe_entries(entries: &BTreeSet<(String, String, String)>) -> String {
-        if entries.is_empty() {
-            return "  (none)".to_string();
-        }
-        entries
-            .iter()
-            .map(|(field, owner, value)| format!("  {field}: {owner} -> {value}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Assert the manifest committed at `path` still records exactly what `derived` says the
-    /// types can emit, writing it instead when `LAKEKEEPER_UPDATE_AUDIT_FIXTURES` is set.
-    ///
-    /// `whose` names the crate in the failure message, since more than one calls this.
-    ///
-    /// # Panics
-    ///
-    /// If the committed manifest and the derived one disagree, or the file cannot be read or
-    /// written. That is the point: this is for use in tests.
-    pub fn assert_wire_values_manifest(
-        path: &std::path::Path,
-        whose: &str,
-        derived: &serde_json::Value,
-    ) {
-        if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("creating the manifest directory");
-            }
-            let mut json = serde_json::to_string_pretty(derived).expect("a manifest serialises");
-            json.push('\n');
-            std::fs::write(path, json)
-                .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
-            return;
-        }
-
-        let committed = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            panic!(
-                "cannot read the committed wire-value manifest {}: {e}\n\n\
-                 If it is new, generate it with `just update-audit-fixtures`. Without it \
-                 nothing detects a renamed or removed audit log value from {whose}.",
-                path.display()
-            )
-        });
-        let committed: serde_json::Value = serde_json::from_str(&committed)
-            .unwrap_or_else(|e| panic!("manifest {} is not valid JSON: {e}", path.display()));
-
-        let committed_entries = manifest_entries(&committed);
-        let derived_entries = manifest_entries(derived);
-        if committed_entries == derived_entries {
-            return;
-        }
-
-        let disappeared = describe_entries(
-            &committed_entries
-                .difference(&derived_entries)
-                .cloned()
-                .collect(),
-        );
-        let added = describe_entries(
-            &derived_entries
-                .difference(&committed_entries)
-                .cloned()
-                .collect(),
-        );
-        panic!(
-            "the committed wire-value manifest {} no longer matches what {whose} derives.\n\n\
-             DISAPPEARED — a value the audit log used to emit and now cannot. These reach the \
-             log as string VALUES, so every consumer matching on one BREAKS: record it with \
-             a `major` fragment under audit-format/unreleased/.\n{disappeared}\n\n\
-             ADDED — a value only new records carry. Consumers are told to treat an \
-             unrecognised value as opaque, so this is not a format change and needs no \
-             fragment.\n{added}\n\n\
-             Regenerate with `just update-audit-fixtures`.\n\n\
-             A whole owner listed under DISAPPEARED, or a value you know is emitted showing \
-             under neither, means the type list that builds this manifest is out of date — a \
-             new enum has to be added to it, or the values it emits stay invisible to \
-             `just check-audit-format`.\n\n\
-             See the audit log section of docs/docs/developer-guide.md.",
-            path.display()
-        );
     }
 
     /// Assert `record` satisfies the contract, naming every rule it breaks.

@@ -363,8 +363,20 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     }
     let records = settled;
 
+    let committed_schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../audit-format/schema.json"),
+        )
+        .expect("the committed audit schema; generate it with `just update-audit-schema`"),
+    )
+    .expect("the committed schema is JSON");
     for (index, record) in records.iter().enumerate() {
         contract::assert_satisfies(record, &format!("record {index}"));
+        lakekeeper::audit::validate::assert_record_parts_valid(
+            &committed_schema,
+            record,
+            &format!("record {index}"),
+        );
     }
 
     eprintln!("audit corpus: {} record(s) checked", records.len());

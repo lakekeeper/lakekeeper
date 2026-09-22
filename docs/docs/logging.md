@@ -68,6 +68,8 @@ Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` str
 
 That promise covers the values Lakekeeper itself emits. `operation` and `outcome` on operational records are deliberately open to other components: the macro that emits them accepts any value, so an authorizer or an enterprise build names its own, and those are governed by whoever ships them rather than by `audit_format`. `ldap_resolve_roles` below is one such value.
 
+Every object, field and closed set of values a record can carry is listed in the [audit format reference](audit/reference.md), generated from the emitting code. The sections below describe what the records mean and show examples.
+
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 
 ##### Which release ships which version

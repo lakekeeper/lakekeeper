@@ -117,9 +117,21 @@ update-audit-fixtures:
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_
     cargo test -p lakekeeper --lib service::events::backends::audit::tests
-    # Each crate owns the audit values it contributes, so each regenerates its own manifest.
-    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
-    cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
+
+# Recompute AUDIT_FORMAT from audit-format/, then regenerate the committed audit schema
+# (audit-format/schema.json) and the field reference (docs/docs/audit/reference.md) from the
+# registry of every in-repo crate that declares audit types. Dev profile: the registry exists in
+# debug builds only. Review the diff — it is what consumers will see.
+update-audit-schema:
+    python3 .github/scripts/check-audit-format.py --write-version
+    # Each crate writes the crate schema of the types it declares, from its own registry.
+    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper --lib the_committed_crate_schema
+    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
+    # Then the crate schemas are merged into the emitter's schema and the field reference.
+    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema
+    cargo test -p lakekeeper --lib the_committed_crate_schema
+    cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
+    cargo test -p lakekeeper-integration-tests --test audit_schema
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
