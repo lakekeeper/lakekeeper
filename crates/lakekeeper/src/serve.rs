@@ -370,9 +370,24 @@ async fn serve_inner<
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
     let build_info = build_info.unwrap_or(&DEFAULT_BUILD_INFO);
 
-    let listener = tokio::net::TcpListener::bind(bind_addr)
-        .await
-        .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
+    // Only bind the main API listener when serving the HTTP API. In headless
+    // worker mode (`LAKEKEEPER__SERVE_HTTP_API=false`) this stays `None` and the
+    // axum server future is not spawned.
+    let listener = if CONFIG.serve_http_api {
+        Some(
+            tokio::net::TcpListener::bind(bind_addr)
+                .await
+                .map_err(|e| {
+                    anyhow!(e).context(format!("Failed to bind to address: {bind_addr}"))
+                })?,
+        )
+    } else {
+        tracing::info!(
+            "serve_http_api is disabled: running headless (metrics, health checks, background \
+             services and task-queue workers only; no HTTP API)."
+        );
+        None
+    };
 
     // Validate ServerInfo, exit if ServerID does not match or terms are not accepted
     let server_info = C::get_server_info(catalog_state.clone()).await?;
@@ -579,14 +594,19 @@ async fn serve_inner<
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
     }
 
-    // HTTP Server / Axum:
-    let cancellation_token_clone = cancellation_token.clone();
-    let axum_abort_handle = service_futures.spawn(async move {
-        service_serve(listener, router, cancellation_token_clone)
-            .await
-            .map_err(|e| anyhow!(e).context("Axum server exited with error"))
-    });
-    service_ids.insert(axum_abort_handle.id(), "Axum Server".to_string());
+    // HTTP Server / Axum: only when serving the HTTP API. In headless worker
+    // mode `listener` is `None` and the router is dropped unused.
+    if let Some(listener) = listener {
+        let cancellation_token_clone = cancellation_token.clone();
+        let axum_abort_handle = service_futures.spawn(async move {
+            service_serve(listener, router, cancellation_token_clone)
+                .await
+                .map_err(|e| anyhow!(e).context("Axum server exited with error"))
+        });
+        service_ids.insert(axum_abort_handle.id(), "Axum Server".to_string());
+    } else {
+        drop(router);
+    }
 
     tracing::info!("All background services started. Lakekeeper is now running.");
     if let Some(result) = service_futures.join_next_with_id().await {

@@ -7,7 +7,7 @@ use lakekeeper::{
     service::{
         CatalogStore, SecretStore,
         authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
-        authz::Authorizer,
+        authz::{AllowAllAuthorizer, Authorizer},
         endpoint_statistics::EndpointStatisticsSink,
         events::EventDispatcher,
     },
@@ -26,6 +26,10 @@ use crate::{
 };
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    // Headless worker mode: no HTTP API, no authorizer/authenticator backend.
+    if !lakekeeper::CONFIG.serve_http_api {
+        return serve_worker(bind_addr).await;
+    }
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
     let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
         .await?
@@ -51,6 +55,33 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
             .await
         }
     }
+}
+
+/// Run the process as a headless maintenance worker: no HTTP API and no
+/// authorizer/authenticator backend. Task-queue workers, metrics and health
+/// checks still run. Selected by `serve_default` when
+/// `LAKEKEEPER__SERVE_HTTP_API=false`.
+///
+/// A worker serves no requests and acts under the internal (authz-bypassed)
+/// actor, so it constructs `AllowAll` directly — no OpenFGA dial — and passes no
+/// authenticator. The library `serve` skips binding the API via
+/// `CONFIG.serve_http_api`.
+pub(crate) async fn serve_worker(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
+    let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
+        .await?
+        .server_id();
+    let events = EventDispatcher::new(vec![]);
+    serve_inner::<PostgresBackend, _, _, AuthenticatorEnum>(
+        bind_addr,
+        secrets,
+        catalog,
+        AllowAllAuthorizer { server_id },
+        None,
+        vec![stats],
+        events,
+    )
+    .await
 }
 
 async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
