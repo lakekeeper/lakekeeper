@@ -266,8 +266,8 @@ impl GcsProfile {
     #[allow(clippy::unused_self)]
     pub fn generate_catalog_config(&self, _: WarehouseId) -> CatalogConfig {
         CatalogConfig {
-            defaults: HashMap::with_capacity(0),
-            overrides: HashMap::with_capacity(0),
+            defaults: HashMap::new(),
+            overrides: HashMap::new(),
             endpoints: supported_endpoints().to_vec(),
             idempotency_key_lifetime: None,
         }

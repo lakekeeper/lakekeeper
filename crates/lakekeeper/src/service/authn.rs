@@ -896,6 +896,8 @@ fn extract_role_id(
 }
 
 #[cfg(feature = "router")]
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn resolve_actor<C: super::CatalogStore>(
     user_id: UserId,
     role_id: Option<super::RoleId>,
