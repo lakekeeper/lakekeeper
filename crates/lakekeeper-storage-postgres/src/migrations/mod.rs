@@ -521,7 +521,7 @@ async fn apply_migration(
                 .await?;
                 return Ok(());
             }
-            return Err(MigrateError::VersionMismatch(migration.version))?;
+            Err(MigrateError::VersionMismatch(migration.version))?;
         }
         tracing::info!(%migration.version, "Migration already applied");
     } else {
@@ -548,7 +548,7 @@ async fn run_checks(
 
     let version = tr.dirty_version(table_name).await?;
     if let Some(version) = version {
-        return Err(MigrateError::Dirty(version))?;
+        Err(MigrateError::Dirty(version))?;
     }
 
     let applied_migrations = tr.list_applied_migrations(table_name).await?;

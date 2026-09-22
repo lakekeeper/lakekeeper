@@ -293,6 +293,8 @@ fn health_response(health: HealthState) -> axum::response::Response {
     (status, Json(health)).into_response()
 }
 
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn print_request_body(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -317,6 +319,8 @@ async fn print_request_body(
     buffer_response_body(response, &method, &path, &request_id, &user_agent).await
 }
 
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn buffer_response_body(
     response: axum::response::Response,
     method: &str,
@@ -356,6 +360,8 @@ async fn buffer_response_body(
 }
 
 // This function is expensive and should only be used for debugging purposes.
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn buffer_request_body(
     request: axum::extract::Request,
     method: &str,
