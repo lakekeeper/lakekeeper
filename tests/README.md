@@ -89,22 +89,15 @@ non-default MinIO or another S3-compatible backend.
 
 ### OneLake (Microsoft Fabric)
 
-The Python Spark suite (`spark_onelake`) reuses the `AZURE_CLIENT_*` /
-`AZURE_TENANT_ID` vars above for the Entra app reg (a OneLake warehouse
-authenticates the same way as a generic ADLS account). The Rust integration
-tests use parallel `ONELAKE_CLIENT_*` / `ONELAKE_TENANT_ID` vars — in practice
-you set both to the same values.
+Both the Rust integration tests and the Python Spark suite (`spark_onelake`) authenticate with the same dedicated Entra app reg, configured through `LAKEKEEPER_TEST__ONELAKE_CLIENT_*` / `_TENANT_ID`. The app reg needs a Fabric workspace role that permits reading and writing lakehouse data, such as Contributor.
 
 | Var | Required by | Purpose |
 |---|---|---|
 | `LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID` | Rust + Spark | Fabric workspace UUID |
 | `LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID` | Rust + Spark | lakehouse UUID inside the workspace |
-| `LAKEKEEPER_TEST__ONELAKE_CLIENT_ID` | Rust | Entra app client ID (Rust tests only) |
-| `LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET` | Rust | client secret (Rust tests only) |
-| `LAKEKEEPER_TEST__ONELAKE_TENANT_ID` | Rust | tenant ID (Rust tests only) |
-| `LAKEKEEPER_TEST__AZURE_CLIENT_ID` | Spark | client ID — reused from the Azure block |
-| `LAKEKEEPER_TEST__AZURE_CLIENT_SECRET` | Spark | client secret — reused |
-| `LAKEKEEPER_TEST__AZURE_TENANT_ID` | Spark | tenant ID — reused |
+| `LAKEKEEPER_TEST__ONELAKE_CLIENT_ID` | Rust + Spark | Entra app client ID |
+| `LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET` | Rust + Spark | client secret |
+| `LAKEKEEPER_TEST__ONELAKE_TENANT_ID` | Rust + Spark | tenant ID |
 | `LAKEKEEPER_TEST__ONELAKE_REGION` | Rust regional, Spark `regional` mode | Azure region slug (e.g. `centralus`) |
 | `LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE` | Spark only | comma-separated subset of `default,regional,workspace-private-link`. Default: `default` |
 
