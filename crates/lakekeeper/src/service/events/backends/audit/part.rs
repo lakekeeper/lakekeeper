@@ -112,6 +112,12 @@ impl fmt::Debug for Registration {
 
 /// A closed-set value as it reaches the wire, tied to the emitter whose vocabulary it belongs
 /// to. Obtainable only from a vocabulary enum's generated `as_wire()`.
+///
+/// Two types, not one: here the emitter is known at compile time and costs nothing to carry,
+/// so mixing two emitters' vocabularies in one record does not compile. Where it cannot be
+/// known, the value is an [`AnyWireStr`] and the emitter is a field. Folding them into one
+/// type with a default parameter would hide that difference behind a field that is dead
+/// whenever the emitter is known.
 pub struct WireStr<E: AuditEmitter> {
     text: &'static str,
     _emitter: PhantomData<E>,
@@ -177,6 +183,10 @@ impl<E: AuditEmitter> schemars::JsonSchema for WireStr<E> {
 /// A wire value whose emitter is known only by name: what a core field that accepts values
 /// from several emitters holds, such as `action_name`. Obtainable only from a [`WireStr`],
 /// so it still cannot be a literal.
+///
+/// The erased half of the pair described on [`WireStr`]. It exists because two places cannot
+/// name their emitter in a type: an action's name, which any authorizer crate supplies, and a
+/// context key pushed by a crate this one does not know.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AnyWireStr {
     text: &'static str,
