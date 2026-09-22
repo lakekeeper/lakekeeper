@@ -2,13 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
-use iceberg_ext::catalog::TableUpdateKind;
 
 use super::{contract::contract_fields, *};
 use crate::{
     WarehouseId,
     audit::AnyWireStr,
-    request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
+    request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, GateDecision,
@@ -21,7 +20,7 @@ use crate::{
         events::{
             Authorization,
             context::{
-                ActionContextKey, EntityDescriptor, EntityField, EntityType, EventEntities,
+                ActionContextKey, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
                 UserProvidedEntity as _, UserProvidedTable,
@@ -158,6 +157,7 @@ const FIXTURE_NAMESPACE_ID: &str = "019684ff-0000-7000-8000-000000000003";
 const FIXTURE_REQUEST_ID: &str = "019684ff-0000-7000-8000-000000000005";
 const FIXTURE_ERROR_ID: &str = "019684ff-0000-7000-8000-000000000006";
 const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
+const FIXTURE_IDEMPOTENCY_KEY: &str = "019684ff-0000-7000-8000-000000000004";
 
 /// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
 /// derived from [`AUDIT_FORMAT`].
@@ -183,6 +183,10 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 /// otherwise fail to compile before it could be generated.
 #[track_caller]
 fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
+    // Every nested object of the record validates against the schema the registry generates,
+    // whatever the fixture says: the fixture pins the sample, the schema pins the declaration.
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    crate::audit::validate::assert_record_parts_valid(&schema, emitted, name);
     let path = fixture_path(name);
 
     if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
@@ -474,6 +478,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_rich_action_context",
     "grant_created",
     "grant_revoked",
+    "authz_succeeded_idempotency_key",
     "idempotent_replay",
     "admission_forbidden",
     "admission_unavailable",
@@ -485,40 +490,6 @@ fn read_fixture(name: &str) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
     serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("fixture {} is not valid JSON: {e}", path.display()))
-}
-
-/// Action context fields whose value is a client-supplied map. Their keys are user
-/// data — `docs/docs/logging.md` documents them as "arbitrary [...] not part of the
-/// audit format" — so the walk below records the container and stops there, rather
-/// than demanding that a customer's table property be documented as a format field.
-///
-/// The authorization and operational `context` objects are deliberately *not* listed.
-/// Their fields are string literals at call sites in this repository, so requiring each
-/// to be documented is exactly the point.
-const FREE_FORM_CONTAINERS: &[&str] = &[
-    ActionContextKey::Properties.as_str(),
-    ActionContextKey::UpdatedProperties.as_str(),
-];
-
-/// Collect every JSON object field in `value`, at any depth, except inside the
-/// free-form containers above.
-fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::Object(fields) => {
-            for (key, nested) in fields {
-                out.push(key.clone());
-                if !FREE_FORM_CONTAINERS.contains(&key.as_str()) {
-                    collect_keys(nested, out);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_keys(item, out);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Every field the audit log puts on the wire must be documented, so the reference
@@ -575,245 +546,6 @@ fn every_audit_record_example_in_the_docs_declares_the_current_format() {
         "expected at least 10 complete audit record examples in docs/docs/logging.md, \
          found {checked}. Either the examples were removed, or the ```json fence \
          detection above no longer matches them and this test is now asserting nothing."
-    );
-}
-
-#[test]
-fn every_emitted_audit_field_is_documented() {
-    // The compile-time check on LOGGING_DOC only covers the file being gone. This covers the other
-    // failure: the file is still there but no longer holds the audit reference —
-    // split into another page, replaced by a stub, or gutted — which would
-    // otherwise surface as one baffling failure per field.
-    assert!(
-        LOGGING_DOC.contains("{#audit-logs}"),
-        "docs/docs/logging.md no longer contains the `{{#audit-logs}}` anchor. The \
-         audit log documentation has moved, been split, or been deleted. This test \
-         asserts that every field the audit log emits is documented there, so point \
-         it at the new location and update the `#audit-logs` links in the other docs."
-    );
-
-    let mut keys = Vec::new();
-    for name in FIXTURE_NAMES {
-        collect_keys(&read_fixture(name), &mut keys);
-    }
-    // The subscriber-owned fields are stripped before a fixture is written, so the walk above
-    // never sees them. They are still on the wire, and `logging.md` restates the list —
-    // this makes the Rust constant the one that decides what that list says.
-    keys.extend(
-        super::contract::ENVELOPE_KEYS
-            .iter()
-            .map(|key| (*key).to_string()),
-    );
-    keys.sort();
-    keys.dedup();
-
-    let undocumented: Vec<&String> = keys
-        .iter()
-        .filter(|key| !LOGGING_DOC.contains(&format!("`{key}`")))
-        .collect();
-
-    assert!(
-        undocumented.is_empty(),
-        "these audit log fields are emitted but not documented in \
-         docs/docs/logging.md: {undocumented:?}\n\n\
-         Add each one to the relevant field table. A field nobody documented is a \
-         field consumers have to reverse-engineer from example output, which is how \
-         the reference fell out of step with the code before.\n\n\
-         Adding a field is a minor change to the audit format: see the audit log \
-         section of docs/docs/developer-guide.md."
-    );
-}
-
-// ── Variant tags of the derived audit enums ─────────────────────────────────
-//
-// These three types reach the wire through `#[derive(valuable::Valuable)]`, which
-// emits whatever variants the type has. Adding one therefore changes the audit log
-// format with no code change anywhere, and no fixture can catch it: a fixture can
-// only exercise a variant that already exists. Verified — adding a variant to
-// `ContextValue`, which is matched by hand, fails to build with E0004, while adding
-// one to `DeterminingFactor` compiles clean.
-//
-// Each match below has no wildcard arm, so a new variant stops the build *here*, at
-// the point where its wire tag has to be chosen and documented.
-
-#[deny(clippy::wildcard_enum_match_arm)]
-fn determining_factor_tag(factor: &DeterminingFactor) -> &'static str {
-    match factor {
-        DeterminingFactor::Policy { .. } => "Policy",
-        DeterminingFactor::SystemAuthority { .. } => "SystemAuthority",
-    }
-}
-
-#[deny(clippy::wildcard_enum_match_arm)]
-fn policy_effect_tag(effect: PolicyEffect) -> &'static str {
-    match effect {
-        PolicyEffect::Permit => "Permit",
-        PolicyEffect::Forbid => "Forbid",
-    }
-}
-
-/// Every variant a derived audit enum can put on the wire must be documented.
-///
-/// The variant sets come from `strum`, not from lists written out here. That is the
-/// point: a hand-written list is exhaustive only until somebody forgets to extend it,
-/// and this test's whole job is to notice a variant nobody thought about.
-///
-/// Two conventions are accepted because the reference uses both: enum tags appear as
-/// `` `Permit` `` while `privilege_source` values appear as `` `"authorizer"` ``.
-///
-/// # The residual gap
-///
-/// `VARIANTS` gives Rust identifiers, while what reaches the wire comes from the tag
-/// functions. Where the two coincide — as they do today for every enum here — this
-/// test covers the wire names. Rename a tag while leaving its variant name alone and
-/// it will not notice. Closing that would mean deriving the tags themselves, which is
-/// a larger change to the `valuable` plumbing than the risk warrants.
-#[test]
-fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
-    use strum::{VariantArray as _, VariantNames as _};
-
-    use crate::service::events::AuthorizationFailureReason as Reason;
-
-    // `DeterminingFactor`'s variants carry fields, so values cannot be enumerated and
-    // these two have to be built by hand. The assertion below is what keeps the pair
-    // honest against the type.
-    let factors = [
-        DeterminingFactor::Policy {
-            policy_id: String::new(),
-            name: None,
-            effect: PolicyEffect::Permit,
-            source: None,
-        },
-        DeterminingFactor::SystemAuthority {
-            source: None,
-            reason: None,
-        },
-    ];
-    let factor_tags: Vec<&'static str> = factors.iter().map(determining_factor_tag).collect();
-    assert_eq!(
-        factor_tags.len(),
-        DeterminingFactor::VARIANTS.len(),
-        "`DeterminingFactor` has {} variants but only {} are built here. Its variants \
-         carry fields, so `strum` cannot enumerate values and this list is hand-built: \
-         add the missing one. Variants: {:?}",
-        DeterminingFactor::VARIANTS.len(),
-        factor_tags.len(),
-        DeterminingFactor::VARIANTS,
-    );
-    for name in DeterminingFactor::VARIANTS {
-        assert!(
-            factor_tags.contains(name),
-            "`DeterminingFactor::{name}` is not covered by the hand-built list in this \
-             test, so its wire tag is never checked against the documentation."
-        );
-    }
-
-    let tags: Vec<&'static str> = factor_tags
-        .into_iter()
-        .chain(
-            <PolicyEffect as strum::VariantArray>::VARIANTS
-                .iter()
-                .copied()
-                .map(policy_effect_tag),
-        )
-        .chain(
-            <Reason as strum::VariantArray>::VARIANTS
-                .iter()
-                .map(super::contract::failure_reason_tag),
-        )
-        .chain(<ActorType as strum::VariantNames>::VARIANTS.iter().copied())
-        .chain(<Decision as strum::VariantNames>::VARIANTS.iter().copied())
-        .chain(
-            <AuditOperation as strum::VariantNames>::VARIANTS
-                .iter()
-                .copied(),
-        )
-        .chain(
-            <AuditOutcome as strum::VariantNames>::VARIANTS
-                .iter()
-                .copied(),
-        )
-        .chain(
-            PrivilegeSource::VARIANTS
-                .iter()
-                .copied()
-                .map(PrivilegeSource::as_str),
-        )
-        .collect();
-
-    for tag in tags {
-        assert!(
-            LOGGING_DOC.contains(&format!("`{tag}`"))
-                || LOGGING_DOC.contains(&format!("`\"{tag}\"`")),
-            "the audit log can emit `{tag}`, but docs/docs/logging.md does not mention \
-             it. A variant of one of these enums reaches the wire as a value, so a \
-             consumer will see it: document what it means. Adding a value is NOT a format \
-             change — the value sets are open and consumers are told to treat an \
-             unrecognised one as opaque — so leave AUDIT_FORMAT alone."
-        );
-    }
-}
-
-/// Every field the audit log can emit must be documented — checked against the type
-/// system, not against the fixtures.
-///
-/// This is the one check here that is not sample-based. The fixture tests and the
-/// documentation test above can only see fields some fixture happens to emit, so a field
-/// on a path nobody wrote a fixture for is invisible to them. Driving the enums instead of
-/// the fixtures is what makes this one exhaustive.
-///
-/// Because the sets below come from `VariantArray`, adding a field cannot escape this
-/// check: a new variant is either listed here or the build fails in `as_str`.
-///
-/// Keys are required as a **table row** rather than a bare mention, so that an
-/// unrelated use of the same word elsewhere in the page cannot satisfy it — the
-/// action context field `source` and the `determined_by` field `source` are different
-/// things that happen to share a name.
-#[test]
-fn every_key_the_audit_log_can_emit_is_documented() {
-    use strum::VariantArray as _;
-
-    let mut missing: Vec<String> = Vec::new();
-
-    // A row whose FIRST column is the field. Matching anywhere on the line is not
-    // enough: `| `Policy` | `source` |` in the determining-factor table would then
-    // satisfy a lookup for the unrelated action context field `source`.
-    let has_row = |key: &str| {
-        let cell = format!("| `{key}`");
-        LOGGING_DOC
-            .lines()
-            .any(|line| line.trim_start().starts_with(&cell))
-    };
-
-    for field in EntityField::VARIANTS {
-        let key = field.as_str();
-        if !has_row(key) {
-            missing.push(format!("entity field `{key}` ({field:?})"));
-        }
-    }
-    for key in ActionContextKey::VARIANTS {
-        let name = key.as_str();
-        if !has_row(name) {
-            missing.push(format!("action context key `{name}` ({key:?})"));
-        }
-    }
-    // `entity_type` values are documented as a prose list rather than a table, so a
-    // plain mention is the right bar for these.
-    for entity_type in EntityType::VARIANTS {
-        let name = entity_type.as_str();
-        if !LOGGING_DOC.contains(&format!("`{name}`")) {
-            missing.push(format!("entity type `{name}` ({entity_type:?})"));
-        }
-    }
-
-    assert!(
-        missing.is_empty(),
-        "the audit log can emit these keys, but docs/docs/logging.md does not \
-         document them:\n  {}\n\n\
-         Add a row to the relevant field table in docs/docs/logging.md. Every key the \
-         emitter can produce is part of the wire format, whether or not a fixture \
-         happens to exercise it.",
-        missing.join("\n  ")
     );
 }
 
@@ -954,6 +686,32 @@ fn fixture_authz_succeeded_rich_action_context() {
     );
 }
 
+/// An authorization carrying an `Idempotency-Key`.
+///
+/// The first call of an idempotent operation is authorized like any other and records the
+/// key; only a repeat is served from the store and emits a replay record. Every other
+/// authorization fixture is built from a request without one, so the field is seen as `null`
+/// and nothing pins what a real key looks like next to a real `user_agent`.
+#[test]
+fn fixture_authz_succeeded_with_idempotency_key() {
+    let mut request_metadata = fixture_metadata();
+    request_metadata.with_idempotency_key(
+        IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("valid test idempotency key"),
+    );
+
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(request_metadata),
+            entities: Arc::new(EventEntities::one(fixture_table_entity())),
+            actions: Arc::new(vec![fixture_read_action()]),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![fixture_plain_authorization()]),
+        })
+    });
+
+    assert_matches_fixture("authz_succeeded_idempotency_key", &contract_fields(record));
+}
+
 /// A denied authorization. Carries `failure_reason` and `error`, which succeeded
 /// events do not, and records `decision: "denied"`.
 #[test]
@@ -992,9 +750,8 @@ fn fixture_authz_failed_with_context() {
     assert_matches_fixture("authz_failed_context", &contract_fields(record));
 }
 
-/// The operational family, emitted through `audit_operation!` rather than
-/// `audit_log!` — a different shape entirely, with `operation` / `outcome` /
-/// `context` and no `entity` or `decision`.
+/// The operational family, emitted through `OperationRecord` — a different shape
+/// entirely, with `operation` / `outcome` / `context` and no `entity` or `decision`.
 ///
 /// The replay family, which is neither authorization nor operational: it carries the
 /// authorization family's `action` / `entity` / `privilege_source` and the operational
@@ -1021,7 +778,7 @@ fn fixture_idempotent_replay() {
             request_metadata: Arc::new(fixture_metadata()),
             entities: Arc::new(entities),
             actions: Arc::new(vec![fixture_drop_action()]),
-            idempotency_key: IdempotencyKey::parse("019684ff-0000-7000-8000-000000000004")
+            idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY)
                 .expect("fixed test key"),
         })
     });
@@ -1133,100 +890,52 @@ fn code_only_hides_comments_without_hiding_code_after_a_slashed_string() {
     );
 }
 
-/// `operation`, `outcome` and `action_name` must reach the wire from an enum, never from a
-/// literal.
+/// A bare string becomes a wire value only inside the attribute's expansion.
 ///
-/// This is the one wire value the type system cannot protect. Every other one is a
-/// variant of a closed enum reached through an exhaustive `match`, so a new value
-/// stops the build until it is named and documented. These two are `tracing` fields
-/// taking any expression — deliberately, because `audit_operation!` is exported and a
-/// crate outside this repository names its own vocabulary. That openness also means a
-/// literal *here* compiles, reaches no manifest, and is therefore never checked for a
-/// rename: `check-audit-format` would see nothing disappear while every consumer
-/// matching on the old string broke.
-///
-/// So the check is lexical rather than type-driven. It scans this crate's own sources
-/// because the hole is this crate's: an external crate owning its vocabulary is the
-/// supported case, and it commits its own manifest.
+/// Every value a record carries is a `WireStr`, and the only constructor is
+/// `WireStr::new`. That constructor has to be public, because the attribute expands in the
+/// crate that uses it and names the full path, and Rust has no way to offer a function to
+/// one caller alone. So the type system closes every door but this one, and this test
+/// watches it: a call anywhere else would put a string on the wire that no vocabulary enum
+/// declares, so it would reach no schema and no rename check.
 #[test]
-fn no_production_code_names_a_wire_value_with_a_literal() {
+fn only_the_attribute_turns_a_bare_string_into_a_wire_value() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_sources(&src, &mut files);
     assert!(
         files.len() > 50,
-        "only {} source files found under {} — the walk is not reaching the crate, so \
-         this test would pass by scanning nothing",
+        "only {} source files found under {}, so this test would pass by scanning nothing",
         files.len(),
         src.display()
     );
 
     let mut offenders = Vec::new();
     for file in files {
-        // Test modules may use literals freely: several exist precisely to prove the
-        // macro accepts a vocabulary this crate does not own.
-        if file.file_name().is_some_and(|name| name == "tests.rs") {
+        let relative = file.strip_prefix(&src).unwrap_or(&file).to_path_buf();
+        // `part.rs` declares the constructor; `tests.rs` may name any vocabulary, including
+        // one this crate does not own.
+        if matches!(
+            relative.file_name().and_then(std::ffi::OsStr::to_str),
+            Some("part.rs" | "tests.rs")
+        ) {
             continue;
         }
         let text = std::fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
-        let stripped = code_only(&text);
-        let bytes = stripped.as_bytes();
-        for name in ["operation", "outcome", "action_name"] {
-            let mut from = 0;
-            while let Some(found) = stripped[from..].find(name) {
-                let at = from + found;
-                from = at + name.len();
-                // A whole identifier, not the tail of `some_operation` or the head of
-                // `operation_kind`.
-                let before_ok =
-                    at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
-                let mut i = at + name.len();
-                if !before_ok
-                    || bytes
-                        .get(i)
-                        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                {
-                    continue;
-                }
-                // `=` then a string literal, with any whitespace — newlines included — in
-                // between, so a wrapped assignment is caught. `==` is a comparison.
-                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-                    i += 1;
-                }
-                // `=` for a builder/field assignment, `:` for a struct literal. `==` is a
-                // comparison, not an assignment.
-                match bytes.get(i) {
-                    Some(&b'=') if bytes.get(i + 1) != Some(&b'=') => {}
-                    Some(&b':') if bytes.get(i + 1) != Some(&b':') => {}
-                    _ => continue,
-                }
-                i += 1;
-                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-                    i += 1;
-                }
-                if bytes.get(i) == Some(&b'"') {
-                    let line = stripped[..at].matches('\n').count() + 1;
-                    offenders.push(format!(
-                        "{}:{}: {name} = {}",
-                        file.strip_prefix(&src).unwrap_or(&file).display(),
-                        line,
-                        stripped[i..].lines().next().unwrap_or("").trim_end(),
-                    ));
-                }
+        for (n, line) in code_only(&text).lines().enumerate() {
+            if line.contains("WireStr::new") {
+                offenders.push(format!("{}:{}: {}", relative.display(), n + 1, line.trim()));
             }
         }
     }
 
     assert!(
         offenders.is_empty(),
-        "an audit record names its `operation` or `outcome` with a string literal:\n  \
-         {}\n\n\
-         A literal reaches no wire-value manifest, so renaming it later breaks every \
-         consumer matching on it while `just check-audit-format` reports nothing. Add a \
-         variant to `AuditOperation` or `AuditOutcome` and emit `Variant::as_str()` \
-         instead. If the value also feeds a metric label, have the helper return the enum \
-         and call `as_str()` at both sites so the two cannot drift.\n\n\
+        "a wire value is built from a bare string outside the attribute:\n  {}\n\n\
+         Put `#[audit_part(field = \"...\")]` on a vocabulary enum and emit \
+         `Variant::as_wire()`. A value that reaches the wire any other way is in no schema, \
+         so renaming it later breaks every consumer while the format check reports nothing.\n\n\
          See the audit log section of docs/docs/developer-guide.md.",
         offenders.join("\n  ")
     );
@@ -1413,19 +1122,19 @@ fn the_capture_helper_omits_envelope_keys_production_omits() {
 /// omitting the context omits the field rather than emitting it as null.
 #[test]
 fn an_operational_audit_record_without_context_omits_the_context_key() {
-    /// A test-only operation vocabulary; registered under `lakekeeper`, filtered out of the
-    /// manifest agreement test by its `tests` module path.
+    /// A test-only operation vocabulary; registered under `lakekeeper`, and kept out of the
+    /// generated schema by its `tests` module path.
     #[crate::audit::audit_part(field = "operation")]
     #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy)]
-    enum ProbeOperation {
+    enum OperationProbe {
         /// The probe.
         ProbeOperation,
     }
     #[crate::audit::audit_part(field = "outcome")]
     #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy)]
-    enum ProbeOutcome {
+    enum OutcomeProbe {
         /// Fine.
         Success,
     }
@@ -1435,9 +1144,9 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
 
     let record = emit_and_capture_one(|| async {
         crate::audit::OperationRecord::new(
-            ProbeOperation::ProbeOperation.as_wire(),
+            OperationProbe::ProbeOperation.as_wire(),
             crate::audit::ActorRecord::principal(&user_id),
-            ProbeOutcome::Success.as_wire(),
+            OutcomeProbe::Success.as_wire(),
         )
         .message("probe")
         .emit();
@@ -1768,368 +1477,9 @@ fn contract_rejects_a_definitive_denial_that_claims_allowed() {
     );
 }
 
-// ── Wire-value manifest ─────────────────────────────────────────────────────
-//
-// The fixtures above pin the record's KEYS. Its VALUES they do not: `action_name`,
-// `entity_type`, `decision` and the rest are strings, so renaming one leaves every shape
-// identical while breaking every consumer that switches on it — and a value no fixture
-// happens to carry changes nothing at all. The manifest closes that: every value the types
-// can emit is committed, and `just check-audit-format` diffs the file across the merge
-// base and demands a `major` fragment for anything that disappeared.
-//
-// Values only. A new KEY is a shape change the fixtures already catch.
-//
-// To regenerate after a deliberate change: `just update-audit-fixtures`.
-
-fn wire_values_manifest_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/service/events/backends/audit/wire_values.json")
-}
-
-/// Reduce a list of enums to one `(type name, derived wire values, variant count)` per enum.
-macro_rules! variant_names_of {
-    ($($ty:ty),+ $(,)?) => {
-        vec![$((
-            stringify!($ty),
-            <$ty as strum::VariantNames>::VARIANTS
-                .iter()
-                .map(|v| (*v).to_string())
-                .collect::<Vec<String>>(),
-            <$ty as strum::EnumCount>::COUNT,
-        )),+]
-    };
-}
-
-/// Every in-repo enum whose variant names reach the audit log verbatim as an `action_name`.
-///
-/// Written out by hand because Rust cannot enumerate the types implementing a trait. An
-/// action enum missing from this list emits names that no test and no format check ever sees;
-/// `grep -rn "impl CatalogAction for" crates/` is the cross-check. The `*ActionKind`
-/// companions do not implement the trait. The `authz-openfga` `*Relation` types do, and
-/// their names do reach the log — they are out of scope here because they are that
-/// authorizer's vocabulary rather than this crate's, and that crate commits its own manifest
-/// the same way; see `crates/authz-openfga/src/relations.rs`.
-fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
-    use crate::service::{
-        authz::{
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
-        },
-        events::context::{AuthnAction, FallbackAction, ManagementAction},
-    };
-
-    variant_names_of!(
-        AuthnAction,
-        FallbackAction,
-        CatalogGenericTableAction,
-        CatalogNamespaceAction,
-        CatalogProjectAction,
-        CatalogRoleAction,
-        CatalogServerAction,
-        CatalogTableAction,
-        CatalogTagAction,
-        CatalogUserAction,
-        CatalogViewAction,
-        CatalogWarehouseAction,
-        InstanceAdminAction,
-        ManagementAction,
-    )
-}
-
-fn owner_map(entries: Vec<(&'static str, Vec<String>)>) -> serde_json::Value {
-    let map: std::collections::BTreeMap<String, Vec<String>> = entries
-        .into_iter()
-        .map(|(owner, mut values)| {
-            values.sort();
-            (owner.to_string(), values)
-        })
-        .collect();
-    serde_json::to_value(map).expect("a manifest owner map serialises")
-}
-
-fn sorted_strings<T, I>(values: I) -> Vec<String>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<String>,
-{
-    let mut values: Vec<String> = values.into_iter().map(Into::into).collect();
-    values.sort();
-    values
-}
-
-/// The manifest as the compiler sees it: what the committed file must contain.
-///
-/// One entry per wire field, and under it one entry per owning type. Each field's values come
-/// from whatever actually encodes the wire string, which differs by field: `action_name`,
-/// `decision`, `operation` and `outcome` are the `strum` name that `IntoStaticStr` emits;
-/// `entity_type` and `privilege_source` come from an `as_str`; and the `Valuable`-derived
-/// enums reach the wire as the Rust variant name, which is `VariantNames`.
-///
-/// Never from the tag helpers in this file, even though they return the same strings today.
-/// Those helpers are exhaustive `match`es returning literals, so renaming a variant forces
-/// the arm's left side to change while the literal compiles untouched — the manifest would
-/// then record a value no record carries and miss the one they do, silently.
-/// [`the_wire_tag_helpers_agree_with_the_variant_names`] is what keeps the two in step.
-fn derived_wire_values() -> serde_json::Value {
-    use strum::{VariantArray as _, VariantNames as _};
-
-    use crate::{
-        request_metadata::PrivilegeSource,
-        service::{
-            authz::{
-                DeterminingFactor, PolicyEffect, PrivilegeScope, ResourceType, RootLevelGrants,
-            },
-            events::{AuthorizationFailureReason, context::EntityType},
-        },
-    };
-
-    let action_name = owner_map(
-        action_name_enums()
-            .into_iter()
-            .map(|(owner, values, _)| (owner, values))
-            .collect(),
-    );
-
-    serde_json::json!({
-        "action_name": action_name,
-        "actor_type": owner_map(vec![(
-            "ActorType",
-            sorted_strings(<ActorType as strum::VariantNames>::VARIANTS.to_vec()),
-        )]),
-        "decision": owner_map(vec![("Decision", sorted_strings(Decision::VARIANTS.to_vec()))]),
-        "determined_by": owner_map(vec![(
-            "DeterminingFactor",
-            sorted_strings(DeterminingFactor::VARIANTS.to_vec()),
-        )]),
-        "effect": owner_map(vec![(
-            "PolicyEffect",
-            sorted_strings(<PolicyEffect as strum::VariantNames>::VARIANTS.to_vec()),
-        )]),
-        "entity_type": owner_map(vec![(
-            "EntityType",
-            sorted_strings(EntityType::VARIANTS.iter().map(|t| t.as_str())),
-        )]),
-        "failure_reason": owner_map(vec![(
-            "AuthorizationFailureReason",
-            sorted_strings(
-                <AuthorizationFailureReason as strum::VariantNames>::VARIANTS.to_vec(),
-            ),
-        )]),
-        "operation": owner_map(vec![(
-            "AuditOperation",
-            sorted_strings(AuditOperation::VARIANTS.to_vec()),
-        )]),
-        "outcome": owner_map(vec![(
-            "AuditOutcome",
-            sorted_strings(AuditOutcome::VARIANTS.to_vec()),
-        )]),
-        "resource_type": owner_map(vec![(
-            "ResourceType",
-            sorted_strings(
-                <ResourceType as strum::VariantArray>::VARIANTS
-                    .iter()
-                    .map(|r| r.as_str()),
-            ),
-        )]),
-        // `update-kinds` is an action-context VALUE, not a field: the field is pinned by
-        // `ActionContextKey`, while the 23 kinds inside it are `TableUpdateKind`'s wire names
-        // and were covered by nothing.
-        "update_kinds": owner_map(vec![(
-            "TableUpdateKind",
-            sorted_strings(<TableUpdateKind as strum::VariantNames>::VARIANTS.to_vec()),
-        )]),
-        // `root_level` is the other action-context VALUE: `ActionContextKey` pins the
-        // field, and these are the two labels that may appear inside it.
-        "root_level": owner_map(vec![(
-            "RootLevelGrants",
-            sorted_strings(<RootLevelGrants as strum::VariantNames>::VARIANTS.to_vec()),
-        )]),
-        "privilege_scope": owner_map(vec![(
-            "PrivilegeScope",
-            sorted_strings(<PrivilegeScope as strum::VariantNames>::VARIANTS.to_vec()),
-        )]),
-        "privilege_source": owner_map(vec![(
-            "PrivilegeSource",
-            sorted_strings(PrivilegeSource::VARIANTS.iter().map(|s| s.as_str())),
-        )]),
-    })
-}
-
-#[test]
-fn fixture_wire_values_manifest_matches_the_derived_values() {
-    super::contract::assert_wire_values_manifest(
-        &wire_values_manifest_path(),
-        "lakekeeper",
-        &derived_wire_values(),
-    );
-}
-
-/// `VariantNames` and `EnumCount` disagree only when a variant carries
-/// `#[strum(disabled)]`: the name list includes it, the count does not. So an inequality
-/// means the manifest is about to record a value the wire cannot actually carry — a
-/// disabled variant has no `IntoStaticStr` arm — and the manifest would then be asserting
-/// coverage of something that does not exist.
-#[test]
-fn every_action_enum_variant_has_a_derived_name() {
-    for (enum_name, variants, count) in action_name_enums() {
-        assert_eq!(
-            variants.len(),
-            count,
-            "`{enum_name}` derives {} action names but counts {count} variants: \
-             {variants:?}. They differ only for a `#[strum(disabled)]` variant, which has no \
-             wire name — so the manifest would record a value no record can carry.",
-            variants.len()
-        );
-    }
-}
-
-/// The five fields Lakekeeper names itself in `snake_case`, whose shape is part of the wire
-/// format: dashboards and alerting rules match these values as literals.
-///
-/// Every other field is excluded for a stated reason, so the list accounts for all fourteen.
-/// `update-kinds`, `root_level` and `privilege_scope` are action-context VALUES rather than
-/// field names: the first is kebab-case, and the other two are checked here.
-/// `entity_type`, `actor_type` and `resource_type` are kebab-case (`generic-table`,
-/// `assumed-role`), and `determined_by`, `effect` and `failure_reason` reach the wire as Rust
-/// variant names through `valuable`, which is `PascalCase`. Asserting one shape across all of
-/// them would either fail today or say nothing.
-///
-/// What this catches is a change in how the names are SPELLED — an enum losing its
-/// `#[strum(serialize_all = "snake_case")]`, gaining a different case style, or carrying a
-/// hand-written `serialize` override that does not follow house style. Each renames a value
-/// consumers match on. What it cannot catch is a mis-split acronym: `read_a_c_l` is itself
-/// well-formed, and no lexical rule tells it from a real name with short segments. That is
-/// prevented upstream, by taking the names from `heck` through `strum` rather than from a
-/// hand-rolled splitter.
-#[test]
-fn the_values_lakekeeper_names_itself_are_lower_snake_case() {
-    const SNAKE_FIELDS: &[&str] = &[
-        "action_name",
-        "decision",
-        "operation",
-        "outcome",
-        "privilege_scope",
-        "privilege_source",
-        "root_level",
-    ];
-
-    let manifest = derived_wire_values();
-    let mut malformed = Vec::new();
-
-    for (field, owner, value) in super::contract::manifest_entries(&manifest) {
-        if !SNAKE_FIELDS.contains(&field.as_str()) {
-            continue;
-        }
-        // Split on `_` and require every segment to be a non-empty run of lowercase
-        // alphanumerics. Checking the characters alone is not enough: it accepts a leading
-        // or trailing underscore and a run of them, so `a__b_` reads as well-formed.
-        let segments_ok = value.split('_').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        });
-        if !(segments_ok && value.starts_with(|c: char| c.is_ascii_lowercase())) {
-            malformed.push(format!("{field}: {owner} -> {value}"));
-        }
-    }
-
-    assert!(
-        malformed.is_empty(),
-        "these wire values are not `lower_snake_case`:\n  {}\n\n\
-         The shape is one or more runs of `[a-z0-9]` joined by single underscores, starting \
-         with a letter — no leading, trailing or doubled underscore, no capitals, no dashes. \
-         An enum that lost its `#[strum(serialize_all = \"snake_case\")]`, or gained a \
-         different case style, or carries a hand-written `#[strum(serialize = \"...\")]` that \
-         does not follow house style, lands here. Each of those renames a value consumers \
-         match on, so it is a MAJOR change, not a spelling preference.",
-        malformed.join("\n  ")
-    );
-}
-
-/// Every value the manifest records is one a record can actually carry: non-empty, and
-/// without whitespace, which would make it unusable as a literal in a query.
-#[test]
-fn every_wire_value_is_usable_as_a_literal() {
-    for (field, owner, value) in super::contract::manifest_entries(&derived_wire_values()) {
-        assert!(
-            !value.is_empty() && !value.chars().any(char::is_whitespace),
-            "`{field}` from `{owner}` derives {value:?}, which no consumer can match on."
-        );
-    }
-}
-
-/// The tag helpers return the same strings `valuable` puts on the wire.
-///
-/// They are exhaustive `match`es returning literals, which is a mirror, and a mirror can
-/// drift in exactly one direction the compiler permits: rename a variant and the arm's left
-/// side must change, while the literal on the right compiles untouched. The helper then
-/// reports a value no record carries. `valuable` emits the Rust variant name, and
-/// `VariantNames` is that same name, so comparing the two catches the drift.
-///
-/// The manifest is built from `VariantNames` rather than from the helpers for this reason.
-/// The helpers still drive the documentation test, so they have to stay honest too.
-#[test]
-fn the_wire_tag_helpers_agree_with_the_variant_names() {
-    use crate::service::events::AuthorizationFailureReason as Reason;
-
-    for (index, name) in <PolicyEffect as strum::VariantNames>::VARIANTS
-        .iter()
-        .enumerate()
-    {
-        let variant = <PolicyEffect as strum::VariantArray>::VARIANTS[index];
-        assert_eq!(
-            policy_effect_tag(variant),
-            *name,
-            "`policy_effect_tag` returns `{}` for the variant `valuable` emits as `{name}`. \
-             A variant was renamed and the literal in the match arm was not.",
-            policy_effect_tag(variant)
-        );
-    }
-
-    for (index, name) in <Reason as strum::VariantNames>::VARIANTS.iter().enumerate() {
-        let variant = &<Reason as strum::VariantArray>::VARIANTS[index];
-        assert_eq!(
-            super::contract::failure_reason_tag(variant),
-            *name,
-            "`failure_reason_tag` returns `{}` for the variant `valuable` emits as `{name}`. \
-             A variant was renamed and the literal in the match arm was not.",
-            super::contract::failure_reason_tag(variant)
-        );
-    }
-
-    for (index, name) in <DeterminingFactor as strum::VariantNames>::VARIANTS
-        .iter()
-        .enumerate()
-    {
-        // `DeterminingFactor` carries data, so there is no `VariantArray` to index; the tag
-        // helper is matched against the name positionally by constructing each variant.
-        let variant = match index {
-            0 => DeterminingFactor::Policy {
-                policy_id: String::new(),
-                name: None,
-                effect: PolicyEffect::Permit,
-                source: None,
-            },
-            _ => DeterminingFactor::SystemAuthority {
-                source: None,
-                reason: None,
-            },
-        };
-        assert_eq!(
-            determining_factor_tag(&variant),
-            *name,
-            "`determining_factor_tag` returns `{}` for the variant `valuable` emits as \
-             `{name}`. A variant was renamed and the literal in the match arm was not.",
-            determining_factor_tag(&variant)
-        );
-    }
-}
-
-/// The manifest is generated from [`strum::VariantNames`], but what a consumer reads is
-/// what `as_wire()` puts on the wire. Two derivations, one string — pin them to each other,
-/// for a variant that carries data and for a unit variant.
+/// `strum` derives one name from a variant and the attribute derives another, while a
+/// consumer reads only what `as_wire()` puts on the wire. Two derivations, one string: pin
+/// them to each other, for a variant that carries data and for a unit variant.
 #[test]
 fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
     use crate::service::authz::CatalogTableAction;
@@ -2145,8 +1495,8 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
     assert!(
         variants.contains(&on_the_wire),
         "`CatalogTableAction::Drop` reaches the wire as `{on_the_wire}`, which is not among \
-         the derived names {variants:?} the manifest is built from. The manifest would then \
-         record a name no record carries, and miss the one they do."
+         the names {variants:?} `strum` derives. The two spellings have drifted \
+         apart."
     );
 
     let unit = CatalogTableAction::ReadData;
@@ -2155,7 +1505,7 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
     assert!(
         variants.contains(&on_the_wire),
         "`CatalogTableAction::ReadData` reaches the wire as `{on_the_wire}`, which is not \
-         among the derived names {variants:?} the manifest is built from."
+         among the names {variants:?} `strum` derives."
     );
 }
 
@@ -2360,79 +1710,158 @@ fn an_audit_event_without_a_break_glass_claim_omits_the_field() {
     assert_eq!(event.get("break_glass"), None);
 }
 
-/// `#[audit_part]` derives every wire value from the variant name and the enum's rename rule;
-/// the manifest derives the same values from `strum` and from `as_str`. The two must agree for
-/// every registered enum, or `as_wire()` would put a string on the wire that the manifest does
-/// not pin. Every owner the manifest lists for a registered field must also be registered, so a
-/// vocabulary enum cannot fall out of the registry unnoticed.
-#[test]
-fn registered_wire_values_agree_with_the_manifest_derivation() {
-    use crate::{
-        Lakekeeper,
-        audit::{Kind, Registration},
-    };
-    fn short_type_name(full: &str) -> String {
-        let tail = full.rsplit("::").next().unwrap_or(full);
-        tail.split('<').next().unwrap_or(tail).to_string()
-    }
+// ── the registry ─────────────────────────────────────────────────────────────
 
-    // The manifest fields whose owners are registered in this crate. The remaining manifest
-    // fields (`determined_by`, `effect`, `resource_type`, `update_kinds`, `root_level`,
-    // `privilege_scope`) render through `valuable` derives and are typed in a later phase.
-    const REGISTERED_FIELDS: &[&str] = &[
-        "action_name",
-        "actor_type",
-        "decision",
-        "operation",
-        "outcome",
-        "entity_type",
-        "privilege_source",
-        "failure_reason",
-    ];
-
-    Registration::require_registry();
-
-    let manifest = derived_wire_values();
-    let mut compared = 0usize;
-    for reg in Registration::for_emitter::<Lakekeeper>().filter(|r| r.kind == Kind::Enum) {
-        let Some(field) = reg.wire_field else {
-            continue;
-        };
-        if !REGISTERED_FIELDS.contains(&field) {
-            continue;
+/// Every Rust source file of this crate, for the source-scan rules below.
+fn crate_sources() -> Vec<(std::path::PathBuf, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).expect("source dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push((
+                    path.clone(),
+                    std::fs::read_to_string(&path).expect("source"),
+                ));
+            }
         }
-        if (reg.type_name)().contains("::tests::") {
-            continue; // test-only probes are registered too, and pin nothing in the manifest
-        }
-        let owner = short_type_name((reg.type_name)());
-        let expected = manifest
-            .get(field)
-            .and_then(|owners| owners.get(&owner))
-            .and_then(serde_json::Value::as_array)
-            .unwrap_or_else(|| {
-                panic!("{owner} is registered for `{field}` but the manifest has no such owner")
-            });
-        let expected: Vec<&str> = expected
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect();
-        let mut registered: Vec<&str> = reg.wire_values.to_vec();
-        registered.sort_unstable();
-        assert_eq!(registered, expected, "wire values of {owner} (`{field}`)");
-        compared += 1;
     }
-
-    let manifested_owners: usize = REGISTERED_FIELDS
-        .iter()
-        .map(|field| {
-            manifest
-                .get(field)
-                .and_then(serde_json::Value::as_object)
-                .map_or(0, serde_json::Map::len)
-        })
-        .sum();
-    assert_eq!(
-        compared, manifested_owners,
-        "every owner the manifest lists for {REGISTERED_FIELDS:?} must be a registered enum"
+    let mut out = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut out,
     );
+    out
+}
+
+/// `AuditPart` is implemented by `#[audit_part]` and nothing else: a hand-written impl would
+/// put a type on the wire without registering it, so the schema would not know it.
+#[test]
+fn audit_part_is_only_implemented_through_the_attribute() {
+    let offenders: Vec<String> = crate_sources()
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("part.rs") && !path.ends_with("tests.rs"))
+        .filter(|(_, text)| code_only(text).contains("AuditPart for"))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "hand-written `impl AuditPart for` found; use `#[audit_part]`: {offenders:?}"
+    );
+}
+
+/// Only the shapes write an audit record. A `tracing::info!(event_source = "audit", …)`
+/// anywhere else would bypass the envelope, the schema and every check.
+#[test]
+fn only_the_shapes_emit_audit_records() {
+    let offenders: Vec<String> = crate_sources()
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("shapes.rs") && !path.ends_with("tests.rs"))
+        .filter(|(_, text)| code_only(text).contains("event_source = \"audit\""))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`event_source = \"audit\"` outside the shapes: {offenders:?}"
+    );
+}
+
+/// No key of a `context` map may spell a top-level field, whatever its separator: a consumer
+/// flattening nested keys would see two fields of one name with unrelated meanings.
+#[test]
+fn no_context_key_spells_a_top_level_field() {
+    use crate::audit::{Kind, Registration};
+    Registration::require_registry();
+    let normalise = |s: &str| s.replace('-', "_");
+    let top_level: Vec<String> = super::shapes::TOP_LEVEL_FIELDS
+        .iter()
+        .map(|f| normalise(f))
+        .collect();
+    for reg in
+        Registration::all().filter(|r| r.kind == Kind::Enum && r.wire_field == Some("context-key"))
+    {
+        for key in reg.wire_values {
+            assert!(
+                !top_level.contains(&normalise(key)),
+                "context key `{key}` of {} spells the top-level field `{key}`",
+                (reg.type_name)()
+            );
+        }
+    }
+}
+
+/// The schema this crate's registry generates is a valid, self-contained document: every
+/// `$ref` resolves, every part has a description on every property, and every registered
+/// type appears under `$defs`.
+#[test]
+fn the_generated_schema_is_self_contained_and_documented() {
+    use crate::audit::{
+        Kind, Registration,
+        schema::{audit_schema_for, short_type_name},
+    };
+    fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                if let Some(r) = m.get("$ref").and_then(serde_json::Value::as_str) {
+                    out.push(r.to_string());
+                }
+                m.values().for_each(|v| refs(v, out));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| refs(v, out)),
+            _ => {}
+        }
+    }
+    let schema = audit_schema_for("lakekeeper");
+    let defs = schema["$defs"].as_object().expect("$defs");
+    // every registration appears
+    for reg in Registration::for_emitter::<crate::Lakekeeper>()
+        .filter(|r| !(r.type_name)().contains("::tests::"))
+    {
+        let name = match reg.kind {
+            Kind::Enum => short_type_name((reg.type_name)()),
+            _ => (reg.schema_name.expect("part schema name"))().to_string(),
+        };
+        assert!(
+            defs.contains_key(&name),
+            "{name} is registered but not in $defs"
+        );
+    }
+    // every $ref resolves
+    let mut found = Vec::new();
+    refs(&schema, &mut found);
+    for r in found {
+        let name = r
+            .strip_prefix("#/$defs/")
+            .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+        assert!(defs.contains_key(name), "$ref {r} does not resolve");
+    }
+    // every property of every part is described
+    for (name, def) in defs {
+        if let Some(props) = def["properties"].as_object() {
+            for (prop, spec) in props {
+                assert!(
+                    spec.get("description").is_some() || spec.get("$ref").is_some(),
+                    "{name}.{prop} has no description"
+                );
+            }
+        }
+    }
+}
+
+/// This crate's crate schema is what its registry generates. `just update-audit-schema` writes
+/// it with `LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1`; the integration tests merge every crate's crate
+/// schema into the emitter's schema.
+#[test]
+fn the_committed_crate_schema_matches_the_registry() {
+    crate::audit::schema::assert_crate_schema_committed(
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_MANIFEST_DIR"),
+    );
+}
+
+/// The values this crate names are house style.
+#[test]
+fn the_wire_values_this_crate_names_are_house_style() {
+    crate::audit::schema::assert_wire_values_are_house_style(env!("CARGO_PKG_NAME"));
 }

@@ -22,12 +22,52 @@ use crate::{
     request_metadata::PrivilegeSource,
 };
 
+/// Every top-level field name a record of any shape can carry. The context-key rule reads
+/// this: no key of a `context` map may spell one of these, whatever its separator.
+pub const TOP_LEVEL_FIELDS: &[&str] = &[
+    "event_source",
+    "audit_format",
+    "record_type",
+    "emitter",
+    "action",
+    "actions",
+    "entity",
+    "entities",
+    "actor",
+    "privilege_source",
+    "user_agent",
+    "break_glass",
+    "failure_reason",
+    "error",
+    "context",
+    "authorizations",
+    "idempotency_key",
+    "decision",
+    "operation",
+    "outcome",
+];
+
 /// The `tracing` target of every audit record. The module path the previous implementation
 /// emitted from, kept so operator filters keep matching; the move to a stable, documented
 /// target is a versioned change of its own.
 const TARGET: &str = "lakekeeper::service::events::backends::audit";
 
-/// Emit one `tracing::info!` with the singular or plural `action`/`entity` fields, by count.
+/// The one `tracing::info!` every audit record goes through: it stamps the target,
+/// `event_source` and `audit_format`, so no record can miss the version. Every other emission
+/// macro in this module expands to it, and a CI check counts that this literal exists once.
+macro_rules! emit_stamped {
+    ({ $($fields:tt)* }, $msg:expr) => {
+        tracing::info!(
+            target: TARGET,
+            event_source = "audit",
+            audit_format = AUDIT_FORMAT,
+            $($fields)*
+            "{}", $msg
+        )
+    };
+}
+
+/// Emit one record with the singular or plural `action`/`entity` fields, by count.
 ///
 /// `tracing` needs literal field names at the call site, so the four arities are four calls;
 /// everything else is shared. Local to this module; it disappears with the arity switch.
@@ -40,41 +80,37 @@ macro_rules! emit_with_arity {
         let action_json = actions.first().map(AuditJson::of);
         let entity_json = entities.first().map(AuditJson::of);
         match (actions.len() == 1, entities.len() == 1) {
-            (true, true) => tracing::info!(
-                target: TARGET,
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
-                action = valuable(action_json.as_ref().expect("one action")),
-                entity = valuable(entity_json.as_ref().expect("one entity")),
-                $($fields)*
-                "{}", $msg
+            (true, true) => emit_stamped!(
+                {
+                    action = valuable(action_json.as_ref().expect("one action")),
+                    entity = valuable(entity_json.as_ref().expect("one entity")),
+                    $($fields)*
+                },
+                $msg
             ),
-            (true, false) => tracing::info!(
-                target: TARGET,
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
-                action = valuable(action_json.as_ref().expect("one action")),
-                entities = valuable(&entities_json),
-                $($fields)*
-                "{}", $msg
+            (true, false) => emit_stamped!(
+                {
+                    action = valuable(action_json.as_ref().expect("one action")),
+                    entities = valuable(&entities_json),
+                    $($fields)*
+                },
+                $msg
             ),
-            (false, true) => tracing::info!(
-                target: TARGET,
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
-                actions = valuable(&actions_json),
-                entity = valuable(entity_json.as_ref().expect("one entity")),
-                $($fields)*
-                "{}", $msg
+            (false, true) => emit_stamped!(
+                {
+                    actions = valuable(&actions_json),
+                    entity = valuable(entity_json.as_ref().expect("one entity")),
+                    $($fields)*
+                },
+                $msg
             ),
-            (false, false) => tracing::info!(
-                target: TARGET,
-                event_source = "audit",
-                audit_format = AUDIT_FORMAT,
-                actions = valuable(&actions_json),
-                entities = valuable(&entities_json),
-                $($fields)*
-                "{}", $msg
+            (false, false) => emit_stamped!(
+                {
+                    actions = valuable(&actions_json),
+                    entities = valuable(&entities_json),
+                    $($fields)*
+                },
+                $msg
             ),
         }
     }};
@@ -215,15 +251,13 @@ impl<E: AuditEmitter, C: AuditPart<Emitter = E>> OperationRecord<E, C> {
     pub fn emit(self) {
         let actor = AuditJson::of(&self.actor);
         let context = self.context.as_ref().map(AuditJson::of);
-        tracing::info!(
-            target: TARGET,
-            event_source = "audit",
-            audit_format = AUDIT_FORMAT,
-            operation = self.operation.text(),
-            actor = valuable(&actor),
-            outcome = self.outcome.text(),
-            context = context.as_ref().map(valuable),
-            "{}",
+        emit_stamped!(
+            {
+                operation = self.operation.text(),
+                actor = valuable(&actor),
+                outcome = self.outcome.text(),
+                context = context.as_ref().map(valuable),
+            },
             self.message
         );
     }

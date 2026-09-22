@@ -184,7 +184,7 @@ pub struct DecisionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) allowed: Option<bool>,
     /// The policies or rules that determined the decision, when the authorizer reports them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) determined_by: Vec<serde_json::Value>,
 }
 
@@ -224,7 +224,7 @@ pub struct ErrorRecord {
     /// The error message the caller received.
     pub(crate) message: String,
     /// The error's stack of causes, innermost first. Absent when empty.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) stack: Vec<String>,
     /// The id the caller can quote to correlate with this record.
     pub(crate) error_id: String,

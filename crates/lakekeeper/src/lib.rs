@@ -106,6 +106,8 @@ pub mod audit {
         HandlerContext, Kind, OperationRecord, Registration, RoleSubjectRecord, SubjectRecord,
         UserSubjectRecord, WireStr, enabled, is_emitter_name, is_major_minor,
     };
+    #[cfg(any(test, feature = "test-utils"))]
+    pub use crate::service::events::backends::audit::{reference, schema, validate};
 }
 
 /// Re-exports the `#[audit_part]` expansion relies on. Not part of the public API.

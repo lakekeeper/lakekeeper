@@ -1,6 +1,6 @@
 //! Who emits audit records.
 //!
-//! An emitter is a type, one per product, declared once with [`declare_audit_emitter!`] and
+//! An emitter is a type, one per product, declared once with [`crate::declare_audit_emitter!`] and
 //! re-exported by every crate of that product as `crate::audit_emitter`. Because it is a type,
 //! "same emitter" is a compile-time fact: a record cannot mix the vocabulary of two emitters.
 

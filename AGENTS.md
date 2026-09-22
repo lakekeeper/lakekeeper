@@ -72,11 +72,13 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format" — it has the decision table, the registration lists, and what each check does and does not cover.
 
 - `AUDIT_FORMAT` is derived from `audit-format/`. Write a fragment; never edit a version number.
-- Never pass a string literal to `action_name`, `operation` or `outcome` — it reaches no manifest, so a later rename breaks consumers silently. Add an enum variant and emit `Variant::as_str()`.
-- Never add a `_ =>` arm to an `as_str` or `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
+- Never build a wire value from a bare string. Put `#[audit_part(field = "...")]` on a vocabulary enum and emit `Variant::as_wire()`; `WireStr::new` is for the attribute's expansion only and a test enforces that.
+- Never add a `_ =>` arm to an `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
 - Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.
 - Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
 - The audit type registry (`#[audit_part]`) exists in debug builds only. Registry and schema tests, and `just update-audit-schema`, run in the dev profile; with `--release` the registry is empty and `Registration::require_registry()` fails with that message.
+- Every crate that declares audit types commits `audit-schema.json` at its root; `audit-format/schema.json` and `docs/docs/audit/reference.md` are their merge. Run `just update-audit-schema` after touching any audit type or its doc comments. Never edit those three files by hand. Every field of an audit type needs a doc comment.
+- `audit-format/schema-baseline.json` (declared types) and `audit-format/records-baseline.json` (top-level record shapes, from the fixtures) record the audit format before the shape change. Never edit them by hand, and never regenerate them once that change has begun. List what changed with `--compare-schemas` against each; `--summarise-records DIR OUT` rebuilds the record half.
 
 ## Rules
 

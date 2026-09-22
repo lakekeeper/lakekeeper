@@ -45,6 +45,8 @@ pub struct Registration {
     pub emitter_name: &'static str,
     /// `core::any::type_name` of the defining crate's emitter type.
     pub emitter_type: fn() -> &'static str,
+    /// `AuditEmitter::FORMAT` of the defining crate's emitter.
+    pub emitter_format: &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
     /// The type's schema name. `None` for a vocabulary enum, whose schema is its value list.
