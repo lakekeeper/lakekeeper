@@ -450,9 +450,7 @@ pub(super) fn should_emit_sas_expires_at_key(request_metadata: &RequestMetadata)
     else {
         return true;
     };
-    semver::Version::parse(version)
-        .ok()
-        .is_some_and(|v| v > semver::Version::new(0, 10, 0))
+    semver::Version::parse(version).is_ok_and(|v| v > semver::Version::new(0, 10, 0))
 }
 
 /// All inputs both ADLS profile types need to produce a `TableConfig` for a

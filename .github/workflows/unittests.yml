@@ -11,7 +11,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.94.1
   RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
@@ -80,8 +79,6 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-machete
         uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
@@ -113,8 +110,6 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install sqlx-cli and migrate database
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -140,9 +135,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: rustfmt
-          toolchain: ${{ env.RUST_TOOLCHAIN }},nightly
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Cargo format
         run: just check-format
@@ -164,14 +158,13 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Cargo clippy
         run: just check-clippy
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
   check-generated-openapi-matches:
     runs-on: ubuntu-24.04
@@ -185,9 +178,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Regenerate generic-table openapi
@@ -307,10 +299,8 @@ jobs:
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
         uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2

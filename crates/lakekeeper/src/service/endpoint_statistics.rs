@@ -71,6 +71,8 @@ impl EndpointStatisticsTrackerTx {
     ///
     /// # Errors
     /// If the receiver has been dropped.
+    // `SendError` hands the message back, so the error is as large as the message.
+    #[allow(clippy::result_large_err)]
     pub async fn send(
         &self,
         msg: EndpointStatisticsMessage,

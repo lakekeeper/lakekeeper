@@ -634,7 +634,7 @@ impl CloudEventsPublisherBackgroundTask {
 
             let event_builder = EventBuilderV10::new()
                 .id(id.to_string())
-                .source(format!("uri:iceberg-catalog-service:{}", &*HOSTNAME))
+                .source(format!("uri:iceberg-catalog-service:{}", *HOSTNAME))
                 .ty(typ)
                 .data("application/json", data);
 

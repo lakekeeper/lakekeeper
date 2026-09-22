@@ -2107,8 +2107,6 @@ fn prepare_properties(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr as _;
-
     use lakekeeper::service::AuthZTableInfo;
     use lakekeeper_io::Location;
     use uuid::Uuid;

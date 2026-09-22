@@ -842,7 +842,7 @@ mod tests {
         );
 
         let tabular_name_rendered = layout.render_tabular_segment(&tabular);
-        assert_eq!(tabular_name_rendered, format!("{}", tabular.name));
+        assert_eq!(tabular_name_rendered, tabular.name.clone());
     }
 
     #[test]
