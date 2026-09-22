@@ -291,26 +291,26 @@ Because the event records the attempt, a *denied* apply is logged with the same 
 
 Both are authorized once at the subtree root for the whole batch, so a single action describes it. The root is the event's `entity`, not part of the action.
 
-The first five fields are the **scope** — the same value the authorizer is asked with, so the record and the decision describe one request. They are emitted together or not at all: a request that names no scope, which is the base-capability form, carries none of them.
+Six fields are the **scope** — the same value the authorizer is asked with, so the record and the decision describe one request. They are emitted together or not at all: a request that names no scope, which is the base-capability form, carries none of them.
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
+| `dry-run`        | String | `"true"` when the call only reports what it would do. A dry run changes nothing, so a record carrying `"true"` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` carrying `"true"`; a `read_subtree_grants` record from a subtree listing reads `"false"` |
 | `resource_types` | Array  | The resource kinds the request reaches. Always at least one, and always a subset of the kinds the addressed resource covers |
 | `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are. Open, like the other value sets — see [Format version and stability](#audit-format) |
 | `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
 | `privilege_scope` | String | `every` when the request reaches every privilege a matching grant can carry — including privileges this server no longer publishes — and `only` when it names a set. Open, like the other value sets — see [Format version and stability](#audit-format) |
 | `narrowed_privileges` | Array | The privileges named when `privilege_scope` is `only`. Emitted as `[]` when it is `every`, because the widest case has no list to expand into: read `privilege_scope` first, and do not read this array alone as the whole answer |
 
-`revoke_subtree_grants` carries four more, describing the filter rather than the reach:
+`revoke_subtree_grants` carries three more, describing the filter rather than the reach:
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
 | `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
 | `allow-partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
-| `dry-run`        | String | `"true"` when the client asked only which grants would be revoked. A dry run changes nothing, so a record carrying it is not evidence of a revocation |
 | `created-before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
 
-Only `created-before` is omitted when the request does not narrow on it. `privileges` is emitted as `[]`, and `allow-partial` and `dry-run` are always present as `"true"` or `"false"` — all three departing from the omit-when-empty rule stated above for action context. Do not infer a field's behaviour here from another field's; read each row.
+Only `created-before` is omitted when the request does not narrow on it. `privileges` is emitted as `[]`, and `allow-partial` is always present as `"true"` or `"false"` — both departing from the omit-when-empty rule stated above for action context. Do not infer a field's behaviour here from another field's; read each row.
 
 **These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry-run` requests, nothing is.
 

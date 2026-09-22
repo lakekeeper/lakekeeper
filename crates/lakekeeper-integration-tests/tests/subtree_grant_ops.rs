@@ -610,7 +610,7 @@ async fn a_resource_type_outside_the_subtree_is_refused(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(err.error.code, 400);
-    assert_eq!(err.error.r#type, "GrantSubtreeScopeMismatch");
+    assert_eq!(err.error.r#type, "SubtreeGrantScopeMismatch");
 
     // The warehouse is not under a namespace either, even though it is a kind a
     // warehouse-rooted revoke can name.
@@ -627,7 +627,7 @@ async fn a_resource_type_outside_the_subtree_is_refused(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(err.error.code, 400);
-    assert_eq!(err.error.r#type, "GrantSubtreeScopeMismatch");
+    assert_eq!(err.error.r#type, "SubtreeGrantScopeMismatch");
 
     // And it is accepted where it does mean something.
     let response = Server::revoke_warehouse_subtree_grants(
@@ -1062,7 +1062,7 @@ async fn an_oversized_namespace_subtree_is_refused(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(err.error.code, 400);
-    assert_eq!(err.error.r#type, "GrantSubtreeTooLarge");
+    assert_eq!(err.error.r#type, "SubtreeGrantTooLarge");
 
     let err = Server::revoke_namespace_subtree_grants(
         f.warehouse_id,
@@ -1074,7 +1074,7 @@ async fn an_oversized_namespace_subtree_is_refused(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(err.error.code, 400);
-    assert_eq!(err.error.r#type, "GrantSubtreeTooLarge");
+    assert_eq!(err.error.r#type, "SubtreeGrantTooLarge");
 
     // Nothing was removed, and the warehouse-rooted form still answers.
     let page = Server::list_warehouse_subtree_grants(
@@ -2404,11 +2404,11 @@ async fn a_tabular_renamed_out_between_the_phases_keeps_its_grant(pool: PgPool) 
     let tree = build_tree(&f).await;
     create_namespace(&f.ctx, f.warehouse_id, &["elsewhere"]).await;
 
-    let root = lakekeeper::service::authz::GrantSubtreeRoot::Namespace {
+    let root = lakekeeper::service::authz::SubtreeGrantRoot::Namespace {
         warehouse_id: f.warehouse_id,
         namespace_id: tree.parent,
     };
-    let filter = lakekeeper::service::authz::GrantSubtreeFilter {
+    let filter = lakekeeper::service::authz::SubtreeGrantFilter {
         include_soft_deleted: true,
         ..Default::default()
     };

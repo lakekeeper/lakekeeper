@@ -839,13 +839,13 @@ impl From<SubtreePrivilegeNames> for BTreeSet<String> {
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum GrantSubtreePrivileges {
+pub enum SubtreeGrantPrivileges {
     /// Every privilege a matching grant can carry, including privileges this server's
     /// authorizer no longer publishes. A request naming none takes this form.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrivilegesEvery"))]
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrivilegesEvery"))]
     Every {},
     /// Only the privileges named here.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrivilegesOnly"))]
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrivilegesOnly"))]
     Only {
         /// Every privilege the request reaches, and never empty. Spelled `names` so the
         /// wire form does not read `privileges.only.privileges`.
@@ -884,7 +884,7 @@ impl PrivilegeScope {
     }
 }
 
-impl GrantSubtreePrivileges {
+impl SubtreeGrantPrivileges {
     /// Which of the two cases this is, as the label the action context carries.
     #[must_use]
     pub fn scope(&self) -> PrivilegeScope {
@@ -902,20 +902,21 @@ impl GrantSubtreePrivileges {
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum GrantSubtreePrincipal {
+pub enum SubtreeGrantPrincipal {
     /// Every principal holding a grant in range.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrincipalEvery"))]
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrincipalEvery"))]
     Every {},
     /// The single principal the request is narrowed to.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreePrincipalOne"))]
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrincipalOne"))]
     One(AuthzUserOrRole),
 }
 
-/// The shape of a concrete subtree grant request: what it reaches, and how far.
+/// The scope of a concrete subtree grant request: what it reaches, how far, and whether
+/// the call only rehearses.
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub struct GrantSubtreeShape {
+pub struct SubtreeGrantScope {
     /// Every resource kind whose grants the request reaches. Never empty, and always a
     /// subset of the kinds the addressed resource covers: a request naming no kinds
     /// carries that full set, so this always states what the operation actually touches.
@@ -926,66 +927,39 @@ pub struct GrantSubtreeShape {
     /// Which privileges the request reaches: every privilege a matching grant can carry,
     /// or the named set it is narrowed to. A revoke removes only what this covers, so a
     /// policy can leave an administrative privilege standing while clearing the rest.
-    pub privileges: GrantSubtreePrivileges,
+    pub privileges: SubtreeGrantPrivileges,
     /// Whether the request covers every principal, or one named principal.
-    pub principal: GrantSubtreePrincipal,
+    pub principal: SubtreeGrantPrincipal,
+    /// Whether the call this check belongs to only reports what it would do. A dry run
+    /// reads the same grants as the live call and changes nothing, so a policy can allow
+    /// a rehearsal and still refuse the revoke, which then removes nothing. Both checks a
+    /// revoke makes carry the same value, so the grant-read check sees the rehearsal too.
+    /// A listing carries `false`, the value of a call that runs for real.
+    pub dry_run: bool,
 }
 
-/// What a subtree grant operation covers.
-///
-/// `request` describes a concrete call — the resource kinds it reaches, how far its range
-/// extends, the privileges it covers and the principal it is narrowed to — and is what
-/// every enforced check carries: Lakekeeper never authorizes a real subtree listing or
-/// revoke with `any`. `any` is the
-/// base-capability form, used for permission introspection and for "may this principal
-/// run subtree operations here at all?" queries. An authorizer that refuses `any` removes
-/// the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
-/// succeed.
-// The base case is a named value, so an authorizer is never silently asked to allow an
-// unspecified subtree operation: a policy that fences on the concrete shape gates
-// `request` and never matches `any`.
-#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum GrantSubtreeScope {
-    /// Concrete request shape.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeRequest"))]
-    Request(GrantSubtreeShape),
-    /// No specific request — the base-capability form.
-    #[cfg_attr(feature = "open-api", schema(title = "GrantSubtreeScopeAny"))]
-    Any {},
-}
-
-impl GrantSubtreeScope {
-    /// The scope as action context, so a policy-based authorizer can fence on it. `any`
-    /// carries none: it describes no request.
-    #[must_use]
-    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
-        match self {
-            Self::Request(shape) => shape.context(),
-            Self::Any {} => Vec::new(),
-        }
-    }
-}
-
-impl GrantSubtreeShape {
-    /// The shape as action context. Every member is stated, so an authorizer reading one
+impl SubtreeGrantScope {
+    /// The scope as action context. Every member is stated, so an authorizer reading one
     /// never has to infer the widest case from a value it did not find.
     ///
-    /// Public because an authorizer that builds its own request context from a concrete
-    /// shape needs it without going back through [`GrantSubtreeScope`].
+    /// Public because an authorizer that builds its own request context reads the scope
+    /// directly.
     #[must_use]
     pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
         // Principals are prefixed by kind, matching the wire discriminator, so a user id
         // and a role id that coincide stay distinguishable.
         let principal = match &self.principal {
-            GrantSubtreePrincipal::Every {} => "every".to_string(),
-            GrantSubtreePrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
-            GrantSubtreePrincipal::One(AuthzUserOrRole::Role(assignee)) => {
+            SubtreeGrantPrincipal::Every {} => "every".to_string(),
+            SubtreeGrantPrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
+            SubtreeGrantPrincipal::One(AuthzUserOrRole::Role(assignee)) => {
                 format!("role:{}", assignee.role_id())
             }
         };
         vec![
+            (
+                ActionContextKey::DryRun,
+                ContextValue::String(self.dry_run.to_string()),
+            ),
             (
                 ActionContextKey::ResourceTypes,
                 ContextValue::List(
@@ -1013,8 +987,8 @@ impl GrantSubtreeShape {
             (
                 ActionContextKey::NarrowedPrivileges,
                 ContextValue::List(match &self.privileges {
-                    GrantSubtreePrivileges::Every {} => Vec::new(),
-                    GrantSubtreePrivileges::Only { names } => {
+                    SubtreeGrantPrivileges::Every {} => Vec::new(),
+                    SubtreeGrantPrivileges::Only { names } => {
                         names.as_set().iter().cloned().collect()
                     }
                 }),
@@ -1091,10 +1065,15 @@ pub enum CatalogWarehouseAction {
     ///
     /// `scope` states what the listing covers — the resource kinds it reaches, how far its
     /// range extends, the privileges it covers, and the principal it is narrowed to — so a
-    /// policy can allow a narrow access review and still refuse a full enumeration. A real
-    /// listing is checked with the `request` form; permission introspection uses `any`.
+    /// policy can allow a narrow access review and still refuse a full enumeration.
+    ///
+    /// Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+    /// revoke only with a scope. An absent scope is the base-capability question that
+    /// permission introspection asks, so an authorizer may answer the two separately —
+    /// refusing the base question drops the action from
+    /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
-        scope: GrantSubtreeScope,
+        scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
     /// batch. An authorizer must answer it as authority over everything beneath — or
@@ -1102,12 +1081,12 @@ pub enum CatalogWarehouseAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
-        scope: GrantSubtreeScope,
+        scope: Option<SubtreeGrantScope>,
     },
 }
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
-/// shapeless [`GrantSubtreeScope::Any`] marker (the base-capability form).
+/// absent scope (the base-capability form).
 static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
@@ -1139,12 +1118,8 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogWarehouseAction::ReadGrants,
-        CatalogWarehouseAction::ReadSubtreeGrants {
-            scope: GrantSubtreeScope::Any {},
-        },
-        CatalogWarehouseAction::RevokeSubtreeGrants {
-            scope: GrantSubtreeScope::Any {},
-        },
+        CatalogWarehouseAction::ReadSubtreeGrants { scope: None },
+        CatalogWarehouseAction::RevokeSubtreeGrants { scope: None },
     ]
 });
 impl CatalogWarehouseAction {
@@ -1218,7 +1193,12 @@ impl CatalogAction for CatalogWarehouseAction {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
-                b = b.context_pairs(scope.context());
+                b = b.context_pairs(
+                    scope
+                        .as_ref()
+                        .map(SubtreeGrantScope::context)
+                        .unwrap_or_default(),
+                );
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::Delete { .. }
@@ -1385,10 +1365,15 @@ pub enum CatalogNamespaceAction {
     ///
     /// `scope` states what the listing covers — the resource kinds it reaches, how far its
     /// range extends, the privileges it covers, and the principal it is narrowed to — so a
-    /// policy can allow a narrow access review and still refuse a full enumeration. A real
-    /// listing is checked with the `request` form; permission introspection uses `any`.
+    /// policy can allow a narrow access review and still refuse a full enumeration.
+    ///
+    /// Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+    /// revoke only with a scope. An absent scope is the base-capability question that
+    /// permission introspection asks, so an authorizer may answer the two separately —
+    /// refusing the base question drops the action from
+    /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
-        scope: GrantSubtreeScope,
+        scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
     /// the whole batch. An authorizer must answer it as authority over everything
@@ -1396,12 +1381,12 @@ pub enum CatalogNamespaceAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
-        scope: GrantSubtreeScope,
+        scope: Option<SubtreeGrantScope>,
     },
 }
 /// The namespace actions enumerated for permission introspection (`GET
 /// /namespace/{id}/actions`). The subtree grant actions are enumerated with the
-/// shapeless [`GrantSubtreeScope::Any`] marker (the base-capability form).
+/// absent scope (the base-capability form).
 static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
@@ -1450,12 +1435,8 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
             source: Arc::new(Vec::new()),
         },
         CatalogNamespaceAction::ReadGrants,
-        CatalogNamespaceAction::ReadSubtreeGrants {
-            scope: GrantSubtreeScope::Any {},
-        },
-        CatalogNamespaceAction::RevokeSubtreeGrants {
-            scope: GrantSubtreeScope::Any {},
-        },
+        CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
+        CatalogNamespaceAction::RevokeSubtreeGrants { scope: None },
     ]
 });
 impl CatalogNamespaceAction {
@@ -1568,7 +1549,12 @@ impl CatalogAction for CatalogNamespaceAction {
                 }
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
-                b = b.context_pairs(scope.context());
+                b = b.context_pairs(
+                    scope
+                        .as_ref()
+                        .map(SubtreeGrantScope::context)
+                        .unwrap_or_default(),
+                );
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
@@ -3643,7 +3629,7 @@ pub mod tests {
     /// is what a client actually sends and receives.
     #[test]
     fn test_subtree_grant_action_scope_serde() {
-        let shape = GrantSubtreeShape {
+        let shape = SubtreeGrantScope {
             resource_types: SubtreeResourceTypes::new(
                 [ResourceType::Namespace, ResourceType::Table]
                     .into_iter()
@@ -3651,37 +3637,35 @@ pub mod tests {
             )
             .expect("non-empty kinds"),
             root_level: RootLevelGrants::Excluded,
-            privileges: GrantSubtreePrivileges::Only {
+            privileges: SubtreeGrantPrivileges::Only {
                 names: SubtreePrivilegeNames::new(["select".to_string()].into_iter().collect())
                     .expect("non-empty privileges"),
             },
-            principal: GrantSubtreePrincipal::One(AuthzUserOrRole::User(
+            principal: SubtreeGrantPrincipal::One(AuthzUserOrRole::User(
                 UserId::try_from("oidc~alice").expect("valid user id"),
             )),
+            dry_run: false,
         };
         let of = serde_json::json!({
-            "request": {
-                "resource_types": ["namespace", "table"],
-                "root_level": "excluded",
-                "privileges": {"only": {"names": ["select"]}},
-                "principal": {"one": {"user": "oidc~alice"}},
-            }
+            "resource_types": ["namespace", "table"],
+            "root_level": "excluded",
+            "privileges": {"only": {"names": ["select"]}},
+            "principal": {"one": {"user": "oidc~alice"}},
+            "dry_run": false,
         });
-        // The base-capability form is an object, like every other union member in the
-        // published spec: a bare string member emits clients that do not compile.
-        let any = serde_json::json!({"any": {}});
+        // The base-capability form carries no scope at all, which is the same absence a
+        // policy guards on.
+        let any = serde_json::Value::Null;
 
         for (action, expected) in [
             (
                 CatalogWarehouseAction::ReadSubtreeGrants {
-                    scope: GrantSubtreeScope::Request(shape.clone()),
+                    scope: Some(shape.clone()),
                 },
                 serde_json::json!({"action": "read_subtree_grants", "scope": of}),
             ),
             (
-                CatalogWarehouseAction::RevokeSubtreeGrants {
-                    scope: GrantSubtreeScope::Any {},
-                },
+                CatalogWarehouseAction::RevokeSubtreeGrants { scope: None },
                 serde_json::json!({"action": "revoke_subtree_grants", "scope": any}),
             ),
         ] {
@@ -3693,14 +3677,12 @@ pub mod tests {
 
         for (action, expected) in [
             (
-                CatalogNamespaceAction::ReadSubtreeGrants {
-                    scope: GrantSubtreeScope::Any {},
-                },
+                CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
                 serde_json::json!({"action": "read_subtree_grants", "scope": any}),
             ),
             (
                 CatalogNamespaceAction::RevokeSubtreeGrants {
-                    scope: GrantSubtreeScope::Request(shape.clone()),
+                    scope: Some(shape.clone()),
                 },
                 serde_json::json!({"action": "revoke_subtree_grants", "scope": of}),
             ),
@@ -3714,7 +3696,7 @@ pub mod tests {
         // Every principal is a named value on the wire, so a policy never reads the
         // widest case out of a missing attribute.
         assert_eq!(
-            serde_json::to_value(GrantSubtreePrincipal::Every {}).expect("serialize"),
+            serde_json::to_value(SubtreeGrantPrincipal::Every {}).expect("serialize"),
             serde_json::json!({"every": {}}),
         );
 
@@ -3722,32 +3704,30 @@ pub mod tests {
         // so the boundary refuses it.
         let empty = serde_json::json!({
             "action": "read_subtree_grants",
-            "scope": {"of": {
+            "scope": {
                 "resource_types": [],
                 "root_level": "included",
                 "principal": {"every": {}},
-            }},
+                "dry_run": false,
+            },
         });
         serde_json::from_value::<CatalogWarehouseAction>(empty)
             .expect_err("an empty resource_types list is refused");
     }
 
     /// Permission introspection asks whether a principal may run subtree operations here
-    /// at all, which no concrete request shape answers. Both levels must therefore
-    /// enumerate the shapeless marker: a scope built from a made-up request would have a
-    /// per-shape policy answer about a request nobody made.
+    /// at all, which no concrete request answers. Both levels therefore enumerate the
+    /// action with no scope: a scope built from a made-up request would draw a
+    /// scope-specific policy answer about a request nobody made.
     #[test]
-    fn subtree_grant_actions_are_introspected_with_the_any_scope() {
+    fn subtree_grant_actions_are_introspected_without_a_scope() {
         let warehouse = CatalogWarehouseAction::variants()
             .iter()
             .filter(|action| {
                 matches!(
                     action,
-                    CatalogWarehouseAction::ReadSubtreeGrants {
-                        scope: GrantSubtreeScope::Any {}
-                    } | CatalogWarehouseAction::RevokeSubtreeGrants {
-                        scope: GrantSubtreeScope::Any {}
-                    }
+                    CatalogWarehouseAction::ReadSubtreeGrants { scope: None }
+                        | CatalogWarehouseAction::RevokeSubtreeGrants { scope: None }
                 )
             })
             .count();
@@ -3758,11 +3738,8 @@ pub mod tests {
             .filter(|action| {
                 matches!(
                     action,
-                    CatalogNamespaceAction::ReadSubtreeGrants {
-                        scope: GrantSubtreeScope::Any {}
-                    } | CatalogNamespaceAction::RevokeSubtreeGrants {
-                        scope: GrantSubtreeScope::Any {}
-                    }
+                    CatalogNamespaceAction::ReadSubtreeGrants { scope: None }
+                        | CatalogNamespaceAction::RevokeSubtreeGrants { scope: None }
                 )
             })
             .count();

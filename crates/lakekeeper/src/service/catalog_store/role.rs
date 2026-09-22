@@ -1184,6 +1184,22 @@ use crate::service::events::impl_authorization_failure_source;
 impl_authorization_failure_source!(CreateRoleError => InternalCatalogError);
 impl_authorization_failure_source!(ListRolesError => InternalCatalogError);
 impl_authorization_failure_source!(GetRoleAcrossProjectsError => InternalCatalogError);
+impl crate::service::events::AuthorizationFailureSource for GetRoleInProjectError {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::from(self)
+    }
+    fn to_failure_reason(&self) -> crate::service::events::AuthorizationFailureReason {
+        // Split by variant: a role id the project does not hold is the request's own
+        // data, and the gate that ran before it reached a verdict of its own.
+        match self {
+            Self::CatalogBackendError(e) => e.to_failure_reason(),
+            Self::InvalidPaginationToken(e) => e.to_failure_reason(),
+            Self::RoleIdNotFoundInProject(_) => {
+                crate::service::events::AuthorizationFailureReason::InvalidRequestData
+            }
+        }
+    }
+}
 impl_authorization_failure_source!(GetRoleByIdentError => InternalCatalogError);
 impl_authorization_failure_source!(DeleteRoleError => InternalCatalogError);
 impl_authorization_failure_source!(UpdateRoleError => InternalCatalogError);

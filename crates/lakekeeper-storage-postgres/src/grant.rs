@@ -41,15 +41,14 @@ use lakekeeper::{
     api::iceberg::v1::PaginationQuery,
     service::{
         ApplyGrantsStoreError, CatalogBackendError, DatabaseIntegrityError, GenericTableId,
-        GrantLockTimeout, GrantSubtreeReadTimeout, GrantTargetNotFound, GrantUserNotFound,
-        InvalidPaginationToken, ListGrantsStoreError, NamespaceId, ProjectId,
-        RevokeSubtreeGrantsStoreError, TableId, TagDefinitionId, ViewId, WarehouseId,
+        GrantLockTimeout, GrantTargetNotFound, GrantUserNotFound, InvalidPaginationToken,
+        ListGrantsStoreError, NamespaceId, ProjectId, RevokeSubtreeGrantsStoreError,
+        SubtreeGrantReadTimeout, TableId, TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
-            GrantRow, GrantRowId, GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot,
-            ListGrantsResultPage, ListSubtreeGrantsResultPage, PrincipalType, ResourceType,
-            UserOrRoleId,
+            GrantRow, GrantRowId, GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage,
+            PrincipalType, ResourceType, SubtreeGrantFilter, SubtreeGrantRoot, UserOrRoleId,
         },
     },
 };
@@ -1538,7 +1537,7 @@ struct SubtreeParams {
 }
 
 impl SubtreeParams {
-    fn of(root: GrantSubtreeRoot, filter: &GrantSubtreeFilter, ceiling: DateTime<Utc>) -> Self {
+    fn of(root: SubtreeGrantRoot, filter: &SubtreeGrantFilter, ceiling: DateTime<Utc>) -> Self {
         let tabular_types = filter.tabular_types().map(|kinds| {
             kinds
                 .into_iter()
@@ -1558,7 +1557,7 @@ impl SubtreeParams {
         Self {
             match_namespaces: filter.matches_namespaces(),
             match_tabulars,
-            match_warehouses: matches!(root, GrantSubtreeRoot::Warehouse { .. })
+            match_warehouses: matches!(root, SubtreeGrantRoot::Warehouse { .. })
                 && filter.include_root_level
                 && filter.matches_warehouses(),
             include_root_level: filter.include_root_level,
@@ -1612,7 +1611,7 @@ where
 ///
 /// Read from the database rather than the process, so the ceiling and `created_at` come
 /// from one clock. This bounds the operation; it does not make the ceiling a snapshot —
-/// see `GrantSubtreeFilter::created_before` for what the bound does and does not mean.
+/// see `SubtreeGrantFilter::created_before` for what the bound does and does not mean.
 pub(crate) async fn resolve_ceiling<'e, 'c: 'e, E>(
     created_before: Option<DateTime<Utc>>,
     connection: E,
@@ -1658,7 +1657,7 @@ fn map_subtree_read(err: sqlx::Error) -> ListGrantsStoreError {
     if let sqlx::Error::Database(ref db) = err
         && db.code().as_deref() == Some("57014")
     {
-        return GrantSubtreeReadTimeout::new().into();
+        return SubtreeGrantReadTimeout::new().into();
     }
     DBErrorHandler::into_catalog_backend_error(err).into()
 }
@@ -1684,8 +1683,8 @@ async fn begin_bounded_read(
 }
 
 pub(crate) async fn list_grants_in_subtree(
-    root: GrantSubtreeRoot,
-    filter: &GrantSubtreeFilter,
+    root: SubtreeGrantRoot,
+    filter: &SubtreeGrantFilter,
     page: PageBounds,
     as_of: DateTime<Utc>,
     pool: &sqlx::PgPool,
@@ -1694,7 +1693,7 @@ pub(crate) async fn list_grants_in_subtree(
 
     let mut transaction = begin_bounded_read(pool).await?;
     let rows = match root {
-        GrantSubtreeRoot::Namespace {
+        SubtreeGrantRoot::Namespace {
             warehouse_id,
             namespace_id,
         } => {
@@ -1707,7 +1706,7 @@ pub(crate) async fn list_grants_in_subtree(
             )
             .await?
         }
-        GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
+        SubtreeGrantRoot::Warehouse { warehouse_id, .. } => {
             select_grants_under_warehouse(warehouse_id, &params, page, &mut *transaction).await?
         }
     };
@@ -2009,14 +2008,14 @@ where
 /// Deliberately not one `DELETE ... RETURNING` with the authority check folded in: that
 /// would hold row locks on a whole batch across a network call to the authorizer.
 pub(crate) async fn select_subtree_grant_candidates(
-    root: GrantSubtreeRoot,
-    filter: &GrantSubtreeFilter,
+    root: SubtreeGrantRoot,
+    filter: &SubtreeGrantFilter,
     limit: usize,
     pool: &sqlx::PgPool,
 ) -> Result<GrantRevokeCandidates, ListGrantsStoreError> {
     // A revoke always reaches into the recycle bin: an undrop restores a table together
     // with its grants, so leaving those would restore access the caller believes gone.
-    let filter = GrantSubtreeFilter {
+    let filter = SubtreeGrantFilter {
         include_soft_deleted: true,
         ..filter.clone()
     };
@@ -2031,7 +2030,7 @@ pub(crate) async fn select_subtree_grant_candidates(
     };
     let mut transaction = begin_bounded_read(pool).await?;
     let mut rows = match root {
-        GrantSubtreeRoot::Namespace {
+        SubtreeGrantRoot::Namespace {
             warehouse_id,
             namespace_id,
         } => {
@@ -2044,7 +2043,7 @@ pub(crate) async fn select_subtree_grant_candidates(
             )
             .await?
         }
-        GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
+        SubtreeGrantRoot::Warehouse { warehouse_id, .. } => {
             select_grants_under_warehouse(warehouse_id, &params, bounds, &mut *transaction).await?
         }
     };
@@ -2082,7 +2081,7 @@ pub(crate) async fn select_subtree_grant_candidates(
 /// A candidate that has since been revoked simply does not come back, so a retry after a
 /// crash reports the delta rather than repeating it.
 pub(crate) async fn revoke_grant_candidates(
-    root: GrantSubtreeRoot,
+    root: SubtreeGrantRoot,
     candidates: &[GrantCandidate],
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError> {
@@ -2105,8 +2104,8 @@ pub(crate) async fn revoke_grant_candidates(
     // the authority asked about never covered. Nothing can leave a *warehouse*, so only a
     // namespace root needs the recheck.
     let root_namespace = match root {
-        GrantSubtreeRoot::Namespace { namespace_id, .. } => Some(*namespace_id),
-        GrantSubtreeRoot::Warehouse { .. } => None,
+        SubtreeGrantRoot::Namespace { namespace_id, .. } => Some(*namespace_id),
+        SubtreeGrantRoot::Warehouse { .. } => None,
     };
     let root_warehouse = *root.warehouse_id();
     let rows = sqlx::query_as!(

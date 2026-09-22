@@ -64,8 +64,8 @@ use lakekeeper::{
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
-            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
-            ListSubtreeGrantsResultPage, UserOrRoleId,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -460,8 +460,8 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_grants_in_subtree_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
@@ -492,8 +492,8 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn select_subtree_grant_candidates_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         limit: usize,
         catalog_state: Self::State,
     ) -> Result<GrantRevokeCandidates, ListGrantsStoreError> {
@@ -504,7 +504,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn revoke_grant_candidates_impl<'a>(
-        root: GrantSubtreeRoot,
+        root: SubtreeGrantRoot,
         candidates: &[GrantCandidate],
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError> {
