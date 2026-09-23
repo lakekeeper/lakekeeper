@@ -40,8 +40,8 @@ use crate::{
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
-            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
-            ListSubtreeGrantsResultPage, UserOrRoleId,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -895,8 +895,8 @@ where
     /// No per-row authorization: the caller gates the whole subtree at the root, and one
     /// answer there covers every member of the page.
     async fn list_grants_in_subtree_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
@@ -928,8 +928,8 @@ where
     /// Grants on soft-deleted tabulars are always candidates, whatever `filter` says
     /// about listing them: an undrop restores a table together with its grants.
     async fn select_subtree_grant_candidates_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         limit: usize,
         catalog_state: Self::State,
     ) -> Result<GrantRevokeCandidates, ListGrantsStoreError>;
@@ -939,7 +939,7 @@ where
     /// Idempotent: a candidate already revoked is simply absent from the result, so a
     /// retry reports the delta rather than repeating it.
     async fn revoke_grant_candidates_impl<'a>(
-        root: GrantSubtreeRoot,
+        root: SubtreeGrantRoot,
         candidates: &[GrantCandidate],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError>;

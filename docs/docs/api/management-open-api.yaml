@@ -10249,124 +10249,6 @@ components:
             listings entirely, so `false` never appears there — see its documentation.
         resource:
           $ref: '#/components/schemas/GrantResourceResponse'
-    GrantSubtreePrincipal:
-      oneOf:
-        - type: object
-          title: GrantSubtreePrincipalEvery
-          description: Every principal holding a grant in range.
-          required:
-            - every
-          properties:
-            every:
-              type: object
-              description: Every principal holding a grant in range.
-        - type: object
-          title: GrantSubtreePrincipalOne
-          description: The single principal the request is narrowed to.
-          required:
-            - one
-          properties:
-            one:
-              $ref: '#/components/schemas/UserOrRole'
-              description: The single principal the request is narrowed to.
-      description: Which principals' grants a subtree operation covers.
-    GrantSubtreePrivileges:
-      oneOf:
-        - type: object
-          title: GrantSubtreePrivilegesEvery
-          description: |-
-            Every privilege a matching grant can carry, including privileges this server's
-            authorizer no longer publishes. A request naming none takes this form.
-          required:
-            - every
-          properties:
-            every:
-              type: object
-              description: |-
-                Every privilege a matching grant can carry, including privileges this server's
-                authorizer no longer publishes. A request naming none takes this form.
-        - type: object
-          title: GrantSubtreePrivilegesOnly
-          description: Only the privileges named here.
-          required:
-            - only
-          properties:
-            only:
-              type: object
-              description: Only the privileges named here.
-              required:
-                - names
-              properties:
-                names:
-                  type: array
-                  items:
-                    type: string
-                  description: |-
-                    Every privilege the request reaches, and never empty. Spelled `names` so the
-                    wire form does not read `privileges.only.privileges`.
-                  minItems: 1
-      description: Which privileges a subtree grant operation covers.
-    GrantSubtreeScope:
-      oneOf:
-        - type: object
-          title: GrantSubtreeScopeRequest
-          description: Concrete request shape.
-          required:
-            - request
-          properties:
-            request:
-              $ref: '#/components/schemas/GrantSubtreeShape'
-              description: Concrete request shape.
-        - type: object
-          title: GrantSubtreeScopeAny
-          description: No specific request — the base-capability form.
-          required:
-            - any
-          properties:
-            any:
-              type: object
-              description: No specific request — the base-capability form.
-      description: |-
-        What a subtree grant operation covers.
-
-        `request` describes a concrete call — the resource kinds it reaches, how far its range
-        extends, the privileges it covers and the principal it is narrowed to — and is what
-        every enforced check carries: Lakekeeper never authorizes a real subtree listing or
-        revoke with `any`. `any` is the
-        base-capability form, used for permission introspection and for "may this principal
-        run subtree operations here at all?" queries. An authorizer that refuses `any` removes
-        the capability from `GET /{warehouse,namespace}/{id}/actions` while real calls still
-        succeed.
-    GrantSubtreeShape:
-      type: object
-      description: 'The shape of a concrete subtree grant request: what it reaches, and how far.'
-      required:
-        - resource_types
-        - root_level
-        - privileges
-        - principal
-      properties:
-        principal:
-          $ref: '#/components/schemas/GrantSubtreePrincipal'
-          description: Whether the request covers every principal, or one named principal.
-        privileges:
-          $ref: '#/components/schemas/GrantSubtreePrivileges'
-          description: |-
-            Which privileges the request reaches: every privilege a matching grant can carry,
-            or the named set it is narrowed to. A revoke removes only what this covers, so a
-            policy can leave an administrative privilege standing while clearing the rest.
-        resource_types:
-          type: array
-          items:
-            $ref: '#/components/schemas/ResourceType'
-          description: |-
-            Every resource kind whose grants the request reaches. Never empty, and always a
-            subset of the kinds the addressed resource covers: a request naming no kinds
-            carries that full set, so this always states what the operation actually touches.
-          minItems: 1
-        root_level:
-          $ref: '#/components/schemas/RootLevelGrants'
-          description: Whether the request's range extends to the addressed resource itself.
     GrantablePrivilege:
       type: object
       description: One privilege of a resource's vocabulary, and whether the principal may grant it.
@@ -11105,10 +10987,14 @@ components:
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
         range extends, the privileges it covers, and the principal it is narrowed to — so a
-        policy can allow a narrow access review and still refuse a full enumeration. A real
-        listing is checked with the `request` form; permission introspection uses `any`.
+        policy can allow a narrow access review and still refuse a full enumeration.
+
+        Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+        revoke only with a scope. An absent scope is the base-capability question that
+        permission introspection asks, so an authorizer may answer the two separately —
+        refusing the base question drops the action from
+        `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
       required:
-        - scope
         - action
       properties:
         action:
@@ -11116,7 +11002,9 @@ components:
           enum:
             - read_subtree_grants
         scope:
-          $ref: '#/components/schemas/GrantSubtreeScope'
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperNamespaceActionRevokeSubtreeGrants:
       type: object
       description: |-
@@ -11126,7 +11014,6 @@ components:
 
         `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
-        - scope
         - action
       properties:
         action:
@@ -11134,7 +11021,9 @@ components:
           enum:
             - revoke_subtree_grants
         scope:
-          $ref: '#/components/schemas/GrantSubtreeScope'
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperNamespaceActionSetProtection:
       type: object
       required:
@@ -13117,10 +13006,14 @@ components:
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
         range extends, the privileges it covers, and the principal it is narrowed to — so a
-        policy can allow a narrow access review and still refuse a full enumeration. A real
-        listing is checked with the `request` form; permission introspection uses `any`.
+        policy can allow a narrow access review and still refuse a full enumeration.
+
+        Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+        revoke only with a scope. An absent scope is the base-capability question that
+        permission introspection asks, so an authorizer may answer the two separately —
+        refusing the base question drops the action from
+        `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
       required:
-        - scope
         - action
       properties:
         action:
@@ -13128,7 +13021,9 @@ components:
           enum:
             - read_subtree_grants
         scope:
-          $ref: '#/components/schemas/GrantSubtreeScope'
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperWarehouseActionRename:
       type: object
       required:
@@ -13147,7 +13042,6 @@ components:
 
         `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
-        - scope
         - action
       properties:
         action:
@@ -13155,7 +13049,9 @@ components:
           enum:
             - revoke_subtree_grants
         scope:
-          $ref: '#/components/schemas/GrantSubtreeScope'
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperWarehouseActionSetFormatVersionPolicy:
       type: object
       required:
@@ -14325,9 +14221,10 @@ components:
           type: boolean
           description: |-
             Compute and return what this request would revoke, removing nothing. The same
-            read and the same authority checks as the live call; the response's `preview`
-            carries the batch. A dry run is never refused for size — `has-more: true` says
-            the live call needs `allow-partial`, or several calls.
+            read and the same two authority checks as the live call, both told this is a
+            rehearsal — so a policy may allow the preview and gate the revoke itself. The
+            response's `preview` carries the batch. A dry run is never refused for batch size
+            — `has-more: true` says the live call needs `allow-partial`, or several calls.
         include-root-level:
           type: boolean
           description: |-
@@ -15845,6 +15742,104 @@ components:
       description: |-
         STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
         set and STACKIT's own endpoint derivation and credentials-group STS.
+    SubtreeGrantPrincipal:
+      oneOf:
+        - type: object
+          title: SubtreeGrantPrincipalEvery
+          description: Every principal holding a grant in range.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: Every principal holding a grant in range.
+        - type: object
+          title: SubtreeGrantPrincipalOne
+          description: The single principal the request is narrowed to.
+          required:
+            - one
+          properties:
+            one:
+              $ref: '#/components/schemas/UserOrRole'
+              description: The single principal the request is narrowed to.
+      description: Which principals' grants a subtree operation covers.
+    SubtreeGrantPrivileges:
+      oneOf:
+        - type: object
+          title: SubtreeGrantPrivilegesEvery
+          description: |-
+            Every privilege a matching grant can carry, including privileges this server's
+            authorizer no longer publishes. A request naming none takes this form.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: |-
+                Every privilege a matching grant can carry, including privileges this server's
+                authorizer no longer publishes. A request naming none takes this form.
+        - type: object
+          title: SubtreeGrantPrivilegesOnly
+          description: Only the privileges named here.
+          required:
+            - only
+          properties:
+            only:
+              type: object
+              description: Only the privileges named here.
+              required:
+                - names
+              properties:
+                names:
+                  type: array
+                  items:
+                    type: string
+                  description: |-
+                    Every privilege the request reaches, and never empty. Spelled `names` so the
+                    wire form does not read `privileges.only.privileges`.
+                  minItems: 1
+      description: Which privileges a subtree grant operation covers.
+    SubtreeGrantScope:
+      type: object
+      description: |-
+        The scope of a concrete subtree grant request: what it reaches, how far, and whether
+        the call only rehearses.
+      required:
+        - resource_types
+        - root_level
+        - privileges
+        - principal
+        - dry_run
+      properties:
+        dry_run:
+          type: boolean
+          description: |-
+            Whether the call this check belongs to only reports what it would do. A dry run
+            reads the same grants as the live call and changes nothing, so a policy can allow
+            a rehearsal and still refuse the revoke, which then removes nothing. Both checks a
+            revoke makes carry the same value, so the grant-read check sees the rehearsal too.
+            A listing carries `false`, the value of a call that runs for real.
+        principal:
+          $ref: '#/components/schemas/SubtreeGrantPrincipal'
+          description: Whether the request covers every principal, or one named principal.
+        privileges:
+          $ref: '#/components/schemas/SubtreeGrantPrivileges'
+          description: |-
+            Which privileges the request reaches: every privilege a matching grant can carry,
+            or the named set it is narrowed to. A revoke removes only what this covers, so a
+            policy can leave an administrative privilege standing while clearing the rest.
+        resource_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceType'
+          description: |-
+            Every resource kind whose grants the request reaches. Never empty, and always a
+            subset of the kinds the addressed resource covers: a request naming no kinds
+            carries that full set, so this always states what the operation actually touches.
+          minItems: 1
+        root_level:
+          $ref: '#/components/schemas/RootLevelGrants'
+          description: Whether the request's range extends to the addressed resource itself.
     TableAction:
       type: string
       enum:
