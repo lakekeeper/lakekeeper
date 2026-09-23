@@ -4047,7 +4047,6 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "valuable",
- "valuable-serde",
  "veil",
  "xxhash-rust",
 ]

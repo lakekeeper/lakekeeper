@@ -208,8 +208,9 @@ pub struct DecisionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) allowed: Option<bool>,
     /// The policies or rules that determined the decision, when the authorizer reports them.
+    /// The same shape the management API returns for a check, so one parser reads both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) determined_by: Vec<serde_json::Value>,
+    pub(crate) determined_by: Vec<crate::service::authz::DeterminingFactor>,
 }
 
 /// An `action` object: the wire name and the action's context fields.

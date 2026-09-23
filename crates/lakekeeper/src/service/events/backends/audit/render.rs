@@ -110,15 +110,6 @@ impl Mappable for AuditJson {
     }
 }
 
-/// Render a value that still implements `valuable` the old way into a JSON tree, through the
-/// same serializer `tracing-subscriber` uses for `valuable` fields, so the result is
-/// byte-identical to what the subscriber wrote before. Used for the nested values that the
-/// `valuable` derive still renders until they get typed shapes of their own.
-pub(crate) fn legacy_json(value: &impl Valuable) -> serde_json::Value {
-    serde_json::to_value(valuable_serde::Serializable::new(value))
-        .expect("a valuable value serializes to JSON")
-}
-
 /// One node of the tree. `Mappable` and `Listable` need a type per node, hence the newtype.
 struct Node<'a>(&'a serde_json::Value);
 

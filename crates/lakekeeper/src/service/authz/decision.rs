@@ -100,6 +100,7 @@ impl From<bool> for AuthorizationDecision {
     Eq,
     Serialize,
     Deserialize,
+    schemars::JsonSchema,
     valuable::Valuable,
     strum_macros::VariantNames,
 )]
@@ -157,6 +158,7 @@ pub enum DeterminingFactor {
     Eq,
     Serialize,
     Deserialize,
+    schemars::JsonSchema,
     valuable::Valuable,
     strum_macros::VariantArray,
     strum_macros::VariantNames,

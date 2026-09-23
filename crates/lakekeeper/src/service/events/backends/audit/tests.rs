@@ -1450,14 +1450,17 @@ fn contract_rejects_a_failure_reason_on_a_record_that_was_not_denied() {
 #[test]
 fn contract_rejects_a_re_encoded_failure_reason() {
     let found = violations_after("authz_failed_single", |r| {
-        r.insert("failure_reason".into(), "ActionForbidden".into());
+        r.insert(
+            "failure_reason".into(),
+            serde_json::json!({ "ActionForbidden": [] }),
+        );
     });
     assert_eq!(
         found,
         vec![
-            "`failure_reason` is `\"ActionForbidden\"`, not an object. The definitive-denial \
-             rule reads the variant from this object's key, so a re-encoding disables it: \
-             teach that rule the new encoding, then update this one"
+            "`failure_reason` is `{\"ActionForbidden\":[]}`, not a string. The \
+             definitive-denial rule reads the variant from that string, so a re-encoding \
+             disables it: teach that rule the new encoding, then update this one"
         ]
     );
 }

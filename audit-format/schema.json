@@ -529,8 +529,10 @@
         },
         "determined_by": {
           "type": "array",
-          "items": true,
-          "description": "The policies or rules that determined the decision, when the authorizer reports them."
+          "items": {
+            "$ref": "#/$defs/DeterminingFactor"
+          },
+          "description": "The policies or rules that determined the decision, when the authorizer reports them.\nThe same shape the management API returns for a check, so one parser reads both."
         }
       },
       "required": [
@@ -540,6 +542,75 @@
       "description": "One entry of `authorizations[]`: which action on which entity was evaluated, for whom,\nwith what result.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::DecisionRecord"
+    },
+    "DeterminingFactor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "policy-id": {
+              "type": "string",
+              "description": "Stable, authorizer-assigned identifier of the policy (e.g. the Cedar\n`PolicyId`). Always present."
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Human-facing name the author gave the policy (e.g. a `@name` or\n`@id` annotation). Neither required nor guaranteed unique; absent\nwhen the author provided none."
+            },
+            "effect": {
+              "$ref": "#/$defs/PolicyEffect",
+              "description": "Whether the policy permits or forbids."
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Opaque origin of the policy (e.g. a policy-source identifier).\nAbsent when the authorizer cannot attribute a source."
+            },
+            "type": {
+              "type": "string",
+              "const": "policy"
+            }
+          },
+          "required": [
+            "type",
+            "policy-id",
+            "effect"
+          ],
+          "description": "A policy that determined the decision, surfaced by a policy-based\nauthorizer."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Opaque, authorizer-assigned identifier of the built-in authority\ntier that granted the action. Absent when none can be attributed."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Human-facing reason the tier applied (e.g. an administrator\nlockout-recovery grant). Absent when the authorizer gives none."
+            },
+            "type": {
+              "type": "string",
+              "const": "system-authority"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "An allow contributed by a built-in/system authority tier that takes\nprecedence over normal authored policy — e.g. a recovery mechanism that\nlets a privileged system role act despite a policy that would otherwise\nforbid it. Its presence means the verdict rested on built-in authority\nrather than on a configured policy."
+        }
+      ],
+      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched, and\n`system-authority` records that a built-in authority tier decided the request. The\nschema is a closed `oneOf` over those two, so a further kind is a schema change a\ngenerated client has to be rebuilt for rather than one it absorbs on its own."
     },
     "EmitterRecord": {
       "type": "object",
@@ -858,6 +929,21 @@
       "description": "The `context` of an operation record that carries none.",
       "x-audit-kind": "context",
       "x-audit-type": "lakekeeper::NoContext"
+    },
+    "PolicyEffect": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "permit",
+          "description": "The policy grants the action."
+        },
+        {
+          "type": "string",
+          "const": "forbid",
+          "description": "The policy denies the action."
+        }
+      ],
+      "description": "Whether a determining policy permits or forbids."
     },
     "PrivilegeSource": {
       "type": "string",

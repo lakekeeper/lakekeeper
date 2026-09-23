@@ -58,7 +58,7 @@ with what result.
 | `action` | [`ActionRecord`](#actionrecord) | always | The action evaluated. |
 | `entity` | [`EntityRecord`](#entityrecord) | always | The entity the action was evaluated against. |
 | `allowed` | boolean | optional | The authorizer's answer. Absent when an upstream error stopped the evaluation. |
-| `determined_by` | array of any | optional | The policies or rules that determined the decision, when the authorizer reports them. |
+| `determined_by` | array of [`DeterminingFactor`](#determiningfactor) | optional | The policies or rules that determined the decision, when the authorizer reports them. The same shape the management API returns for a check, so one parser reads both. |
 
 ### `EmitterRecord`
 
