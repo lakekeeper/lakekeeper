@@ -4,17 +4,18 @@
 //! record: it stamps `event_source` and `audit_format`, passes scalar fields as `tracing`
 //! fields, and hands every object field to `tracing` as a JSON tree through the bridge.
 //!
-//! Field lists are the ones the previous emit macros wrote, so the output is identical to the
-//! previous implementation's: `action`/`actions` and `entity`/`entities` switch on count,
-//! `user_agent` and `idempotency_key` render `null` when absent, and a replay record carries
-//! `operation` and `outcome` as its markers. The deliberate changes to that shape are a later,
-//! separately versioned step.
+//! Every record names its shape in `record_type` and its producer in `emitter`, carries its
+//! action and entity lists under one name whatever their length, and omits a field it has no
+//! value for rather than writing `null`.
 
 use tracing::field::valuable;
 
 use super::{
-    AUDIT_FORMAT, AuditOperation, AuditOutcome, Decision,
-    parts::{ActionRecord, ActorRecord, DecisionRecord, EntityRecord, ErrorRecord, HandlerContext},
+    AUDIT_FORMAT, Decision, RecordType,
+    parts::{
+        ActionRecord, ActorRecord, DecisionRecord, EmitterRecord, EntityRecord, ErrorRecord,
+        HandlerContext,
+    },
     render::AuditJson,
 };
 use crate::{
@@ -67,55 +68,6 @@ macro_rules! emit_stamped {
     };
 }
 
-/// Emit one record with the singular or plural `action`/`entity` fields, by count.
-///
-/// `tracing` needs literal field names at the call site, so the four arities are four calls;
-/// everything else is shared. Local to this module; it disappears with the arity switch.
-macro_rules! emit_with_arity {
-    ($actions:expr, $entities:expr, { $($fields:tt)* }, $msg:expr) => {{
-        let actions: &[ActionRecord] = $actions;
-        let entities: &[EntityRecord] = $entities;
-        let actions_json = AuditJson::of(actions);
-        let entities_json = AuditJson::of(entities);
-        let action_json = actions.first().map(AuditJson::of);
-        let entity_json = entities.first().map(AuditJson::of);
-        match (actions.len() == 1, entities.len() == 1) {
-            (true, true) => emit_stamped!(
-                {
-                    action = valuable(action_json.as_ref().expect("one action")),
-                    entity = valuable(entity_json.as_ref().expect("one entity")),
-                    $($fields)*
-                },
-                $msg
-            ),
-            (true, false) => emit_stamped!(
-                {
-                    action = valuable(action_json.as_ref().expect("one action")),
-                    entities = valuable(&entities_json),
-                    $($fields)*
-                },
-                $msg
-            ),
-            (false, true) => emit_stamped!(
-                {
-                    actions = valuable(&actions_json),
-                    entity = valuable(entity_json.as_ref().expect("one entity")),
-                    $($fields)*
-                },
-                $msg
-            ),
-            (false, false) => emit_stamped!(
-                {
-                    actions = valuable(&actions_json),
-                    entities = valuable(&entities_json),
-                    $($fields)*
-                },
-                $msg
-            ),
-        }
-    }};
-}
-
 /// An authorization record: was this caller permitted to do these actions on these entities?
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
@@ -136,31 +88,34 @@ pub struct AuthorizationRecord {
 
 impl AuthorizationRecord {
     pub(crate) fn emit(self) {
+        let emitter = AuditJson::of(&EmitterRecord::of::<crate::Lakekeeper>());
+        let actions = AuditJson::of(&self.actions);
+        let entities = AuditJson::of(&self.entities);
         let actor = AuditJson::of(&self.actor);
         let authorizations = AuditJson::of(&self.authorizations);
         let context = self.context.as_ref().map(AuditJson::of);
         let failure_reason = self.failure_reason.clone().map(AuditJson::from);
         let error = self.error.as_ref().map(AuditJson::of);
-        let user_agent = self.user_agent.as_deref();
-        let idempotency_key = self.idempotency_key.as_deref();
         let message = match self.decision {
             Decision::Allowed => "Authorization succeeded event",
             Decision::Denied => "Authorization failed event",
         };
-        emit_with_arity!(
-            &self.actions,
-            &self.entities,
+        emit_stamped!(
             {
+                record_type = RecordType::Authorization.as_str(),
+                emitter = valuable(&emitter),
+                actions = valuable(&actions),
+                entities = valuable(&entities),
                 actor = valuable(&actor),
                 privilege_source = self.privilege_source.as_str(),
-                user_agent = valuable(&user_agent),
+                user_agent = self.user_agent.as_deref(),
                 break_glass = self.break_glass.as_deref(),
-                failure_reason = failure_reason.as_ref().map(valuable),
-                error = error.as_ref().map(valuable),
                 context = context.as_ref().map(valuable),
                 authorizations = valuable(&authorizations),
-                idempotency_key = valuable(&idempotency_key),
+                idempotency_key = self.idempotency_key.as_deref(),
                 decision = self.decision.as_str(),
+                failure_reason = failure_reason.as_ref().map(valuable),
+                error = error.as_ref().map(valuable),
             },
             message
         );
@@ -180,18 +135,20 @@ pub struct ReplayRecord {
 
 impl ReplayRecord {
     pub(crate) fn emit(self) {
+        let emitter = AuditJson::of(&EmitterRecord::of::<crate::Lakekeeper>());
+        let actions = AuditJson::of(&self.actions);
+        let entities = AuditJson::of(&self.entities);
         let actor = AuditJson::of(&self.actor);
-        let user_agent = self.user_agent.as_deref();
-        emit_with_arity!(
-            &self.actions,
-            &self.entities,
+        emit_stamped!(
             {
+                record_type = RecordType::Replay.as_str(),
+                emitter = valuable(&emitter),
+                actions = valuable(&actions),
+                entities = valuable(&entities),
                 actor = valuable(&actor),
                 privilege_source = self.privilege_source.as_str(),
-                user_agent = valuable(&user_agent),
-                operation = AuditOperation::IdempotentReplay.as_str(),
+                user_agent = self.user_agent.as_deref(),
                 idempotency_key = self.idempotency_key.as_str(),
-                outcome = AuditOutcome::Replayed.as_str(),
             },
             "Idempotent replay served"
         );
@@ -249,10 +206,13 @@ impl<E: AuditEmitter, C: AuditPart<Emitter = E>> OperationRecord<E, C> {
 
     /// Write the record.
     pub fn emit(self) {
+        let emitter = AuditJson::of(&EmitterRecord::of::<E>());
         let actor = AuditJson::of(&self.actor);
         let context = self.context.as_ref().map(AuditJson::of);
         emit_stamped!(
             {
+                record_type = RecordType::Operation.as_str(),
+                emitter = valuable(&emitter),
                 operation = self.operation.text(),
                 actor = valuable(&actor),
                 outcome = self.outcome.text(),

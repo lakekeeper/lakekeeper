@@ -106,6 +106,30 @@ impl ActorRecord {
     }
 }
 
+/// The `emitter` object: which product produced this record, and the version of the
+/// vocabulary and context shapes it governs.
+///
+/// A consumer routes the core shape on `audit_format` and everything the emitter owns — its
+/// `context`, its vocabulary, any shape it defines — on this.
+#[audit_part]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitterRecord {
+    /// The emitter's name, unique across the products that write to this log.
+    pub(crate) name: &'static str,
+    /// The `MAJOR.MINOR` version of what this emitter contributes.
+    pub(crate) format: &'static str,
+}
+
+impl EmitterRecord {
+    /// The stamp for emitter `E`.
+    pub(crate) fn of<E: crate::audit::AuditEmitter>() -> Self {
+        Self {
+            name: E::NAME,
+            format: E::FORMAT,
+        }
+    }
+}
+
 /// The role an `assumed-role` actor acts as.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]

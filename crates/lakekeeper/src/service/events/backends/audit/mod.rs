@@ -106,6 +106,23 @@ pub enum ActorType {
     LakekeeperInternal,
 }
 
+/// The `record_type` value: which shape a record has.
+///
+/// A consumer routes on this field alone. Before it existed the three shapes were told apart
+/// by which fields were absent, which meant a reader had to know the rule and a new shape
+/// could not be added without changing it.
+#[audit_part(field = "record_type")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
+#[strum(serialize_all = "snake_case")]
+pub enum RecordType {
+    /// Was this caller permitted to do these actions on these entities?
+    Authorization,
+    /// A retry answered from an idempotency record, so no authorization ran.
+    Replay,
+    /// Something the system did that touches identity or access.
+    Operation,
+}
+
 /// The `decision` value on an authorization record.
 #[audit_part(field = "decision")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
@@ -163,7 +180,13 @@ macro_rules! wire_value_as_str {
         }
     )+};
 }
-wire_value_as_str!(ActorType, Decision, AuditOperation, AuditOutcome);
+wire_value_as_str!(
+    ActorType,
+    Decision,
+    RecordType,
+    AuditOperation,
+    AuditOutcome
+);
 
 /// The audit backend: renders events into audit records and writes them as log lines.
 ///

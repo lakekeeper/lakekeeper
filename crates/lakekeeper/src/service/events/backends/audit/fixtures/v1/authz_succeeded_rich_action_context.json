@@ -1,6 +1,11 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
+  },
   "actions": [
     {
       "action_name": "create_table",
@@ -13,11 +18,13 @@
       "purge": "true"
     }
   ],
-  "entity": {
-    "entity_type": "warehouse",
-    "project-id": "00000000-0000-0000-0000-000000000000",
-    "warehouse-id": "019684ff-0000-7000-8000-000000000001"
-  },
+  "entities": [
+    {
+      "entity_type": "warehouse",
+      "project-id": "00000000-0000-0000-0000-000000000000",
+      "warehouse-id": "019684ff-0000-7000-8000-000000000001"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~alice"
@@ -38,6 +45,5 @@
       "allowed": true
     }
   ],
-  "idempotency_key": null,
   "decision": "allowed"
 }
