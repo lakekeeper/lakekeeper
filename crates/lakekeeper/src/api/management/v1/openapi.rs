@@ -128,6 +128,7 @@ use crate::{
         super::update_user,
         super::update_warehouse_delete_profile,
         super::update_warehouse_format_version_policy,
+        super::update_warehouse_rollback_compaction_policy,
         super::whoami,
     ),
     components(schemas(

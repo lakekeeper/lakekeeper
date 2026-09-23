@@ -149,7 +149,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -160,7 +160,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -632,9 +632,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.0"
+version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -643,14 +643,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.41.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1116,6 +1117,7 @@ dependencies = [
  "axum",
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-core",
  "futures-util",
  "headers",
@@ -1124,6 +1126,9 @@ dependencies = [
  "http-body-util",
  "mime",
  "pin-project-lite",
+ "serde_core",
+ "serde_html_form",
+ "serde_path_to_error",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -1917,7 +1922,7 @@ dependencies = [
  "openssl-sys",
  "pkg-config",
  "vcpkg",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2196,7 +2201,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2359,7 +2364,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2722,7 +2727,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "home",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "path-clean",
  "percent-encoding",
  "reqwest 0.12.28",
@@ -2896,9 +2901,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3270,7 +3275,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2056f3e4d53129039f2229f3b326aa538289be27#2056f3e4d53129039f2229f3b326aa538289be27"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?branch=jan%2Fvak-534-rollback-branch-to-snapshot#c219773dbe5f5b3ce511f7cacdf64725de3d4a4b"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3349,7 +3354,6 @@ dependencies = [
  "utoipa",
  "uuid",
  "valuable",
- "xxhash-rust",
 ]
 
 [[package]]
@@ -3708,6 +3712,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "jwks_client_rs"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3715,7 +3737,7 @@ checksum = "9d53eaaccb419ae77a896b482b5311ae537e941b17ab770673a3958dd0049bb8"
 dependencies = [
  "async-trait",
  "chrono",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -3818,6 +3840,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sdk-s3",
  "aws-sdk-sts",
  "aws-sigv4",
@@ -3828,6 +3851,7 @@ dependencies = [
  "azure_core",
  "azure_storage",
  "azure_storage_blobs",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "cloudevents-sdk",
@@ -3837,19 +3861,23 @@ dependencies = [
  "flate2",
  "futures",
  "gcloud-auth",
+ "hmac 0.12.1",
  "hostname",
  "http 1.4.1",
  "http-body-util",
+ "hyper-util",
  "iceberg",
  "iceberg-ext",
  "iso8601",
  "itertools 0.14.0",
+ "jsonwebtoken 11.0.0",
  "k8s-openapi",
  "lakekeeper",
  "lakekeeper-io",
  "lazy-regex",
  "limes",
  "maplit",
+ "metrics",
  "mockall",
  "moka",
  "pastey",
@@ -3862,7 +3890,9 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "serde_urlencoded",
+ "sha1 0.10.6",
  "similar",
+ "socket2",
  "sqlx",
  "strum",
  "strum_macros",
@@ -3891,6 +3921,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakekeeper-alloc"
+version = "0.13.1"
+dependencies = [
+ "axum-prometheus",
+ "serde_json",
+ "tikv-jemalloc-ctl",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lakekeeper-authz-openfga"
 version = "0.13.1"
 dependencies = [
@@ -3913,6 +3954,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-test",
+ "typed-builder 0.23.2",
  "url",
  "urlencoding",
  "utoipa",
@@ -3930,6 +3972,7 @@ dependencies = [
  "figment",
  "http 1.4.1",
  "lakekeeper",
+ "lakekeeper-alloc",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
  "lakekeeper-events-kafka",
@@ -3945,8 +3988,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.21.0"
-source = "git+https://github.com/lakekeeper/console?rev=v0.21.0#db3469578f3993a66bc1f2905ffe1e8c9c039582"
+version = "0.22.0"
+source = "git+https://github.com/lakekeeper/console?rev=v0.22.0#77e8ca6961585bde8280a644c77b3e84833cc458"
 dependencies = [
  "flate2",
  "fs_extra",
@@ -3999,6 +4042,7 @@ dependencies = [
  "anyhow",
  "assert-json-diff",
  "async-channel 2.5.0",
+ "async-trait",
  "aws-sdk-s3",
  "bytes",
  "chrono",
@@ -4027,6 +4071,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "url",
  "utoipa",
  "uuid",
 ]
@@ -4132,13 +4177,16 @@ dependencies = [
  "similar",
  "sqlx",
  "strum",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
  "tryhard",
  "typed-builder 0.23.2",
  "url",
  "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -4289,12 +4337,12 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.4.2"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?tag=v0.4.2#dcd1bb1b5fae6f1009111276c9695f0438a344e7"
+version = "0.6.0"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=641c81961b423c5e72239655e8a0cff7a8bd5790#641c81961b423c5e72239655e8a0cff7a8bd5790"
 dependencies = [
  "axum",
  "axum-extra",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "jwks_client_rs",
  "k8s-openapi",
  "kube",
@@ -4631,7 +4679,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4872,7 +4920,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6025,14 +6073,14 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -6106,7 +6154,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6117,9 +6165,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -6347,6 +6395,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_html_form"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2f2d7ff8a2140333718bb329f5c40fc5f0865b84c426183ce14c97d2ab8154f"
+dependencies = [
+ "form_urlencoded",
+ "indexmap 2.14.0",
+ "itoa",
+ "ryu",
+ "serde_core",
 ]
 
 [[package]]
@@ -6704,7 +6765,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7030,10 +7091,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7100,6 +7161,17 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float 2.10.1",
+]
+
+[[package]]
+name = "tikv-jemalloc-ctl"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661f1f6a57b3a36dc9174a2c10f19513b4866816e13425d3e418b11cc37bc24c"
+dependencies = [
+ "libc",
+ "paste",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
@@ -8173,7 +8245,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

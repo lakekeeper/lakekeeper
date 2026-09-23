@@ -3696,6 +3696,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/rollback-compaction-policy:
+    post:
+      tags:
+        - warehouse
+      summary: Update Rollback-Compaction Policy
+      description: |-
+        Enables or disables transparent commit (rollback-compaction-on-conflict) for a warehouse.
+        When enabled, a writer's commit that would otherwise fail optimistic-concurrency
+        validation solely because of intervening rollbackable compaction snapshots reaps those
+        snapshots and rebases the writer on top, so the writer wins over compaction.
+      operationId: update_warehouse_rollback_compaction_policy
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetWarehouseRollbackCompactionPolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Rollback-compaction policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/statistics:
     get:
       tags:
@@ -5955,6 +5992,13 @@ components:
         protected:
           type: boolean
           description: Whether the warehouse is protected from being deleted.
+        rollback-compaction-on-conflict:
+          type: boolean
+          description: |-
+            Whether transparent commit (rollback-compaction-on-conflict) is enabled for this
+            warehouse. When `true`, a writer's commit that would fail optimistic-concurrency
+            validation solely because of intervening rollbackable compaction snapshots reaps those
+            snapshots and rebases the writer on top, so the writer wins over compaction.
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
@@ -9123,6 +9167,17 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SetWarehouseRollbackCompactionPolicyRequest:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+          description: |-
+            When `true`, a writer's commit that would fail optimistic-concurrency validation solely
+            because of intervening rollbackable compaction snapshots reaps those snapshots and
+            rebases the writer on top, so the writer wins over compaction ("transparent commit").
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.

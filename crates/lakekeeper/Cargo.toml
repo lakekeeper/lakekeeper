@@ -70,6 +70,7 @@ lakekeeper-io = { path = "../io", features = [
 ] }
 lazy-regex = { workspace = true }
 limes = { workspace = true }
+metrics = { workspace = true }
 moka = { workspace = true }
 pastey = { workspace = true }
 percent-encoding = { workspace = true }

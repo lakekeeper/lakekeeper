@@ -114,3 +114,29 @@ For production workloads, we recommend running remove orphan files workers in de
 
 !!! warning
     Every run performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. The adaptive scheduler stretches the cadence on tables that produce few orphans, but each run still pays the listing cost.
+
+## Transparent Commit { #transparent-commit .lkp }
+
+Iceberg optimistic concurrency is symmetric: whoever commits second loses. When a compaction (a `REPLACE` snapshot) lands first, a concurrent writer's commit fails validation even though the compaction changed no logical table data — the compaction, being lower value, wins over the user's write. Transparent commit reverses that priority at the catalog: the writer wins, and the conflicting compaction is silently rolled back.
+
+The catalog uses a lazy *tag-and-reap* model. A compaction commit lands as an ordinary, durable snapshot; it merely carries a marker in its snapshot summary declaring it rollbackable. If no conflicting writer ever appears, it stays as a perfectly valid compaction result and nothing further happens. Only when a writer's commit would otherwise fail optimistic-concurrency validation does the catalog act: if *every* snapshot between the writer's expected base and the current branch tip is a rollbackable compaction snapshot, the catalog excises those snapshots, rebases the writer onto its expected base, and commits — folding the revert into the writer's own commit. The pre-compaction data files still physically exist, so restoring the earlier snapshot leaves the writer's positional deletes referencing live files again.
+
+If any genuine data commit sits between the writer's base and the tip, the catalog does **not** roll back — the writer takes a normal concurrency failure and retries, and the compaction snapshot becomes permanent. There is no timeout: rollback fires whenever the writer conflicts, regardless of how long ago the compaction committed. This is a yield primitive, not a rebase — the catalog drops the compaction snapshot rather than replaying it, which is what makes it safe on V2 positional-delete tables.
+
+### Two-part opt-in
+
+Transparent commit is disabled by default and requires two independent opt-ins:
+
+1. **Warehouse flag.** Enable it per warehouse:
+
+    ```bash
+    curl -X POST ".../management/v1/warehouse/{warehouse_id}/rollback-compaction-policy" \
+      -H "Content-Type: application/json" \
+      -d '{"enabled": true}'
+    ```
+
+2. **Per-snapshot marker.** The compaction engine must stamp its `REPLACE` snapshot summary with either `lakekeeper.rollbackable=true` (native) or Apache Polaris's `polaris.internal.conflict-resolution.by-operation-type.replace=rollback` (honoured for compatibility with engines already integrated against Polaris). Because the opt-in is a snapshot-summary marker, external compaction engines participate without any Lakekeeper-specific integration beyond stamping the marker.
+
+### Notes and limitations
+
+A rolled-back compaction leaves its data and manifest files behind; they are reclaimed by [Remove Orphan Files](#remove-orphan-files), not synchronously during the commit. Rollback is attempted only for a clean single-snapshot writer append to one branch; snapshots referenced by another branch or tag are never excised. On V3 (row-lineage) tables, rollback is skipped when a reaped snapshot carries row ranges.

@@ -18,7 +18,8 @@ use lakekeeper::{
         DatabaseIntegrityError, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
         ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
+        SetWarehouseProtectedError, SetWarehouseRollbackCompactionPolicyError,
+        SetWarehouseStatusError, StorageProfileSerializationError,
         SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
         WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
         WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
@@ -67,6 +68,7 @@ pub(super) async fn set_warehouse_deletion_profile<
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -140,6 +142,7 @@ pub(crate) async fn create_warehouse(
                                     protected,
                                     allowed_format_versions,
                                     default_format_version,
+                                    rollback_compaction_on_conflict,
                                     managed_by as "managed_by: ManagedBy",
                                     updated_at,
                                     version),
@@ -336,6 +339,7 @@ struct WarehouseRecord {
     managed_by: ManagedBy,
     allowed_format_versions: Vec<i16>,
     default_format_version: Option<i16>,
+    rollback_compaction_on_conflict: bool,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
 }
@@ -367,6 +371,7 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             managed_by: value.managed_by,
             allowed_format_versions,
             default_format_version,
+            rollback_compaction_on_conflict: value.rollback_compaction_on_conflict,
             updated_at: value.updated_at,
             version: WarehouseVersion::from(value.version),
         })
@@ -398,6 +403,7 @@ pub(crate) async fn list_warehouses<
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -438,6 +444,7 @@ pub(super) async fn get_warehouse_by_name(
             protected,
             allowed_format_versions,
             default_format_version,
+            rollback_compaction_on_conflict,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -481,6 +488,7 @@ pub(crate) async fn get_warehouse_by_id<
             protected,
             allowed_format_versions,
             default_format_version,
+            rollback_compaction_on_conflict,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -605,6 +613,7 @@ pub(crate) async fn rename_warehouse(
             protected,
             allowed_format_versions,
             default_format_version,
+            rollback_compaction_on_conflict,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -645,6 +654,7 @@ pub(crate) async fn set_warehouse_status(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -685,6 +695,7 @@ pub(crate) async fn set_warehouse_protection(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -725,11 +736,53 @@ pub(crate) async fn set_warehouse_managed_by(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             "#,
         managed_by as ManagedBy,
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
+
+    Ok(warehouse.try_into()?)
+}
+
+pub(crate) async fn set_warehouse_rollback_compaction_on_conflict(
+    warehouse_id: WarehouseId,
+    enabled: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
+            SET rollback_compaction_on_conflict = $1
+            WHERE warehouse_id = $2
+            RETURNING
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                allowed_format_versions,
+                default_format_version,
+                rollback_compaction_on_conflict,
+                managed_by as "managed_by: ManagedBy",
+                updated_at,
+                version
+            "#,
+        enabled,
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)
@@ -803,6 +856,7 @@ pub(crate) async fn set_warehouse_format_version_policy(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -850,6 +904,7 @@ pub(crate) async fn update_storage_profile(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                rollback_compaction_on_conflict,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
