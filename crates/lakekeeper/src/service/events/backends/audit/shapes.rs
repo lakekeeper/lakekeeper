@@ -48,10 +48,12 @@ pub const TOP_LEVEL_FIELDS: &[&str] = &[
     "outcome",
 ];
 
-/// The `tracing` target of every audit record. The module path the previous implementation
-/// emitted from, kept so operator filters keep matching; the move to a stable, documented
-/// target is a versioned change of its own.
-const TARGET: &str = "lakekeeper::service::events::backends::audit";
+/// The `tracing` target of every audit record: a fixed name, not this module's path.
+///
+/// It is the handle operators filter on, so it cannot move when the code is reorganised. It
+/// is also what [`crate::audit::enabled`] asks about, and the two have to be the same string
+/// or the gate would answer for a target no record is written to.
+const TARGET: &str = crate::audit::AUDIT_TARGET;
 
 /// The one `tracing::info!` every audit record goes through: it stamps the target,
 /// `event_source` and `audit_format`, so no record can miss the version. Every other emission

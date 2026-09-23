@@ -16,7 +16,10 @@ pub mod shapes;
 pub mod validate;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
-pub use part::{AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled};
+pub use part::{
+    AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled,
+    warn_on_retired_audit_filter,
+};
 pub use parts::{
     ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityRecord, ErrorRecord,
     GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord, UserSubjectRecord,

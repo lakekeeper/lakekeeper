@@ -105,6 +105,7 @@ pub mod audit {
         AuditJson, AuditPart, DecisionRecord, EntityRecord, ErrorRecord, GrantContextRecord,
         HandlerContext, Kind, OperationRecord, Registration, RoleSubjectRecord, SubjectRecord,
         UserSubjectRecord, WireStr, enabled, is_emitter_name, is_major_minor,
+        warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::{reference, schema, validate};
