@@ -49,10 +49,27 @@ SCHEMA_PATH = "audit-format/schema.json"
 # tree, before anything else.
 CONFIG_PATH = "audit-format/config.json"
 
+# The Rust constant every record's version is read from, and the tree searched for its
+# declaration. Both are configurable because another repository names and places its own.
+VERSION_CONST = "AUDIT_FORMAT"
+VERSION_SEARCH_PATH = "crates/"
+
+# The generated field reference of this repository's emitter. Regenerated beside the schema,
+# so a schema that moved without it means one of the two was not regenerated.
+REFERENCE_PATH = "docs/docs/audit/reference-lakekeeper.md"
+
 
 def load_config() -> None:
-    """Override the path constants from `CONFIG_PATH`, if the file exists."""
+    """Override the path constants from `CONFIG_PATH`, if the file exists.
+
+    Everything this checker needs to find is named here, so the script runs unchanged in a
+    repository laid out differently: the declaration it reads the version from, the tree it
+    searches for that declaration, the schema, the generated reference, the baseline and the
+    fragments. The defaults are Lakekeeper's, so this repository needs no config file.
+    """
     global AUDIT_DIR, SCHEMA_PATH, BASELINE_PATH, FRAGMENT_DIR
+    global VERSION_CONST, VERSION_SEARCH_PATH, REFERENCE_PATH
+    global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
     if not path.is_file():
         return
@@ -66,14 +83,33 @@ def load_config() -> None:
     SCHEMA_PATH = config.get("schema", SCHEMA_PATH)
     BASELINE_PATH = config.get("baseline", BASELINE_PATH)
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
+    REFERENCE_PATH = config.get("reference", REFERENCE_PATH)
+    VERSION_CONST = config.get("version_const", VERSION_CONST)
+    VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
+    GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
 # Two patterns for the same thing: `git grep -E` is POSIX ERE, which has no `\s`.
 #
 # Both are anchored to a `pub const` DECLARATION rather than to any occurrence of the text.
 # Without the anchor, prose that merely quotes the constant — a doc comment explaining the
 # format, say — counts as a second declaration and fails the build, while a commented-out
 # declaration would count as a real one.
-GIT_PATTERN = r'^[[:space:]]*pub const AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"'
-VERSION_RE = re.compile(r'^\s*pub const AUDIT_FORMAT:\s*&str\s*=\s*"(\d+)\.(\d+)"')
+def version_patterns(const: str) -> tuple[str, re.Pattern[str], re.Pattern[str]]:
+    """The three patterns that find, read and rewrite the version declaration of `const`.
+
+    Built from the constant's name rather than written out, so naming it in the config file
+    changes all three together and they cannot disagree.
+    """
+    name = re.escape(const)
+    return (
+        rf'^[[:space:]]*pub const {const}: &str = "[0-9]+\.[0-9]+"',
+        re.compile(rf'^\s*pub const {name}:\s*&str\s*=\s*"(\d+)\.(\d+)"'),
+        re.compile(
+            rf'(^[ \t]*pub const {name}:[ \t]*&str[ \t]*=[ \t]*")\d+\.\d+(")', re.MULTILINE
+        ),
+    )
+
+
+GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
 
 
 # ── git plumbing ────────────────────────────────────────────────────────────────
@@ -112,7 +148,7 @@ def declared_versions(rev: str) -> dict[str, tuple[int, int]]:
     Searched tree-wide so moving the module does not read as the version disappearing;
     keyed by path because a second match must be an error, not a silent pick.
     """
-    out = _git_grep("-E", GIT_PATTERN, rev, "--", "crates/")
+    out = _git_grep("-E", GIT_PATTERN, rev, "--", VERSION_SEARCH_PATH)
     if out is None:
         return {}
     found: dict[str, tuple[int, int]] = {}
@@ -168,11 +204,6 @@ LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 REQUIRED_LEVEL = {"breaking": "major", "additive": "minor"}
 
 FRAGMENT_LEVEL_RE = re.compile(r"^level:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
-# Anchored to the declaration, like `VERSION_RE`, and capturing everything either side of
-# the value so a rewrite cannot disturb the rest of the line.
-VERSION_WRITE_RE = re.compile(
-    r'(^[ \t]*pub const AUDIT_FORMAT:[ \t]*&str[ \t]*=[ \t]*")\d+\.\d+(")', re.MULTILINE
-)
 
 
 def parse_baseline(text: str, where: str) -> tuple[int, int] | None:
@@ -478,6 +509,31 @@ def schema_at(rev: str) -> dict | None:
     if not isinstance(schema, dict) or not isinstance(schema.get("$defs"), dict):
         raise CheckFailed(f"::error::{SCHEMA_PATH} at {rev} has no `$defs` object.")
     return schema
+
+
+def file_at(rev: str, path: str) -> str | None:
+    """The contents of `path` at `rev`, or `None` when it does not exist there."""
+    if not _git("ls-tree", "-r", "--name-only", rev, "--", path).strip():
+        return None
+    return _git("show", f"{rev}:{path}")
+
+
+def require_reference_regenerated(merge_base: str, head_ref: str) -> None:
+    """Refuse a schema change whose generated reference did not move with it.
+
+    Both are written by the same command, so one changing without the other means one of the
+    two was regenerated and committed and the other was not. The stale half is the one
+    customers read.
+
+    Silent when the repository commits no reference: not every emitter publishes one.
+    """
+    base, head = file_at(merge_base, REFERENCE_PATH), file_at(head_ref, REFERENCE_PATH)
+    if base is None or head is None or base != head:
+        return
+    raise CheckFailed(
+        f"::error::{SCHEMA_PATH} changed and {REFERENCE_PATH} did not. They are generated "
+        f"together; run `just update-audit-schema` and commit both."
+    )
 
 
 def emitter_of(schema: dict) -> tuple[str | None, str | None]:
@@ -806,6 +862,8 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
         moved = "" if base_format == head_format else f" -> {head_format}"
         print(f"Schema:     emitter `{name}`, format {base_format}{moved}")
     schema_kind, reasons = classify_schema(base_schema, head_schema)
+    if reasons:
+        require_reference_regenerated(merge_base, head_ref)
     for reason in reasons:
         print(f"Schema:     {reason}")
     print(
@@ -1102,7 +1160,7 @@ def worktree_fragments() -> dict[str, str]:
 def worktree_declaration() -> tuple[str, tuple[int, int]]:
     """The file declaring AUDIT_FORMAT in the working tree, and its value."""
     found: dict[str, tuple[int, int]] = {}
-    for line in (_git_grep("-E", GIT_PATTERN, "--", "crates/") or "").splitlines():
+    for line in (_git_grep("-E", GIT_PATTERN, "--", VERSION_SEARCH_PATH) or "").splitlines():
         # No revision, so `git grep` prefixes `path:` only — and a path cannot contain a
         # colon in git, so partitioning from the left is exact.
         path, _, body = line.partition(":")
@@ -1830,6 +1888,19 @@ def self_test() -> int:
         refused = True
     check("stamp: two emitters are refused", refused, True)
     # The check that the committed schema agrees with the constant it was generated from.
+    # The three version patterns are built from one name, so a repository that names its
+    # constant differently changes all three at once and they cannot disagree.
+    git_pattern, read_re, write_re = version_patterns("PLUS_AUDIT_FORMAT")
+    line = '    pub const PLUS_AUDIT_FORMAT: &str = "2.1";'
+    check("const: the reader finds a renamed constant",
+          read_re.search(line).groups() if read_re.search(line) else None, ("2", "1"))
+    check("const: the writer rewrites only the value",
+          write_re.sub(r"\g<1>3.0\g<2>", line),
+          '    pub const PLUS_AUDIT_FORMAT: &str = "3.0";')
+    check("const: the grep pattern names it", "PLUS_AUDIT_FORMAT" in git_pattern, True)
+    check("const: the reader ignores another constant",
+          version_patterns("AUDIT_FORMAT")[1].search(line), None)
+
     check("stamp: a format the constant does not declare is caught",
           emitter_of({"x-audit-emitter": {"name": "lakekeeper", "format": "2.0"}})[1] != show((1, 0)),
           True)

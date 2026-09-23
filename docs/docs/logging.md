@@ -66,9 +66,28 @@ Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` str
 
 **Values, as well as keys, are open.** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `decision`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, the `determined_by` factor kinds and their `effect`, and the kinds inside an action's `update-kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
 
-That promise covers the values Lakekeeper itself emits. `operation` and `outcome` on operational records are deliberately open to other components: the macro that emits them accepts any value, so an authorizer or an enterprise build names its own, and those are governed by whoever ships them rather than by `audit_format`. `ldap_resolve_roles` below is one such value.
+That promise covers the values Lakekeeper itself emits. Other components write to the same log and name their own values, and those are governed by whoever ships them rather than by `audit_format`. Which brings us to the second version number.
 
-Every object, field and closed set of values a record can carry is listed in the [audit format reference](audit/reference.md), generated from the emitting code. The sections below describe what the records mean and show examples.
+#### Two version numbers, and what each one governs {#audit-emitter}
+
+Every record carries two versions, and they answer different questions.
+
+```json
+{"event_source": "audit", "audit_format": "1.0",
+ "record_type": "operation",
+ "emitter": {"name": "lakekeeper-plus", "format": "2.1"}, "...": "..."}
+```
+
+`audit_format` governs **the whole record's shape**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper itself defines. Every record carries it, whoever produced the record.
+
+`emitter` says **who produced the record and what they contribute**. `emitter.name` identifies the product; `emitter.format` is that product's own `MAJOR.MINOR`, and it governs that product's vocabulary, its `context` objects, and any record shape it defines. It moves on that product's release cycle, not on Lakekeeper's.
+
+**Match on `audit_format` for the whole log, and on `emitter.name` together with `emitter.format` for anything that emitter carries.** Both can move independently: an addition to a product's own vocabulary moves only its `emitter.format`, and a change to the record's overall shape moves only `audit_format`.
+
+!!! warning "The two numbers are not the same field written twice"
+    For records Lakekeeper itself produces, `emitter.name` is `lakekeeper` and `emitter.format` happens to equal `audit_format`, because one project governs both. That equality is a property of that one emitter, not of the format. A record from any other emitter carries two different numbers, and a consumer that compares whichever it first encountered will route those records wrongly and silently. Compare the one whose scope you mean.
+
+Each emitter publishes its own generated reference, listing every object and value set it contributes: Lakekeeper's is the [audit format reference](audit/reference-lakekeeper.md). The sections below describe what the records mean and show examples.
 
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 

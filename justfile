@@ -119,7 +119,8 @@ update-audit-fixtures:
     cargo test -p lakekeeper --lib service::events::backends::audit::tests
 
 # Recompute AUDIT_FORMAT from audit-format/, then regenerate the committed audit schema
-# (audit-format/schema.json) and the field reference (docs/docs/audit/reference.md) from the
+# (audit-format/schema.json) and the emitter's field reference
+# (docs/docs/audit/reference-<emitter>.md) from the
 # registry of every in-repo crate that declares audit types. Dev profile: the registry exists in
 # debug builds only. Review the diff — it is what consumers will see.
 update-audit-schema:

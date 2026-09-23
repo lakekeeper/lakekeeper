@@ -73,7 +73,7 @@ fn the_committed_schema_is_the_merge_of_the_crate_schemas() {
 fn the_committed_reference_matches_the_schema() {
     let merged = schema::merge_crate_schemas(&committed_crate_schemas());
     write_or_compare(
-        &repo_root().join("docs/docs/audit/reference.md"),
+        &repo_root().join(format!("docs/docs/audit/reference-{EMITTER}.md")),
         &render_reference(&merged),
         "audit field reference",
     );

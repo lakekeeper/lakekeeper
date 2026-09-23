@@ -36,7 +36,7 @@ nav:
           - View Security: view-security.md
           - UI Branding <span class="lkp"></span>: ui-branding.md
           - logging.md
-          - Audit Log Reference: audit/reference.md
+          - Audit Log Reference: audit/reference-lakekeeper.md
           - monitoring.md
           - opa.md
           - table-maintenance.md
