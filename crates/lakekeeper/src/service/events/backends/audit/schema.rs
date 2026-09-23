@@ -39,6 +39,60 @@ fn registrations(keep: impl Fn(&Registration) -> bool) -> Vec<&'static Registrat
     regs
 }
 
+/// Strip `null` from every optional property's type, in place and at every depth.
+///
+/// A field with no value is left out of the record; nothing emits `null`. The schema
+/// generator does not know that — it renders `Option<T>` as "T or null" — so without this
+/// the schema would promise a shape the emitter cannot produce, and a consumer would write a
+/// parser for a value they will never see. A property that is required keeps whatever type
+/// it has: `null` there would be a real value, not an absence.
+fn drop_null_from_optionals(schema: &mut Value) {
+    if let Some(object) = schema.as_object_mut() {
+        let required: Vec<String> = object
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|r| {
+                r.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+            for (name, spec) in properties.iter_mut() {
+                if required.contains(name)
+                    && let Some(kinds) = spec.get("type").and_then(Value::as_array)
+                    && kinds.iter().any(|k| k == "null")
+                {
+                    continue;
+                }
+                if let Some(spec) = spec.as_object_mut()
+                    && let Some(kinds) = spec.get("type").and_then(Value::as_array)
+                {
+                    let kept: Vec<Value> = kinds.iter().filter(|k| *k != "null").cloned().collect();
+                    if kept.len() != kinds.len() {
+                        spec.insert(
+                            "type".into(),
+                            if kept.len() == 1 {
+                                kept[0].clone()
+                            } else {
+                                Value::Array(kept)
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        for value in object.values_mut() {
+            drop_null_from_optionals(value);
+        }
+    } else if let Some(array) = schema.as_array_mut() {
+        for value in array {
+            drop_null_from_optionals(value);
+        }
+    }
+}
+
 /// The definitions the registrations contribute, plus every type they reference.
 fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12());
@@ -92,6 +146,9 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 .or_insert_with(|| json!(if values { "enum" } else { "part" }));
         }
         defs.entry(name).or_insert(schema);
+    }
+    for schema in defs.values_mut() {
+        drop_null_from_optionals(schema);
     }
     defs
 }

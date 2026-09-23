@@ -44,7 +44,7 @@ RUST_LOG=warn,lakekeeper::audit=info
 RUST_LOG=info,lakekeeper::audit=warn
 ```
 
-Filtering this way suppresses the record before it is built, so it costs nothing to leave off. Routing records **after** they are emitted is a different job: match on `event_source`, not on the target, because the `target` key itself is added by the log subscriber.
+Filtering this way stops the record reaching the log. Routing records **after** they are emitted is a different job: match on `event_source`, not on the target, because the `target` key itself is added by the log subscriber.
 
 To disable audit logs entirely:
 
@@ -156,24 +156,24 @@ One of them is worth a word. The `target` **key** belongs to the subscriber, but
 
 Emitted for every authz check. Always contain `action`/`actions`, `entity`/`entities`, `actor`, and `decision`.
 
-Discriminate on `operation`, not on the presence of `entity`: a record carrying `operation` belongs to the [operational family](#operational-audit-events) below even when it also carries `action`/`entity`.
+Discriminate on `record_type`, which every record carries and which is the only field meant for the purpose. A record is `authorization`, `replay` or `operation`.
 
 **Structure:**
 
 | Field                  | Type            | Description                       |
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
-| `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. |
-| `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
+| `actions`              | Array           | Operation(s) attempted, always an array however many there are. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. |
+| `entities`             | Array           | Resource(s) accessed, always an array however many there are. Each entity contains `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
 | `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
-| `user_agent`           | String or null  | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. `null` when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
+| `user_agent`           | String          | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. Absent when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `break_glass`          | String          | Optional; present only when the caller sent the `x-break-glass` request header with a value that was non-empty after trimming, which nearly no request does. The reason the caller stated for marking the request an emergency override, recorded as sent (undecodable bytes replaced) and truncated to 256 bytes. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `idempotency_key`      | String \| null  | The request's `Idempotency-Key`, or `null` when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
 | `context`              | Object          | Optional. Additional request context as a flat string-to-string map. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
-| `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
+| `failure_reason`       | String          | Only on failed events. One of `ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`, `InternalAuthorizationError`, `InternalCatalogError`, `InvalidRequestData`. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
@@ -194,7 +194,7 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 A write failure never appears as a denial. But `decision` alone is not a refusal filter: `"denied"` is stamped on *every* authorization-failed record, including the ones where no verdict was reached — a catalog or authorizer outage during the check surfaces as `decision: "denied"` with a `5xx`. To select actual refusals, filter on the reason as well:
 
 ```jq
-select(.decision == "denied" and (.failure_reason | keys[0]) as $r
+select(.decision == "denied" and .failure_reason as $r
        | $r == "ActionForbidden" or $r == "ResourceNotFound" or $r == "CannotSeeResource")
 ```
 
@@ -390,11 +390,11 @@ Each `determined_by` element is a single-key object naming the kind of factor, w
 | Factor            | Field       | Type           | Description                                                                 |
 |-------------------|-------------|----------------|-----------------------------------------------------------------------------|
 | `Policy`          | `policy_id` | String         | Authorizer-assigned identifier of the policy. Always present.               |
-| `Policy`          | `name`      | String or null | Author-supplied policy name. `null` when the author provided none. Not guaranteed unique. |
-| `Policy`          | `effect`    | Object         | `{"Permit": []}` or `{"Forbid": []}`. The empty array is the variant payload. |
-| `Policy`          | `source`    | String or null | Opaque origin of the policy. `null` when the producer cannot attribute one.  |
-| `SystemAuthority` | `source`    | String or null | Opaque identifier of the built-in authority tier. `null` when none can be attributed. |
-| `SystemAuthority` | `reason`    | String or null | Human-facing reason the tier applied. `null` when the producer gives none.    |
+| `policy`          | `name`      | String         | Author-supplied policy name. Absent when the author provided none. Not guaranteed unique. |
+| `policy`          | `effect`    | String         | `permit` or `forbid`. |
+| `policy`          | `source`    | String         | Opaque origin of the policy. Absent when the producer cannot attribute one.  |
+| `system-authority`| `source`    | String         | Opaque identifier of the built-in authority tier. Absent when none can be attributed. |
+| `system-authority`| `reason`    | String         | Human-facing reason the tier applied. Absent when the producer gives none.    |
 
 Note that these fields are emitted as `null` when absent, whereas the optional fields of an `authorizations` entry — `id`, `for-principal`, `allowed`, `determined_by` — are omitted entirely. Both mean "not recorded"; the encoding differs by where the field sits.
 
@@ -655,7 +655,7 @@ This record names the principal. The error response does not, because responses 
 | Context field | Description |
 |---------------|-------------|
 | `gate`        | Which gate decided. Useful when you run more than one |
-| `denied_by`   | The gate's rule that decided it. Present as `null` — not absent — when the gate named none, as a fail-closed rejection does. Test the value, not the key |
+| `denied_by`   | The gate's rule that decided it. Absent when the gate named none, as a fail-closed rejection does |
 | `status`      | `403` or `503`, as a JSON **number** rather than a string, matching `error.code` on authorization events |
 | `error_type`  | The gate's error type, e.g. `ExternalEnforceForbidden` |
 | `message`     | The gate's own wording, as the caller received it. What separates two rejections sharing an `error_type` — the same gate failing closed on a missing precondition rather than on an unreachable upstream. Not to be confused with the envelope `message` at the top level of every log line |
@@ -676,9 +676,9 @@ There is one record per answer from the control plane, not one per request. The 
 
 `actor` has the same shape here as in `admission_decided`, including the assumed role. The two records join on it directly.
 
-**Idempotent replays (`operation` = `idempotent_replay`):**
+**Idempotent replays (`record_type` = `replay`):**
 
-Emitted when a request carrying an `Idempotency-Key` was answered from the stored record instead of being executed. `outcome` is always `replayed`.
+Emitted when a request carrying an `Idempotency-Key` was answered from the stored record instead of being executed. Identified by `record_type: "replay"`; it carries no `operation` or `outcome`.
 
 These records also carry the top-level `action`, `entity`, `privilege_source` and `user_agent` fields of an authorization event, so a retry reads with the same queries as the request that did the work — join the two on `idempotency_key`, which every *authorization* record carries too. The operational records above (`grant_created`, `ldap_resolve_roles`) do not carry it.
 

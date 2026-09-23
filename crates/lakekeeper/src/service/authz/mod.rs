@@ -715,6 +715,7 @@ impl CatalogAction for CatalogRoleAction {
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[crate::audit::audit_part(field = "root_level")]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum RootLevelGrants {
@@ -865,9 +866,9 @@ pub enum GrantSubtreePrivileges {
 /// The `privilege_scope` label: whether a subtree request reaches every privilege or only
 /// the ones it narrows to.
 ///
-/// Its own enum rather than a literal at the emission site so the two values reach the
-/// wire-value manifest and a rename fails `check-audit-format`, as `RootLevelGrants` does
-/// for `root_level`.
+/// Its own enum rather than a literal at the emission site so the two values reach the audit
+/// schema and a rename fails `check-audit-format`, as `RootLevelGrants` does for
+/// `root_level`.
 #[derive(
     Debug,
     Clone,
@@ -878,6 +879,7 @@ pub enum GrantSubtreePrivileges {
     strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
+#[crate::audit::audit_part(field = "privilege_scope")]
 #[strum(serialize_all = "snake_case")]
 pub enum PrivilegeScope {
     Every,

@@ -2018,6 +2018,8 @@ fn a_filter_naming_the_retired_target_is_reported() {
         "lakekeeper::service::events::backends::audit=info",
         "info,lakekeeper::service::events=trace",
         "lakekeeper::service=debug,sqlx=warn",
+        // The admission gate emitted from its own module, so its path is retired too.
+        "lakekeeper::service::admission=info",
     ] {
         assert!(
             !retired(filter).is_empty(),

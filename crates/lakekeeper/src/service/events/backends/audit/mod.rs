@@ -149,7 +149,6 @@ pub enum AuditOperation {
     AdmissionDecided,
     GrantCreated,
     GrantRevoked,
-    IdempotentReplay,
 }
 
 /// The `outcome` value on the operational records this crate emits. Open to other crates in
@@ -159,7 +158,6 @@ pub enum AuditOperation {
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOutcome {
     Success,
-    Replayed,
     /// An admission gate denied the caller authoritatively.
     Forbidden,
     /// An admission gate could not reach an upstream it needs and failed closed.
@@ -190,6 +188,28 @@ wire_value_as_str!(
     AuditOperation,
     AuditOutcome
 );
+
+// `TableUpdateKind` reaches the wire as the `update_kinds` field of a commit action's
+// context, but it lives in `iceberg-ext`, which cannot carry the attribute: the expansion
+// names `::lakekeeper`, and this crate already depends on that one. Registered here instead,
+// from the same `VariantNames` the attribute would have read, so a renamed variant still
+// fails the format check rather than reaching consumers unannounced.
+#[cfg(debug_assertions)]
+crate::__private::inventory::submit! {
+    Registration {
+        kind: Kind::Enum,
+        type_name: || core::any::type_name::<iceberg_ext::catalog::TableUpdateKind>(),
+        emitter_name: <crate::Lakekeeper as AuditEmitter>::NAME,
+        emitter_type: || core::any::type_name::<crate::Lakekeeper>(),
+        emitter_format: <crate::Lakekeeper as AuditEmitter>::FORMAT,
+        defining_crate: env!("CARGO_PKG_NAME"),
+        schema_name: None,
+        schema: None,
+        wire_field: Some("update_kinds"),
+        wire_values:
+            <iceberg_ext::catalog::TableUpdateKind as strum::VariantNames>::VARIANTS,
+    }
+}
 
 /// The audit backend: renders events into audit records and writes them as log lines.
 ///

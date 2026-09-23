@@ -72,6 +72,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format" — it has the decision table, the registration lists, and what each check does and does not cover.
 
 - `AUDIT_FORMAT` is derived from `audit-format/`. Write a fragment; never edit a version number.
+- A `context` value drawn from a fixed set is a vocabulary: put `#[audit_part(field = "<key>")]` on its enum so a rename fails the format check. A value derived from the request is data and needs nothing. At the emission site the two look identical.
 - Never build a wire value from a bare string. Put `#[audit_part(field = "...")]` on a vocabulary enum and emit `Variant::as_wire()`; `WireStr::new` is for the attribute's expansion only and a test enforces that.
 - Never add a `_ =>` arm to an `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
 - Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.

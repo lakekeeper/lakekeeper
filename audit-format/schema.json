@@ -70,18 +70,8 @@
           "description": "One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`."
         },
         "principal": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The authenticated principal. Present for `principal` and `assumed-role`."
-        },
-        "email": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Best-effort email of `principal`. Present only when the operator enabled it and one\nwas available. Metadata, not identity: correlate on `principal`."
         },
         "assumed_role": {
           "anyOf": [
@@ -122,10 +112,7 @@
           "description": "The gate that rejected the request."
         },
         "denied_by": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The rule of the gate that decided, when the gate names one."
         },
         "status": {
@@ -211,8 +198,7 @@
       "enum": [
         "admission_decided",
         "grant_created",
-        "grant_revoked",
-        "idempotent_replay"
+        "grant_revoked"
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "operation",
@@ -222,7 +208,6 @@
       "type": "string",
       "enum": [
         "forbidden",
-        "replayed",
         "success",
         "unavailable"
       ],
@@ -287,17 +272,11 @@
           "description": "Which authority answered: the authorizer, or a bypass."
         },
         "user_agent": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
         },
         "break_glass": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The stated break-glass reason. Absent unless the caller claimed one."
         },
         "context": {
@@ -319,10 +298,7 @@
           "description": "One entry per permission evaluated."
         },
         "idempotency_key": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The request's `Idempotency-Key`. Absent when the caller sent none."
         },
         "decision": {
@@ -330,10 +306,7 @@
           "description": "Whether the request was permitted."
         },
         "failure_reason": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "Why a denied record was denied, as the vocabulary spells it."
         },
         "error": {
@@ -605,10 +578,7 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The client's id for this check in a batch, or its index. Absent for single checks."
         },
         "for-principal": {
@@ -631,10 +601,7 @@
           "description": "The entity the action was evaluated against."
         },
         "allowed": {
-          "type": [
-            "boolean",
-            "null"
-          ],
+          "type": "boolean",
           "description": "The authorizer's answer. Absent when an upstream error stopped the evaluation."
         },
         "determined_by": {
@@ -663,10 +630,7 @@
               "description": "Stable, authorizer-assigned identifier of the policy (e.g. the Cedar\n`PolicyId`). Always present."
             },
             "name": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "description": "Human-facing name the author gave the policy (e.g. a `@name` or\n`@id` annotation). Neither required nor guaranteed unique; absent\nwhen the author provided none."
             },
             "effect": {
@@ -674,10 +638,7 @@
               "description": "Whether the policy permits or forbids."
             },
             "source": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "description": "Opaque origin of the policy (e.g. a policy-source identifier).\nAbsent when the authorizer cannot attribute a source."
             },
             "type": {
@@ -696,17 +657,11 @@
           "type": "object",
           "properties": {
             "source": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "description": "Opaque, authorizer-assigned identifier of the built-in authority\ntier that granted the action. Absent when none can be attributed."
             },
             "reason": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "description": "Human-facing reason the tier applied (e.g. an administrator\nlockout-recovery grant). Absent when the authorizer gives none."
             },
             "type": {
@@ -910,17 +865,11 @@
           "description": "The kind of resource the grant is on."
         },
         "resource_id": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The exact resource. Absent for server grants, whose type is their whole identity."
         },
         "warehouse_id": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The containing warehouse, for warehouse-scoped resources."
         }
       },
@@ -1096,6 +1045,16 @@
       "description": "Whether a determining policy permits or forbids.",
       "x-audit-kind": "enum"
     },
+    "PrivilegeScope": {
+      "type": "string",
+      "enum": [
+        "every",
+        "only"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "privilege_scope",
+      "x-audit-type": "lakekeeper::service::authz::PrivilegeScope"
+    },
     "PrivilegeSource": {
       "type": "string",
       "enum": [
@@ -1197,10 +1156,7 @@
           "description": "Which authority would have answered, had one been asked."
         },
         "user_agent": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
         },
         "idempotency_key": {
@@ -1272,6 +1228,16 @@
       "description": "A role named as a target.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::RoleSubjectRecord"
+    },
+    "RootLevelGrants": {
+      "type": "string",
+      "enum": [
+        "excluded",
+        "included"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "root_level",
+      "x-audit-type": "lakekeeper::service::authz::RootLevelGrants"
     },
     "ServerRelation": {
       "type": "string",
@@ -1347,6 +1313,37 @@
       "x-audit-field": "action_name",
       "x-audit-type": "lakekeeper_authz_openfga::relations::TableRelation"
     },
+    "TableUpdateKind": {
+      "type": "string",
+      "enum": [
+        "add-encryption-key",
+        "add-schema",
+        "add-snapshot",
+        "add-sort-order",
+        "add-spec",
+        "assign-uuid",
+        "remove-encryption-key",
+        "remove-partition-specs",
+        "remove-partition-statistics",
+        "remove-properties",
+        "remove-schemas",
+        "remove-snapshot-ref",
+        "remove-snapshots",
+        "remove-statistics",
+        "set-current-schema",
+        "set-default-sort-order",
+        "set-default-spec",
+        "set-location",
+        "set-partition-statistics",
+        "set-properties",
+        "set-snapshot-ref",
+        "set-statistics",
+        "upgrade-format-version"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "update_kinds",
+      "x-audit-type": "iceberg_ext::catalog::table_update_kind::TableUpdateKind"
+    },
     "TagRelation": {
       "type": "string",
       "enum": [
@@ -1372,13 +1369,6 @@
         "user": {
           "type": "string",
           "description": "The user's principal id."
-        },
-        "email": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Best-effort email of `user`. Present only when the operator enabled it and one was\navailable. Metadata, not identity: correlate on `user`."
         }
       },
       "required": [

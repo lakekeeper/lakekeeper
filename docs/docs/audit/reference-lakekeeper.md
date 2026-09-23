@@ -84,7 +84,6 @@ The `actor` object: who made the request, as authentication established it.
 |---|---|---|---|
 | `actor_type` | string | always | One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`. |
 | `principal` | string | optional | The authenticated principal. Present for `principal` and `assumed-role`. |
-| `email` | string | optional | Best-effort email of `principal`. Present only when the operator enabled it and one was available. Metadata, not identity: correlate on `principal`. |
 | `assumed_role` | [`AssumedRoleRecord`](#assumedrolerecord) | optional | The role acted as. Present for `assumed-role`; `principal` is still the human. |
 
 ### `AssumedRoleRecord`
@@ -99,11 +98,15 @@ The role an `assumed-role` actor acts as.
 
 ### `ContextValue`
 
-One of:
+One of 3 shapes.
 
-- object
-- array of string
-- string
+**Shape 1**
+
+An object whose keys are data and whose values are string.
+
+**Shape 2**
+
+**Shape 3**
 
 ### `DecisionRecord`
 
@@ -128,10 +131,25 @@ Discriminated by `type`: `policy` names a policy the authorizer matched, and
 schema is a closed `oneOf` over those two, so a further kind is a schema change a
 generated client has to be rebuilt for rather than one it absorbs on its own.
 
-One of:
+One of 2 shapes.
 
-- object
-- object
+**`policy`**
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `policy-id` | string | always | Stable, authorizer-assigned identifier of the policy (e.g. the Cedar `PolicyId`). Always present. |
+| `name` | string | optional | Human-facing name the author gave the policy (e.g. a `@name` or `@id` annotation). Neither required nor guaranteed unique; absent when the author provided none. |
+| `effect` | [`PolicyEffect`](#policyeffect) | always | Whether the policy permits or forbids. |
+| `source` | string | optional | Opaque origin of the policy (e.g. a policy-source identifier). Absent when the authorizer cannot attribute a source. |
+| `type` | string | always |  |
+
+**`system-authority`**
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `source` | string | optional | Opaque, authorizer-assigned identifier of the built-in authority tier that granted the action. Absent when none can be attributed. |
+| `reason` | string | optional | Human-facing reason the tier applied (e.g. an administrator lockout-recovery grant). Absent when the authorizer gives none. |
+| `type` | string | always |  |
 
 ### `EmitterRecord`
 
@@ -186,10 +204,11 @@ A role named as a target.
 A principal named as a target: `for-principal` on a decision entry, `principal` on a grant
 record. `{"user": …}` or `{"role": …}`.
 
-One of:
+One of 2 shapes.
 
-- [`UserSubjectRecord`](#usersubjectrecord)
-- [`RoleSubjectRecord`](#rolesubjectrecord)
+**Shape 1**
+
+**Shape 2**
 
 ### `UserSubjectRecord`
 
@@ -198,7 +217,6 @@ A user named as a target.
 | Field | Type | Present | Description |
 |---|---|---|---|
 | `user` | string | always | The user's principal id. |
-| `email` | string | optional | Best-effort email of `user`. Present only when the operator enabled it and one was available. Metadata, not identity: correlate on `user`. |
 
 ## Operation contexts
 
@@ -249,10 +267,10 @@ Closed sets of values, by the field that carries them.
 
 Whether a determining policy permits or forbids.
 
-One of:
+One of these values:
 
-- string
-- string
+- `permit` — The policy grants the action.
+- `forbid` — The policy denies the action.
 
 ### `ActionContextKey`
 
@@ -898,16 +916,21 @@ Values of `operation`:
 - `admission_decided`
 - `grant_created`
 - `grant_revoked`
-- `idempotent_replay`
 
 ### `AuditOutcome`
 
 Values of `outcome`:
 
 - `forbidden`
-- `replayed`
 - `success`
 - `unavailable`
+
+### `PrivilegeScope`
+
+Values of `privilege_scope`:
+
+- `every`
+- `only`
 
 ### `PrivilegeSource`
 
@@ -937,4 +960,39 @@ Values of `resource_type`:
 - `tag-definition`
 - `view`
 - `warehouse`
+
+### `RootLevelGrants`
+
+Values of `root_level`:
+
+- `excluded`
+- `included`
+
+### `TableUpdateKind`
+
+Values of `update_kinds`:
+
+- `add-encryption-key`
+- `add-schema`
+- `add-snapshot`
+- `add-sort-order`
+- `add-spec`
+- `assign-uuid`
+- `remove-encryption-key`
+- `remove-partition-specs`
+- `remove-partition-statistics`
+- `remove-properties`
+- `remove-schemas`
+- `remove-snapshot-ref`
+- `remove-snapshots`
+- `remove-statistics`
+- `set-current-schema`
+- `set-default-sort-order`
+- `set-default-spec`
+- `set-location`
+- `set-partition-statistics`
+- `set-properties`
+- `set-snapshot-ref`
+- `set-statistics`
+- `upgrade-format-version`
 

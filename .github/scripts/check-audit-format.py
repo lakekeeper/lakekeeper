@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 import re
 import subprocess
 import sys
@@ -579,6 +580,8 @@ def _type_of(spec: object) -> str:
         return f"ref:{spec['$ref']}"
     if "enum" in spec:
         return "enum"
+    if "const" in spec:
+        return f"const:{json.dumps(spec['const'], sort_keys=True)}"
     for key in ("anyOf", "oneOf"):
         if key in spec:
             return key + "[" + ",".join(sorted(_type_of(v) for v in spec[key])) + "]"
@@ -588,6 +591,14 @@ def _type_of(spec: object) -> str:
     if kind == "array":
         return f"array[{_type_of(spec.get('items', {}))}]"
     return str(kind)
+
+
+def _branches(spec: dict) -> list | None:
+    """The `oneOf`/`anyOf` branches of a definition, or `None` when it has neither."""
+    for key in ("oneOf", "anyOf"):
+        if isinstance(spec.get(key), list):
+            return spec[key]
+    return None
 
 
 def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
@@ -621,6 +632,30 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
                 bump("breaking", f"`{name}` lost the value `{value}`")
             if set(h["enum"]) - set(b["enum"]):
                 reasons.append(f"`{name}` gained values (no format change)")
+            continue
+
+        # A definition whose branches are `oneOf`/`anyOf` rather than an `enum` list: what
+        # schemars writes for an enum whose variants carry doc comments, and for a tagged
+        # union. Without this the whole definition falls through to the property comparison
+        # with no properties on either side, and a removed branch reads as no change at all.
+        # Compared as a MULTISET: two object branches both render as `object`, so a set would
+        # collapse them and hide the loss of one.
+        b_branches, h_branches = _branches(b), _branches(h)
+        if b_branches is not None and h_branches is not None:
+            b_rendered = Counter(_type_of(v) for v in b_branches)
+            h_rendered = Counter(_type_of(v) for v in h_branches)
+            for branch in sorted((b_rendered - h_rendered).elements()):
+                bump("breaking", f"`{name}` lost the variant `{branch}`")
+            gained = sorted((h_rendered - b_rendered).elements())
+            if gained:
+                # All-constant branches are a value set, where the format promises openness;
+                # anything else is a new object shape a consumer has to be ready for.
+                values_only = all("const" in v for v in b_branches + h_branches if isinstance(v, dict))
+                for branch in gained:
+                    if values_only:
+                        reasons.append(f"`{name}` gained the value `{branch}` (no format change)")
+                    else:
+                        bump("additive", f"`{name}` gained the variant `{branch}`")
             continue
         b_props, h_props = b.get("properties", {}) or {}, h.get("properties", {}) or {}
         b_req, h_req = set(b.get("required", []) or []), set(h.get("required", []) or [])
@@ -1060,18 +1095,17 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             base_branch, shape_kind, head_fragments, head_version, baseline
         )
 
-    # The bootstrap. Nothing has been released carrying an audit format, so there is no
-    # format to have changed and nothing for a fragment to describe. Rejected rather than
-    # ignored: a fragment here reads as a change that a reader would go looking for in the
-    # previous release notes, and there are none.
+    # The bootstrap. No release has carried an audit FORMAT VERSION, so the version derives
+    # to the first one whatever the fragments say and none is demanded. Fragments are still
+    # allowed, and usually wanted: released builds have emitted audit records for some time
+    # without a version field, so a consumer may well be parsing them already, and a change
+    # to what they receive is a change to describe whether or not a number moves.
     if baseline is None and head_fragments:
         print(
-            f"::error::{BASELINE_PATH} records no released version, so the first release "
-            f"declares {show(required)} rather than changing anything — but "
-            f"{len(head_fragments)} fragment(s) are present: {', '.join(sorted(head_fragments))}. "
-            f"Delete them and describe the audit log in the release notes as a new feature."
+            f"Bootstrap:  {len(head_fragments)} fragment(s) present with no released "
+            f"baseline. The version derives to {show(required)} regardless; the fragments "
+            f"are the release note for consumers already parsing these records."
         )
-        return 1
 
     # A pull request that only WITHDRAWS fragments is undoing a change no release has
     # carried, so the comparison's verdict describes the removal of something consumers never
@@ -1209,13 +1243,6 @@ def write_version() -> int:
     """Compute the required version from the working tree and write it into the constant."""
     baseline = worktree_baseline()
     fragments = worktree_fragments()
-    if baseline is None and fragments:
-        raise SystemExit(
-            f"::error::{BASELINE_PATH} records no released version, so the first release "
-            f"declares {show(required_version(None, None))} rather than changing anything — "
-            f"but {len(fragments)} fragment(s) are present. Delete them and describe the audit "
-            f"log in the release notes as a new feature."
-        )
     level = highest(fragments.values())
     required = required_version(baseline, level)
     path, current = worktree_declaration()
@@ -1862,6 +1889,25 @@ def self_test() -> int:
     check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
     check("schema: enum value added is none", classify_schema(schema({"D": decision}), schema({"D": decision_more}))[0], "none")
     check("schema: enum value removed is breaking", classify_schema(schema({"D": decision}), schema({"D": decision_less}))[0], "breaking")
+
+    # A value set written as `oneOf` of constants, which is what schemars produces for an
+    # enum whose variants carry doc comments. Without the branch comparison the whole
+    # definition falls through with no properties on either side and a removal reads as
+    # no change.
+    effect = {"oneOf": [{"type": "string", "const": "permit"}, {"type": "string", "const": "forbid"}]}
+    effect_less = {"oneOf": [{"type": "string", "const": "permit"}]}
+    effect_more = {"oneOf": effect["oneOf"] + [{"type": "string", "const": "defer"}]}
+    check("schema: a constant lost from a oneOf is breaking", classify_schema(schema({"E": effect}), schema({"E": effect_less}))[0], "breaking")
+    check("schema: the lost constant is named",
+          any('const:"forbid"' in r for r in classify_schema(schema({"E": effect}), schema({"E": effect_less}))[1]), True)
+    check("schema: a constant added to a oneOf is not a format change", classify_schema(schema({"E": effect}), schema({"E": effect_more}))[0], "none")
+
+    # Two object branches render alike, so the comparison must be a multiset: a set would
+    # collapse them and hide the loss of one.
+    tagged = {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}, {"type": "object", "properties": {"b": {"type": "string"}}}]}
+    tagged_less = {"oneOf": [tagged["oneOf"][0]]}
+    check("schema: one of two object variants removed is breaking", classify_schema(schema({"T": tagged}), schema({"T": tagged_less}))[0], "breaking")
+    check("schema: an object variant added is additive", classify_schema(schema({"T": tagged_less}), schema({"T": tagged}))[0], "additive")
     check("schema: description change is none", classify_schema(schema({"A": actor}), schema({"A": {**actor, "description": "x"}}))[0], "none")
 
     # THE regression. `get_metadata` is emitted by six action enums, so renaming ONE of them is
