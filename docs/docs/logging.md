@@ -34,6 +34,18 @@ For production environments, use `RUST_LOG=info` to avoid excessive log volume w
 
 Audit logs are **enabled by default**. They will appear when `RUST_LOG` is set to `info` or higher (since audit logs are emitted at INFO level).
 
+Every audit record is emitted on the fixed target `lakekeeper::audit`, whichever part of the catalog produced it. That name is a stable handle chosen for filtering; it is not a Rust module path and does not move when the code is reorganised.
+
+```bash
+# Audit records only, nothing else from the catalog
+RUST_LOG=warn,lakekeeper::audit=info
+
+# Everything at INFO except audit records
+RUST_LOG=info,lakekeeper::audit=warn
+```
+
+Filtering this way suppresses the record before it is built, so it costs nothing to leave off. Routing records **after** they are emitted is a different job: match on `event_source`, not on the target, because the `target` key itself is added by the log subscriber.
+
 To disable audit logs entirely:
 
 ```bash
@@ -73,10 +85,29 @@ That promise covers the values Lakekeeper itself emits. Other components write t
 Every record carries two versions, and they answer different questions.
 
 ```json
-{"event_source": "audit", "audit_format": "1.0",
- "record_type": "operation",
- "emitter": {"name": "lakekeeper-plus", "format": "2.1"}, "...": "..."}
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "2.1"
+  },
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "outcome": "success",
+  "context": {
+    "provider_id": "ldap",
+    "role_count": 3,
+    "mode": "attribute"
+  }
+}
 ```
+
+The record's shape — that it has a `record_type`, an `actor`, an `outcome` and a `context` — is Lakekeeper's, and `audit_format` governs it. What fills `operation`, `outcome` and `context` belongs to the product named in `emitter`, and `emitter.format` governs that.
 
 `audit_format` governs **the whole record's shape**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper itself defines. Every record carries it, whoever produced the record.
 
@@ -118,6 +149,8 @@ The following keys are added by the log subscriber (`tracing-subscriber`), not b
 - `line_number`
 
 Under the default binary configuration `span` is suppressed and `filename` / `line_number` appear only when extended debug logs are enabled. Note also that `message` precedes `event_source` in the flattened output. Do not build detection or routing rules on any of these keys — match on `event_source` instead.
+
+One of them is worth a word. The `target` **key** belongs to the subscriber, but the **value** on an audit record is chosen by Lakekeeper and fixed at `lakekeeper::audit`, which is what makes `RUST_LOG` filtering possible. Use it to decide what gets emitted; use `event_source` to decide what to do with what arrives.
 
 #### Authorization Events
 
@@ -376,16 +409,27 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
 {
   "timestamp": "2026-02-15T14:20:50.758690Z",
   "level": "INFO",
+  "message": "Authorization succeeded event",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "create_warehouse",
-    "name": "demo"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
-  "entity": {
-    "entity_type": "project",
-    "project-id": "00000000-0000-0000-0000-000000000000"
-  },
+  "actions": [
+    {
+      "action_name": "create_warehouse",
+      "name": "demo"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "project",
+      "project-id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
@@ -405,9 +449,7 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
       },
       "allowed": true
     }
-  ],
-  "message": "Authorization succeeded event",
-  "target": "lakekeeper::service::events::backends::audit"
+  ]
 }
 ```
 
@@ -420,17 +462,28 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
 {
   "timestamp": "2026-02-15T14:21:10.123456Z",
   "level": "INFO",
+  "message": "Authorization failed event",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "drop"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
-  "entity": {
-    "entity_type": "table",
-    "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0",
-    "namespace": "production",
-    "table": "sensitive_data"
-  },
+  "actions": [
+    {
+      "action_name": "drop"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0",
+      "namespace": "production",
+      "table": "sensitive_data"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~user@example.com"
@@ -452,17 +505,13 @@ Note that these fields are emitted as `null` when absent, whereas the optional f
       "allowed": false
     }
   ],
-  "failure_reason": {
-    "ActionForbidden": []
-  },
+  "failure_reason": "ActionForbidden",
   "error": {
     "type": "Forbidden",
     "message": "Insufficient permissions",
     "code": 403,
     "error_id": "01234567-89ab-cdef-0123-456789abcdef"
-  },
-  "message": "Authorization failed event",
-  "target": "lakekeeper::service::events::backends::audit"
+  }
 }
 ```
 
@@ -477,11 +526,20 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
 {
   "timestamp": "2026-04-07T17:58:34.358975Z",
   "level": "INFO",
+  "message": "Authorization succeeded event",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "introspect_permissions"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
+  "actions": [
+    {
+      "action_name": "introspect_permissions"
+    }
+  ],
   "entities": [
     {
       "entity_type": "warehouse",
@@ -532,9 +590,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
       },
       "allowed": false
     }
-  ],
-  "message": "Authorization succeeded event",
-  "target": "lakekeeper::service::events::backends::audit"
+  ]
 }
 ```
 
@@ -678,8 +734,15 @@ These records are audit-log only. Like the grant records above, they are never p
 {
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
+  "message": "LDAP role resolution complete",
+  "target": "lakekeeper_role_provider::role_provider::ldap",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -690,9 +753,7 @@ These records are audit-log only. Like the grant records above, they are never p
     "provider_id": "my-ldap",
     "role_count": 3,
     "mode": "search"
-  },
-  "message": "LDAP role resolution complete",
-  "target": "lakekeeper_role_provider::role_provider::ldap"
+  }
 }
 ```
 
@@ -705,8 +766,15 @@ These records are audit-log only. Like the grant records above, they are never p
 {
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
+  "message": "LDAP user not found; returning empty role list",
+  "target": "lakekeeper_role_provider::role_provider::ldap",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -717,9 +785,7 @@ These records are audit-log only. Like the grant records above, they are never p
     "provider_id": "my-ldap",
     "filter": "(&(objectClass=person)(uid=unknown))",
     "mode": "search"
-  },
-  "message": "LDAP user not found; returning empty role list",
-  "target": "lakekeeper_role_provider::role_provider::ldap"
+  }
 }
 ```
 
@@ -732,8 +798,15 @@ These records are audit-log only. Like the grant records above, they are never p
 {
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
+  "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
+  "target": "lakekeeper_role_provider::role_provider::ldap",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -745,9 +818,7 @@ These records are audit-log only. Like the grant records above, they are never p
     "filter": "(&(objectClass=person)(uid=alice))",
     "count": 2,
     "mode": "attribute"
-  },
-  "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
-  "target": "lakekeeper_role_provider::role_provider::ldap"
+  }
 }
 ```
 
@@ -760,8 +831,15 @@ These records are audit-log only. Like the grant records above, they are never p
 {
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
+  "message": "branching DN regex did not match; explicit no-roles outcome",
+  "target": "lakekeeper_role_provider::role_provider::ldap",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -773,9 +851,7 @@ These records are audit-log only. Like the grant records above, they are never p
     "user_dn": "CN=svc-account,OU=Services,DC=corp,DC=example,DC=com",
     "pattern": "OU=(?<tenant>[^,]+),OU=Tenants,",
     "mode": "branch_else_none"
-  },
-  "message": "branching DN regex did not match; explicit no-roles outcome",
-  "target": "lakekeeper_role_provider::role_provider::ldap"
+  }
 }
 ```
 
@@ -802,8 +878,14 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
 {
   "timestamp": "2026-03-07T10:00:00.000000Z",
   "level": "INFO",
+  "message": "No role provider handled user; user will have no provider-assigned roles",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -811,9 +893,10 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   },
   "outcome": "no_provider_applicable",
   "context": {
-    "providers_checked": ["ldap-prod"]
-  },
-  "message": "No role provider handled user; user will have no provider-assigned roles"
+    "providers_checked": [
+      "ldap-prod"
+    ]
+  }
 }
 ```
 
@@ -826,8 +909,14 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
 {
   "timestamp": "2026-03-07T10:00:01.000000Z",
   "level": "INFO",
+  "message": "Resolved role assignments for user",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -836,10 +925,15 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "outcome": "roles_resolved",
   "context": {
     "role_count": 2,
-    "roles": ["my-ldap~devs", "my-ldap~admins"],
-    "sources": {"my-ldap": "cache_hit", "oidc": "in_request"}
-  },
-  "message": "Resolved role assignments for user"
+    "roles": [
+      "my-ldap~devs",
+      "my-ldap~admins"
+    ],
+    "sources": {
+      "my-ldap": "cache_hit",
+      "oidc": "in_request"
+    }
+  }
 }
 ```
 
@@ -860,8 +954,14 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
 {
   "timestamp": "2026-03-07T11:30:00.000000Z",
   "level": "INFO",
+  "message": "stale provider(s) failed to refresh; serving cached roles",
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitter": {
+    "name": "lakekeeper-plus",
+    "format": "1.0"
+  },
   "operation": "cached_role_provider",
   "actor": {
     "actor_type": "principal",
@@ -869,9 +969,10 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
   },
   "outcome": "stale_cache_fallback",
   "context": {
-    "provider_ids": ["ldap-prod"]
-  },
-  "message": "stale provider(s) failed to refresh; serving cached roles"
+    "provider_ids": [
+      "ldap-prod"
+    ]
+  }
 }
 ```
 

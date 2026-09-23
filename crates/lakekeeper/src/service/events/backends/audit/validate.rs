@@ -84,9 +84,21 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
     if let Some(error) = record.get("error") {
         assert_valid_part(schema, "ErrorRecord", error, &format!("{whence}: error"));
     }
-    // An operation record's context is one of the emitter's declared contexts.
-    if record.get("operation").is_some()
-        && record.get("decision").is_none()
+    // An operation record's `context` is declared by the emitter that produced the record,
+    // not by whoever owns the shape. A record from another emitter carries a context this
+    // schema cannot know, and checking it here would demand that every product's contexts be
+    // declared in Lakekeeper's schema — the opposite of what the emitter field is for.
+    //
+    // So the record must positively name this schema's emitter. A record naming a different
+    // one, or naming none at all, is not checked: an unknown emitter is not this one, and
+    // guessing otherwise would report a violation of a contract the record never claimed.
+    // Nothing is lost by skipping, because `emitter` is required on every shape, so
+    // `assert_valid_record` has already refused a record that carries none.
+    let ours = schema["x-audit-emitter"]["name"].as_str();
+    let theirs = record.pointer("/emitter/name").and_then(Value::as_str);
+    if theirs.is_some()
+        && theirs == ours
+        && record["record_type"] == "operation"
         && let Some(context) = record.get("context")
     {
         let contexts: Vec<&String> = schema["$defs"]

@@ -1945,3 +1945,140 @@ fn every_record_matches_the_shape_its_type_names() {
         }
     }
 }
+
+/// Every complete audit record shown in `docs/docs/logging.md` validates against the schema.
+///
+/// The page teaches consumers what to expect, so an example that no longer matches what the
+/// code emits teaches the wrong thing. Nothing regenerates these examples, which is exactly
+/// why they need checking: a shape change leaves them behind in silence.
+#[test]
+fn every_audit_record_example_in_the_docs_validates() {
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let mut checked = 0;
+
+    for block in LOGGING_DOC.split("```json").skip(1) {
+        let Some(block) = block.split("```").next() else {
+            continue;
+        };
+        if !block.contains("\"event_source\": \"audit\"") {
+            continue;
+        }
+        checked += 1;
+        let record: serde_json::Value = serde_json::from_str(block).unwrap_or_else(|e| {
+            panic!(
+                "an audit record example in docs/docs/logging.md is not valid JSON: {e}\n\n{block}"
+            )
+        });
+        crate::audit::validate::assert_valid_record(
+            &schema,
+            &record,
+            &format!("docs/docs/logging.md example {checked}"),
+        );
+    }
+
+    assert!(
+        checked >= 8,
+        "only {checked} audit record examples found in docs/docs/logging.md; the page is \
+         supposed to show one per family and several per authorization case, so this is \
+         reading the wrong file or the wrong fences"
+    );
+}
+
+/// The gate and the emission name one target.
+///
+/// `enabled()` asks the subscriber whether a record would be recorded, and the shapes write
+/// the record. If those named different targets the answer would be about a target nothing
+/// writes to: a filter that enables one would build records the other drops, and a filter
+/// that disables it would skip records that would have been emitted.
+#[test]
+fn the_gate_and_the_emission_name_one_target() {
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(succeeded_event(fixture_metadata()))
+    });
+    assert_eq!(
+        record.get("target").and_then(serde_json::Value::as_str),
+        Some(crate::audit::AUDIT_TARGET),
+        "a record must be written to the target `enabled()` asks about"
+    );
+    assert!(
+        !crate::audit::AUDIT_TARGET.contains("backends"),
+        "the target is a fixed name, not this module's path: `{}` moves when the code is \
+         reorganised, and operator filters would move with it",
+        crate::audit::AUDIT_TARGET
+    );
+}
+
+/// A filter that used to select audit records is reported; one that still works is not.
+#[test]
+fn a_filter_naming_the_retired_target_is_reported() {
+    use crate::service::events::backends::audit::part::retired_audit_directives as retired;
+
+    // Directives that selected audit records by this crate's module path, and no longer do.
+    for filter in [
+        "lakekeeper::service::events::backends::audit=info",
+        "info,lakekeeper::service::events=trace",
+        "lakekeeper::service=debug,sqlx=warn",
+    ] {
+        assert!(
+            !retired(filter).is_empty(),
+            "`{filter}` used to select audit records and no longer does, so an operator \
+             needs telling"
+        );
+    }
+
+    // Directives that still select them, or never claimed to.
+    for filter in [
+        "info",
+        "lakekeeper=info",
+        "lakekeeper::audit=info",
+        "warn,lakekeeper::audit=info",
+        "sqlx=warn,tower_http=debug",
+        "",
+    ] {
+        assert_eq!(
+            retired(filter),
+            Vec::<&str>::new(),
+            "`{filter}` still selects audit records, so warning about it would be noise"
+        );
+    }
+}
+
+/// An operation record's `context` is checked against this schema only when the record says
+/// this emitter produced it.
+///
+/// A context belongs to whoever declared it. Checking another product's context against
+/// Lakekeeper's declarations would report a violation of a contract the record never claimed,
+/// and would in effect demand that every product declare its contexts here.
+#[test]
+fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
+    use crate::audit::validate::assert_record_parts_valid;
+
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let foreign = |name: serde_json::Value| {
+        serde_json::json!({
+            "record_type": "operation",
+            "emitter": { "name": name, "format": "1.0" },
+            "operation": "ldap_resolve_roles",
+            "actor": { "actor_type": "principal", "principal": "oidc~alice" },
+            "outcome": "success",
+            "context": { "provider_id": "ldap", "role_count": 3 },
+        })
+    };
+
+    // Another emitter's context: not ours to judge.
+    assert_record_parts_valid(
+        &schema,
+        &foreign("lakekeeper-plus".into()),
+        "another emitter",
+    );
+
+    // Ours, and the context matches none we declare: caught.
+    let ours = foreign("lakekeeper".into());
+    let checked = std::panic::catch_unwind(|| {
+        assert_record_parts_valid(&schema, &ours, "this emitter");
+    });
+    assert!(
+        checked.is_err(),
+        "a context claiming to be ours and matching no declared context must be reported"
+    );
+}

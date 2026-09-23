@@ -265,7 +265,56 @@ impl schemars::JsonSchema for AnyWireStr {
 
 /// The `tracing` target of every audit record. Independent of module paths, so operators can
 /// filter on it: `RUST_LOG=warn,lakekeeper::audit=info` keeps audit lines and quiets the rest.
+/// The `tracing` target every audit record is written to, and the one [`enabled`] asks
+/// about. A fixed name rather than a module path, so operator filters survive the code being
+/// reorganised.
 pub const AUDIT_TARGET: &str = "lakekeeper::audit";
+
+/// The target audit records were written to before it was fixed: this module's path.
+///
+/// Kept only to recognise a log filter written against it. Nothing is emitted here.
+const RETIRED_TARGET: &str = "lakekeeper::service::events::backends::audit";
+
+/// The directives in `filter` that used to select audit records and no longer do.
+///
+/// A directive selects a target by prefix, so anything that is a prefix of the old target
+/// but not of [`AUDIT_TARGET`] used to match every audit record and now matches none. A
+/// broader directive such as `lakekeeper` still matches, and is not reported.
+pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
+    filter
+        .split(',')
+        .map(|directive| directive.split('=').next().unwrap_or(directive).trim())
+        .filter(|target| {
+            !target.is_empty()
+                && RETIRED_TARGET.starts_with(target)
+                && !AUDIT_TARGET.starts_with(target)
+        })
+        .collect()
+}
+
+/// Warn when the log filter names a target audit records are no longer written to.
+///
+/// Called once at start-up. An operator whose `RUST_LOG` selected audit records by this
+/// crate's module path would otherwise see them silently stop, with nothing to say why.
+///
+/// Written to standard error rather than through `tracing`, because the filter this warns
+/// about is the one that would decide whether the warning is printed: a directive naming only
+/// the retired target suppresses everything else, including a warning sent through the log.
+/// A diagnostic about the logging configuration cannot depend on the logging configuration.
+pub fn warn_on_retired_audit_filter() {
+    let Ok(filter) = std::env::var("RUST_LOG") else {
+        return;
+    };
+    let retired = retired_audit_directives(&filter);
+    if retired.is_empty() {
+        return;
+    }
+    eprintln!(
+        "warning: RUST_LOG selects audit records by {retired:?}, which no longer matches \
+         them. They are emitted on the fixed target `{AUDIT_TARGET}`; a filter naming this \
+         crate's module path now matches none of them. See docs/docs/logging.md."
+    );
+}
 
 /// Whether an audit record emitted now would be recorded by the installed subscriber.
 ///

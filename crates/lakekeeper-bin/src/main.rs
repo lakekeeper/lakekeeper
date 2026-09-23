@@ -208,6 +208,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // After the subscriber is installed, so the warning itself is logged.
+    lakekeeper::audit::warn_on_retired_audit_filter();
+
     match cli.command {
         Some(Commands::WaitForDB {
             check_db,
