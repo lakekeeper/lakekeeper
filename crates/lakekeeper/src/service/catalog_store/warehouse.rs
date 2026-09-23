@@ -260,6 +260,12 @@ pub struct ResolvedWarehouse {
     /// does not specify one. When `None`, resolves to `V2` if allowed, otherwise
     /// the highest allowed version. Always a member of `allowed_format_versions`.
     pub default_format_version: Option<FormatVersion>,
+    /// When `true`, a writer's commit that would fail optimistic-concurrency
+    /// validation solely because of intervening rollbackable compaction
+    /// snapshots reaps those snapshots and rebases the writer on top, so the
+    /// writer wins over compaction. See [`crate::server::tables::transparent_commit`].
+    /// Defaults to `false`.
+    pub rollback_compaction_on_conflict: bool,
     /// Timestamp when the warehouse metadata was last updated.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Version of the warehouse entity.
@@ -287,6 +293,7 @@ impl ResolvedWarehouse {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_on_conflict: false,
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -310,6 +317,7 @@ impl ResolvedWarehouse {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_on_conflict: false,
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -704,6 +712,17 @@ define_transparent_error! {
 define_transparent_error! {
     pub enum SetWarehouseManagedByError,
     stack_message: "Error setting warehouse managed-by marker in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+        DatabaseIntegrityError,
+    ]
+}
+
+// ---------------- Set Warehouse Rollback-Compaction Policy Error ----------------
+define_transparent_error! {
+    pub enum SetWarehouseRollbackCompactionPolicyError,
+    stack_message: "Error setting warehouse rollback-compaction policy in catalog",
     variants: [
         CatalogBackendError,
         WarehouseIdNotFound,
@@ -1162,6 +1181,18 @@ where
         .await?;
         transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
+    }
+
+    /// Enable or disable transparent-commit (rollback-compaction-on-conflict) for a warehouse.
+    async fn set_warehouse_rollback_compaction_policy(
+        warehouse_id: WarehouseId,
+        enabled: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseRollbackCompactionPolicyError>
+    {
+        Self::set_warehouse_rollback_compaction_policy_impl(warehouse_id, enabled, transaction)
+            .await
+            .map(Arc::new)
     }
 }
 

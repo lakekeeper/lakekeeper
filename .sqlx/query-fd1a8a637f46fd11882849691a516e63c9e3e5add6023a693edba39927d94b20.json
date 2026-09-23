@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET allowed_format_versions = $1, default_format_version = $2\n            WHERE warehouse_id = $3\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
+  "query": "\n            UPDATE warehouse\n            SET storage_profile = $1, storage_secret_id = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n        ",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,17 @@
       },
       {
         "ordinal": 11,
+        "name": "rollback_compaction_on_conflict",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_on_conflict"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +177,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -190,8 +201,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int2Array",
-        "Int2",
+        "Jsonb",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -208,9 +219,10 @@
       false,
       true,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "9caecf0b171e1902e85370ef9894ae9eb5087e62448242e42ba5a759f0c08c0b"
+  "hash": "fd1a8a637f46fd11882849691a516e63c9e3e5add6023a693edba39927d94b20"
 }
