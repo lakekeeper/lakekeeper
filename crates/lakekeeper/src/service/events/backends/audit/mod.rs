@@ -307,21 +307,6 @@ pub mod contract {
         "line_number",
     ];
 
-    /// The wire tag of a failure reason. `valuable` tags externally, using the variant name
-    /// verbatim, so these must stay identical to it.
-    #[deny(clippy::wildcard_enum_match_arm)]
-    #[must_use]
-    pub fn failure_reason_tag(reason: &AuthorizationFailureReason) -> &'static str {
-        match reason {
-            AuthorizationFailureReason::ActionForbidden => "ActionForbidden",
-            AuthorizationFailureReason::ResourceNotFound => "ResourceNotFound",
-            AuthorizationFailureReason::CannotSeeResource => "CannotSeeResource",
-            AuthorizationFailureReason::InternalAuthorizationError => "InternalAuthorizationError",
-            AuthorizationFailureReason::InternalCatalogError => "InternalCatalogError",
-            AuthorizationFailureReason::InvalidRequestData => "InvalidRequestData",
-        }
-    }
-
     /// Whether a reason means the request was evaluated and refused, as opposed to never
     /// having reached a verdict.
     ///
@@ -343,7 +328,7 @@ pub mod contract {
         AuthorizationFailureReason::VARIANTS
             .iter()
             .filter(|reason| is_definitive(reason))
-            .map(failure_reason_tag)
+            .map(|reason| reason.as_wire().text())
             .collect()
     }
 
@@ -508,16 +493,17 @@ pub mod contract {
             out.push("`failure_reason` is present but `decision` is not `denied`".to_string());
         }
 
-        // `failure_reason` is externally tagged today, so the definitive-denial rule below
-        // reads the variant from the object's key. Re-encoding it — as a plain string, say —
-        // would make `as_object` return `None` and silently retire that rule. The re-encoding itself is loud (the fixture diff shows
-        // it); losing the rule with it would not be. So trip here, and make whoever
-        // re-encodes it teach the rule again rather than drop it.
-        let Some(tagged) = reason.as_object() else {
+        // `failure_reason` is the vocabulary's own value, so the definitive-denial rule below
+        // reads the variant from the string itself. Re-encoding it — wrapping it in an object,
+        // say — would make `as_str` return `None` and silently retire that rule. The
+        // re-encoding itself is loud, the fixture diff shows it; losing the rule with it would
+        // not be. So trip here, and make whoever re-encodes it teach the rule again rather
+        // than drop it.
+        let Some(named) = reason.as_str() else {
             out.push(format!(
-                "`failure_reason` is `{reason}`, not an object. The definitive-denial rule \
-                 reads the variant from this object's key, so a re-encoding disables it: \
-                 teach that rule the new encoding, then update this one"
+                "`failure_reason` is `{reason}`, not a string. The definitive-denial rule \
+                 reads the variant from that string, so a re-encoding disables it: teach that \
+                 rule the new encoding, then update this one"
             ));
             return out;
         };
@@ -526,9 +512,7 @@ pub mod contract {
         // entry may claim it was allowed. This is the rule a fixture cannot state: it relates
         // two fields, and a fixture only ever records one combination of them.
         let definitive_denials = definitive_denials();
-        let definitive = tagged
-            .keys()
-            .any(|k| definitive_denials.contains(&k.as_str()));
+        let definitive = definitive_denials.contains(&named);
         if definitive
             && record
                 .get("authorizations")

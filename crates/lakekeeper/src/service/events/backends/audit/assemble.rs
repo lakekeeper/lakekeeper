@@ -8,7 +8,6 @@ use super::{
         ActionRecord, ActorRecord, DecisionRecord, EntityRecord, ErrorRecord, HandlerContext,
         SubjectRecord,
     },
-    render::legacy_json,
     shapes::{AuthorizationRecord, ReplayRecord},
 };
 use crate::{
@@ -67,7 +66,7 @@ fn authorization(
         authorizations: decisions(authorizations),
         idempotency_key: idempotency_key(request_metadata),
         decision,
-        failure_reason: failure.map(|(reason, _)| legacy_json(reason)),
+        failure_reason: failure.map(|(reason, _)| reason.as_wire()),
         error: failure.map(|(_, error)| ErrorRecord::from(error)),
     }
 }
@@ -138,11 +137,7 @@ pub(crate) fn decision(authorization: &Authorization) -> DecisionRecord {
         action: action(&authorization.action),
         entity: entity(&authorization.entity),
         allowed: authorization.allowed,
-        determined_by: authorization
-            .determined_by
-            .iter()
-            .map(legacy_json)
-            .collect(),
+        determined_by: authorization.determined_by.clone(),
     }
 }
 

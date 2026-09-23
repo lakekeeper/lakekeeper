@@ -71,14 +71,11 @@
       "allowed": false,
       "determined_by": [
         {
-          "Policy": {
-            "policy_id": "policy-42",
-            "name": "deny-stale-namespaces",
-            "effect": {
-              "Forbid": []
-            },
-            "source": "cedar"
-          }
+          "type": "policy",
+          "policy-id": "policy-42",
+          "name": "deny-stale-namespaces",
+          "effect": "forbid",
+          "source": "cedar"
         }
       ]
     }

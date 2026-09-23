@@ -43,9 +43,7 @@
     }
   ],
   "decision": "denied",
-  "failure_reason": {
-    "CannotSeeResource": []
-  },
+  "failure_reason": "CannotSeeResource",
   "error": {
     "type": "NotAuthorized",
     "code": 403,

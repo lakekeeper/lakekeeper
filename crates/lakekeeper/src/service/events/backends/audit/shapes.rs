@@ -81,8 +81,8 @@ pub struct AuthorizationRecord {
     pub(crate) authorizations: Vec<DecisionRecord>,
     pub(crate) idempotency_key: Option<String>,
     pub(crate) decision: Decision,
-    /// The failure reason of a denied record, pre-rendered from its `valuable` form.
-    pub(crate) failure_reason: Option<serde_json::Value>,
+    /// Why a denied record was denied, as the vocabulary spells it.
+    pub(crate) failure_reason: Option<WireStr<crate::Lakekeeper>>,
     pub(crate) error: Option<ErrorRecord>,
 }
 
@@ -94,7 +94,6 @@ impl AuthorizationRecord {
         let actor = AuditJson::of(&self.actor);
         let authorizations = AuditJson::of(&self.authorizations);
         let context = self.context.as_ref().map(AuditJson::of);
-        let failure_reason = self.failure_reason.clone().map(AuditJson::from);
         let error = self.error.as_ref().map(AuditJson::of);
         let message = match self.decision {
             Decision::Allowed => "Authorization succeeded event",
@@ -114,7 +113,7 @@ impl AuthorizationRecord {
                 authorizations = valuable(&authorizations),
                 idempotency_key = self.idempotency_key.as_deref(),
                 decision = self.decision.as_str(),
-                failure_reason = failure_reason.as_ref().map(valuable),
+                failure_reason = self.failure_reason.map(WireStr::text),
                 error = error.as_ref().map(valuable),
             },
             message
