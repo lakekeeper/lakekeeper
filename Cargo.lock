@@ -3275,7 +3275,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=aa04094683f84db8fa82daed716efc0f78d1936d#aa04094683f84db8fa82daed716efc0f78d1936d"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?branch=jan%2Fvak-534-rollback-branch-to-snapshot#c219773dbe5f5b3ce511f7cacdf64725de3d4a4b"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3877,6 +3877,7 @@ dependencies = [
  "lazy-regex",
  "limes",
  "maplit",
+ "metrics",
  "mockall",
  "moka",
  "pastey",

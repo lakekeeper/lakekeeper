@@ -87,9 +87,9 @@ pub mod v1 {
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
         RenameWarehouseRequest, Service as _, SetWarehouseManagedByRequest,
-        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
-        UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
-        ValidateWarehouseResponse, WarehouseStatisticsResponse,
+        SetWarehouseRollbackCompactionPolicyRequest, UpdateWarehouseCredentialRequest,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
+        UpdateWarehouseStorageRequest, ValidateWarehouseResponse, WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -2874,6 +2874,42 @@ pub mod v1 {
         .await
     }
 
+    /// Update Rollback-Compaction Policy
+    ///
+    /// Enables or disables transparent commit (rollback-compaction-on-conflict) for a warehouse.
+    /// When enabled, a writer's commit that would otherwise fail optimistic-concurrency
+    /// validation solely because of intervening rollbackable compaction snapshots reaps those
+    /// snapshots and rebases the writer on top, so the writer wins over compaction.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::UpdateWarehouseRollbackCompactionPolicy.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = SetWarehouseRollbackCompactionPolicyRequest,
+        responses(
+            (status = 200, body = GetWarehouseResponse, description = "Rollback-compaction policy updated successfully"),
+        (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn update_warehouse_rollback_compaction_policy<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetWarehouseRollbackCompactionPolicyRequest>,
+    ) -> Result<GetWarehouseResponse> {
+        ApiServer::<C, A, S>::set_warehouse_rollback_compaction_policy(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Deactivate Warehouse
     ///
     /// Temporarily disables access to a warehouse without deleting its data.
@@ -4858,6 +4894,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/format-version-policy",
                     post(update_warehouse_format_version_policy),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/rollback-compaction-policy",
+                    post(update_warehouse_rollback_compaction_policy),
                 )
                 .route(
                     ManagementV1Endpoint::GetWarehouseActions.path_in_management_v1(),

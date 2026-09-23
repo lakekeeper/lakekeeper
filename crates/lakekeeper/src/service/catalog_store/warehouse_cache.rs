@@ -482,6 +482,7 @@ mod tests {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_on_conflict: false,
             updated_at,
             version: version.into(),
         })

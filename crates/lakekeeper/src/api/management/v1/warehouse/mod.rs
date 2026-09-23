@@ -296,6 +296,16 @@ pub struct UpdateWarehouseFormatVersionPolicyRequest {
     pub default_format_version: Option<FormatVersion>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct SetWarehouseRollbackCompactionPolicyRequest {
+    /// When `true`, a writer's commit that would fail optimistic-concurrency validation solely
+    /// because of intervening rollbackable compaction snapshots reaps those snapshots and
+    /// rebases the writer on top, so the writer wins over compaction ("transparent commit").
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -348,6 +358,12 @@ pub struct GetWarehouseResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
     pub default_format_version: Option<FormatVersion>,
+    /// Whether transparent commit (rollback-compaction-on-conflict) is enabled for this
+    /// warehouse. When `true`, a writer's commit that would fail optimistic-concurrency
+    /// validation solely because of intervening rollbackable compaction snapshots reaps those
+    /// snapshots and rebases the writer on top, so the writer wins over compaction.
+    #[serde(default)]
+    pub rollback_compaction_on_conflict: bool,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -1604,6 +1620,73 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
     }
 
+    /// Enable or disable transparent commit (rollback-compaction-on-conflict) for a warehouse.
+    ///
+    /// Authorized as a warehouse-spec mutation, reusing the format-version-policy action (both
+    /// are commit-behaviour policy changes gated identically); a dedicated authz action and
+    /// domain event are a follow-up.
+    async fn set_warehouse_rollback_compaction_policy(
+        warehouse_id: WarehouseId,
+        request: SetWarehouseRollbackCompactionPolicyRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetWarehouseResponse> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::SetFormatVersionPolicy,
+        );
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        C::ensure_warehouse_spec_mutable(
+            warehouse_id,
+            event_ctx.action(),
+            event_ctx
+                .request_metadata()
+                .bypasses_control_plane_authz(None),
+            transaction.transaction(),
+        )
+        .await
+        .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
+        let updated_warehouse = C::set_warehouse_rollback_compaction_policy(
+            warehouse_id,
+            request.enabled,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
+    }
+
     async fn deactivate_warehouse(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -2320,6 +2403,7 @@ impl GetWarehouseResponse {
             managed_by: warehouse.managed_by,
             allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
             default_format_version: warehouse.default_format_version,
+            rollback_compaction_on_conflict: warehouse.rollback_compaction_on_conflict,
             updated_at: warehouse.updated_at,
         }
     }
@@ -2851,6 +2935,7 @@ mod test {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_on_conflict: false,
             updated_at: None,
             version: crate::service::WarehouseVersion::from(0),
         }
