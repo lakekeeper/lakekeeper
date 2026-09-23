@@ -269,6 +269,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         storage_profile,
     )?;
 
+    let unmodified_request = request.clone();
+
     // Update the request for event
     request.location = Some(table_location.to_string());
     let request = request; // Make it non-mutable again for our sanity
@@ -296,7 +298,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     state
         .v1_state
         .contract_verifiers
-        .check_create_table(&request, &table_metadata)
+        .check_create_table(&unmodified_request, &table_metadata)
         .await?
         .into_result()?;
 
