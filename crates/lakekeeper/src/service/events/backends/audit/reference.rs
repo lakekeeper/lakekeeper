@@ -97,13 +97,45 @@ fn render_def(out: &mut String, name: &str, def: &Value) {
         return;
     }
     if let Some(variants) = def["anyOf"].as_array().or_else(|| def["oneOf"].as_array()) {
-        out.push_str("One of:\n\n");
-        for v in variants {
-            let _ = writeln!(out, "- {}", type_of(v));
+        // Each branch rendered in full. Naming only its type would print "object" for every
+        // variant of a tagged union, which tells a reader nothing and leaves the fields that
+        // actually reach them undocumented.
+        let constants: Vec<&Value> = variants
+            .iter()
+            .filter(|v| v.get("const").is_some())
+            .collect();
+        if constants.len() == variants.len() {
+            out.push_str("One of these values:\n\n");
+            for v in constants {
+                let value = v["const"].as_str().unwrap_or("?");
+                match v["description"].as_str() {
+                    Some(description) => {
+                        let _ = writeln!(out, "- `{value}` — {}", description.replace('\n', " "));
+                    }
+                    None => {
+                        let _ = writeln!(out, "- `{value}`");
+                    }
+                }
+            }
+            out.push('\n');
+            return;
         }
-        out.push('\n');
+        let _ = writeln!(out, "One of {} shapes.\n", variants.len());
+        for (n, variant) in variants.iter().enumerate() {
+            let name = variant["properties"]
+                .as_object()
+                .and_then(|p| p.values().find_map(|s| s["const"].as_str()))
+                .map_or_else(|| format!("Shape {}", n + 1), |tag| format!("`{tag}`"));
+            let _ = writeln!(out, "**{name}**\n");
+            render_fields(out, variant);
+        }
         return;
     }
+    render_fields(out, def);
+}
+
+/// The field table of one object: name, type, whether it is always there, description.
+fn render_fields(out: &mut String, def: &Value) {
     let Some(props) = def["properties"].as_object() else {
         if let Some(extra) = def.get("additionalProperties") {
             let _ = write!(

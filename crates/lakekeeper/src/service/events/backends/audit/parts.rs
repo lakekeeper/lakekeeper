@@ -2,7 +2,7 @@
 //!
 //! Each is an audit type: `#[audit_part]` gives it serde, a schema and a registry entry. A
 //! part is built by assembly from the event payload and, where the design provides for it,
-//! from enrichment such as a user's email; it is the only place a wire field gets its value.
+//! from enrichment; it is the only place a wire field gets its value.
 
 use std::collections::BTreeMap;
 
@@ -30,10 +30,6 @@ pub struct ActorRecord {
     /// The authenticated principal. Present for `principal` and `assumed-role`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) principal: Option<String>,
-    /// Best-effort email of `principal`. Present only when the operator enabled it and one
-    /// was available. Metadata, not identity: correlate on `principal`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) email: Option<String>,
     /// The role acted as. Present for `assumed-role`; `principal` is still the human.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) assumed_role: Option<AssumedRoleRecord>,
@@ -53,19 +49,8 @@ impl ActorRecord {
         Self {
             actor_type: ActorType::Principal.as_wire(),
             principal: Some(id.to_string()),
-            email: None,
             assumed_role: None,
         }
-    }
-
-    /// Attach a best-effort email to a `principal` or `assumed-role` actor. Ignored for the
-    /// other two shapes, which have no principal to describe.
-    #[must_use]
-    pub fn with_email(mut self, email: Option<&str>) -> Self {
-        if self.principal.is_some() {
-            self.email = email.map(str::to_owned);
-        }
-        self
     }
 
     pub(crate) fn from_internal_actor(actor: &InternalActor) -> Self {
@@ -73,7 +58,6 @@ impl ActorRecord {
             InternalActor::LakekeeperInternal => Self {
                 actor_type: ActorType::LakekeeperInternal.as_wire(),
                 principal: None,
-                email: None,
                 assumed_role: None,
             },
             InternalActor::External(actor) => Self::from_actor(actor),
@@ -85,7 +69,6 @@ impl ActorRecord {
             Actor::Anonymous => Self {
                 actor_type: ActorType::Anonymous.as_wire(),
                 principal: None,
-                email: None,
                 assumed_role: None,
             },
             Actor::Principal(user_id) => Self::principal(user_id),
@@ -95,7 +78,6 @@ impl ActorRecord {
             } => Self {
                 actor_type: ActorType::AssumedRole.as_wire(),
                 principal: Some(principal.to_string()),
-                email: None,
                 assumed_role: Some(AssumedRoleRecord {
                     role_id: assumed_role.id.to_string(),
                     provider_id: assumed_role.provider_id().to_string(),
@@ -160,7 +142,6 @@ impl SubjectRecord {
         match id {
             UserOrRoleId::User(user) => Self::User(UserSubjectRecord {
                 user: user.to_string(),
-                email: None,
             }),
             UserOrRoleId::Role(role) => Self::Role(RoleSubjectRecord {
                 role: role.to_string(),
@@ -175,10 +156,6 @@ impl SubjectRecord {
 pub struct UserSubjectRecord {
     /// The user's principal id.
     pub(crate) user: String,
-    /// Best-effort email of `user`. Present only when the operator enabled it and one was
-    /// available. Metadata, not identity: correlate on `user`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) email: Option<String>,
 }
 
 /// A role named as a target.

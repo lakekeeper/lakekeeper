@@ -270,15 +270,22 @@ impl schemars::JsonSchema for AnyWireStr {
 /// reorganised.
 pub const AUDIT_TARGET: &str = "lakekeeper::audit";
 
-/// The target audit records were written to before it was fixed: this module's path.
+/// The targets audit records were written to before the target was fixed.
 ///
-/// Kept only to recognise a log filter written against it. Nothing is emitted here.
-const RETIRED_TARGET: &str = "lakekeeper::service::events::backends::audit";
+/// More than one, because the emission macro expanded in the CALLER's module, so the target
+/// was whichever module held the call. Kept only to recognise a log filter written against
+/// them; nothing is emitted on any of them now.
+const RETIRED_TARGETS: &[&str] = &[
+    // Authorization, replay and grant records, emitted from the audit module itself.
+    "lakekeeper::service::events::backends::audit",
+    // Admission rejections, emitted from the gate rather than from the audit module.
+    "lakekeeper::service::admission",
+];
 
 /// The directives in `filter` that used to select audit records and no longer do.
 ///
-/// A directive selects a target by prefix, so anything that is a prefix of the old target
-/// but not of [`AUDIT_TARGET`] used to match every audit record and now matches none. A
+/// A directive selects a target by prefix, so anything that is a prefix of one of the old
+/// targets but not of [`AUDIT_TARGET`] used to match audit records and now matches none. A
 /// broader directive such as `lakekeeper` still matches, and is not reported.
 pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
     filter
@@ -286,7 +293,7 @@ pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
         .map(|directive| directive.split('=').next().unwrap_or(directive).trim())
         .filter(|target| {
             !target.is_empty()
-                && RETIRED_TARGET.starts_with(target)
+                && RETIRED_TARGETS.iter().any(|old| old.starts_with(*target))
                 && !AUDIT_TARGET.starts_with(target)
         })
         .collect()

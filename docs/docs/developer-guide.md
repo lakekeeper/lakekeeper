@@ -146,6 +146,12 @@ The schema pins every declared field and value, fixtures pin the emitted bytes o
 
 Never build a wire value from a bare string. `WireStr::new` exists for the attribute's expansion to call and nothing else, and a test fails on any other caller. A string that reaches the wire outside a vocabulary enum is in no schema, so renaming it later breaks every consumer while the format check reports nothing.
 
+**A context value drawn from a fixed set is a vocabulary; one derived from the request is data.** The `context` map of an action is open on its values, and has to be: most of them are a warehouse id, a namespace name, something the caller sent. Those need nothing. But a few keys hold a choice from a fixed set — `root_level` is `included` or `excluded`, `privilege_scope` is `every` or `only`, `update_kinds` is drawn from a closed list of commit kinds — and a consumer writes rules against those exactly as they do against `action_name`. Put `#[audit_part(field = "<the key>")]` on the enum behind such a value, so its values reach the schema and a rename fails the format check.
+
+This is the easiest thing in the audit log to get wrong, because at the emission site a closed value and a free one look identical: both are a string pushed into the same map. Nothing in the code distinguishes them, so the decision has to be made by whoever adds the key. Ask whether a consumer could reasonably switch on the value. If yes, it is a vocabulary.
+
+If the enum lives in a crate that cannot depend on `lakekeeper` — `iceberg-ext` is the case that exists — the attribute cannot be used, because its expansion names `::lakekeeper`. Register it by hand instead, as `TableUpdateKind` is registered in `events/backends/audit/mod.rs`, reading the same `VariantNames` the attribute would have read.
+
 **Never add a `_ =>` arm** to an `action_descriptor` match. The missing wildcard is the mechanism: with one, a new action silently emits no context. They carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails `just check` and CI, though not a bare `cargo build`. A wildcard _alongside_ the full list is caught by rustc's `unreachable_patterns`; the dangerous edit is replacing arms with one. Not every `action_descriptor` impl carries the deny yet, and `CatalogAction` is public, so authorizer crates have impls this repository cannot see; add the deny when you next touch an unprotected one.
 
 **If you are adding audit types from another crate in this repository**, put the attribute on them, re-export Lakekeeper's emitter module as `crate::audit_emitter`, and add one test calling `lakekeeper::audit::schema::assert_crate_schema_committed`. `crates/authz-openfga` is the worked example. A crate outside this repository declares its own emitter and commits its own schema and fragments; the mechanism is shared and the vocabulary is not.
@@ -167,6 +173,7 @@ Two things follow from the version being derived rather than bumped. Withdrawing
 | Change                                                    | What fails                                          |
 | --------------------------------------------------------- | ---------------------------------------------------- |
 | A field or value on any audit type                        | the crate schema test, then the schema merge test   |
+| A closed set of values pushed into a `context` map as a bare string | nothing — put the attribute on its enum             |
 | A type that reaches the log without the attribute         | the registry test that the attribute is the only way |
 | A crate that declares audit types and commits no schema   | the schema merge test                               |
 | A field with no doc comment                               | the schema test                                     |
