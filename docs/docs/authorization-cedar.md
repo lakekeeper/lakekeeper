@@ -986,6 +986,47 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
 
+## Break-Glass
+
+Cedar policies come from two places. The **server set** comes from files and ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__*`), and only the operator can change it. The **scope sets** are stored in the catalog, one per project and one per warehouse, and a project manages its own through the management API.
+
+A project controls its own scope set, so it can write a `forbid` that denies everyone, including the people who would remove it again. Break-glass is the way out.
+
+A break-glass request is decided by the server set only. Scope policies are not read, so a bad one cannot block the repair. Grants are still read: they sit in an ordinary catalog table that a policy lockout cannot reach, so the grants a project already has start granting access again.
+
+Break-glass allows only what the server set allows. The operator writes the policy that says who may repair a project.
+
+### Sending a Break-Glass Request
+
+Add the `x-break-glass` header, with your reason as its value:
+
+```bash
+curl -X POST "https://lakekeeper.example.com/management/v1/permissions/cedar/project/policies" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-project-id: 01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "x-break-glass: INC-1234 removing the forbid that locked out the admins" \
+  -H "Content-Type: application/json" \
+  -d '{"writes": [], "replace": true}'
+```
+
+Any non-empty value works. The reason goes into the audit event as `break_glass`, cut off at 256 bytes, so send a ticket reference. See the [Logging guide](./logging.md#audit-logs-and-rust_log).
+
+Break-glass applies only to a user acting as themselves. Requests that assume a role with `x-assume-role`, and permission checks about someone else, are decided the normal way. OpenFGA and allow-all ignore the header: it changes no decision and only shows up in the audit record.
+
+An [instance admin](./instance-admins.md) must give a reason, because their requests skip stored policy and nothing else would record why a policy changed. Without one, applying project or warehouse policies answers `403 CedarInstanceAdminNeedsBreakGlass`. The value `true` does not count as a reason.
+
+### Checking Whether Break-Glass Is Available
+
+Ask `break-glass-status` first. It only reports, and decides nothing:
+
+```bash
+curl "https://lakekeeper.example.com/management/v1/permissions/cedar/break-glass-status?project-id=01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "Authorization: Bearer $TOKEN"
+# {"break-glass-available": true}
+```
+
+Anyone signed in can ask, and no permission is needed, because the people who need this answer are the ones being denied. It covers one project and the break-glass path only. To see whether someone is an instance admin, read `is-instance-admin` from `/management/v1/whoami`.
+
 ## Cedar Actions
 
 The following tables document all available Cedar actions. Use action groups for broad permissions or individual actions for fine-grained control.
