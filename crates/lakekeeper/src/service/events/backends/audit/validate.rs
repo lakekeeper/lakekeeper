@@ -108,3 +108,39 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
         );
     }
 }
+
+/// The definition of the shape `record_type` names, or `None` when the schema declares none.
+#[must_use]
+pub fn shape_of<'a>(schema: &'a Value, record_type: &str) -> Option<(&'a str, &'a Value)> {
+    schema["$defs"].as_object()?.iter().find_map(|(name, def)| {
+        (def["x-audit-record-type"] == record_type).then_some((name.as_str(), def))
+    })
+}
+
+/// Validate a whole record against the shape its `record_type` names.
+///
+/// The envelope the subscriber owns is not the emitter's to promise, so it is removed first;
+/// what remains is the record, and the shape describes all of it.
+///
+/// # Panics
+///
+/// If the record names no shape, names one the schema does not declare, or violates it.
+pub fn assert_valid_record(schema: &Value, record: &Value, whence: &str) {
+    let record_type = record["record_type"].as_str().unwrap_or_else(|| {
+        panic!("{whence}: no `record_type`, so nothing says which shape to check it against")
+    });
+    let (def, _) = shape_of(schema, record_type).unwrap_or_else(|| {
+        panic!("{whence}: `record_type` is `{record_type}`, which no shape in the schema names")
+    });
+    let mut body = record.clone();
+    if let Some(object) = body.as_object_mut() {
+        for envelope in super::contract::ENVELOPE_KEYS {
+            object.remove(*envelope);
+        }
+        // Stamped by the emitter on every record whatever its shape, so no shape lists them.
+        object.remove("event_source");
+        object.remove("audit_format");
+    }
+    assert_valid_part(schema, def, &body, &format!("{whence}: {record_type}"));
+    assert_record_parts_valid(schema, record, whence);
+}

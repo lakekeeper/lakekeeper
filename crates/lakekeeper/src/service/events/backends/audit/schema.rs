@@ -53,6 +53,9 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 if let Some(object) = schema.as_object_mut() {
                     object.insert("x-audit-kind".into(), json!(kind_name(reg.kind)));
                     object.insert("x-audit-type".into(), json!((reg.type_name)()));
+                    if let (Kind::Shape, Some(record_type)) = (reg.kind, reg.wire_values.first()) {
+                        object.insert("x-audit-record-type".into(), json!(record_type));
+                    }
                 }
                 defs.insert(name().to_string(), schema);
             }
@@ -73,8 +76,21 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
         }
     }
     // Types the parts reference but that are not registered themselves, if any, and every
-    // registered type the generator chose to reference rather than inline.
+    // registered type the generator chose to reference rather than inline. An unregistered
+    // one still reaches a consumer, so it is kinded here too: without a kind the reference
+    // generator drops it, and a field would link to a section that does not exist.
     for (name, schema) in generator.take_definitions(true) {
+        let mut schema = schema;
+        if let Some(object) = schema.as_object_mut() {
+            let values = object.contains_key("enum")
+                || object
+                    .get("oneOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|variants| variants.iter().all(|v| v.get("const").is_some()));
+            object
+                .entry("x-audit-kind")
+                .or_insert_with(|| json!(if values { "enum" } else { "part" }));
+        }
         defs.entry(name).or_insert(schema);
     }
     defs

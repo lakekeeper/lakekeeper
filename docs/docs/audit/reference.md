@@ -4,6 +4,63 @@
 
 Every object and every closed set of values that records emitted by `lakekeeper` can carry. Field descriptions are the doc comments of the emitting types. Optional fields are absent when not recorded unless a description says otherwise.
 
+## Records
+
+The top-level structures, named by `record_type`.
+
+### `AuthorizationRecord`
+
+An authorization record: was this caller permitted to do these actions on these entities?
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `record_type` | string | always | Names this record's shape. Always `authorization`. |
+| `emitter` | [`EmitterRecord`](#emitterrecord) | always | Which product produced this record, and the version of what it governs. |
+| `actions` | array of [`ActionRecord`](#actionrecord) | always | The actions evaluated, always a list however many there are. |
+| `entities` | array of [`EntityRecord`](#entityrecord) | always | The entities they were evaluated against, always a list. |
+| `actor` | [`ActorRecord`](#actorrecord) | always | Who made the request, as authentication established it. |
+| `privilege_source` | string | always | Which authority answered: the authorizer, or a bypass. |
+| `user_agent` | string | optional | The `User-Agent` header, verbatim and unverified. Absent when none was sent. |
+| `break_glass` | string | optional | The stated break-glass reason. Absent unless the caller claimed one. |
+| `context` | [`HandlerContext`](#handlercontext) | optional | Handler-supplied detail about the request. Absent when the handler added none. |
+| `authorizations` | array of [`DecisionRecord`](#decisionrecord) | always | One entry per permission evaluated. |
+| `idempotency_key` | string | optional | The request's `Idempotency-Key`. Absent when the caller sent none. |
+| `decision` | string | always | Whether the request was permitted. |
+| `failure_reason` | string | optional | Why a denied record was denied, as the vocabulary spells it. |
+| `error` | [`ErrorRecord`](#errorrecord) | optional | The error the caller received. Present only on a denial that produced one. |
+
+### `OperationRecord`
+
+An operation record as it reaches the wire.
+
+The builder above is generic, so a record cannot mix two emitters' vocabularies. What it
+writes is not generic, and this is it: one struct, so the schema describes the record
+rather than a description of it kept alongside.
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `record_type` | string | always | Names this record's shape. Always `operation`. |
+| `emitter` | [`EmitterRecord`](#emitterrecord) | always | Which product produced this record, and the version of what it governs. |
+| `operation` | string | always | What was done, from the emitter's own vocabulary. |
+| `actor` | [`ActorRecord`](#actorrecord) | always | Who made the request, as authentication established it. |
+| `outcome` | string | always | How it ended, from the emitter's own vocabulary. |
+| `context` | any | optional | The operation's own detail. One shape per operation kind, each declared by its emitter; absent for an operation that carries none. |
+
+### `ReplayRecord`
+
+A replay record: a retry answered from an idempotency record, so no authorization ran.
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `record_type` | string | always | Names this record's shape. Always `replay`. |
+| `emitter` | [`EmitterRecord`](#emitterrecord) | always | Which product produced this record, and the version of what it governs. |
+| `actions` | array of [`ActionRecord`](#actionrecord) | always | The actions the replayed request named, always a list. |
+| `entities` | array of [`EntityRecord`](#entityrecord) | always | The entities it named, always a list. As the caller wrote them: a replay resolves nothing. |
+| `actor` | [`ActorRecord`](#actorrecord) | always | Who made the request, as authentication established it. |
+| `privilege_source` | string | always | Which authority would have answered, had one been asked. |
+| `user_agent` | string | optional | The `User-Agent` header, verbatim and unverified. Absent when none was sent. |
+| `idempotency_key` | string | always | The key whose stored response was served. Always present: it is what makes this a replay. |
+
 ## Objects
 
 Nested objects of a record.
@@ -59,6 +116,20 @@ with what result.
 | `entity` | [`EntityRecord`](#entityrecord) | always | The entity the action was evaluated against. |
 | `allowed` | boolean | optional | The authorizer's answer. Absent when an upstream error stopped the evaluation. |
 | `determined_by` | array of [`DeterminingFactor`](#determiningfactor) | optional | The policies or rules that determined the decision, when the authorizer reports them. The same shape the management API returns for a check, so one parser reads both. |
+
+### `DeterminingFactor`
+
+A single factor that contributed to an authorization decision.
+
+Discriminated by `type`: `policy` names a policy the authorizer matched, and
+`system-authority` records that a built-in authority tier decided the request. The
+schema is a closed `oneOf` over those two, so a further kind is a schema change a
+generated client has to be rebuilt for rather than one it absorbs on its own.
+
+One of:
+
+- object
+- object
 
 ### `EmitterRecord`
 
@@ -171,6 +242,15 @@ The `context` of an operation record that carries none.
 ## Values
 
 Closed sets of values, by the field that carries them.
+
+### `PolicyEffect`
+
+Whether a determining policy permits or forbids.
+
+One of:
+
+- string
+- string
 
 ### `ActionContextKey`
 
