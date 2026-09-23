@@ -1191,7 +1191,7 @@ fn every_committed_fixture_satisfies_the_format_contract() {
 /// that sent a client named "unknown", so the field is null rather than a
 /// sentinel.
 #[test]
-fn an_audit_event_without_a_user_agent_records_null() {
+fn an_audit_event_without_a_user_agent_omits_the_key() {
     let metadata = RequestMetadataTestBuilder::builder().build();
 
     let event = emit_and_capture_one(|| {
@@ -1200,8 +1200,9 @@ fn an_audit_event_without_a_user_agent_records_null() {
 
     assert_eq!(
         event.get("user_agent"),
-        Some(&serde_json::Value::Null),
-        "the key must be present so consumers can tell 'not sent' from 'not recorded'"
+        None,
+        "a caller that sent no `User-Agent` leaves the key out; a `null` would claim the \
+         header was seen and held nothing"
     );
 }
 
@@ -1365,7 +1366,7 @@ fn contract_rejects_a_record_with_no_version() {
 #[test]
 fn contract_rejects_an_entity_key_outside_the_enum() {
     let found = violations_after("authz_succeeded_single", |r| {
-        r["entity"]["not-a-field"] = "x".into();
+        r["entities"][0]["not-a-field"] = "x".into();
     });
     assert_eq!(
         found,
@@ -1397,7 +1398,7 @@ fn contract_rejects_an_entity_key_inside_a_per_decision_entry() {
 #[test]
 fn contract_rejects_an_action_context_key_outside_the_enum() {
     let found = violations_after("authz_succeeded_single", |r| {
-        r["action"]["not-a-context-key"] = "x".into();
+        r["actions"][0]["not-a-context-key"] = "x".into();
     });
     assert_eq!(
         found,
@@ -1412,7 +1413,7 @@ fn contract_rejects_an_action_context_key_outside_the_enum() {
 #[test]
 fn contract_rejects_an_unknown_entity_type() {
     let found = violations_after("authz_succeeded_single", |r| {
-        r["entity"]["entity_type"] = "banana".into();
+        r["entities"][0]["entity_type"] = "banana".into();
     });
     assert_eq!(
         found,
@@ -1425,7 +1426,7 @@ fn contract_rejects_an_unknown_entity_type() {
 #[test]
 fn contract_ignores_client_property_keys_that_collide_with_its_own() {
     let found = violations_after("authz_succeeded_single", |r| {
-        r["action"]["properties"] = serde_json::json!({
+        r["actions"][0]["properties"] = serde_json::json!({
             "entity_type": "banana",
             "not-a-field": "x",
         });
@@ -1556,13 +1557,13 @@ fn a_replay_records_the_actor_action_and_target_but_no_decision() {
     let event = emit_and_capture_one(|| AuditEventListener.idempotent_replay_served(event));
 
     assert_eq!(
-        event.get("operation").and_then(serde_json::Value::as_str),
-        Some("idempotent_replay"),
+        event.get("record_type").and_then(serde_json::Value::as_str),
+        Some("replay"),
+        "a replay names its own shape; it does not borrow `operation` and `outcome` from the \
+         operational family to be recognised"
     );
-    assert_eq!(
-        event.get("outcome").and_then(serde_json::Value::as_str),
-        Some("replayed"),
-    );
+    assert_eq!(event.get("operation"), None);
+    assert_eq!(event.get("outcome"), None);
     assert_eq!(
         event
             .get("idempotency_key")
@@ -1594,19 +1595,19 @@ fn a_replay_records_the_actor_action_and_target_but_no_decision() {
     // a plain one.
     assert_eq!(
         event
-            .pointer("/action/action_name")
+            .pointer("/actions/0/action_name")
             .and_then(serde_json::Value::as_str),
         Some("drop"),
     );
     assert_eq!(
         event
-            .pointer("/action/force")
+            .pointer("/actions/0/force")
             .and_then(serde_json::Value::as_str),
         Some("true"),
     );
     assert_eq!(
         event
-            .pointer("/action/purge")
+            .pointer("/actions/0/purge")
             .and_then(serde_json::Value::as_str),
         Some("true"),
     );
@@ -1614,25 +1615,25 @@ fn a_replay_records_the_actor_action_and_target_but_no_decision() {
     // Against what, as the caller named it.
     assert_eq!(
         event
-            .pointer("/entity/entity_type")
+            .pointer("/entities/0/entity_type")
             .and_then(serde_json::Value::as_str),
         Some("table"),
     );
     assert_eq!(
         event
-            .pointer("/entity/warehouse-id")
+            .pointer("/entities/0/warehouse-id")
             .and_then(serde_json::Value::as_str),
         Some(warehouse_id.to_string().as_str()),
     );
     assert_eq!(
         event
-            .pointer("/entity/namespace")
+            .pointer("/entities/0/namespace")
             .and_then(serde_json::Value::as_str),
         Some("sales"),
     );
     assert_eq!(
         event
-            .pointer("/entity/table")
+            .pointer("/entities/0/table")
             .and_then(serde_json::Value::as_str),
         Some("orders"),
         "the target is the name the caller sent, since a replay resolves nothing"
@@ -1666,16 +1667,13 @@ fn an_authorization_record_carries_the_idempotency_key() {
         Some("0198f2c0-0000-7000-8000-000000000002"),
     );
 
-    // Absent must be distinguishable from "not recorded", as for `user_agent`.
+    // A request without one leaves the key out, as for `user_agent`.
     let without = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(succeeded_event(
             RequestMetadataTestBuilder::builder().build(),
         ))
     });
-    assert_eq!(
-        without.get("idempotency_key"),
-        Some(&serde_json::Value::Null)
-    );
+    assert_eq!(without.get("idempotency_key"), None);
 }
 
 /// A caller claiming an emergency override has to be visible in the audit

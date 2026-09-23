@@ -1,9 +1,16 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "read_data"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
+  "actions": [
+    {
+      "action_name": "read_data"
+    }
+  ],
   "entities": [
     {
       "entity_type": "table",
@@ -38,6 +45,5 @@
       "allowed": true
     }
   ],
-  "idempotency_key": null,
   "decision": "allowed"
 }

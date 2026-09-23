@@ -60,6 +60,19 @@ with what result.
 | `allowed` | boolean | optional | The authorizer's answer. Absent when an upstream error stopped the evaluation. |
 | `determined_by` | array of any | optional | The policies or rules that determined the decision, when the authorizer reports them. |
 
+### `EmitterRecord`
+
+The `emitter` object: which product produced this record, and the version of the
+vocabulary and context shapes it governs.
+
+A consumer routes the core shape on `audit_format` and everything the emitter owns — its
+`context`, its vocabulary, any shape it defines — on this.
+
+| Field | Type | Present | Description |
+|---|---|---|---|
+| `name` | string | always | The emitter's name, unique across the products that write to this log. |
+| `format` | string | always | The `MAJOR.MINOR` version of what this emitter contributes. |
+
 ### `EntityRecord`
 
 An `entity` object: the kind of resource and its identifying fields.
@@ -821,6 +834,14 @@ Values of `privilege_source`:
 - `authorizer`
 - `instance_admin`
 - `internal`
+
+### `RecordType`
+
+Values of `record_type`:
+
+- `authorization`
+- `operation`
+- `replay`
 
 ### `ResourceType`
 

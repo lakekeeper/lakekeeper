@@ -1,33 +1,30 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "read_data"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
-  "entity": {
-    "entity_type": "table",
-    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-    "table-id": "019684ff-0000-7000-8000-000000000002",
-    "table": "sales.orders"
-  },
+  "actions": [
+    {
+      "action_name": "read_data"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+      "table-id": "019684ff-0000-7000-8000-000000000002",
+      "table": "sales.orders"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~alice"
   },
   "privilege_source": "authorizer",
   "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
-  "failure_reason": {
-    "ActionForbidden": []
-  },
-  "error": {
-    "type": "NotAuthorized",
-    "code": 403,
-    "message": "Principal is not allowed to read this table",
-    "stack": [
-      "authorizer: no matching grant"
-    ],
-    "error_id": "019684ff-0000-7000-8000-0000000000ff"
-  },
   "authorizations": [
     {
       "id": "check-0",
@@ -58,6 +55,17 @@
       ]
     }
   ],
-  "idempotency_key": null,
-  "decision": "denied"
+  "decision": "denied",
+  "failure_reason": {
+    "ActionForbidden": []
+  },
+  "error": {
+    "type": "NotAuthorized",
+    "code": 403,
+    "message": "Principal is not allowed to read this table",
+    "stack": [
+      "authorizer: no matching grant"
+    ],
+    "error_id": "019684ff-0000-7000-8000-0000000000ff"
+  }
 }

@@ -541,6 +541,26 @@
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::DecisionRecord"
     },
+    "EmitterRecord": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The emitter's name, unique across the products that write to this log."
+        },
+        "format": {
+          "type": "string",
+          "description": "The `MAJOR.MINOR` version of what this emitter contributes."
+        }
+      },
+      "required": [
+        "name",
+        "format"
+      ],
+      "description": "The `emitter` object: which product produced this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything the emitter owns — its\n`context`, its vocabulary, any shape it defines — on this.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EmitterRecord"
+    },
     "EntityField": {
       "type": "string",
       "enum": [
@@ -894,6 +914,17 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-type": "lakekeeper_authz_openfga::relations::ProjectRelation"
+    },
+    "RecordType": {
+      "type": "string",
+      "enum": [
+        "authorization",
+        "operation",
+        "replay"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "record_type",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType"
     },
     "ResourceType": {
       "type": "string",

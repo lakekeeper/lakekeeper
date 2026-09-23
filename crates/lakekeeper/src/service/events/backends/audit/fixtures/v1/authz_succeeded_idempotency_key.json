@@ -1,15 +1,24 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "read_data"
+  "record_type": "authorization",
+  "emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
   },
-  "entity": {
-    "entity_type": "table",
-    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-    "table-id": "019684ff-0000-7000-8000-000000000002",
-    "table": "sales.orders"
-  },
+  "actions": [
+    {
+      "action_name": "read_data"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+      "table-id": "019684ff-0000-7000-8000-000000000002",
+      "table": "sales.orders"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~alice"

@@ -517,6 +517,7 @@ struct AdmissionRejectedContext<'a> {
     /// The gate that rejected the request.
     gate: &'a str,
     /// The rule of the gate that decided, when the gate names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     denied_by: Option<&'a str>,
     /// The HTTP status the caller received.
     status: u16,
