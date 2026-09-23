@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            FROM warehouse\n            WHERE project_id = $1\n            AND status = ANY($2)\n            ",
+  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            rollback_compaction_on_conflict,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,17 @@
       },
       {
         "ordinal": 11,
+        "name": "rollback_compaction_on_conflict",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_on_conflict"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +177,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -191,24 +202,7 @@
     "parameters": {
       "Left": [
         "Text",
-        {
-          "Custom": {
-            "name": "warehouse_status[]",
-            "kind": {
-              "Array": {
-                "Custom": {
-                  "name": "warehouse_status",
-                  "kind": {
-                    "Enum": [
-                      "active",
-                      "inactive"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        }
+        "Text"
       ]
     },
     "nullable": [
@@ -224,9 +218,10 @@
       false,
       true,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "01eda539ce8aaa7cd32ef87c0d70f583255da7c1ef42445ee16af71e667cdfdb"
+  "hash": "c1674297b9b2cf2efe6d36b9919848b2fa56e378072f7d674770c4d4f56bd84f"
 }

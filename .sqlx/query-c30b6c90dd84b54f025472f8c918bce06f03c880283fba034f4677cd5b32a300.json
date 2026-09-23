@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET status = $1\n            WHERE warehouse_id = $2\n            RETURNING                 \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n        ",
+  "query": "UPDATE warehouse\n            SET status = $1\n            WHERE warehouse_id = $2\n            RETURNING                 \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n        ",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,17 @@
       },
       {
         "ordinal": 11,
+        "name": "rollback_compaction_on_conflict",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_on_conflict"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +177,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -217,9 +228,10 @@
       false,
       true,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "7785248d22ff7c8a5cec7a248578d157e7fdb67f51f579481f2bdbfe7e7bd6c3"
+  "hash": "c30b6c90dd84b54f025472f8c918bce06f03c880283fba034f4677cd5b32a300"
 }
