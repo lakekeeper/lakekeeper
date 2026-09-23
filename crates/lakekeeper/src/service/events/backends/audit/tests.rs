@@ -183,10 +183,10 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 /// otherwise fail to compile before it could be generated.
 #[track_caller]
 fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
-    // Every nested object of the record validates against the schema the registry generates,
-    // whatever the fixture says: the fixture pins the sample, the schema pins the declaration.
+    // The whole record validates against the shape its `record_type` names, whatever the
+    // fixture says: the fixture pins the sample, the schema pins the declaration.
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
-    crate::audit::validate::assert_record_parts_valid(&schema, emitted, name);
+    crate::audit::validate::assert_valid_record(&schema, emitted, name);
     let path = fixture_path(name);
 
     if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
@@ -1865,4 +1865,83 @@ fn the_committed_crate_schema_matches_the_registry() {
 #[test]
 fn the_wire_values_this_crate_names_are_house_style() {
     crate::audit::schema::assert_wire_values_are_house_style(env!("CARGO_PKG_NAME"));
+}
+
+/// The schema's description of a record's shape is what the emitter actually writes.
+///
+/// A shape is described by deriving from its struct, but a record reaches the wire as the log
+/// event's own fields, written one by one by `emit()`. Those two could drift: a field added to
+/// the struct and not to `emit()` would be promised and never sent, and one added to `emit()`
+/// and not to the struct would be sent and never described. Every committed record is checked
+/// against the shape its `record_type` names, which is what makes the derived description
+/// worth trusting.
+#[test]
+fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let mut declared: Vec<String> = schema["$defs"]
+        .as_object()
+        .expect("$defs")
+        .values()
+        .filter_map(|d| d["x-audit-record-type"].as_str().map(str::to_owned))
+        .collect();
+    declared.sort();
+    let mut vocabulary: Vec<String> = RecordType::WIRE_NAMES
+        .iter()
+        .map(|n| (*n).to_owned())
+        .collect();
+    vocabulary.sort();
+    assert_eq!(
+        declared, vocabulary,
+        "each shape names the `record_type` it carries and the vocabulary lists them all; a \
+         value in one and not the other means a consumer routes on something no shape \
+         describes, or a shape nothing can reach"
+    );
+}
+
+#[test]
+fn every_record_matches_the_shape_its_type_names() {
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let defs = schema["$defs"].as_object().expect("$defs");
+    let shapes: std::collections::BTreeMap<&str, &serde_json::Value> = defs
+        .iter()
+        .filter(|(_, d)| d["x-audit-kind"] == "shape")
+        .map(|(name, d)| (name.as_str(), d))
+        .collect();
+    assert_eq!(
+        shapes.len(),
+        3,
+        "one definition per shape: {:?}",
+        shapes.keys()
+    );
+
+    for name in FIXTURE_NAMES {
+        let record = read_fixture(name);
+        let record_type = record["record_type"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} carries no `record_type`"));
+        let (_, shape) = shapes
+            .iter()
+            .find(|(shape_name, _)| {
+                shape_name.to_lowercase() == format!("{}record", record_type.replace('_', ""))
+            })
+            .unwrap_or_else(|| panic!("{name} says `{record_type}`, which names no shape"));
+
+        let properties = shape["properties"].as_object().expect("properties");
+        let envelope = ["event_source", "audit_format"];
+        for key in record.as_object().expect("an object").keys() {
+            assert!(
+                envelope.contains(&key.as_str()) || properties.contains_key(key),
+                "{name} carries `{key}`, which `{record_type}` does not describe. Add it to \
+                 the shape struct, or stop emitting it."
+            );
+        }
+        for required in shape["required"].as_array().into_iter().flatten() {
+            let required = required.as_str().expect("a property name");
+            assert!(
+                record.get(required).is_some(),
+                "`{record_type}` promises `{required}` on every record, and {name} has none. \
+                 Make the field optional, or emit it."
+            );
+        }
+    }
 }

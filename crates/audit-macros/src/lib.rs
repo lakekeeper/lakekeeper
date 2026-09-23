@@ -54,6 +54,9 @@ struct Args {
     field: Option<String>,
     /// `context`: this struct is the `context` object of an operation record.
     context: bool,
+    /// `shape = "authorization"`: this struct is a whole record, and that is the
+    /// `record_type` value naming it.
+    shape: Option<String>,
 }
 
 impl Parse for Args {
@@ -63,19 +66,26 @@ impl Parse for Args {
         for meta in metas {
             match &meta {
                 Meta::Path(p) if p.is_ident("context") => args.context = true,
+                Meta::NameValue(nv) if nv.path.is_ident("shape") => {
+                    args.shape = Some(lit_str(&nv.value, "shape")?);
+                }
                 Meta::NameValue(nv) if nv.path.is_ident("field") => {
                     args.field = Some(lit_str(&nv.value, "field")?);
                 }
                 other => {
                     return Err(Error::new_spanned(
                         other,
-                        "unknown argument: expected `field = \"<wire field>\"` or `context`",
+                        "unknown argument: expected `field = \"<wire field>\"`, `context` or \
+                         `shape = \"<record_type>\"`",
                     ));
                 }
             }
         }
         if args.context && args.field.is_some() {
             return Err(input.error("`context` and `field` cannot be combined"));
+        }
+        if args.shape.is_some() && (args.context || args.field.is_some()) {
+            return Err(input.error("`shape` stands alone"));
         }
         Ok(args)
     }
@@ -108,7 +118,7 @@ fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
     reject_type_generics(input)?;
     match (&input.data, &args.field, args.context) {
         (Data::Enum(e), Some(field), _) => expand_vocabulary(input, e, field),
-        (Data::Struct(_) | Data::Enum(_), None, _) => expand_part(input, args.context),
+        (Data::Struct(_) | Data::Enum(_), None, _) => expand_part(input, args),
         (Data::Struct(_), Some(_), _) => Err(Error::new_spanned(
             &input.ident,
             "`field = ...` is for vocabulary enums; a struct is a part or a `context`",
@@ -120,30 +130,63 @@ fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
     }
 }
 
-/// A part or a context: derives, `AuditPart`, registration with the schema.
-fn expand_part(input: &DeriveInput, context: bool) -> Result<TokenStream2> {
-    if matches!(input.data, Data::Enum(_)) && context {
-        return Err(Error::new_spanned(&input.ident, "`context` is for structs"));
+/// A part, a context or a shape: derives, `AuditPart`, registration with the schema.
+///
+/// A shape is a whole record. It is described but not serialised: a record reaches the wire as
+/// the log event's own fields, written one by one by its `emit()`, so nothing ever serialises
+/// the struct. Deriving `Serialize` for it would produce a nested object no consumer ever
+/// sees, and would demand `Serialize` of every vocabulary enum it holds.
+fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
+    let (context, shape) = (args.context, args.shape.as_deref());
+    let is_shape = shape.is_some();
+    if matches!(input.data, Data::Enum(_)) && (context || is_shape) {
+        return Err(Error::new_spanned(
+            &input.ident,
+            "`context` and `shape` are for structs",
+        ));
     }
     require_field_docs(input)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
-    let kind = if context {
+    let kind = if is_shape {
+        quote!(::lakekeeper::audit::Kind::Shape)
+    } else if context {
         quote!(::lakekeeper::audit::Kind::Context)
     } else {
         quote!(::lakekeeper::audit::Kind::Part)
     };
+    let derives = if is_shape {
+        quote!(#[derive(::lakekeeper::__private::schemars::JsonSchema)])
+    } else {
+        quote!(
+            #[derive(::lakekeeper::__private::serde::Serialize, ::lakekeeper::__private::schemars::JsonSchema)]
+            #[serde(crate = "::lakekeeper::__private::serde")]
+        )
+    };
+    let part_impl = if is_shape {
+        quote!()
+    } else {
+        quote! {
+            impl #impl_generics ::lakekeeper::audit::AuditPart for #ident #ty_generics #where_clause {
+                type Emitter = crate::audit_emitter::Emitter;
+            }
+        }
+    };
+    let (wire_field, wire_values) = match shape {
+        Some(record_type) => (
+            quote!(::core::option::Option::Some("record_type")),
+            quote!(&[#record_type]),
+        ),
+        None => (quote!(::core::option::Option::None), quote!(&[])),
+    };
     let item = strip_our_attrs(input);
     Ok(quote! {
-        #[derive(::lakekeeper::__private::serde::Serialize, ::lakekeeper::__private::schemars::JsonSchema)]
-        #[serde(crate = "::lakekeeper::__private::serde")]
+        #derives
         #[schemars(crate = "::lakekeeper::__private::schemars")]
         #item
 
-        impl #impl_generics ::lakekeeper::audit::AuditPart for #ident #ty_generics #where_clause {
-            type Emitter = crate::audit_emitter::Emitter;
-        }
+        #part_impl
 
         #[cfg(debug_assertions)]
         ::lakekeeper::__private::inventory::submit! {
@@ -156,8 +199,8 @@ fn expand_part(input: &DeriveInput, context: bool) -> Result<TokenStream2> {
                 defining_crate: env!("CARGO_PKG_NAME"),
                 schema_name: ::core::option::Option::Some(|| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::schema_name()),
                 schema: ::core::option::Option::Some(|generator| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::json_schema(generator)),
-                wire_field: ::core::option::Option::None,
-                wire_values: &[],
+                wire_field: #wire_field,
+                wire_values: #wire_values,
             }
         }
     })

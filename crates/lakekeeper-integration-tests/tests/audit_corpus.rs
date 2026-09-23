@@ -372,7 +372,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     .expect("the committed schema is JSON");
     for (index, record) in records.iter().enumerate() {
         contract::assert_satisfies(record, &format!("record {index}"));
-        lakekeeper::audit::validate::assert_record_parts_valid(
+        lakekeeper::audit::validate::assert_valid_record(
             &committed_schema,
             record,
             &format!("record {index}"),

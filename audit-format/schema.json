@@ -253,6 +253,116 @@
       "x-audit-field": "failure_reason",
       "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason"
     },
+    "AuthorizationRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "type": "string",
+          "description": "Names this record's shape. Always `authorization`."
+        },
+        "emitter": {
+          "$ref": "#/$defs/EmitterRecord",
+          "description": "Which product produced this record, and the version of what it governs."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionRecord"
+          },
+          "description": "The actions evaluated, always a list however many there are."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityRecord"
+          },
+          "description": "The entities they were evaluated against, always a list."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "privilege_source": {
+          "type": "string",
+          "description": "Which authority answered: the authorizer, or a bypass."
+        },
+        "user_agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
+        },
+        "break_glass": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The stated break-glass reason. Absent unless the caller claimed one."
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HandlerContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Handler-supplied detail about the request. Absent when the handler added none."
+        },
+        "authorizations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionRecord"
+          },
+          "description": "One entry per permission evaluated."
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The request's `Idempotency-Key`. Absent when the caller sent none."
+        },
+        "decision": {
+          "type": "string",
+          "description": "Whether the request was permitted."
+        },
+        "failure_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a denied record was denied, as the vocabulary spells it."
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The error the caller received. Present only on a denial that produced one."
+        }
+      },
+      "required": [
+        "record_type",
+        "emitter",
+        "actions",
+        "entities",
+        "actor",
+        "privilege_source",
+        "authorizations",
+        "decision"
+      ],
+      "description": "An authorization record: was this caller permitted to do these actions on these entities?",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::AuthorizationRecord",
+      "x-audit-record-type": "authorization"
+    },
     "CatalogGenericTableAction": {
       "type": "string",
       "enum": [
@@ -610,7 +720,8 @@
           "description": "An allow contributed by a built-in/system authority tier that takes\nprecedence over normal authored policy — e.g. a recovery mechanism that\nlets a privileged system role act despite a policy that would otherwise\nforbid it. Its presence means the verdict rested on built-in authority\nrather than on a configured policy."
         }
       ],
-      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched, and\n`system-authority` records that a built-in authority tier decided the request. The\nschema is a closed `oneOf` over those two, so a further kind is a schema change a\ngenerated client has to be rebuilt for rather than one it absorbs on its own."
+      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched, and\n`system-authority` records that a built-in authority tier decided the request. The\nschema is a closed `oneOf` over those two, so a further kind is a schema change a\ngenerated client has to be rebuilt for rather than one it absorbs on its own.",
+      "x-audit-kind": "part"
     },
     "EmitterRecord": {
       "type": "object",
@@ -930,6 +1041,45 @@
       "x-audit-kind": "context",
       "x-audit-type": "lakekeeper::NoContext"
     },
+    "OperationRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "type": "string",
+          "description": "Names this record's shape. Always `operation`."
+        },
+        "emitter": {
+          "$ref": "#/$defs/EmitterRecord",
+          "description": "Which product produced this record, and the version of what it governs."
+        },
+        "operation": {
+          "type": "string",
+          "description": "What was done, from the emitter's own vocabulary."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "How it ended, from the emitter's own vocabulary."
+        },
+        "context": {
+          "description": "The operation's own detail. One shape per operation kind, each declared by its\nemitter; absent for an operation that carries none."
+        }
+      },
+      "required": [
+        "record_type",
+        "emitter",
+        "operation",
+        "actor",
+        "outcome"
+      ],
+      "description": "An operation record as it reaches the wire.\n\nThe builder above is generic, so a record cannot mix two emitters' vocabularies. What it\nwrites is not generic, and this is it: one struct, so the schema describes the record\nrather than a description of it kept alongside.",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::OperationWire",
+      "x-audit-record-type": "operation"
+    },
     "PolicyEffect": {
       "oneOf": [
         {
@@ -943,7 +1093,8 @@
           "description": "The policy denies the action."
         }
       ],
-      "description": "Whether a determining policy permits or forbids."
+      "description": "Whether a determining policy permits or forbids.",
+      "x-audit-kind": "enum"
     },
     "PrivilegeSource": {
       "type": "string",
@@ -1011,6 +1162,65 @@
       "x-audit-kind": "enum",
       "x-audit-field": "record_type",
       "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType"
+    },
+    "ReplayRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "type": "string",
+          "description": "Names this record's shape. Always `replay`."
+        },
+        "emitter": {
+          "$ref": "#/$defs/EmitterRecord",
+          "description": "Which product produced this record, and the version of what it governs."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionRecord"
+          },
+          "description": "The actions the replayed request named, always a list."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityRecord"
+          },
+          "description": "The entities it named, always a list. As the caller wrote them: a replay resolves\nnothing."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "privilege_source": {
+          "type": "string",
+          "description": "Which authority would have answered, had one been asked."
+        },
+        "user_agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "The key whose stored response was served. Always present: it is what makes this a\nreplay."
+        }
+      },
+      "required": [
+        "record_type",
+        "emitter",
+        "actions",
+        "entities",
+        "actor",
+        "privilege_source",
+        "idempotency_key"
+      ],
+      "description": "A replay record: a retry answered from an idempotency record, so no authorization ran.",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::ReplayRecord",
+      "x-audit-record-type": "replay"
     },
     "ResourceType": {
       "type": "string",
