@@ -636,6 +636,11 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
                 )
             if prop in h_req and prop not in b_req:
                 bump("breaking", f"`{name}.{prop}` became required")
+            # The mirror case, and breaking for the same reason read the other way: a
+            # consumer that relied on the field always being there now meets records
+            # without it.
+            if prop in b_req and prop not in h_req:
+                bump("breaking", f"`{name}.{prop}` became optional")
         if _type_of(b.get("additionalProperties", True)) != _type_of(
             h.get("additionalProperties", True)
         ):
@@ -1844,6 +1849,14 @@ def self_test() -> int:
     check("schema: optional property added is additive", classify_schema(schema({"A": actor}), schema({"A": actor_email}))[0], "additive")
     check("schema: property removed is breaking", classify_schema(schema({"A": actor_email}), schema({"A": actor}))[0], "breaking")
     check("schema: property made required is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_req}))[0], "breaking")
+    # The mirror. Missing this branch made a field that stopped being guaranteed invisible
+    # to the comparison, while the same change the other way round was reported.
+    check("schema: property made optional is breaking", classify_schema(schema({"A": actor_req}), schema({"A": actor}))[0], "breaking")
+    check(
+        "schema: property made optional is named",
+        any("became optional" in r for r in classify_schema(schema({"A": actor_req}), schema({"A": actor}))[1]),
+        True,
+    )
     check("schema: property retyped is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_retyped}))[0], "breaking")
     check("schema: definition added is additive", classify_schema(schema({"A": actor}), schema({"A": actor, "B": actor}))[0], "additive")
     check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
