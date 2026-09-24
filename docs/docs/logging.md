@@ -118,7 +118,7 @@ The record's shape — that it has a `record_type`, an `actor`, an `outcome` and
 !!! warning "The two numbers are not the same field written twice"
     For records Lakekeeper itself produces, `emitter.name` is `lakekeeper` and `emitter.format` happens to equal `audit_format`, because one project governs both. That equality is a property of that one emitter, not of the format. A record from any other emitter carries two different numbers, and a consumer that compares whichever it first encountered will route those records wrongly and silently. Compare the one whose scope you mean.
 
-Each emitter publishes its own generated reference, listing every object and value set it contributes: Lakekeeper's is the [audit format reference](audit/reference-lakekeeper.md). The sections below describe what the records mean and show examples.
+Every object, field and closed set of values a record can carry is described in the [audit log schema](audit/schema.md), generated from the emitting code. The sections below describe what the records mean and show examples.
 
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 

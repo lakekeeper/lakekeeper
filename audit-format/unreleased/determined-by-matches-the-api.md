@@ -19,5 +19,5 @@ into a `type` field, and its spelling changes with it: `Policy` becomes `policy`
 so `policy_id` becomes `policy-id`. And `effect`, which wrapped its own value in an
 object, becomes that value as a lowercase string: `permit` or `forbid`.
 
-One parser now reads both the audit log and the API response. Every field of both
-shapes is listed in the audit format reference.
+One parser now reads both the audit log and the API response. Both shapes are described
+in full in the published audit log schema.

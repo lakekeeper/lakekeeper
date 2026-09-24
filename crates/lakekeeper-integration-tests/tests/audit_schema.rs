@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lakekeeper::audit::{reference::render_reference, schema};
+use lakekeeper::audit::schema;
 
 const EMITTER: &str = "lakekeeper";
 
@@ -69,13 +69,18 @@ fn the_committed_schema_is_the_merge_of_the_crate_schemas() {
     );
 }
 
+/// The schema customers read is the schema the tests check records against.
+///
+/// Published as a file of the documentation site rather than rendered into prose: it is the
+/// document a consumer validates against and generates types from, and a second, hand-rolled
+/// rendering of it could only ever be a worse copy that drifts.
 #[test]
-fn the_committed_reference_matches_the_schema() {
+fn the_published_schema_matches_the_committed_one() {
     let merged = schema::merge_crate_schemas(&committed_crate_schemas());
     write_or_compare(
-        &repo_root().join(format!("docs/docs/audit/reference-{EMITTER}.md")),
-        &render_reference(&merged),
-        "audit field reference",
+        &repo_root().join("docs/docs/audit/schema.json"),
+        &schema::render(&merged),
+        "published audit schema",
     );
 }
 
