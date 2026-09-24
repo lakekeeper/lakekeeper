@@ -57,7 +57,7 @@ VERSION_SEARCH_PATH = "crates/"
 
 # The generated field reference of this repository's emitter. Regenerated beside the schema,
 # so a schema that moved without it means one of the two was not regenerated.
-REFERENCE_PATH = "docs/docs/audit/reference-lakekeeper.md"
+REFERENCE_PATH = "docs/docs/audit/schema.json"
 
 
 def load_config() -> None:
@@ -532,8 +532,8 @@ def require_reference_regenerated(merge_base: str, head_ref: str) -> None:
     if base is None or head is None or base != head:
         return
     raise CheckFailed(
-        f"::error::{SCHEMA_PATH} changed and {REFERENCE_PATH} did not. They are generated "
-        f"together; run `just update-audit-schema` and commit both."
+        f"::error::{SCHEMA_PATH} changed and {REFERENCE_PATH} did not. The published copy is "
+        f"written from it; run `just update-audit-schema` and commit both."
     )
 
 

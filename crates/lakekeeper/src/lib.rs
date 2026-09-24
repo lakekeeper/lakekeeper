@@ -108,7 +108,7 @@ pub mod audit {
         warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
-    pub use crate::service::events::backends::audit::{reference, schema, validate};
+    pub use crate::service::events::backends::audit::{schema, validate};
 }
 
 /// Re-exports the `#[audit_part]` expansion relies on. Not part of the public API.

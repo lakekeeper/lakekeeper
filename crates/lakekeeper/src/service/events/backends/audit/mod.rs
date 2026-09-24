@@ -6,8 +6,6 @@ pub mod assemble;
 pub mod emitter;
 pub mod part;
 pub mod parts;
-#[cfg(any(test, feature = "test-utils"))]
-pub mod reference;
 pub mod render;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod schema;
