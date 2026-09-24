@@ -100,12 +100,15 @@ pub type XXHashSet<T> = std::collections::HashSet<T, xxhash_rust::xxh3::Xxh3Buil
 pub mod audit {
     pub use lakekeeper_audit_macros::audit_part;
 
+    // What an emitting crate needs and nothing else. Lakekeeper's own record parts —
+    // `EntityRecord`, `DecisionRecord`, the subject records — are reachable at
+    // `service::events::backends::audit` but are not re-exported here: another emitter never
+    // builds one. It supplies an actor, a vocabulary and a context of its own, and the shape
+    // assembles the rest.
     pub use crate::service::events::backends::audit::{
-        AUDIT_TARGET, ActionRecord, ActorRecord, AnyWireStr, AssumedRoleRecord, AuditEmitter,
-        AuditJson, AuditPart, DecisionRecord, EntityRecord, ErrorRecord, GrantContextRecord,
-        HandlerContext, Kind, OperationRecord, Registration, RoleSubjectRecord, SubjectRecord,
-        UserSubjectRecord, WireStr, enabled, is_emitter_name, is_major_minor,
-        warn_on_retired_audit_filter,
+        AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, Kind,
+        OperationRecord, Registration, WireKey, WireName, WireStr, enabled, is_emitter_name,
+        is_major_minor, warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::{schema, validate};

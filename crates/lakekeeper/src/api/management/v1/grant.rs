@@ -1669,7 +1669,7 @@ fn validate_filter_resource_types(
     let outside: Vec<&str> = requested
         .iter()
         .filter(|kind| !kinds.contains(kind))
-        .map(|kind| kind.as_str())
+        .map(ResourceType::as_str)
         .collect();
     if outside.is_empty() {
         return Ok(());

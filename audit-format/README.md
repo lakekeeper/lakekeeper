@@ -17,6 +17,11 @@ carries, and a major change absorbs every minor change in the same cycle.
 | `released.json` | The audit format version the most recent release on this branch shipped, and which release that was. `null` until the first release carries one. Maintained by the release recipe. |
 | `unreleased/*.md` | One fragment per change: its level, and prose for the release notes. Written in the pull request that makes the change. |
 | `TEMPLATE.md` | What a fragment looks like. Not a fragment — only `unreleased/*.md` is read. |
+| `schema.json` | The audit format itself: every record shape, nested object, field and closed set of names. Generated from the code by `just update-audit-schema`, and published to the documentation site as `docs/docs/audit/schema.json`. Never edited by hand. |
+| `schema-baseline.json` | The declared types as they stood before the current shape change, frozen. Working state for that change's release note; it goes when the fragments it covers ship. |
+| `records-baseline.json` | The top-level record shapes as they stood before the current shape change, summarised from the fixtures. Frozen and temporary, like the file above. |
+
+Compare either baseline with what the tree holds now using `just audit-format-since-baseline`.
 
 ## Writing a fragment
 

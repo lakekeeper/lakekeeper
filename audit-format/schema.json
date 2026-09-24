@@ -40,8 +40,8 @@
         "updated-properties",
         "writes"
       ],
-      "x-audit-kind": "enum",
-      "x-audit-field": "action-key",
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "action",
       "x-audit-type": "lakekeeper::service::events::context::ActionContextKey"
     },
     "ActionRecord": {
@@ -49,6 +49,7 @@
       "properties": {
         "action_name": {
           "type": "string",
+          "x-audit-open": true,
           "description": "The action's wire name, from a vocabulary enum of any emitter."
         }
       },
@@ -66,23 +67,16 @@
       "type": "object",
       "properties": {
         "actor_type": {
-          "type": "string",
-          "description": "One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`."
+          "description": "One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`.",
+          "$ref": "#/$defs/ActorType"
         },
         "principal": {
           "type": "string",
           "description": "The authenticated principal. Present for `principal` and `assumed-role`."
         },
         "assumed_role": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AssumedRoleRecord"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The role acted as. Present for `assumed-role`; `principal` is still the human."
+          "description": "The role acted as. Present for `assumed-role`; `principal` is still the human.",
+          "$ref": "#/$defs/AssumedRoleRecord"
         }
       },
       "required": [
@@ -147,7 +141,7 @@
         "error_id",
         "request_id"
       ],
-      "description": "Context for the admission-rejection audit record.\n\nThe operation-specific fields live here rather than at the top level,\nbecause that is the shape every `event_source=\"audit\"` operational record\npromises. `error_id` correlates with what the caller was handed, and\n`request_id` is repeated out of the span so the record stands alone.",
+      "description": "Context for the admission-rejection audit record: which gate refused the request, on what\ngrounds, and what the caller was told.\n\n`error_id` is the id the caller was handed, so a user's report resolves to this record.\n`request_id` is repeated out of the span, so the record stands alone.",
       "x-audit-kind": "context",
       "x-audit-type": "lakekeeper::service::admission::AdmissionRejectedContext<'_>"
     },
@@ -213,7 +207,12 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "outcome",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOutcome"
+      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOutcome",
+      "x-audit-descriptions": {
+        "forbidden": "An admission gate denied the caller authoritatively.",
+        "success": "The operation completed.",
+        "unavailable": "An admission gate could not reach an upstream it needs and failed closed.\nSeparate from `forbidden` so an outage of that upstream reads as an outage\nrather than as a wave of denials."
+      }
     },
     "AuthnAction": {
       "type": "string",
@@ -236,14 +235,22 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "failure_reason",
-      "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason"
+      "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason",
+      "x-audit-descriptions": {
+        "ActionForbidden": "Action is not allowed for the user",
+        "CannotSeeResource": "Resource exists but user lacks permission to see it",
+        "InternalAuthorizationError": "Authorization backend service is unavailable",
+        "InternalCatalogError": "An internal Catalog error occurred before authorization check could be completed",
+        "InvalidRequestData": "Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)",
+        "ResourceNotFound": "Resource does not exist"
+      }
     },
     "AuthorizationRecord": {
       "type": "object",
       "properties": {
         "record_type": {
-          "type": "string",
-          "description": "Names this record's shape. Always `authorization`."
+          "description": "Names this record's shape. Always `authorization`.",
+          "const": "authorization"
         },
         "emitter": {
           "$ref": "#/$defs/EmitterRecord",
@@ -268,8 +275,8 @@
           "description": "Who made the request, as authentication established it."
         },
         "privilege_source": {
-          "type": "string",
-          "description": "Which authority answered: the authorizer, or a bypass."
+          "description": "Which authority answered: the authorizer, or a bypass.",
+          "$ref": "#/$defs/PrivilegeSource"
         },
         "user_agent": {
           "type": "string",
@@ -280,15 +287,8 @@
           "description": "The stated break-glass reason. Absent unless the caller claimed one."
         },
         "context": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HandlerContext"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Handler-supplied detail about the request. Absent when the handler added none."
+          "description": "Handler-supplied detail about the request. Absent when the handler added none.",
+          "$ref": "#/$defs/HandlerContext"
         },
         "authorizations": {
           "type": "array",
@@ -302,23 +302,16 @@
           "description": "The request's `Idempotency-Key`. Absent when the caller sent none."
         },
         "decision": {
-          "type": "string",
-          "description": "Whether the request was permitted."
+          "description": "Whether the request was permitted.",
+          "$ref": "#/$defs/Decision"
         },
         "failure_reason": {
-          "type": "string",
-          "description": "Why a denied record was denied, as the vocabulary spells it."
+          "description": "Why a denied record was denied, as the vocabulary spells it.",
+          "$ref": "#/$defs/AuthorizationFailureReason"
         },
         "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorRecord"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The error the caller received. Present only on a denial that produced one."
+          "description": "The error the caller received. Present only on a denial that produced one.",
+          "$ref": "#/$defs/ErrorRecord"
         }
       },
       "required": [
@@ -354,7 +347,11 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogGenericTableAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogGenericTableAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this generic table.",
+        "read_grants": "Can list the grants held on this generic table."
+      }
     },
     "CatalogNamespaceAction": {
       "type": "string",
@@ -382,7 +379,15 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogNamespaceAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogNamespaceAction",
+      "x-audit-descriptions": {
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "manage_tags": "Attach/detach governance tags on this namespace.",
+        "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
+        "read_grants": "Can list the grants held on this namespace.",
+        "read_subtree_grants": "Can list and read every grant in the subtree rooted here: the namespace's own and\nthose on every descendant namespace and tabular. Strictly stronger than\n`ReadGrants`, which covers this one resource; granted separately because it\nenumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the subtree rooted here, asked once at this namespace for\nthe whole batch. An authorizer must answer it as authority over everything\nbeneath — or refuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+      }
     },
     "CatalogProjectAction": {
       "type": "string",
@@ -407,7 +412,12 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogProjectAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogProjectAction",
+      "x-audit-descriptions": {
+        "create_tag": "Create a new governance tag definition in this project.",
+        "list_tags": "List tag definitions in this project.",
+        "read_grants": "Can list the grants held on this project."
+      }
     },
     "CatalogRoleAction": {
       "type": "string",
@@ -422,7 +432,12 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogRoleAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogRoleAction",
+      "x-audit-descriptions": {
+        "manage_role_assignments": "Can add/remove members (user or role) of this role.",
+        "read_role_assignments": "Can list members / parents / assignments of this role.",
+        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The catalog backend treats this the same as\n`ManageRoleAssignments`.\n\nThe destination is explicit. A real rebind names the target provider and source id;\nthe permission enumeration behind `GET /role/{id}/actions`, and any \"may this\nprincipal rebind at all?\" query, name `any` instead. `any` is a base-capability\nmarker, not a permissive default: a policy written against a concrete destination\ngates that destination and never matches `any`, and a `/check` caller picks between\nthe two deliberately."
+      }
     },
     "CatalogServerAction": {
       "type": "string",
@@ -436,7 +451,15 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogServerAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogServerAction",
+      "x-audit-descriptions": {
+        "create_project": "Can create items inside the server (can create Warehouses).",
+        "delete_users": "Can delete all users on this server.",
+        "list_users": "Can List all users on this server.",
+        "provision_users": "Can provision user",
+        "read_grants": "Can list the grants held on this server.",
+        "update_users": "Can update all users on this server."
+      }
     },
     "CatalogTableAction": {
       "type": "string",
@@ -457,7 +480,11 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogTableAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogTableAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this table.",
+        "read_grants": "Can list the grants held on this table."
+      }
     },
     "CatalogTagAction": {
       "type": "string",
@@ -472,7 +499,16 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogTagAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogTagAction",
+      "x-audit-descriptions": {
+        "apply": "Attach this tag to a target. Also requires `manage_tags` on the target.",
+        "delete": "Delete the tag definition.",
+        "read": "Read the tag definition (name, description, value kind, allowed values).",
+        "read_attachments": "List the targets this tag is attached to (reverse lookup). Broader disclosure\nthan `Read`, so restricted to tag owners / project security admins. Distinct\nfrom `can_read_assignments`, which reads who holds apply/ownership (grants).",
+        "read_grants": "Can list the grants held on this tag definition.",
+        "remove": "Detach this tag from a target. Also requires `manage_tags` on the target.",
+        "update": "Update the tag definition (name/description, widen scope, add allowed values)."
+      }
     },
     "CatalogUserAction": {
       "type": "string",
@@ -484,7 +520,13 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogUserAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogUserAction",
+      "x-audit-descriptions": {
+        "delete": "Can delete this user",
+        "read": "Can get all details of the user given its id",
+        "read_role_assignments": "Can list the role assignments held by this user.",
+        "update": "Can update the user."
+      }
     },
     "CatalogViewAction": {
       "type": "string",
@@ -504,7 +546,11 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogViewAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogViewAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this view.",
+        "read_grants": "Can list the grants held on this view."
+      }
     },
     "CatalogWarehouseAction": {
       "type": "string",
@@ -538,7 +584,14 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogWarehouseAction"
+      "x-audit-type": "lakekeeper::service::authz::CatalogWarehouseAction",
+      "x-audit-descriptions": {
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "manage_tags": "Attach/detach governance tags on this warehouse.",
+        "read_grants": "Can list the grants held on this warehouse.",
+        "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `ReadGrants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+      }
     },
     "ContextValue": {
       "anyOf": [
@@ -582,15 +635,8 @@
           "description": "The client's id for this check in a batch, or its index. Absent for single checks."
         },
         "for-principal": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SubjectRecord"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The principal whose permission was evaluated, when it is not the request's actor."
+          "description": "The principal whose permission was evaluated, when it is not the request's actor.",
+          "$ref": "#/$defs/SubjectRecord"
         },
         "action": {
           "$ref": "#/$defs/ActionRecord",
@@ -720,16 +766,16 @@
         "view-id",
         "warehouse-id"
       ],
-      "x-audit-kind": "enum",
-      "x-audit-field": "entity-key",
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "entity",
       "x-audit-type": "lakekeeper::service::events::context::EntityField"
     },
     "EntityRecord": {
       "type": "object",
       "properties": {
         "entity_type": {
-          "type": "string",
-          "description": "The kind of resource: `table`, `namespace`, `warehouse`, …"
+          "description": "The kind of resource: `table`, `namespace`, `warehouse`, …",
+          "$ref": "#/$defs/EntityType"
         }
       },
       "required": [
@@ -861,8 +907,8 @@
           "description": "The privilege name, verbatim from the authorizer's vocabulary."
         },
         "resource_type": {
-          "type": "string",
-          "description": "The kind of resource the grant is on."
+          "description": "The kind of resource the grant is on.",
+          "$ref": "#/$defs/ResourceType"
         },
         "resource_id": {
           "type": "string",
@@ -900,9 +946,16 @@
         "self-provisioning",
         "self-read"
       ],
-      "x-audit-kind": "enum",
-      "x-audit-field": "context-key",
-      "x-audit-type": "lakekeeper::service::events::context::HandlerContextKey"
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "context",
+      "x-audit-type": "lakekeeper::service::events::context::HandlerContextKey",
+      "x-audit-descriptions": {
+        "entity_id": "The id of the entity a task operation addressed.",
+        "invoked-by": "Which operation invoked this one, when a handler acts on behalf of another.",
+        "queue_name": "The task queue an operation addressed.",
+        "self-provisioning": "Whether the user creation was the caller provisioning itself.",
+        "self-read": "Whether a grant read asked about the caller's own grants."
+      }
     },
     "InstanceAdminAction": {
       "type": "string",
@@ -911,7 +964,10 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::instance_admin::InstanceAdminAction"
+      "x-audit-type": "lakekeeper::service::authz::instance_admin::InstanceAdminAction",
+      "x-audit-descriptions": {
+        "set_warehouse_managed_by": "Set or clear a warehouse's managed-by marker."
+      }
     },
     "ManagementAction": {
       "type": "string",
@@ -984,18 +1040,12 @@
       "x-audit-field": "action_name",
       "x-audit-type": "lakekeeper_authz_openfga::relations::NamespaceRelation"
     },
-    "NoContext": {
-      "type": "null",
-      "description": "The `context` of an operation record that carries none.",
-      "x-audit-kind": "context",
-      "x-audit-type": "lakekeeper::NoContext"
-    },
     "OperationRecord": {
       "type": "object",
       "properties": {
         "record_type": {
-          "type": "string",
-          "description": "Names this record's shape. Always `operation`."
+          "description": "Names this record's shape. Always `operation`.",
+          "const": "operation"
         },
         "emitter": {
           "$ref": "#/$defs/EmitterRecord",
@@ -1003,6 +1053,7 @@
         },
         "operation": {
           "type": "string",
+          "x-audit-open": true,
           "description": "What was done, from the emitter's own vocabulary."
         },
         "actor": {
@@ -1011,6 +1062,7 @@
         },
         "outcome": {
           "type": "string",
+          "x-audit-open": true,
           "description": "How it ended, from the emitter's own vocabulary."
         },
         "context": {
@@ -1024,7 +1076,7 @@
         "actor",
         "outcome"
       ],
-      "description": "An operation record as it reaches the wire.\n\nThe builder above is generic, so a record cannot mix two emitters' vocabularies. What it\nwrites is not generic, and this is it: one struct, so the schema describes the record\nrather than a description of it kept alongside.",
+      "description": "An operation record: something the system did that touches identity or access, with no\npermission decision of its own. Any emitter can produce one.",
       "x-audit-kind": "shape",
       "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::OperationWire",
       "x-audit-record-type": "operation"
@@ -1064,7 +1116,12 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "privilege_source",
-      "x-audit-type": "lakekeeper::request_metadata::PrivilegeSource"
+      "x-audit-type": "lakekeeper::request_metadata::PrivilegeSource",
+      "x-audit-descriptions": {
+        "authorizer": "Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).",
+        "instance_admin": "Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass\nonly; data-plane actions still route through the configured authorizer.",
+        "internal": "A call the catalog made to itself, with no client request behind it. Full bypass,\nincluding data-plane actions."
+      }
     },
     "ProjectRelation": {
       "type": "string",
@@ -1120,14 +1177,19 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "record_type",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType"
+      "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType",
+      "x-audit-descriptions": {
+        "authorization": "Was this caller permitted to do these actions on these entities?",
+        "operation": "Something the system did that touches identity or access.",
+        "replay": "A retry answered from an idempotency record, so no authorization ran."
+      }
     },
     "ReplayRecord": {
       "type": "object",
       "properties": {
         "record_type": {
-          "type": "string",
-          "description": "Names this record's shape. Always `replay`."
+          "description": "Names this record's shape. Always `replay`.",
+          "const": "replay"
         },
         "emitter": {
           "$ref": "#/$defs/EmitterRecord",
@@ -1152,8 +1214,8 @@
           "description": "Who made the request, as authentication established it."
         },
         "privilege_source": {
-          "type": "string",
-          "description": "Which authority would have answered, had one been asked."
+          "description": "Which authority would have answered, had one been asked.",
+          "$ref": "#/$defs/PrivilegeSource"
         },
         "user_agent": {
           "type": "string",
@@ -1192,7 +1254,10 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "resource_type",
-      "x-audit-type": "lakekeeper::service::authz::grant::ResourceType"
+      "x-audit-type": "lakekeeper::service::authz::grant::ResourceType",
+      "x-audit-descriptions": {
+        "tag-definition": "Spelled `tag-definition` on the wire, matching the path segment tag definitions\nare addressed by, so every key of the vocabulary map names its own URL segment.\nThe only spelling `kebab-case` does not already produce."
+      }
     },
     "RoleRelation": {
       "type": "string",
@@ -1237,7 +1302,11 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "root_level",
-      "x-audit-type": "lakekeeper::service::authz::RootLevelGrants"
+      "x-audit-type": "lakekeeper::service::authz::RootLevelGrants",
+      "x-audit-descriptions": {
+        "excluded": "Only grants held below the addressed resource are in range.",
+        "included": "The request's range extends to the addressed resource itself. The kinds it\nactually reaches are in `resource_types`; a kind filter can still exclude the\nroot's own kind."
+      }
     },
     "ServerRelation": {
       "type": "string",

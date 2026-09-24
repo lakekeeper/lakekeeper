@@ -7,7 +7,7 @@ use strum::VariantArray;
 use tracing::Instrument;
 
 use crate::{
-    CONFIG, ProjectId, WarehouseId,
+    ProjectId, WarehouseId,
     api::{
         RequestMetadata,
         management::v1::{
@@ -19,7 +19,7 @@ use crate::{
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
-    audit::{AnyWireStr, audit_part},
+    audit::audit_part,
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
@@ -45,7 +45,7 @@ use crate::{
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
 /// that require every field to be documented, and `#[audit_part]` derives every wire name
 /// from the variant, so a new variant cannot reach the wire unnamed.
-#[audit_part(field = "entity-key")]
+#[audit_part(keys_of = "entity")]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
@@ -67,16 +67,6 @@ pub enum EntityField {
     GenericTable,
     GenericTableId,
     TagDefinitionId,
-}
-
-impl EntityField {
-    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
-    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
-    /// usable in const context.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
@@ -103,9 +93,9 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
 ///
 /// Values are strings the handler chooses. A key declared here is declared in Lakekeeper's
-/// audit schema; another emitter declares its own enum with `#[audit_part(field =
-/// "context-key")]`. No key may spell the name of a core field of any shape.
-#[audit_part(field = "context-key")]
+/// audit schema; another emitter declares its own enum with `#[audit_part(keys_of =
+/// "context")]`. No key may spell the name of a core field of any shape.
+#[audit_part(keys_of = "context")]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum HandlerContextKey {
@@ -139,14 +129,6 @@ pub enum FallbackAction {
     Unknown,
 }
 
-impl FallbackAction {
-    /// The value as it reaches the wire.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
-}
-
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
@@ -170,16 +152,6 @@ pub enum EntityType {
     Unknown,
 }
 
-impl EntityType {
-    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
-    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
-    /// usable in const context.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
-}
-
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
 // keep compiling unchanged while the type system gains a closed field set.
 pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
@@ -200,7 +172,7 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 /// space enumerable, so the tests can require every field to be documented and covered,
 /// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
 /// unnamed.
-#[audit_part(field = "action-key")]
+#[audit_part(keys_of = "action")]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
@@ -244,16 +216,6 @@ pub enum ActionContextKey {
     UpdateKinds,
     UpdatedProperties,
     Writes,
-}
-
-impl ActionContextKey {
-    /// The wire name, as `#[audit_part]` derives it from the variant: kebab-case unless a
-    /// variant names its wire form with `#[audit(rename = "...")]`. `const fn` so it is
-    /// usable in const context.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
 }
 
 impl std::fmt::Display for ActionContextKey {
@@ -1303,10 +1265,16 @@ where
 
     /// Record a key on this event's `context` object.
     ///
-    /// The key is a value of a vocabulary enum declared with `#[audit_part(field =
-    /// "context-key")]`, so it is declared in its emitter's schema and cannot be a literal.
-    /// Lakekeeper's own keys are [`HandlerContextKey`].
-    pub fn push_extra_context(&mut self, key: impl Into<AnyWireStr>, value: impl Into<String>) {
+    /// The key comes from a key enum declared with `#[audit_part(keys_of = "context")]`, so it
+    /// is declared in its emitter's schema and cannot be a literal. Lakekeeper's own keys are
+    /// [`HandlerContextKey`]; the emitter is free, so a crate outside this one supplies its
+    /// own. A value enum is not accepted here: its variants name what a field holds, not where
+    /// it goes.
+    pub fn push_extra_context<E: crate::audit::AuditEmitter>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: impl Into<String>,
+    ) {
         self.extra_context
             .insert(key.into().text().to_string(), value.into());
     }
@@ -1483,8 +1451,12 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         let failure_reason = error.to_failure_reason();
         let mut error = error.into_error_model();
 
-        if CONFIG.audit.tracing.enabled {
-            error.skip_log = true; // Already emitted in more detail by audit logger
+        // The audit record below carries the same denial with the actor and the entities,
+        // so the plain error line would only repeat it with less. Suppressed only when that
+        // record reaches the log: with the audit trail switched off or filtered out, this
+        // line is the one place the denial appears.
+        if crate::audit::enabled() {
+            error.skip_log = true;
         }
 
         let entities = Arc::new(self.user_provided_entity.event_entities());

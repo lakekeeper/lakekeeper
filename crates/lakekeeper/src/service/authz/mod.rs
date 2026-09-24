@@ -645,13 +645,12 @@ pub enum CatalogRoleAction {
     /// provider). The catalog backend treats this the same as
     /// `ManageRoleAssignments`.
     ///
-    /// The destination is explicit: [`SourceSystemTarget::To`] on the actual write
-    /// (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
-    /// the `GET /role/{id}/actions` introspection enumeration / any "may this
-    /// principal rebind at all?" query. `Any` is a named base-capability marker, not
-    /// a permissive default: a per-destination policy gates the concrete `To` target
-    /// and never matches `Any`, and a `/check` caller chooses `To`/`Any`
-    /// deliberately.
+    /// The destination is explicit. A real rebind names the target provider and source id;
+    /// the permission enumeration behind `GET /role/{id}/actions`, and any "may this
+    /// principal rebind at all?" query, name `any` instead. `any` is a base-capability
+    /// marker, not a permissive default: a policy written against a concrete destination
+    /// gates that destination and never matches `any`, and a `/check` caller picks between
+    /// the two deliberately.
     UpdateSourceSystem {
         target: SourceSystemTarget,
     },
@@ -734,18 +733,6 @@ impl From<bool> for RootLevelGrants {
         } else {
             Self::Excluded
         }
-    }
-}
-
-impl RootLevelGrants {
-    /// The label used on the wire and in action context.
-    ///
-    /// Derived through `strum`, not spelled out: the value is committed to a wire-value
-    /// manifest, and a hand-written arm would let a renamed variant keep the old literal
-    /// while the manifest recorded the new one.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
     }
 }
 
@@ -884,14 +871,6 @@ pub enum SubtreeGrantPrivileges {
 pub enum PrivilegeScope {
     Every,
     Only,
-}
-
-impl PrivilegeScope {
-    /// The label as it reaches the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
-    }
 }
 
 impl SubtreeGrantPrivileges {

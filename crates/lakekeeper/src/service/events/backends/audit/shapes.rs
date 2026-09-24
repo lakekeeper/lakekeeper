@@ -30,9 +30,7 @@ pub const TOP_LEVEL_FIELDS: &[&str] = &[
     "audit_format",
     "record_type",
     "emitter",
-    "action",
     "actions",
-    "entity",
     "entities",
     "actor",
     "privilege_source",
@@ -56,8 +54,12 @@ pub const TOP_LEVEL_FIELDS: &[&str] = &[
 const TARGET: &str = crate::audit::AUDIT_TARGET;
 
 /// The one `tracing::info!` every audit record goes through: it stamps the target,
-/// `event_source` and `audit_format`, so no record can miss the version. Every other emission
-/// macro in this module expands to it, and a CI check counts that this literal exists once.
+/// `event_source` and `audit_format`, so no record can miss the version. A test scans this
+/// crate for `event_source = "audit"` outside this file, so nothing else can write a record.
+///
+/// Each `emit()` asks [`crate::audit::enabled`] before it reaches here, so the configuration
+/// switch holds for every record whatever built it, and a switched-off audit trail costs no
+/// serialization.
 macro_rules! emit_stamped {
     ({ $($fields:tt)* }, $msg:expr) => {
         tracing::info!(
@@ -109,6 +111,12 @@ pub struct AuthorizationRecord {
 
 impl AuthorizationRecord {
     pub(crate) fn emit(self) {
+        // Asked before anything is serialized: the work below is only worth doing for a
+        // record that reaches the log. Every record passes through one of the three `emit()`
+        // bodies, so this is also what makes the configuration switch complete.
+        if !crate::audit::enabled() {
+            return;
+        }
         let emitter = AuditJson::of(&self.emitter);
         let actions = AuditJson::of(&self.actions);
         let entities = AuditJson::of(&self.entities);
@@ -170,6 +178,12 @@ pub struct ReplayRecord {
 
 impl ReplayRecord {
     pub(crate) fn emit(self) {
+        // Asked before anything is serialized: the work below is only worth doing for a
+        // record that reaches the log. Every record passes through one of the three `emit()`
+        // bodies, so this is also what makes the configuration switch complete.
+        if !crate::audit::enabled() {
+            return;
+        }
         let emitter = AuditJson::of(&self.emitter);
         let actions = AuditJson::of(&self.actions);
         let entities = AuditJson::of(&self.entities);
@@ -194,18 +208,17 @@ impl ReplayRecord {
 /// permission decision of its own. The one shape any crate can emit.
 ///
 /// `E` is the emitter. `operation`, `outcome` and `context` must all belong to it, or the
-/// record does not compile; `E` is what stamps the emitter on the record once that field
-/// exists.
+/// record does not compile; `E` is what stamps the emitter on the record.
 #[derive(Debug)]
-pub struct OperationRecord<E: AuditEmitter, C: AuditPart<Emitter = E>> {
+pub struct OperationRecord<E: AuditEmitter> {
     operation: WireStr<E>,
     actor: ActorRecord,
     outcome: WireStr<E>,
-    context: Option<C>,
+    context: Option<AuditJson>,
     message: &'static str,
 }
 
-impl<E: AuditEmitter> OperationRecord<E, E::NoContext> {
+impl<E: AuditEmitter> OperationRecord<E> {
     /// A record without context. Add one with [`OperationRecord::context`].
     #[must_use]
     pub fn new(operation: WireStr<E>, actor: ActorRecord, outcome: WireStr<E>) -> Self {
@@ -217,19 +230,19 @@ impl<E: AuditEmitter> OperationRecord<E, E::NoContext> {
             message: "Audit operation",
         }
     }
-}
 
-impl<E: AuditEmitter, C: AuditPart<Emitter = E>> OperationRecord<E, C> {
     /// Attach the operation's `context` object, an audit type of the same emitter.
+    ///
+    /// Taken by value like every other part of the record, so a caller can hand over one it
+    /// built on the spot; it is serialized here and the record carries the tree, not the type.
+    /// Serializing here rather than at `emit()` is what keeps this type free of a second
+    /// parameter, at the cost of doing the work before the gate is asked — a caller on a hot
+    /// path asks [`crate::audit::enabled`] itself before building the record.
     #[must_use]
-    pub fn context<C2: AuditPart<Emitter = E>>(self, context: C2) -> OperationRecord<E, C2> {
-        OperationRecord {
-            operation: self.operation,
-            actor: self.actor,
-            outcome: self.outcome,
-            context: Some(context),
-            message: self.message,
-        }
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn context<C: AuditPart<Emitter = E>>(mut self, context: C) -> Self {
+        self.context = Some(AuditJson::of(&context));
+        self
     }
 
     /// The human-readable `message` of the log line. Outside `audit_format`.
@@ -247,17 +260,16 @@ impl<E: AuditEmitter, C: AuditPart<Emitter = E>> OperationRecord<E, C> {
             operation: self.operation.into(),
             actor: self.actor,
             outcome: self.outcome.into(),
-            context: self.context.as_ref().map(AuditJson::of),
+            context: self.context,
         }
         .emit(self.message);
     }
 }
 
-/// An operation record as it reaches the wire.
-///
-/// The builder above is generic, so a record cannot mix two emitters' vocabularies. What it
-/// writes is not generic, and this is it: one struct, so the schema describes the record
-/// rather than a description of it kept alongside.
+/// An operation record: something the system did that touches identity or access, with no
+/// permission decision of its own. Any emitter can produce one.
+// Not generic, while the builder is: the schema is derived from this struct, so a type
+// parameter here would leave the schema describing a description of the record.
 #[audit_part(shape = "operation")]
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]
@@ -268,12 +280,10 @@ struct OperationWire {
     /// Which product produced this record, and the version of what it governs.
     emitter: EmitterRecord,
     /// What was done, from the emitter's own vocabulary.
-    #[schemars(with = "String")]
     operation: AnyWireStr,
     /// Who made the request, as authentication established it.
     actor: ActorRecord,
     /// How it ended, from the emitter's own vocabulary.
-    #[schemars(with = "String")]
     outcome: AnyWireStr,
     /// The operation's own detail. One shape per operation kind, each declared by its
     /// emitter; absent for an operation that carries none.
@@ -283,6 +293,12 @@ struct OperationWire {
 
 impl OperationWire {
     fn emit(self, message: &'static str) {
+        // Asked before anything is serialized: the work below is only worth doing for a
+        // record that reaches the log. Every record passes through one of the three `emit()`
+        // bodies, so this is also what makes the configuration switch complete.
+        if !crate::audit::enabled() {
+            return;
+        }
         let emitter = AuditJson::of(&self.emitter);
         let actor = AuditJson::of(&self.actor);
         emit_stamped!(

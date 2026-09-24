@@ -105,22 +105,14 @@ impl UserAgent {
 #[audit(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
-    /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
-    /// Full bypass including data-plane actions.
+    /// A call the catalog made to itself, with no client request behind it. Full bypass,
+    /// including data-plane actions.
     Internal,
     /// Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass
     /// only; data-plane actions still route through the configured authorizer.
     InstanceAdmin,
     /// Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).
     Authorizer,
-}
-
-impl PrivilegeSource {
-    /// The value as it reaches the wire.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
 }
 
 /// A struct to hold metadata about a request.

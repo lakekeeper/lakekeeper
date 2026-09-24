@@ -208,7 +208,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // After the subscriber is installed, so the warning itself is logged.
+    // After the subscriber is installed, so the filter it inspects is the one in force. The
+    // warning goes to standard error, not through the subscriber, because a filter that
+    // selects nothing would suppress a logged warning about itself.
     lakekeeper::audit::warn_on_retired_audit_filter();
 
     match cli.command {
