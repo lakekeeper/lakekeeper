@@ -15,7 +15,7 @@ pub mod validate;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
 pub use part::{
-    AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireStr, enabled,
+    AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireKey, WireName, WireStr, enabled,
     warn_on_retired_audit_filter,
 };
 pub use parts::{
@@ -109,9 +109,8 @@ pub enum ActorType {
 
 /// The `record_type` value: which shape a record has.
 ///
-/// A consumer routes on this field alone. Before it existed the three shapes were told apart
-/// by which fields were absent, which meant a reader had to know the rule and a new shape
-/// could not be added without changing it.
+/// A consumer routes on this field alone. Nothing has to be inferred from which fields are
+/// absent, and a shape can be added without changing how the existing ones are recognised.
 #[audit_part(field = "record_type")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
@@ -155,37 +154,15 @@ pub enum AuditOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOutcome {
+    /// The operation completed.
     Success,
     /// An admission gate denied the caller authoritatively.
     Forbidden,
     /// An admission gate could not reach an upstream it needs and failed closed.
-    /// Kept distinct from [`Forbidden`](Self::Forbidden) so an outage of that
-    /// upstream reads as an outage rather than as a wave of denials.
+    /// Separate from `forbidden` so an outage of that upstream reads as an outage
+    /// rather than as a wave of denials.
     Unavailable,
 }
-
-macro_rules! wire_value_as_str {
-    ($($t:ty),+ $(,)?) => {$(
-        impl $t {
-            /// The value as it reaches the wire.
-            ///
-            /// Spelled out rather than `.into()` at the call site: the emission sites are
-            /// `tracing` macro fields, where the target type is not known and inference for
-            /// `Into` fails.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                self.as_wire().text()
-            }
-        }
-    )+};
-}
-wire_value_as_str!(
-    ActorType,
-    Decision,
-    RecordType,
-    AuditOperation,
-    AuditOutcome
-);
 
 // `TableUpdateKind` reaches the wire as the `update_kinds` field of a commit action's
 // context, but it lives in `iceberg-ext`, which cannot carry the attribute: the expansion
@@ -193,9 +170,21 @@ wire_value_as_str!(
 // from the same `VariantNames` the attribute would have read, so a renamed variant still
 // fails the format check rather than reaching consumers unannounced.
 #[cfg(debug_assertions)]
+const UPDATE_KIND_TEXTS: &[&str] =
+    <iceberg_ext::catalog::TableUpdateKind as strum::VariantNames>::VARIANTS;
+#[cfg(debug_assertions)]
+const UPDATE_KIND_COUNT: usize = UPDATE_KIND_TEXTS.len();
+#[cfg(debug_assertions)]
+static UPDATE_KIND_NAMES: [crate::audit::WireName; UPDATE_KIND_COUNT] =
+    crate::audit::WireName::from_texts(UPDATE_KIND_TEXTS);
+
+#[cfg(debug_assertions)]
 crate::__private::inventory::submit! {
     Registration {
-        kind: Kind::Enum,
+        kind: Kind::Values {
+            field: "update_kinds",
+            names: &UPDATE_KIND_NAMES,
+        },
         type_name: || core::any::type_name::<iceberg_ext::catalog::TableUpdateKind>(),
         emitter_name: <crate::Lakekeeper as AuditEmitter>::NAME,
         emitter_type: || core::any::type_name::<crate::Lakekeeper>(),
@@ -203,17 +192,19 @@ crate::__private::inventory::submit! {
         defining_crate: env!("CARGO_PKG_NAME"),
         schema_name: None,
         schema: None,
-        wire_field: Some("update_kinds"),
-        wire_values:
-            <iceberg_ext::catalog::TableUpdateKind as strum::VariantNames>::VARIANTS,
     }
 }
 
 /// The audit backend: renders events into audit records and writes them as log lines.
 ///
-/// One method per event kind it records. Each assembles the record's shape from the event
-/// ([`assemble`]) and calls the shape's `emit()`; nothing else in this crate writes an audit
-/// record.
+/// One method per event kind it records. Each asks [`crate::audit::enabled`] before it does
+/// any work, then assembles the record's shape from the event ([`assemble`]) and calls the
+/// shape's `emit()`; nothing else in this crate writes an audit record.
+///
+/// The gate is asked here as well as inside `emit()` because assembly is the expensive half:
+/// it enriches the event and serializes every nested object. Asking first means a catalog
+/// with the audit trail switched off pays nothing per request, rather than building records
+/// that are dropped on the way out.
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -226,6 +217,9 @@ impl Display for AuditEventListener {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
         assemble::authorization_failed(&event).emit();
         Ok(())
     }
@@ -238,6 +232,9 @@ impl EventListener for AuditEventListener {
     /// reconstruction of current access need. A revoked grant is hard-deleted, so its
     /// record here is the only remaining evidence the access ever existed.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
         let actor = ActorRecord::from_request(&event.request_metadata);
         // One record per triple, not one per request: the batch is a dispatch
         // optimisation, while the audit trail is answered per grant.
@@ -276,19 +273,24 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
         assemble::authorization_succeeded(&event).emit();
         Ok(())
     }
 
     /// A retry answered from an idempotency record.
     ///
-    /// Carries `action` and `entity` in the same shape as the two authorization
-    /// records above, so one query over the audit stream sees the original
-    /// request and every replay of it. It deliberately carries no `decision`:
-    /// no authorization ran, because the mutation had already happened and
-    /// there was nothing left to permit. `operation` and `outcome` are the
-    /// positive markers that say so.
+    /// Carries `actions` and `entities` in the same shape as the two authorization records
+    /// above, so one query over the audit stream sees the original request and every replay
+    /// of it. It carries no `decision`, because no authorization ran: the mutation had
+    /// already happened and there was nothing left to permit. `record_type` is `replay`,
+    /// which is what a consumer routes on.
     async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
         assemble::replay(&event).emit();
         Ok(())
     }
@@ -485,7 +487,10 @@ pub mod contract {
 
         // Only where an entity actually is. See `described`: a walk would also read
         // client-supplied property keys.
-        let known_type: BTreeSet<&str> = EntityType::VARIANTS.iter().map(|t| t.as_str()).collect();
+        let known_type: BTreeSet<&str> = EntityType::VARIANTS
+            .iter()
+            .map(EntityType::as_str)
+            .collect();
         for entity in described(record, "entity", "entities") {
             if let Some(serde_json::Value::String(kind)) = entity.get("entity_type")
                 && !known_type.contains(kind.as_str())

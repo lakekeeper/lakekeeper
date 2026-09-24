@@ -111,28 +111,37 @@ test-audit-corpus:
 # `docs/docs/logging.md` does not document, an orphan fixture, a contract rule the new records
 # break.
 # Review the diff — it is exactly what consumers will see.
-# Recompute AUDIT_FORMAT, then regenerate the committed audit log fixtures and wire-value manifests
+# Recompute AUDIT_FORMAT, then regenerate the committed audit log fixtures
 update-audit-fixtures:
     python3 .github/scripts/check-audit-format.py --write-version
     LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
       service::events::backends::audit::tests::fixture_
     cargo test -p lakekeeper --lib service::events::backends::audit::tests
 
-# Recompute AUDIT_FORMAT from audit-format/, then regenerate the committed audit schema
-# (audit-format/schema.json) and the emitter's field reference
-# (docs/docs/audit/reference-<emitter>.md) from the
-# registry of every in-repo crate that declares audit types. Dev profile: the registry exists in
-# debug builds only. Review the diff — it is what consumers will see.
+# Generated from the registry of every in-repo crate that declares audit types. That registry
+# exists in debug builds only, which is why these run in the dev profile. Review the diff — it
+# is what consumers will see.
+# Recompute AUDIT_FORMAT, then regenerate audit-format/schema.json and its published copy
 update-audit-schema:
     python3 .github/scripts/check-audit-format.py --write-version
     # Each crate writes the crate schema of the types it declares, from its own registry.
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper --lib the_committed_crate_schema
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
-    # Then the crate schemas are merged into the emitter's schema and the field reference.
+    # Then the crate schemas are merged into the emitter's schema and the published copy.
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema
     cargo test -p lakekeeper --lib the_committed_crate_schema
     cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
     cargo test -p lakekeeper-integration-tests --test audit_schema
+
+# Both baselines are frozen snapshots of the audit format before the current shape change, and
+# both go when the fragments they cover ship.
+# List what the audit format change has done so far, for the release note
+audit-format-since-baseline:
+    @echo "=== declared types ==="
+    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/schema-baseline.json audit-format/schema.json
+    @echo "=== top-level record shapes ==="
+    @python3 .github/scripts/check-audit-format.py --summarise-records crates/lakekeeper/src/service/events/backends/audit/fixtures/v1 /tmp/lakekeeper-records-head.json
+    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/records-baseline.json /tmp/lakekeeper-records-head.json
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml

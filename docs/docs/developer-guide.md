@@ -109,9 +109,10 @@ This is why a release ships `4.0` rather than `4.4`. The baseline is raised by t
 
 #### Terms
 
-- **Audit type** — a Rust type that reaches the audit log, marked `#[audit_part]`. The attribute makes it serialisable, describes it as JSON Schema from its doc comments, and registers it with the emitter of its crate. Everything that reaches a record is one of these: a record part, an operation context, or a vocabulary enum.
+- **Audit type** — a Rust type that reaches the audit log, marked `#[audit_part]`. The attribute makes it serialisable, describes it as JSON Schema from its doc comments, and registers it with the emitter of its crate. Everything that reaches a record is one of these: a record part, an operation context, a value vocabulary or a key vocabulary.
 - **Field** — a name in the record: `action_name`, `entity_type`, `warehouse-id`. Adding one changes the record's shape.
-- **Value** — the string a field holds: `get_metadata` in `action_name`, `table` in `entity_type`. Every value comes from a vocabulary enum, an audit type whose variant names are the values of one field. Adding one leaves the shape identical, which is why consumers are told to tolerate values they do not recognise.
+- **Value** — the string a field holds: `get_metadata` in `action_name`, `table` in `entity_type`. Every value comes from a **value vocabulary**, an enum marked `#[audit_part(field = "…")]` whose variant names are the values of that field. Adding one leaves the shape identical, which is why consumers are told to tolerate values they do not recognise.
+- **Key vocabulary** — an enum marked `#[audit_part(keys_of = "…")]` whose variant names are the *keys* of an object: `EntityField` inside an entity, `ActionContextKey` inside an action, `HandlerContextKey` for `push_extra_context`. Adding one adds a field, so it is a `minor` change, not a free one. The two forms are separate types on the way out — a key yields a `WireKey` and a value a `WireStr`, and neither converts into the other — so a key cannot be emitted where a value belongs, or the other way round.
 - **Shape** — which fields exist, their JSON types, their nesting, and the singular/plural arity switch.
 - **Crate schema** — a committed `audit-schema.json` at the root of every crate that declares audit types: the definitions of that crate's own types, generated from its registry by its own tests.
 - **Schema** — `audit-format/schema.json`, the merge of the crate schemas. Every object, every field with its description, and every closed set of values a record can carry. It is published to the documentation site as `docs/docs/audit/schema.json`, which is what customers read.
@@ -128,6 +129,7 @@ The schema pins every declared field and value, fixtures pin the emitted bytes o
 | ------------------------------------------------------------------------------------ | ------- |
 | A field added                                                                        | `minor` |
 | A new field on an entity or an action                                                | `minor` |
+| A variant added to a key vocabulary, which is the same thing                         | `minor` |
 | A new action, entity type, or other wire _value_                                     | `none`  |
 | A field removed, renamed or retyped                                                  | `major` |
 | A wire value renamed or removed                                                      | `major` |
@@ -139,18 +141,22 @@ The schema pins every declared field and value, fixtures pin the emitted bytes o
 
 **1. Make the change.**
 
-- **A value**: add a variant to the vocabulary enum that owns the field and emit `Variant::as_wire()`. The enum already carries `#[audit_part(field = "...")]`, so the wire name derives from the variant name and the enum's case style, and the value reaches the schema with no list to update.
-- **A whole new vocabulary**: put `#[audit_part(field = "...")]` on the enum. That is the entire registration. Give every variant a doc comment; it becomes the description in the generated reference.
-- **A field**: add it to the part or context struct with a doc comment, or add a variant to the key enum that governs it — `EntityField` inside an entity, `ActionContextKey` inside an action, `HandlerContextKey` for `push_extra_context`.
+- **A value**: add a variant to the value vocabulary that owns the field and emit `Variant::as_wire()`. The enum already carries `#[audit_part(field = "...")]`, so the wire name derives from the variant name and the enum's case style, and the value reaches the schema with no list to update.
+- **A whole new vocabulary**: put `#[audit_part(field = "...")]` on the enum for a set of values, or `#[audit_part(keys_of = "...")]` for a set of object keys. That is the entire registration. A doc comment on a variant becomes that name's description in the schema, which is the only place a consumer can read what the name means.
+- **A field**: add it to the part or context struct with a doc comment, or add a variant to the key vocabulary that governs it.
 - **A new kind of operation record, from any crate**: an operations enum, an outcomes enum and a context struct, each with the attribute, then `OperationRecord::new(..).context(..).emit()`.
 
-Never build a wire value from a bare string. `WireStr::new` exists for the attribute's expansion to call and nothing else, and a test fails on any other caller. A string that reaches the wire outside a vocabulary enum is in no schema, so renaming it later breaks every consumer while the format check reports nothing.
+Never build a wire name from a bare string. `WireStr::new` and `WireKey::new` exist for the attribute's expansion to call and nothing else, and a test fails on any other caller. A name that reaches the wire outside a vocabulary is in no schema, so renaming it later breaks every consumer while the format check reports nothing.
+
+Every vocabulary gets `as_wire()` and `as_str()` from the attribute, both from the same match. Do not write an `as_str` of your own: a `strum`, `serde` or hand-written derivation is a second source of truth, and it agrees with the registered name only until someone renames a variant.
 
 **A context value drawn from a fixed set is a vocabulary; one derived from the request is data.** The `context` map of an action is open on its values, and has to be: most of them are a warehouse id, a namespace name, something the caller sent. Those need nothing. But a few keys hold a choice from a fixed set — `root_level` is `included` or `excluded`, `privilege_scope` is `every` or `only`, `update_kinds` is drawn from a closed list of commit kinds — and a consumer writes rules against those exactly as they do against `action_name`. Put `#[audit_part(field = "<the key>")]` on the enum behind such a value, so its values reach the schema and a rename fails the format check.
 
 This is the easiest thing in the audit log to get wrong, because at the emission site a closed value and a free one look identical: both are a string pushed into the same map. Nothing in the code distinguishes them, so the decision has to be made by whoever adds the key. Ask whether a consumer could reasonably switch on the value. If yes, it is a vocabulary.
 
 If the enum lives in a crate that cannot depend on `lakekeeper` — `iceberg-ext` is the case that exists — the attribute cannot be used, because its expansion names `::lakekeeper`. Register it by hand instead, as `TableUpdateKind` is registered in `events/backends/audit/mod.rs`, reading the same `VariantNames` the attribute would have read.
+
+**Before setting `skip_log` on an error, ask what else records the event.** `skip_log` suppresses the ordinary error line, and the usual reason is that an audit record says the same thing with the principal named. That holds only while the audit record reaches the log, so ask `crate::audit::enabled()` first: it is `false` under `LAKEKEEPER__AUDIT__TRACING__ENABLED=false` and under a `tracing` filter that drops the `lakekeeper::audit` target, and suppressing both lines would leave the event in no log at all. Where a second, unconditional line already exists — a fail-closed admission gate warns whatever the audit configuration — suppress unconditionally instead, so an outage does not surface as an error this server did not have. The same gate opens every shape's `emit()`, so the configuration switch reaches records built outside the event listener too, and a switched-off audit trail serializes nothing.
 
 **Never add a `_ =>` arm** to an `action_descriptor` match. The missing wildcard is the mechanism: with one, a new action silently emits no context. They carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails `just check` and CI, though not a bare `cargo build`. A wildcard _alongside_ the full list is caught by rustc's `unreachable_patterns`; the dangerous edit is replacing arms with one. Not every `action_descriptor` impl carries the deny yet, and `CatalogAction` is public, so authorizer crates have impls this repository cannot see; add the deny when you next touch an unprotected one.
 
@@ -160,7 +166,7 @@ If the enum lives in a crate that cannot depend on `lakekeeper` — `iceberg-ext
 
 **3. Regenerate: `just update-audit-fixtures`, then `just update-audit-schema`.** The first computes `AUDIT_FORMAT` from the baseline and your fragment, renames the fixture directory if the major moved, and regenerates the fixtures. The second regenerates each crate schema from the types, merges them into `audit-format/schema.json`, and publishes that to `docs/docs/audit/schema.json`. Read both diffs. They are exactly what a consumer's pipeline will see, so anything in them you did not intend is the bug.
 
-**4. Update `docs/docs/logging.md`** if the meaning changed. The field reference regenerates itself, so prose is for what a field means and when it appears, not for listing fields. On a major bump the example records need updating; they are the only documentation carrying a version value.
+**4. Update `docs/docs/logging.md`** if the meaning changed. The schema regenerates itself and is published as `docs/docs/audit/schema.json`, so prose is for what a field means and when it appears, not for listing fields. On a major bump the example records need updating; they are the only documentation carrying a version value.
 
 **5. Check it: `just check-audit-format`.** CI runs it on every pull request.
 
@@ -193,7 +199,7 @@ Checked by declaration, for every registered type: **fields, their JSON types, w
 
 Checked by example only: **which optional fields are omitted versus `null`, and the singular/plural arity switch**. The fixtures pin the scenarios they cover and nothing else, so if you change a code path no fixture exercises, add a fixture: write a test that builds the event, run `just update-audit-fixtures`, and register the name in `FIXTURE_NAMES`.
 
-A fixture is compared by value, so everything in the record has to be deterministic. Where the emitter generates an id, pin it through a test-only seam rather than normalising the record afterwards — `RequestMetadataTestBuilder::request_id` and `AdmissionRejection::with_error_id` are the two that exist, and a new one belongs next to them. Normalising instead would mean the fixture no longer pins what the code actually emits, which is the only thing it is for.
+A fixture is compared by value, so everything in the record has to be deterministic. Where the emitter generates an id, pin it through a test-only seam rather than normalising the record afterwards — `RequestMetadataTestBuilder::request_id` and `AdmissionRejection::with_error_id` are the two that exist, and a new one belongs next to them. Normalising instead would pin the normalised form and not what the code emits, which is the only thing a fixture is for.
 
 Comparison of fixtures is on field paths and JSON types rather than values, and containers record their own type, so `{}`, `[]` and an absent field stay distinguishable. A changed fixture _value_ is reported but not classified, because nothing can tell a renamed wire value from a more realistic test input, and fixtures present in only one revision are not compared. Neither demands a fragment: both fire on changes that did nothing to the format.
 

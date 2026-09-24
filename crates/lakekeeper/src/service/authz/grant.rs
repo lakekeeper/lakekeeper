@@ -89,15 +89,6 @@ pub enum ResourceType {
 }
 
 impl ResourceType {
-    /// The label used on the wire.
-    ///
-    /// Derived from the variant names by `#[audit_part]`, so this spelling and `serde`'s
-    /// cannot drift apart silently — the round-trip test below pins that they agree.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.as_wire().text()
-    }
-
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         <Self as std::str::FromStr>::from_str(s).ok()

@@ -582,9 +582,9 @@ fn the_fixture_directory_matches_the_declared_set() {
     );
 }
 
-/// One action, one entity: `audit_log!` emits the singular `action` / `entity`
-/// fields. No `extra_context`, and an anonymous caller with no `User-Agent`, so
-/// this fixture is the one that pins the absent and null forms.
+/// One action and one entity, each still in the `actions` / `entities` list. No
+/// `extra_context`, and an anonymous caller with no `User-Agent`, so this fixture is the one
+/// that pins which fields an unadorned request leaves out.
 #[test]
 fn fixture_authz_succeeded_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
@@ -600,9 +600,9 @@ fn fixture_authz_succeeded_single_action_single_entity() {
     assert_matches_fixture("authz_succeeded_single", &contract_fields(record));
 }
 
-/// Several actions and several entities: `audit_log!` switches to the plural
-/// `actions` / `entities` fields. Also carries `extra_context`, an action with its
-/// own context, and a fully-populated per-decision entry.
+/// Several actions and several entities in the same lists the single-item case uses. Also
+/// carries `extra_context`, an action with its own context, and a fully-populated
+/// per-decision entry.
 #[test]
 fn fixture_authz_succeeded_plural_actions_plural_entities() {
     let record = emit_and_capture_one(|| {
@@ -624,8 +624,8 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
     assert_matches_fixture("authz_succeeded_plural", &contract_fields(record));
 }
 
-/// One action, several entities: the singular `action` field with the plural
-/// `entities` field. This mixed arity is its own arm of `audit_log!`.
+/// One action, several entities: the arity of the two lists is independent, and a consumer
+/// reading either as a single object would be wrong here.
 #[test]
 fn fixture_authz_succeeded_single_action_plural_entities() {
     let record = emit_and_capture_one(|| {
@@ -644,8 +644,7 @@ fn fixture_authz_succeeded_single_action_plural_entities() {
     assert_matches_fixture("authz_succeeded_action_entities", &contract_fields(record));
 }
 
-/// Several actions, one entity: the remaining arm, plural `actions` with the
-/// singular `entity` field.
+/// Several actions, one entity: the mixed arity the other way round.
 #[test]
 fn fixture_authz_succeeded_plural_actions_single_entity() {
     let record = emit_and_capture_one(|| {
@@ -664,10 +663,8 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
 /// Action context and entity fields that real traffic emits but the other fixtures
 /// do not: `name`, `table_id`, `force`, `purge`, and `project-id`.
 ///
-/// Added after comparing these fixtures against audit records from a running server,
-/// which emitted all five. Without a fixture that carries them, nothing checks that
-/// they stay documented — the documentation test walks the fixtures, so its reach is
-/// exactly the fixtures' reach.
+/// The documentation test walks the fixtures, so its reach is exactly the fixtures' reach.
+/// A field carried by no fixture is a field nothing checks the documentation for.
 #[test]
 fn fixture_authz_succeeded_rich_action_context() {
     let record = emit_and_capture_one(|| {
@@ -924,7 +921,9 @@ fn only_the_attribute_turns_a_bare_string_into_a_wire_value() {
         let text = std::fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
         for (n, line) in code_only(&text).lines().enumerate() {
-            if line.contains("WireStr::new") {
+            // Both constructors: a key is as much a name the schema has to know as a value,
+            // and `WireKey::new` is the same door with a different sign on it.
+            if line.contains("WireStr::new") || line.contains("WireKey::new") {
                 offenders.push(format!("{}:{}: {}", relative.display(), n + 1, line.trim()));
             }
         }
@@ -932,9 +931,10 @@ fn only_the_attribute_turns_a_bare_string_into_a_wire_value() {
 
     assert!(
         offenders.is_empty(),
-        "a wire value is built from a bare string outside the attribute:\n  {}\n\n\
-         Put `#[audit_part(field = \"...\")]` on a vocabulary enum and emit \
-         `Variant::as_wire()`. A value that reaches the wire any other way is in no schema, \
+        "a wire name is built from a bare string outside the attribute:\n  {}\n\n\
+         Put `#[audit_part(field = \"...\")]` on a value vocabulary, or \
+         `#[audit_part(keys_of = \"...\")]` on a key vocabulary, and emit \
+         `Variant::as_wire()`. A name that reaches the wire any other way is in no schema, \
          so renaming it later breaks every consumer while the format check reports nothing.\n\n\
          See the audit log section of docs/docs/developer-guide.md.",
         offenders.join("\n  ")
@@ -1171,11 +1171,11 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
 /// Every committed fixture satisfies the format contract.
 ///
 /// The fixture tests either side of this one compare emitted bytes against a committed
-/// file, which detects drift but says nothing about whether the file describes a record
-/// the emitter could actually produce — the fixture is generated by the test that
-/// asserts against it, so a wrongly built event yields a fixture that agrees with it.
-/// One did: a `CannotSeeResource` denial whose per-decision entry said `allowed: true`,
-/// which passed every test until a human read the JSON.
+/// file. That detects drift, but says nothing about whether the file describes a record the
+/// emitter should produce at all: the fixture is generated by the test that asserts against
+/// it, so a wrongly built event yields a fixture that agrees with it and passes for ever.
+/// These rules hold for any record, so they reject one that should not exist whatever
+/// produced it.
 ///
 /// These are the same rules the corpus test in `lakekeeper-integration-tests` applies to
 /// records from real requests, shared rather than copied. Running them here costs
@@ -1328,11 +1328,10 @@ fn determined_by_absent_when_empty() {
     assert_eq!(decision_keys(&auth), vec!["action", "entity", "allowed"]);
 }
 
-/// Every rule in [`contract`] is only ever run against records that satisfy it: all nine
-/// fixtures pass, and so does every record the corpus test captures. That verifies nothing
-/// about the rules themselves — one could be deleted, or silently stop matching, and the
-/// whole suite would stay green. The historical bug this module guards against is exactly
-/// that shape: a rule that looked right and never fired.
+/// Every rule in [`contract`] is only ever run against records that satisfy it: every
+/// fixture passes, and so does every record the corpus test captures. That verifies nothing
+/// about the rules themselves — one could be deleted, or stop matching, and the whole suite
+/// would stay green. A rule that looks right and never fires is what these cases catch.
 ///
 /// Each case starts from a committed fixture and breaks one thing.
 fn violations_after(
@@ -1779,13 +1778,41 @@ fn no_context_key_spells_a_top_level_field() {
         .iter()
         .map(|f| normalise(f))
         .collect();
-    for reg in
-        Registration::all().filter(|r| r.kind == Kind::Enum && r.wire_field == Some("context-key"))
+    for reg in Registration::all()
+        .filter(|r| matches!(r.kind, Kind::Keys { object, .. } if object == "context"))
     {
-        for key in reg.wire_values {
+        for key in reg.kind.names().iter().map(|name| name.text) {
             assert!(
                 !top_level.contains(&normalise(key)),
                 "context key `{key}` of {} spells the top-level field `{key}`",
+                (reg.type_name)()
+            );
+        }
+    }
+}
+
+/// A key flattened into an object may not spell a field that object already has.
+///
+/// An `entity` object carries `entity_type` and then every `EntityField` key beside it; an
+/// `action` object carries `action_name` and then every `ActionContextKey` key. A key that
+/// spelled one of those would land on the same name with an unrelated meaning — and the
+/// contract rules would not notice, because they accept the object's own field as a known
+/// key and cannot tell the two apart once both are strings in one map.
+#[test]
+fn no_flattened_key_spells_a_field_of_the_object_it_lands_in() {
+    use crate::audit::{Kind, Registration};
+    Registration::require_registry();
+    // The two objects that flatten a key set beside a field of their own. A third would be a
+    // third line here; there is no way to derive the pairing, because which field a struct
+    // carries next to its `#[serde(flatten)]` map is a fact about that struct.
+    for (object, own_field) in [("entity", "entity_type"), ("action", "action_name")] {
+        for reg in Registration::all()
+            .filter(|r| matches!(r.kind, Kind::Keys { object: o, .. } if o == object))
+        {
+            assert!(
+                !reg.kind.names().iter().any(|name| name.text == own_field),
+                "{} declares the key `{own_field}`, which is already a field of the \
+                 `{object}` object it is flattened into. Rename the variant.",
                 (reg.type_name)()
             );
         }
@@ -1820,7 +1847,7 @@ fn the_generated_schema_is_self_contained_and_documented() {
         .filter(|r| !(r.type_name)().contains("::tests::"))
     {
         let name = match reg.kind {
-            Kind::Enum => short_type_name((reg.type_name)()),
+            Kind::Values { .. } | Kind::Keys { .. } => short_type_name((reg.type_name)()),
             _ => (reg.schema_name.expect("part schema name"))().to_string(),
         };
         assert!(
@@ -1842,11 +1869,74 @@ fn the_generated_schema_is_self_contained_and_documented() {
         if let Some(props) = def["properties"].as_object() {
             for (prop, spec) in props {
                 assert!(
-                    spec.get("description").is_some() || spec.get("$ref").is_some(),
+                    spec.get("description").is_some(),
                     "{name}.{prop} has no description"
                 );
             }
         }
+    }
+    // a value's description belongs to a value the set actually has
+    for (name, def) in defs {
+        let Some(descriptions) = def["x-audit-descriptions"].as_object() else {
+            continue;
+        };
+        let names: Vec<&str> = def["enum"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        for described in descriptions.keys() {
+            assert!(
+                names.contains(&described.as_str()),
+                "{name} describes `{described}`, which is not one of its names: {names:?}"
+            );
+        }
+    }
+    // The schema is published to customers, so its prose is prose. A rustdoc link renders as
+    // itself there, in either form: the labelled `[`Forbidden`](Self::Forbidden)` and the
+    // shortcut `[`SourceSystemTarget::To`]` are both Rust syntax nobody outside this
+    // repository can follow. Matching on "[`" rather than on a bare bracket keeps a legitimate
+    // mention such as `authorizations[]` out of it.
+    let mut rust_syntax = Vec::new();
+    collect_descriptions(&schema, "", &mut rust_syntax);
+    let offenders: Vec<&(String, String)> = rust_syntax
+        .iter()
+        .filter(|(_, text)| text.contains("[`"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these descriptions carry rustdoc link syntax, which reaches customers verbatim. \
+         Write the name as prose or in backticks instead: {offenders:#?}"
+    );
+}
+
+/// Every description in a schema, with the path it sits at.
+fn collect_descriptions(value: &serde_json::Value, path: &str, out: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let here = format!("{path}/{key}");
+                match child.as_str() {
+                    Some(text) if key == "description" => out.push((here, text.to_owned())),
+                    _ => collect_descriptions(child, &here, out),
+                }
+            }
+            if let Some(descriptions) = map.get("x-audit-descriptions").and_then(|d| d.as_object())
+            {
+                for (name, text) in descriptions {
+                    if let Some(text) = text.as_str() {
+                        out.push((format!("{path}/{name}"), text.to_owned()));
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, child) in items.iter().enumerate() {
+                collect_descriptions(child, &format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1896,6 +1986,298 @@ fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
          value in one and not the other means a consumer routes on something no shape \
          describes, or a shape nothing can reach"
     );
+}
+
+/// The keys one emission writes, without the envelope the subscriber owns.
+fn emitted_keys(emit: impl FnOnce()) -> std::collections::BTreeSet<String> {
+    emit_and_capture_one(|| async move {
+        emit();
+        Ok(())
+    })
+    .as_object()
+    .expect("a record is an object")
+    .keys()
+    .filter(|key| !super::contract::ENVELOPE_KEYS.contains(&key.as_str()))
+    .cloned()
+    .collect()
+}
+
+/// The keys a shape declares, plus the two `emit()` stamps on every record whatever its
+/// shape, which is why no shape lists them.
+fn declared_keys(
+    schema: &serde_json::Value,
+    record_type: &str,
+) -> std::collections::BTreeSet<String> {
+    let (_, shape) = crate::audit::validate::shape_of(schema, record_type)
+        .unwrap_or_else(|| panic!("no shape names `{record_type}`"));
+    shape["properties"]
+        .as_object()
+        .expect("a shape has properties")
+        .keys()
+        .cloned()
+        .chain(["event_source".to_owned(), "audit_format".to_owned()])
+        .collect()
+}
+
+/// An authorization record with every optional filled in. Written as a struct literal with
+/// no `..`, so a field added to the shape stops this file compiling until it has a value.
+fn maximal_authorization() -> AuthorizationRecord {
+    let assembled = assemble::authorization_failed(&AuthorizationFailedEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_read_action()]),
+        failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
+        error: fixture_error(),
+        extra_context: fixture_context(&[("self-read", "true")]),
+        authorizations: Arc::new(vec![fixture_detailed_authorization()]),
+    });
+    AuthorizationRecord {
+        record_type: assembled.record_type,
+        emitter: assembled.emitter,
+        actions: assembled.actions,
+        entities: assembled.entities,
+        actor: assembled.actor,
+        privilege_source: assembled.privilege_source,
+        authorizations: assembled.authorizations,
+        decision: assembled.decision,
+        error: assembled.error,
+        failure_reason: assembled.failure_reason,
+        context: assembled.context,
+        // The optionals no single scenario fills in at once.
+        user_agent: Some("lakekeeper-tests/1.0".to_owned()),
+        break_glass: Some("INC-1234 undoing lockout forbid".to_owned()),
+        idempotency_key: Some(FIXTURE_IDEMPOTENCY_KEY.to_owned()),
+    }
+}
+
+/// A replay record with every optional filled in. See [`maximal_authorization`].
+fn maximal_replay() -> ReplayRecord {
+    let assembled = assemble::replay(&IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_read_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    });
+    ReplayRecord {
+        record_type: assembled.record_type,
+        emitter: assembled.emitter,
+        actions: assembled.actions,
+        entities: assembled.entities,
+        actor: assembled.actor,
+        privilege_source: assembled.privilege_source,
+        idempotency_key: assembled.idempotency_key,
+        user_agent: Some("lakekeeper-tests/1.0".to_owned()),
+    }
+}
+
+/// An operation record carrying its one optional, `context`.
+fn emit_maximal_operation() {
+    let alice = UserId::try_from("oidc~alice").expect("valid test user id");
+    OperationRecord::new(
+        AuditOperation::GrantCreated.as_wire(),
+        ActorRecord::principal(&alice),
+        AuditOutcome::Success.as_wire(),
+    )
+    .context(GrantContextRecord::new(
+        &UserOrRoleId::User(alice.clone()),
+        "select",
+        &GrantResource::Warehouse(WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID.parse().expect("fixed test uuid"),
+        )),
+    ))
+    .message("Grant created")
+    .emit();
+}
+
+/// A field whose values are a closed set points at the set; one that is open does not.
+///
+/// A value set that nothing refers to describes the format without checking it: the schema
+/// can list the two decisions there are and still accept `"decision": "banana"`, because the
+/// property says only `"type": "string"`. Linking the two is what makes the published schema
+/// enforce a value rather than document it.
+///
+/// `action_name`, `operation` and `outcome` stay open. Their values come from whichever
+/// emitter produced the record — another product's operations are not in this schema — so
+/// pointing them at Lakekeeper's vocabulary would reject records that are perfectly valid.
+#[test]
+fn a_closed_value_set_is_linked_and_an_open_one_is_not() {
+    use crate::audit::{schema::audit_schema_for, validate::is_valid_part};
+    let schema = audit_schema_for("lakekeeper");
+    let property = |def: &str, name: &str| schema["$defs"][def]["properties"][name].clone();
+
+    for (def, name, owner) in [
+        ("AuthorizationRecord", "decision", "Decision"),
+        ("AuthorizationRecord", "privilege_source", "PrivilegeSource"),
+        (
+            "AuthorizationRecord",
+            "failure_reason",
+            "AuthorizationFailureReason",
+        ),
+        ("ActorRecord", "actor_type", "ActorType"),
+        ("EntityRecord", "entity_type", "EntityType"),
+        ("GrantContextRecord", "resource_type", "ResourceType"),
+    ] {
+        assert_eq!(
+            property(def, name)["$ref"],
+            format!("#/$defs/{owner}"),
+            "{def}.{name} must point at the set of values it can hold"
+        );
+    }
+
+    for (def, name) in [
+        ("ActionRecord", "action_name"),
+        ("OperationRecord", "operation"),
+        ("OperationRecord", "outcome"),
+    ] {
+        assert_eq!(
+            property(def, name)["x-audit-open"],
+            serde_json::json!(true),
+            "{def}.{name} is filled by any emitter, so it must stay a plain string"
+        );
+    }
+
+    // Each shape pins the one `record_type` it carries, so a record checked against the
+    // wrong shape is rejected instead of passing on a field that names a different shape.
+    for (def, record_type) in [
+        ("AuthorizationRecord", "authorization"),
+        ("ReplayRecord", "replay"),
+        ("OperationRecord", "operation"),
+    ] {
+        assert_eq!(property(def, "record_type")["const"], record_type);
+    }
+
+    // The link bites: the same record passes unmodified and fails on a value the vocabulary
+    // does not list.
+    let mut body = contract_fields(read_fixture("authz_succeeded_single"));
+    if let Some(object) = body.as_object_mut() {
+        object.remove("event_source");
+        object.remove("audit_format");
+    }
+    assert!(
+        is_valid_part(&schema, "AuthorizationRecord", &body),
+        "the fixture must satisfy its own shape: {body}"
+    );
+    body["decision"] = "banana".into();
+    assert!(
+        !is_valid_part(&schema, "AuthorizationRecord", &body),
+        "`decision` accepted a value outside its vocabulary, so the schema checks nothing"
+    );
+}
+
+/// An operation record from another emitter still satisfies the shape.
+///
+/// Lakekeeper owns the three shapes; other products fill them with their own vocabulary. If
+/// `operation` or `outcome` pointed at Lakekeeper's value sets, a record from any other
+/// emitter would fail the shape it was built from — and the operation shape exists precisely
+/// so other products can emit one.
+#[test]
+fn an_operation_record_from_another_emitter_satisfies_the_shape() {
+    use crate::audit::{schema::audit_schema_for, validate::is_valid_part};
+    let schema = audit_schema_for("lakekeeper");
+
+    let mut body = contract_fields(read_fixture("grant_created"));
+    if let Some(object) = body.as_object_mut() {
+        object.remove("event_source");
+        object.remove("audit_format");
+    }
+    assert!(
+        is_valid_part(&schema, "OperationRecord", &body),
+        "lakekeeper's own operation record must satisfy the shape: {body}"
+    );
+
+    body["emitter"] = serde_json::json!({ "name": "lakekeeper-plus", "format": "1.0" });
+    body["operation"] = "license_checked".into();
+    body["outcome"] = "expired".into();
+    assert!(
+        is_valid_part(&schema, "OperationRecord", &body),
+        "another emitter's operation and outcome must not be measured against lakekeeper's \
+         vocabulary: {body}"
+    );
+
+    // The shape a record names is still checked, whoever emitted it.
+    body["record_type"] = "authorization".into();
+    assert!(
+        !is_valid_part(&schema, "OperationRecord", &body),
+        "`record_type` must pin the shape, so a record naming another one is rejected"
+    );
+}
+
+/// Every emission in `shapes.rs` is guarded by the gate.
+///
+/// The gate is stated once per `emit()` rather than once inside `emit_stamped!`, so that a
+/// record costs no serialization when the audit trail is off. Three statements can become
+/// two, and a behavioural test cannot tell: `tracing` filters an INFO event by target on its
+/// own, so a shape that forgot to ask still writes nothing under a filter. What the gate adds
+/// is the configuration switch and the saved work, and neither shows up in the captured
+/// output. So this counts the gates against the emissions they guard.
+#[test]
+fn every_emission_is_guarded_by_the_gate() {
+    let shapes = code_only(include_str!("shapes.rs"));
+    // `macro_rules! emit_stamped {` has no `!` after the name, so only invocations count.
+    let emissions = shapes.matches("emit_stamped!").count();
+    let gates = shapes.matches("crate::audit::enabled()").count();
+    assert!(
+        emissions >= 3,
+        "found {emissions} emissions, so this is scanning the wrong file"
+    );
+    assert_eq!(
+        gates, emissions,
+        "{gates} gate(s) for {emissions} emission(s) in shapes.rs. Every `emit()` must start \
+         with `if !crate::audit::enabled() {{ return; }}`: without it a record is serialized \
+         and handed to `tracing` even when the operator switched the audit trail off, and \
+         `LAKEKEEPER__AUDIT__TRACING__ENABLED=false` stops meaning anything for a record \
+         built outside the event listener."
+    );
+}
+
+/// Every field a shape declares is a field its `emit()` writes, and the other way round.
+///
+/// A shape is spelled twice: once as the struct the schema is derived from, once as the list
+/// of field names its `emit()` hands to `tracing`. Nothing ties the two spellings together,
+/// so renaming one alone changes the record without changing the schema, or the schema
+/// without changing the record.
+///
+/// The fixtures do not catch that. Each covers the scenario somebody wrote it for, and a
+/// field no scenario populates is absent from every one of them — `break_glass` is in none.
+/// So each shape is emitted here with every optional filled in, and the keys that come out
+/// are compared with the keys the schema declares.
+#[test]
+fn every_shape_emits_exactly_the_fields_it_declares() {
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    for (record_type, emitted) in [
+        (
+            "authorization",
+            emitted_keys(|| maximal_authorization().emit()),
+        ),
+        ("replay", emitted_keys(|| maximal_replay().emit())),
+        ("operation", emitted_keys(emit_maximal_operation)),
+    ] {
+        let declared = declared_keys(&schema, record_type);
+        assert_eq!(
+            emitted,
+            declared,
+            "`{record_type}` emits {:?} and declares {:?}. A field on one side only is a \
+             field the schema promises and no record carries, or a field on the wire that \
+             no schema describes: fix the struct and the `emit()` together.",
+            emitted.difference(&declared).collect::<Vec<_>>(),
+            declared.difference(&emitted).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// `context` is the one optional an operation record can lack, and absence is an absent key
+/// rather than a null.
+#[test]
+fn an_operation_record_without_context_omits_the_key() {
+    let keys = emitted_keys(|| {
+        OperationRecord::new(
+            AuditOperation::GrantCreated.as_wire(),
+            ActorRecord::principal(&UserId::try_from("oidc~alice").expect("valid test user id")),
+            AuditOutcome::Success.as_wire(),
+        )
+        .emit();
+    });
+    assert!(!keys.contains("context"), "{keys:?}");
 }
 
 #[test]
@@ -1948,9 +2330,9 @@ fn every_record_matches_the_shape_its_type_names() {
 
 /// Every complete audit record shown in `docs/docs/logging.md` validates against the schema.
 ///
-/// The page teaches consumers what to expect, so an example that no longer matches what the
-/// code emits teaches the wrong thing. Nothing regenerates these examples, which is exactly
-/// why they need checking: a shape change leaves them behind in silence.
+/// The page teaches consumers what to expect, so an example that does not match what the code
+/// emits teaches the wrong thing. Nothing regenerates these examples, which is why they need
+/// checking: a shape change leaves them behind in silence.
 #[test]
 fn every_audit_record_example_in_the_docs_validates() {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
@@ -2008,23 +2390,22 @@ fn the_gate_and_the_emission_name_one_target() {
     );
 }
 
-/// A filter that used to select audit records is reported; one that still works is not.
+/// A filter that selects no audit record is reported; one that selects them is not.
 #[test]
 fn a_filter_naming_the_retired_target_is_reported() {
     use crate::service::events::backends::audit::part::retired_audit_directives as retired;
 
-    // Directives that selected audit records by this crate's module path, and no longer do.
+    // Directives naming a module path, which matches no audit record.
     for filter in [
         "lakekeeper::service::events::backends::audit=info",
         "info,lakekeeper::service::events=trace",
         "lakekeeper::service=debug,sqlx=warn",
-        // The admission gate emitted from its own module, so its path is retired too.
+        // The admission gate's own module path, which an operator may equally have named.
         "lakekeeper::service::admission=info",
     ] {
         assert!(
             !retired(filter).is_empty(),
-            "`{filter}` used to select audit records and no longer does, so an operator \
-             needs telling"
+            "`{filter}` selects no audit record, so an operator who wrote it needs telling"
         );
     }
 

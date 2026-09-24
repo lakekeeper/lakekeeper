@@ -13,17 +13,115 @@ pub trait AuditPart: Serialize + schemars::JsonSchema {
     type Emitter: AuditEmitter;
 }
 
-/// What role a registered type plays in a record.
+/// One name a type puts on the wire, with the doc comment that explains it.
+///
+/// A pair rather than two slices: the name and its description cannot fall out of step, and
+/// nothing has to check that two lists are the same length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WireName {
+    /// The name as it reaches the wire.
+    pub text: &'static str,
+    /// The doc comment on the variant, or empty when it has none.
+    pub doc: &'static str,
+}
+
+impl WireName {
+    /// Names with no descriptions, from a plain list of strings.
+    ///
+    /// For a vocabulary registered by hand because its enum lives in a crate that cannot
+    /// carry the attribute. The list is still derived — from `strum`'s `VariantNames` — so a
+    /// renamed variant still moves the registry; only the doc comments are out of reach,
+    /// because they stay in that crate.
+    ///
+    /// # Panics
+    ///
+    /// If `texts` is not exactly `N` long. `N` comes from `texts.len()` at the call site, so
+    /// this fires only if the two are written apart.
+    #[must_use]
+    pub const fn from_texts<const N: usize>(texts: &'static [&'static str]) -> [Self; N] {
+        assert!(
+            texts.len() == N,
+            "the length must be the list's own, e.g. `const N: usize = LIST.len();`"
+        );
+        let mut out = [Self { text: "", doc: "" }; N];
+        let mut i = 0;
+        while i < N {
+            out[i] = Self {
+                text: texts[i],
+                doc: "",
+            };
+            i += 1;
+        }
+        out
+    }
+}
+
+/// What role a registered type plays in a record, and what it contributes to the wire.
+///
+/// The data belongs to the variant that has it, so a part cannot be read as if it carried
+/// names and a key vocabulary cannot be read as if its names were a field's values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A top-level record structure with an `emit()`.
-    Shape,
+    /// A top-level record structure with an `emit()`, carrying the `record_type` value that
+    /// names it.
+    Shape { record_type: &'static str },
     /// A nested object of a record, or a data enum such as a subject reference.
     Part,
-    /// A vocabulary enum: its variants are the values of one wire field.
-    Enum,
     /// The `context` object of an operation record.
     Context,
+    /// A value vocabulary: these names are the values of one wire field.
+    Values {
+        /// The wire field the names fill.
+        field: &'static str,
+        /// Every value the enum can put on that field.
+        names: &'static [WireName],
+    },
+    /// A key vocabulary: these names are the keys of one object.
+    ///
+    /// Apart from a value vocabulary because the two differ in what a new name means. A new
+    /// value on a field changes no format — consumers match values they know and ignore the
+    /// rest. A new key is a new field, which is a minor version.
+    Keys {
+        /// The object the names are keys of.
+        object: &'static str,
+        /// Every key the enum can put on that object.
+        names: &'static [WireName],
+    },
+}
+
+impl Kind {
+    /// The names this type puts on the wire. Empty for a part, a context or a shape, none of
+    /// which contributes a vocabulary.
+    #[must_use]
+    pub const fn names(&self) -> &'static [WireName] {
+        match self {
+            Self::Values { names, .. } | Self::Keys { names, .. } => names,
+            Self::Shape { .. } | Self::Part | Self::Context => &[],
+        }
+    }
+
+    /// Where those names go: the field whose values they are, or the object whose keys they
+    /// are. `None` for a kind that contributes no vocabulary.
+    #[must_use]
+    pub const fn wire_place(&self) -> Option<&'static str> {
+        match self {
+            Self::Values { field, .. } => Some(field),
+            Self::Keys { object, .. } => Some(object),
+            Self::Shape { .. } | Self::Part | Self::Context => None,
+        }
+    }
+
+    /// The word for this kind in the schema's `x-audit-kind`.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Shape { .. } => "shape",
+            Self::Part => "part",
+            Self::Context => "context",
+            Self::Values { .. } => "enum",
+            Self::Keys { .. } => "keys",
+        }
+    }
 }
 
 /// One registered audit type. Written by `#[audit_part]`, read by the schema builder and the
@@ -37,7 +135,7 @@ pub enum Kind {
 /// [`Registration::all`]. In a `--release` test build the registry is empty; call
 /// [`Registration::require_registry`] first so the failure names the cause.
 pub struct Registration {
-    /// The type's role.
+    /// The type's role, and whatever that role carries.
     pub kind: Kind,
     /// `core::any::type_name` of the type, lifetimes made `'static`.
     pub type_name: fn() -> &'static str,
@@ -49,14 +147,10 @@ pub struct Registration {
     pub emitter_format: &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
-    /// The type's schema name. `None` for a vocabulary enum, whose schema is its value list.
+    /// The type's schema name. `None` for a vocabulary, whose schema is its list of names.
     pub schema_name: Option<fn() -> Cow<'static, str>>,
-    /// The type's JSON Schema. `None` for a vocabulary enum.
+    /// The type's JSON Schema. `None` for a vocabulary.
     pub schema: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
-    /// For a vocabulary enum, the wire field its values belong to.
-    pub wire_field: Option<&'static str>,
-    /// For a vocabulary enum, every value it can put on the wire. Empty otherwise.
-    pub wire_values: &'static [&'static str],
 }
 
 inventory::collect!(Registration);
@@ -104,65 +198,89 @@ impl fmt::Debug for Registration {
             .field("type_name", &(self.type_name)())
             .field("emitter_name", &self.emitter_name)
             .field("defining_crate", &self.defining_crate)
-            .field("wire_field", &self.wire_field)
-            .field("wire_values", &self.wire_values)
             .finish_non_exhaustive()
     }
 }
 
 /// A closed-set value as it reaches the wire, tied to the emitter whose vocabulary it belongs
-/// to. Obtainable only from a vocabulary enum's generated `as_wire()`.
+/// to. Obtainable only from a value vocabulary's generated `as_wire()`.
 ///
-/// Two types, not one: here the emitter is known at compile time and costs nothing to carry,
-/// so mixing two emitters' vocabularies in one record does not compile. Where it cannot be
-/// known, the value is an [`AnyWireStr`] and the emitter is a field. Folding them into one
-/// type with a default parameter would hide that difference behind a field that is dead
-/// whenever the emitter is known.
+/// The emitter is known at compile time here and costs nothing to carry, so mixing two
+/// emitters' vocabularies in one record does not compile. Where it cannot be known, the value
+/// is an [`AnyWireStr`] and the emitter is a field instead. Folding the two into one type with
+/// a default parameter would hide that difference behind a field that is dead whenever the
+/// emitter is known.
+///
+/// A [`WireKey`] is the same idea for a name that is a key rather than a value.
 pub struct WireStr<E: AuditEmitter> {
     text: &'static str,
     _emitter: PhantomData<E>,
 }
 
-impl<E: AuditEmitter> WireStr<E> {
-    /// Constructed by `#[audit_part]`-generated code. Not part of the public API.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn new(text: &'static str) -> Self {
-        Self {
-            text,
-            _emitter: PhantomData,
+/// A key of an audit object as it reaches the wire, tied to the emitter whose vocabulary it
+/// belongs to. Obtainable only from a key enum's generated `as_wire()`.
+///
+/// Convertible into neither [`WireStr`] nor [`AnyWireStr`], and not serializable, so a key
+/// cannot be passed where a record expects a value. That stops the mix-up, not every route to
+/// the string: [`Self::text`] yields one, as does the `as_str` every key enum carries, and
+/// either can be written wherever a `&'static str` is accepted. What the type buys is that the
+/// wrong one cannot be handed over by accident.
+pub struct WireKey<E: AuditEmitter> {
+    text: &'static str,
+    _emitter: PhantomData<E>,
+}
+
+/// The impls a wire-name type gets whatever it names. Derives cannot supply them: the
+/// derived bounds would demand `Clone`, `Eq` and `Debug` of the emitter, which carries no
+/// data and needs none of them.
+macro_rules! wire_name_impls {
+    ($ty:ident) => {
+        impl<E: AuditEmitter> $ty<E> {
+            /// Constructed by `#[audit_part]`-generated code. Not part of the public API.
+            #[doc(hidden)]
+            #[must_use]
+            pub const fn new(text: &'static str) -> Self {
+                Self {
+                    text,
+                    _emitter: PhantomData,
+                }
+            }
+
+            /// The name as written to the wire.
+            #[must_use]
+            pub const fn text(self) -> &'static str {
+                self.text
+            }
         }
-    }
 
-    /// The value as written to the wire.
-    #[must_use]
-    pub const fn text(self) -> &'static str {
-        self.text
-    }
+        impl<E: AuditEmitter> Clone for $ty<E> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+        impl<E: AuditEmitter> Copy for $ty<E> {}
+        impl<E: AuditEmitter> PartialEq for $ty<E> {
+            fn eq(&self, other: &Self) -> bool {
+                self.text == other.text
+            }
+        }
+        impl<E: AuditEmitter> Eq for $ty<E> {}
+        impl<E: AuditEmitter> fmt::Debug for $ty<E> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}<{}>({:?})", stringify!($ty), E::NAME, self.text)
+            }
+        }
+        impl<E: AuditEmitter> fmt::Display for $ty<E> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.text)
+            }
+        }
+    };
 }
 
-impl<E: AuditEmitter> Clone for WireStr<E> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<E: AuditEmitter> Copy for WireStr<E> {}
-impl<E: AuditEmitter> PartialEq for WireStr<E> {
-    fn eq(&self, other: &Self) -> bool {
-        self.text == other.text
-    }
-}
-impl<E: AuditEmitter> Eq for WireStr<E> {}
-impl<E: AuditEmitter> fmt::Debug for WireStr<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "WireStr<{}>({:?})", E::NAME, self.text)
-    }
-}
-impl<E: AuditEmitter> fmt::Display for WireStr<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.text)
-    }
-}
+wire_name_impls!(WireStr);
+wire_name_impls!(WireKey);
+
 impl<E: AuditEmitter> Serialize for WireStr<E> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.text)
@@ -258,23 +376,26 @@ impl schemars::JsonSchema for AnyWireStr {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("AnyWireStr")
     }
+    /// Marked open, which is the schema's record of what this type means: the value comes
+    /// from whichever emitter produced the record, so no one emitter's schema can list the
+    /// values a consumer may meet. The schema builder leaves such a field a plain string
+    /// instead of pointing it at a value set.
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string" })
+        schemars::json_schema!({ "type": "string", "x-audit-open": true })
     }
 }
 
-/// The `tracing` target of every audit record. Independent of module paths, so operators can
-/// filter on it: `RUST_LOG=warn,lakekeeper::audit=info` keeps audit lines and quiets the rest.
-/// The `tracing` target every audit record is written to, and the one [`enabled`] asks
-/// about. A fixed name rather than a module path, so operator filters survive the code being
-/// reorganised.
+/// The `tracing` target every audit record is written to, and the one [`enabled`] asks about.
+///
+/// A fixed name, not a module path, so an operator filter keeps working when the code moves:
+/// `RUST_LOG=warn,lakekeeper::audit=info` keeps audit lines and quiets the rest.
 pub const AUDIT_TARGET: &str = "lakekeeper::audit";
 
-/// The targets audit records were written to before the target was fixed.
+/// Module paths that an operator filter may name expecting to select audit records.
 ///
-/// More than one, because the emission macro expanded in the CALLER's module, so the target
-/// was whichever module held the call. Kept only to recognise a log filter written against
-/// them; nothing is emitted on any of them now.
+/// Records are written to [`AUDIT_TARGET`] and to nothing else, so a filter naming one of
+/// these matches none of them. The list exists so [`warn_on_retired_audit_filter`] can say
+/// so; more than one entry, because the paths differ by where the record was raised.
 const RETIRED_TARGETS: &[&str] = &[
     // Authorization, replay and grant records, emitted from the audit module itself.
     "lakekeeper::service::events::backends::audit",
@@ -282,11 +403,12 @@ const RETIRED_TARGETS: &[&str] = &[
     "lakekeeper::service::admission",
 ];
 
-/// The directives in `filter` that used to select audit records and no longer do.
+/// The directives in `filter` that name a path from [`RETIRED_TARGETS`] and so select no
+/// audit record.
 ///
-/// A directive selects a target by prefix, so anything that is a prefix of one of the old
-/// targets but not of [`AUDIT_TARGET`] used to match audit records and now matches none. A
-/// broader directive such as `lakekeeper` still matches, and is not reported.
+/// A directive selects a target by prefix. One that is a prefix of a retired path but not of
+/// [`AUDIT_TARGET`] matches nothing. A broader directive such as `lakekeeper` matches audit
+/// records too, and is not reported.
 pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
     filter
         .split(',')
@@ -299,15 +421,15 @@ pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Warn when the log filter names a target audit records are no longer written to.
+/// Warn when the log filter selects audit records by a module path, which matches none.
 ///
-/// Called once at start-up. An operator whose `RUST_LOG` selected audit records by this
-/// crate's module path would otherwise see them silently stop, with nothing to say why.
+/// Called once at start-up. Such a filter fails silently: it matches nothing, so the operator
+/// sees an empty audit stream and no reason for it.
 ///
-/// Written to standard error rather than through `tracing`, because the filter this warns
-/// about is the one that would decide whether the warning is printed: a directive naming only
-/// the retired target suppresses everything else, including a warning sent through the log.
-/// A diagnostic about the logging configuration cannot depend on the logging configuration.
+/// Written to standard error, not through `tracing`, because the filter this warns about is
+/// the one that decides whether the warning is printed. A directive naming only a retired
+/// path suppresses everything else, the warning included, and a diagnostic about the logging
+/// configuration cannot depend on the logging configuration.
 pub fn warn_on_retired_audit_filter() {
     let Ok(filter) = std::env::var("RUST_LOG") else {
         return;
@@ -317,20 +439,28 @@ pub fn warn_on_retired_audit_filter() {
         return;
     }
     eprintln!(
-        "warning: RUST_LOG selects audit records by {retired:?}, which no longer matches \
-         them. They are emitted on the fixed target `{AUDIT_TARGET}`; a filter naming this \
-         crate's module path now matches none of them. See docs/docs/logging.md."
+        "warning: RUST_LOG selects audit records by {retired:?}, which matches none of \
+         them. Audit records are emitted on the fixed target `{AUDIT_TARGET}`, not on a \
+         module path. See docs/docs/logging.md."
     );
 }
 
-/// Whether an audit record emitted now would be recorded by the installed subscriber.
+/// Whether an audit record emitted now reaches the log.
 ///
-/// Callers on a hot path check this before building a record, and the audit listener checks
-/// it before enrichment and assembly, so a filtered-out audit log costs no lookup and no
-/// allocation. `tracing` caches the answer per call site when the filter is static.
+/// Two switches must both be open: `LAKEKEEPER__AUDIT__TRACING__ENABLED`, which decides
+/// whether the catalog keeps an audit trail at all, and the `tracing` filter on
+/// [`AUDIT_TARGET`], which decides whether the subscriber records what is written there.
+///
+/// Every record passes this on its way out, so the configuration switch covers records
+/// emitted outside the event listener too. Code that suppresses an ordinary log line because
+/// the audit record carries the same event in more detail must ask this first: with either
+/// switch closed the event would otherwise be absent from both logs.
+///
+/// `tracing` caches its half per call site when the filter is static.
 #[must_use]
 pub fn enabled() -> bool {
-    tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO)
+    crate::CONFIG.audit.tracing.enabled
+        && tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO)
 }
 
 #[cfg(test)]
@@ -361,6 +491,15 @@ mod tests {
         },
     }
 
+    /// A key vocabulary declared the way any crate declares one.
+    #[audit_part(keys_of = "probe")]
+    #[audit(rename_all = "kebab-case")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ProbeKey {
+        /// The only key.
+        FirstKey,
+    }
+
     /// A part declared the way any crate declares one.
     #[audit_part]
     struct ProbePart<'a> {
@@ -380,6 +519,10 @@ mod tests {
             ProbeOutcome::WithData { n: 1 }.as_wire().text(),
             "with_data"
         );
+        // `as_str` is generated from the same match as `as_wire`, so the two cannot answer
+        // differently and neither can drift from the value the registry declares.
+        assert_eq!(ProbeOutcome::AllGood.as_str(), good.text());
+        assert_eq!(ProbeOutcome::Renamed.as_str(), "x-y");
         assert_eq!(ProbeOutcome::WIRE_VARIANTS.len(), 3);
         assert_eq!(ProbeOutcome::WIRE_NAMES, ["all_good", "x-y", "with_data"]);
         assert_eq!(serde_json::to_value(good).expect("serializes"), "all_good");
@@ -387,6 +530,18 @@ mod tests {
         let any: AnyWireStr = good.into();
         assert_eq!(any, "all_good");
         assert_eq!(any.emitter(), "lakekeeper");
+    }
+
+    #[test]
+    fn a_key_vocabulary_yields_a_key_type_that_no_value_field_accepts() {
+        let key: WireKey<Lakekeeper> = ProbeKey::FirstKey.as_wire();
+        assert_eq!(key.text(), "first-key");
+        assert_eq!(ProbeKey::FirstKey.as_str(), "first-key");
+        assert_eq!(ProbeKey::WIRE_NAMES, ["first-key"]);
+        assert_eq!(key.to_string(), "first-key");
+        // The guarantee is in what is missing: `WireKey` implements neither `Serialize` nor
+        // `Into<AnyWireStr>`, so a key cannot be written into a field that holds a value.
+        // That is enforced by the compiler; nothing here can assert it at run time.
     }
 
     #[test]
@@ -398,22 +553,35 @@ mod tests {
                 .find(|r| (r.type_name)().trim_end_matches("<'_>").ends_with(needle))
                 .unwrap_or_else(|| panic!("{needle} is registered; have {regs:#?}"))
         };
+        let texts = |reg: &Registration| -> Vec<&str> {
+            reg.kind.names().iter().map(|name| name.text).collect()
+        };
+
         let outcome = by_name("ProbeOutcome");
-        assert_eq!(outcome.kind, Kind::Enum);
-        assert_eq!(outcome.wire_field, Some("probe_outcome"));
-        assert_eq!(outcome.wire_values, ["all_good", "x-y", "with_data"]);
+        assert_eq!(outcome.kind.wire_place(), Some("probe_outcome"));
+        assert_eq!(texts(outcome), ["all_good", "x-y", "with_data"]);
+        assert!(matches!(outcome.kind, Kind::Values { .. }));
         assert!(outcome.schema.is_none());
         assert_eq!(outcome.emitter_name, "lakekeeper");
         assert_eq!(outcome.defining_crate, "lakekeeper");
         assert!((outcome.emitter_type)().ends_with("Lakekeeper"));
 
+        let key = by_name("ProbeKey");
+        assert!(matches!(key.kind, Kind::Keys { .. }));
+        assert_eq!(key.kind.wire_place(), Some("probe"));
+        // Each name carries its own description, so the two cannot fall out of step.
+        assert_eq!(
+            key.kind.names(),
+            [WireName {
+                text: "first-key",
+                doc: "The only key."
+            }]
+        );
+
         let part = by_name("ProbePart");
         assert_eq!(part.kind, Kind::Part);
-        assert_eq!(part.wire_field, None);
-        assert!(part.wire_values.is_empty());
-
-        let no_context = by_name("NoContext");
-        assert_eq!(no_context.kind, Kind::Context);
+        assert_eq!(part.kind.wire_place(), None);
+        assert!(part.kind.names().is_empty());
     }
 
     #[test]

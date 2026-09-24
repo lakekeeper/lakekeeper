@@ -396,8 +396,12 @@ fn describe(records: &[serde_json::Value]) -> String {
                     .unwrap_or("-")
                     .to_string()
             };
+            // The first of the `actions` list: every record carries the list, and one name is
+            // enough to recognise which call the record came from.
             let action = record
-                .get("action")
+                .get("actions")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|actions| actions.first())
                 .and_then(|action| action.get("action_name"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("-");

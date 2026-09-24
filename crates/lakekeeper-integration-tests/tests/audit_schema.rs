@@ -1,11 +1,10 @@
-//! The committed audit schema and field reference are the merge of every crate's committed
-//! crate schema.
+//! The committed audit schema is the merge of every crate's committed crate schema.
 //!
 //! Each crate that declares audit types writes `audit-schema.json` at its root from its own
 //! registry (see `lakekeeper::audit::schema`); this test merges the crate schemas of the
-//! `lakekeeper` emitter into `audit-format/schema.json` and renders the field reference from
-//! it. `just update-audit-schema` runs the crate schema tests and then these with
-//! `LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1` to write, then again to verify.
+//! `lakekeeper` emitter into `audit-format/schema.json` and copies the result to the
+//! documentation site. `just update-audit-schema` runs the crate schema tests and then these
+//! with `LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1` to write, then again to verify.
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +16,9 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every committed crate schema under `crates/`, sorted by path so the merge is deterministic.
-fn committed_crate_schemas() -> Vec<serde_json::Value> {
+/// Every committed crate schema under `crates/`, whatever emitter it names, sorted by path so
+/// the merge is deterministic.
+fn all_committed_crate_schemas() -> Vec<serde_json::Value> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(repo_root().join("crates"))
         .expect("crates dir")
         .map(|e| e.expect("entry").path().join("audit-schema.json"))
@@ -35,6 +35,14 @@ fn committed_crate_schemas() -> Vec<serde_json::Value> {
             serde_json::from_str(&std::fs::read_to_string(p).expect("crate schema"))
                 .unwrap_or_else(|e| panic!("{} is not JSON: {e}", p.display()))
         })
+        .collect()
+}
+
+/// The committed crate schemas of one emitter: a schema describes one emitter, so a crate
+/// declaring types for another belongs in that emitter's schema and not in this one.
+fn committed_crate_schemas() -> Vec<serde_json::Value> {
+    all_committed_crate_schemas()
+        .into_iter()
         .filter(|f: &serde_json::Value| f["x-audit-emitter"]["name"] == EMITTER)
         .collect()
 }
@@ -112,7 +120,9 @@ fn every_crate_that_declares_audit_types_commits_a_crate_schema() {
     }
     declaring.sort();
 
-    let mut committed: Vec<String> = committed_crate_schemas()
+    // Every crate schema, not this emitter's: the question here is whether a declaring crate
+    // committed one at all, and a crate declaring types for another emitter still must.
+    let mut committed: Vec<String> = all_committed_crate_schemas()
         .iter()
         .map(|f| {
             f["x-audit-crate"]
@@ -154,10 +164,13 @@ fn declares_audit_types(dir: &Path) -> bool {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
+        // Any attribute line naming the attribute, in either form: `#[audit_part]` on a part
+        // takes no arguments, so matching on the opening parenthesis would miss a crate whose
+        // types are all bare parts.
         if text
             .lines()
             .map(str::trim_start)
-            .any(|l| l.starts_with("#[") && !l.starts_with("//") && l.contains("audit_part("))
+            .any(|l| l.starts_with("#[") && l.contains("audit_part"))
         {
             return true;
         }

@@ -11,8 +11,6 @@ pub trait AuditEmitter: 'static {
     const NAME: &'static str;
     /// `MAJOR.MINOR`. Derived from the emitter's fragments by the checker, never edited by hand.
     const FORMAT: &'static str;
-    /// The `context` an operation record of this emitter carries when it carries none.
-    type NoContext: super::part::AuditPart<Emitter = Self>;
 }
 
 /// Whether `s` is a valid emitter name: non-empty, lowercase ASCII letters, digits and `-`,
@@ -36,10 +34,10 @@ pub const fn is_emitter_name(s: &str) -> bool {
 /// Declares the audit emitter of a product.
 ///
 /// Writes the unit struct, its [`AuditEmitter`] impl, compile-time assertions on the name and
-/// the format, a `NoContext` type for operation records that carry no context, and the
-/// `audit_emitter` module every audit type in the crate is bound to. Invoke it once, at the
-/// root of the crate that owns the product's audit format; every other crate of the product
-/// re-exports the module: `pub mod audit_emitter { pub use <that crate>::audit_emitter::*; }`.
+/// the format, and the `audit_emitter` module every audit type in the crate is bound to.
+/// Invoke it once, at the root of the crate that owns the product's audit format; every other
+/// crate of the product re-exports the module:
+/// `pub mod audit_emitter { pub use <that crate>::audit_emitter::*; }`.
 #[macro_export]
 macro_rules! declare_audit_emitter {
     ($ty:ident, name = $name:literal, format = $format:expr $(,)?) => {
@@ -50,7 +48,6 @@ macro_rules! declare_audit_emitter {
         impl $crate::audit::AuditEmitter for $ty {
             const NAME: &'static str = $name;
             const FORMAT: &'static str = $format;
-            type NoContext = NoContext;
         }
 
         const _: () = {
@@ -64,14 +61,8 @@ macro_rules! declare_audit_emitter {
             );
         };
 
-        /// The `context` of an operation record that carries none.
-        #[$crate::audit::audit_part(context)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct NoContext;
-
         /// The emitter every audit type in this crate belongs to.
         pub mod audit_emitter {
-            pub use super::NoContext;
             /// The product's emitter type.
             pub type Emitter = super::$ty;
         }

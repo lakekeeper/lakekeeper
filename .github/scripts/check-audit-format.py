@@ -55,9 +55,10 @@ CONFIG_PATH = "audit-format/config.json"
 VERSION_CONST = "AUDIT_FORMAT"
 VERSION_SEARCH_PATH = "crates/"
 
-# The generated field reference of this repository's emitter. Regenerated beside the schema,
-# so a schema that moved without it means one of the two was not regenerated.
-REFERENCE_PATH = "docs/docs/audit/schema.json"
+# The copy of the schema published to the documentation site: the file customers download.
+# Written beside the schema by the same command, so a schema that moved without it means one
+# of the two was not regenerated.
+PUBLISHED_SCHEMA_PATH = "docs/docs/audit/schema.json"
 
 
 def load_config() -> None:
@@ -65,11 +66,11 @@ def load_config() -> None:
 
     Everything this checker needs to find is named here, so the script runs unchanged in a
     repository laid out differently: the declaration it reads the version from, the tree it
-    searches for that declaration, the schema, the generated reference, the baseline and the
+    searches for that declaration, the schema, its published copy, the baseline and the
     fragments. The defaults are Lakekeeper's, so this repository needs no config file.
     """
     global AUDIT_DIR, SCHEMA_PATH, BASELINE_PATH, FRAGMENT_DIR
-    global VERSION_CONST, VERSION_SEARCH_PATH, REFERENCE_PATH
+    global VERSION_CONST, VERSION_SEARCH_PATH, PUBLISHED_SCHEMA_PATH
     global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
     if not path.is_file():
@@ -84,7 +85,7 @@ def load_config() -> None:
     SCHEMA_PATH = config.get("schema", SCHEMA_PATH)
     BASELINE_PATH = config.get("baseline", BASELINE_PATH)
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
-    REFERENCE_PATH = config.get("reference", REFERENCE_PATH)
+    PUBLISHED_SCHEMA_PATH = config.get("published_schema", PUBLISHED_SCHEMA_PATH)
     VERSION_CONST = config.get("version_const", VERSION_CONST)
     VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
     GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
@@ -519,21 +520,22 @@ def file_at(rev: str, path: str) -> str | None:
     return _git("show", f"{rev}:{path}")
 
 
-def require_reference_regenerated(merge_base: str, head_ref: str) -> None:
-    """Refuse a schema change whose generated reference did not move with it.
+def require_published_schema_regenerated(merge_base: str, head_ref: str) -> None:
+    """Refuse a schema change whose published copy did not move with it.
 
-    Both are written by the same command, so one changing without the other means one of the
-    two was regenerated and committed and the other was not. The stale half is the one
-    customers read.
+    Both are written by the same command, so one changing without the other means one was
+    regenerated and committed and the other was not. The stale half is the one customers
+    download.
 
-    Silent when the repository commits no reference: not every emitter publishes one.
+    Silent when the repository publishes no copy: not every emitter does.
     """
-    base, head = file_at(merge_base, REFERENCE_PATH), file_at(head_ref, REFERENCE_PATH)
+    base = file_at(merge_base, PUBLISHED_SCHEMA_PATH)
+    head = file_at(head_ref, PUBLISHED_SCHEMA_PATH)
     if base is None or head is None or base != head:
         return
     raise CheckFailed(
-        f"::error::{SCHEMA_PATH} changed and {REFERENCE_PATH} did not. The published copy is "
-        f"written from it; run `just update-audit-schema` and commit both."
+        f"::error::{SCHEMA_PATH} changed and {PUBLISHED_SCHEMA_PATH} did not. The published "
+        f"copy is written from it; run `just update-audit-schema` and commit both."
     )
 
 
@@ -605,9 +607,11 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
     """`none`, `additive` or `breaking` for the change from `base` to `head`, with the reasons.
 
     Definitions are the unit: a definition removed, a property removed or retyped, a property
-    made required, or an enum value removed breaks a parser. A definition or an optional
-    property added, or an enum value added, does not. Descriptions and the `x-audit-*`
-    annotations carry no shape and are ignored.
+    made required, or a name removed from a set breaks a parser. A definition or an optional
+    property added, or a value added to a value set, does not. Descriptions carry no shape and
+    are ignored. So is every `x-audit-*` annotation but one: `x-audit-kind` says whether a list
+    of names holds a field's values or an object's keys, and an addition means different things
+    for the two.
     """
     reasons: list[str] = []
     kind = "none"
@@ -628,9 +632,20 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
     for name in sorted(set(base_defs) & set(head_defs)):
         b, h = base_defs[name], head_defs[name]
         if isinstance(b.get("enum"), list) and isinstance(h.get("enum"), list):
-            for value in sorted(set(b["enum"]) - set(h["enum"])):
-                bump("breaking", f"`{name}` lost the value `{value}`")
-            if set(h["enum"]) - set(b["enum"]):
+            # Two kinds of name list, and they differ in what an addition means. A value
+            # vocabulary lists what one field can hold, and the format promises that set is
+            # open, so a new value changes nothing for a consumer. A key vocabulary lists the
+            # KEYS of an object, so its names are field names: one more is one more field,
+            # which is exactly what `minor` is for.
+            keys = "keys" in (h.get("x-audit-kind"), b.get("x-audit-kind"))
+            noun = "key" if keys else "value"
+            for gone in sorted(set(b["enum"]) - set(h["enum"])):
+                bump("breaking", f"`{name}` lost the {noun} `{gone}`")
+            gained = sorted(set(h["enum"]) - set(b["enum"]))
+            if gained and keys:
+                for added in gained:
+                    bump("additive", f"`{name}` gained the key `{added}`")
+            elif gained:
                 reasons.append(f"`{name}` gained values (no format change)")
             continue
 
@@ -683,8 +698,9 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
     return kind, reasons
 
 
-# A record names its family with `record_type` once the shapes carry one. Before that the
-# family is read off which fields are present, which is the rule consumers are given today.
+# Which family a record belongs to. A record that carries `record_type` names its own; one
+# that does not is read off which fields are present, which is what lets this summarise a
+# revision from before the field existed.
 FAMILY_BY_RECORD_TYPE = {
     "authorization": "AuthorizationRecord",
     "replay": "ReplayRecord",
@@ -903,7 +919,7 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
         print(f"Schema:     emitter `{name}`, format {base_format}{moved}")
     schema_kind, reasons = classify_schema(base_schema, head_schema)
     if reasons:
-        require_reference_regenerated(merge_base, head_ref)
+        require_published_schema_regenerated(merge_base, head_ref)
     for reason in reasons:
         print(f"Schema:     {reason}")
     print(
@@ -1876,8 +1892,8 @@ def self_test() -> int:
     check("schema: optional property added is additive", classify_schema(schema({"A": actor}), schema({"A": actor_email}))[0], "additive")
     check("schema: property removed is breaking", classify_schema(schema({"A": actor_email}), schema({"A": actor}))[0], "breaking")
     check("schema: property made required is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_req}))[0], "breaking")
-    # The mirror. Missing this branch made a field that stopped being guaranteed invisible
-    # to the comparison, while the same change the other way round was reported.
+    # The mirror of the case above, and breaking for the same reason read the other way: a
+    # consumer that relied on the field always being there now meets records without it.
     check("schema: property made optional is breaking", classify_schema(schema({"A": actor_req}), schema({"A": actor}))[0], "breaking")
     check(
         "schema: property made optional is named",
@@ -1889,6 +1905,25 @@ def self_test() -> int:
     check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
     check("schema: enum value added is none", classify_schema(schema({"D": decision}), schema({"D": decision_more}))[0], "none")
     check("schema: enum value removed is breaking", classify_schema(schema({"D": decision}), schema({"D": decision_less}))[0], "breaking")
+
+    # A key vocabulary. Its names are the keys of an object, so the same edit that is no
+    # change on a value vocabulary adds a field here. Reading the two alike reported a new
+    # audit field as no format change at all.
+    keys = {"type": "string", "enum": ["queue_name", "self_read"], "x-audit-kind": "keys", "x-audit-keys-of": "context"}
+    keys_more = {**keys, "enum": keys["enum"] + ["entity_id"]}
+    keys_less = {**keys, "enum": ["queue_name"]}
+    check("schema: a new key is a new field", classify_schema(schema({"K": keys}), schema({"K": keys_more}))[0], "additive")
+    check(
+        "schema: the new key is named",
+        any("gained the key `entity_id`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_more}))[1]),
+        True,
+    )
+    check("schema: a key removed is breaking", classify_schema(schema({"K": keys}), schema({"K": keys_less}))[0], "breaking")
+    check(
+        "schema: the lost key is named as a key",
+        any("lost the key `self_read`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_less}))[1]),
+        True,
+    )
 
     # A value set written as `oneOf` of constants, which is what schemars produces for an
     # enum whose variants carry doc comments. Without the branch comparison the whole
