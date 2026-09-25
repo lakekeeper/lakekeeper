@@ -43,7 +43,7 @@ Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access 
 
 ## Token-Based Role Matching with `project_roles`
 
-Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records that represents the role memberships relevant to the project being accessed:
+Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records holding the user's role memberships in the request's project:
 
 ```
 principal.project_roles  →  Set<{provider_id: String, source_id: String}>
@@ -57,7 +57,7 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 |--------------------------------|------------------------------------------------|-----|
 | `provider_id`                  | `"oidc"`                                       | Authentication provider of the user |
 | `source_id`                    | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
+| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP), resolved in the request's project. |
 | `global_role_ids` | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
 The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
@@ -74,6 +74,18 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 `project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
 
 `global_role_ids` further simplifies policies when all configured role providers use globally unique `source_id` values (e.g. a single LDAP server or OIDC provider where group names are unique). Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+
+### Role scope: one project per request
+
+!!! warning "One project's roles, on every request"
+    `roles`, `project_roles` and `global_role_ids` hold the roles of **one** project — the one `x-project-id` names, or the default project — on every request, server-level actions included.
+
+A default project is configured out of the box, so these attributes are rarely empty; that happens only when the request names no project and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT=false`. Two consequences for a policy that can decide a server-level or user-management action:
+
+- Which roles it sees depends on `x-project-id`. A `forbid` naming a role stops firing when the header names another project — `principal in Lakekeeper::Role::"..."` included, since the Role ID embeds a project.
+- Naming a role is only meaningful if that role means the same people in every project. Identity-provider groups shared across projects do; catalog roles created per project do not, so anyone able to create a role in their own project can match such a policy from there.
+
+For authority that must not depend on the request, use a grant on the server — grants belong to no project — or name the user. To keep a role-based policy at the project level, add `principal has request_project && resource in principal.request_project`; a server or user resource is never inside a project.
 
 ### Policy example
 
@@ -95,9 +107,6 @@ when {
     )
 };
 ```
-
-!!! note
-    `project_roles` and `global_role_ids` are only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). Both are empty sets for server-level actions that span multiple projects, so policies using either attribute will always deny server-level actions. Use the full Role ID or grant direct access to users for server-level policies.
 
 !!! tip "Monitoring role providers"
     Role provider availability is tracked via Prometheus metrics (`lakekeeper_role_provider_up`, `lakekeeper_role_provider_get_roles_duration_seconds`), emitted per `provider_id` for providers with an external backend such as LDAP. The built-in OIDC token provider does no external lookup, so it reports neither — with `persist_token_roles` it surfaces only through `lakekeeper_role_provider_sync_errors_total` on a failed catalog write. Lakekeeper deliberately excludes role provider health from the pod liveness probe — an unreachable provider causes graceful fallback to cached roles from Postgres rather than a pod restart. See [Monitoring — Role Provider Metrics](./monitoring.md#role-provider-metrics) for details and alerting guidance.
@@ -420,7 +429,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     **Option 2 — using `project_roles`**
-    `project_roles` is always an empty set for server-level actions (which carry no project context), so this policy will never permit them. Use Option 1 with the full Role ID when server-level permissions are required, or grant direct access to users.
+    `project_roles` matches by provider and role name, with no project ID to look up. It is resolved for the request's project, exactly as the Role ID in Option 1 is — both options therefore match according to `x-project-id`. See [Role scope](#role-scope-one-project-per-request) before using either with `action` left unconstrained, as it is here: these policies reach server-level and user-management actions too.
 
     ```cedar
     permit (
@@ -437,7 +446,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "Grant access based on a token-sourced group (project_roles)"
 
-    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. Note that `project_roles` is always an empty set for server-level actions — use the full Role ID for those.
+    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. `project_roles` holds the roles of the request's project, and the full Role ID is scoped the same way — see [Role scope](#role-scope-one-project-per-request) for what that means above the project level.
 
     ```cedar
     permit (

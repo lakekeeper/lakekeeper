@@ -2201,12 +2201,27 @@ fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
                 validate_table_properties(updates.keys())?;
             }
             TableUpdate::RemoveProperties { removals } => {
-                validate_table_properties(removals)?;
+                // Removing a data path moves writes back into the table location, so
+                // a table that already carries one can always shed it.
+                validate_table_properties(removals.iter().filter(|p| !is_data_path_property(p)))?;
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Properties that direct an engine to write data files outside the table
+/// location, where they could land in another tabular's location. The last two
+/// are deprecated spellings of `write.data.path` that engines still honor.
+const DATA_PATH_PROPERTIES: [&str; 3] = [
+    "write.data.path",
+    "write.object-storage.path",
+    "write.folder-storage.path",
+];
+
+fn is_data_path_property(prop: &str) -> bool {
+    DATA_PATH_PROPERTIES.iter().any(|p| prop.starts_with(p))
 }
 
 pub(crate) fn delete_after_commit_enabled(properties: &HashMap<String, String>) -> bool {
@@ -2231,7 +2246,7 @@ where
                 PROPERTY_METADATA_COMPRESSION_CODEC,
             ]
             .contains(&prop.as_str()))
-            || prop.starts_with("write.data.path"))
+            || is_data_path_property(prop))
             && !prop.starts_with("write.metadata.metrics.")
         {
             return Err(ErrorModel::conflict(
@@ -2457,6 +2472,38 @@ mod unit_tests {
     fn test_mixed_case_properties() {
         let properties = ["a".to_string(), "B".to_string()];
         assert!(validate_table_properties(properties.iter()).is_ok());
+    }
+
+    #[test]
+    fn test_deny_data_path_properties() {
+        for prop in DATA_PATH_PROPERTIES {
+            let err = validate_table_properties([prop.to_string()].iter())
+                .expect_err(&format!("{prop} was accepted"));
+            assert_eq!(err.error.r#type, "FailedToSetProperties", "{prop}: {err:?}");
+
+            let err = validate_table_updates(&[TableUpdate::SetProperties {
+                updates: HashMap::from([(prop.to_string(), "s3://elsewhere".to_string())]),
+            }])
+            .expect_err(&format!("setting {prop} was accepted"));
+            assert_eq!(err.error.r#type, "FailedToSetProperties", "{prop}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn test_allow_removing_data_path_properties() {
+        let removals = DATA_PATH_PROPERTIES.map(ToString::to_string).to_vec();
+        validate_table_updates(&[TableUpdate::RemoveProperties { removals }])
+            .expect("removing a data path must be allowed");
+
+        // Other unsupported properties stay refused on removal.
+        let err = validate_table_updates(&[TableUpdate::RemoveProperties {
+            removals: vec![
+                "write.data.path".to_string(),
+                "write.metadata.path".to_string(),
+            ],
+        }])
+        .expect_err("removing write.metadata.path was accepted");
+        assert_eq!(err.error.r#type, "FailedToSetProperties", "{err:?}");
     }
 
     #[test]
