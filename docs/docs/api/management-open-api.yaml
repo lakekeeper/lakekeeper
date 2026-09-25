@@ -15239,7 +15239,7 @@ components:
             - 'null'
           description: |-
             URN of the STACKIT credentials group to assume when vending credentials,
-            e.g. `urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3`.
+            e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`.
 
             Copy it verbatim from the credentials group; it is not derivable.
             Required when `sts-enabled` is true, optional otherwise — but validated
@@ -15251,7 +15251,8 @@ components:
           format: uri
           description: |-
             Endpoint override. Normally omitted — the endpoint is derived from
-            `region`.
+            `region` and `storage-service`. Takes precedence over `storage-service`
+            when set.
 
             Set this only for a STACKIT endpoint outside the public naming scheme,
             which STACKIT hands out per customer. Such an endpoint is a distinct
@@ -15280,6 +15281,14 @@ components:
             - type: 'null'
             - $ref: '#/components/schemas/StorageLayout'
               description: Storage layout for namespace and tabular paths.
+        storage-service:
+          $ref: '#/components/schemas/StackitStorageService'
+          description: |-
+            STACKIT storage service that holds the bucket. Defaults to
+            `object-storage`. Ignored when `endpoint` is set.
+
+            Each service is a distinct storage tenant, so it is immutable once the
+            warehouse exists.
         sts-enabled:
           type: boolean
           description: |-
@@ -15293,6 +15302,17 @@ components:
           format: int64
           description: Validity of vended credentials in seconds. Defaults to 3600.
           minimum: 0
+    StackitStorageService:
+      type: string
+      description: |-
+        STACKIT storage service that holds a bucket.
+
+        - `object-storage`: STACKIT Object Storage, `object.storage.<region>.onstackit.cloud`.
+        - `data-platform`: STACKIT data platform storage,
+          `dataplatform.storage.<region>.onstackit.cloud`. Available in `eu01` only.
+      enum:
+        - object-storage
+        - data-platform
     StorageCredential:
       oneOf:
         - allOf:

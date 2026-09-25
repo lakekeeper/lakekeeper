@@ -9,6 +9,7 @@ Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a l
 Currently, we support the following storages:
 
 - S3 (tested with AWS, Silo and SeaweedFS)
+- STACKIT Object Storage
 - Azure Data Lake Storage Gen 2
 - OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
@@ -17,7 +18,7 @@ When creating a Warehouse or updating storage information, Lakekeeper validates 
 
 By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
 
-- **S3 / AWS Warehouses**: Must start with `s3://`
+- **S3 / AWS / STACKIT Warehouses**: Must start with `s3://`
 - **Azure / ADLS Warehouses**: Must start with `abfss://`
 - **GCP Warehouses**: Must start with `gs://`
 
@@ -772,6 +773,84 @@ OSS supports only [virtual-hosted-style addressing](https://www.alibabacloud.com
     - **boto3** configured directly: `Config(request_checksum_calculation="when_required")`.
 
     This affects only clients writing to OSS directly; Lakekeeper's own metadata I/O is unaffected.
+
+## STACKIT Object Storage
+
+STACKIT Object Storage is S3-compatible, and Lakekeeper backs warehouses with it through a dedicated `stackit` storage profile. The profile exposes only the settings that apply to STACKIT: it derives the endpoint from `region` and `storage-service`, pins addressing and S3 flavor, and vends downscoped credentials through a STACKIT credentials group. Table locations use `s3://`, so engines read and write with their regular S3 file IO.
+
+### Configuration Parameters
+
+| Parameter                    | Type    | Required | Default               | Description |
+|------------------------------|---------|----------|-----------------------|-------------|
+| `bucket`                     | String  | Yes      | -                     | Name of the STACKIT bucket. Must not contain `.`. |
+| `region`                     | String  | Yes      | -                     | STACKIT region, e.g. `eu01`. |
+| `storage-service`            | String  | No       | `object-storage`      | STACKIT storage service that holds the bucket. See [Storage services](#storage-services) below. |
+| `key-prefix`                 | String  | No       | None                  | Subpath within the bucket to use. |
+| `endpoint`                   | URL     | No       | Derived               | Endpoint override for a STACKIT endpoint outside the public naming scheme, which STACKIT hands out per customer. Takes precedence over `storage-service`. |
+| `sts-enabled`                | Boolean | No       | `true`                | Vend temporary downscoped credentials via STS. Requires `credentials-group-urn`. |
+| `credentials-group-urn`      | String  | If STS   | None                  | URN of the STACKIT credentials group to assume when vending credentials, e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`. Copy it verbatim from the credentials group. |
+| `sts-token-validity-seconds` | Integer | No       | `3600`                | Validity of vended credentials in seconds. |
+| `remote-signing-enabled`     | Boolean | No       | `true`                | Allow clients to have Lakekeeper sign their S3 requests. The only client path when `sts-enabled` is `false`. |
+| `push-s3-delete-disabled`    | Boolean | No       | `true`                | Push `s3.delete-enabled=false` to clients, discouraging Spark from deleting files directly and bypassing soft-deletion. |
+| `storage-layout`             | Object  | No       | `{"type": "default"}` | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout). |
+
+At least one of `sts-enabled` and `remote-signing-enabled` must be `true`.
+
+### Storage services
+
+| `storage-service` | Endpoint                                          | Regions   |
+|-------------------|---------------------------------------------------|-----------|
+| `object-storage`  | `https://object.storage.<region>.onstackit.cloud` | All       |
+| `data-platform`   | `https://dataplatform.storage.<region>.onstackit.cloud` | `eu01` |
+
+Select the service that holds your bucket. Lakekeeper rejects `data-platform` in any other region.
+
+### Credentials
+
+Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials, so it needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`:
+
+```json
+{
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Effect": "Allow",
+      "Principal": { "AWS": "urn:sgws:identity::<account>:user/<group-id>" }
+    }
+  ]
+}
+```
+
+The URN uses the credentials group's ID, not its display name. If your STACKIT storage does not offer STS yet, set `sts-enabled` to `false`; clients then use remote signing.
+
+### Example
+
+A POST request to `/management/v1/warehouse` to create a warehouse on the data platform storage:
+
+```json
+{
+  "warehouse-name": "stackit_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential": {
+    "type": "stackit",
+    "credential-type": "access-key",
+    "access-key-id": "...",
+    "secret-access-key": "..."
+  },
+  "storage-profile": {
+    "type": "stackit",
+    "bucket": "my-warehouse",
+    "region": "eu01",
+    "storage-service": "data-platform",
+    "key-prefix": "lakekeeper-dev",
+    "credentials-group-urn": "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3"
+  }
+}
+```
+
+### Immutability
+
+`bucket`, `key-prefix`, `region`, `storage-service` and `endpoint` are immutable on `update-storage-profile`: each storage service and endpoint is a distinct storage tenant, so changing them would point the warehouse at other data. All other fields can be updated.
 
 ## Azure Data Lake Storage Gen 2
 
