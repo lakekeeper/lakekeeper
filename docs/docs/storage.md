@@ -850,7 +850,7 @@ A POST request to `/management/v1/warehouse` to create a warehouse on the data p
 
 ### Immutability
 
-`bucket`, `key-prefix`, `region`, `storage-service` and `endpoint` are immutable on `update-storage-profile`: each storage service and endpoint is a distinct storage tenant, so changing them would point the warehouse at other data. All other fields can be updated.
+`bucket`, `key-prefix`, `region` and the resolved endpoint are immutable on `update-storage-profile`: each storage service and endpoint is a distinct storage tenant, so changing them would point the warehouse at other data. `storage-service` and `endpoint` can be exchanged for each other as long as they resolve to the same endpoint, e.g. replacing `"endpoint": "https://dataplatform.storage.eu01.onstackit.cloud"` with `"storage-service": "data-platform"`. All other fields can be updated.
 
 ## Azure Data Lake Storage Gen 2
 

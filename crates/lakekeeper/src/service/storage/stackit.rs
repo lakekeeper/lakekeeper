@@ -68,8 +68,9 @@ pub struct StackitProfile {
     /// STACKIT storage service that holds the bucket. Defaults to
     /// `object-storage`. Ignored when `endpoint` is set.
     ///
-    /// Each service is a distinct storage tenant, so it is immutable once the
-    /// warehouse exists.
+    /// Each service is a distinct storage tenant, so the resolved endpoint is
+    /// immutable once the warehouse exists. An update may switch between
+    /// `storage-service` and `endpoint` if both resolve to the same endpoint.
     #[serde(default)]
     #[builder(default)]
     pub storage_service: StackitStorageService,
@@ -79,8 +80,10 @@ pub struct StackitProfile {
     ///
     /// Set this only for a STACKIT endpoint outside the public naming scheme,
     /// which STACKIT hands out per customer. Such an endpoint is a distinct
-    /// storage tenant, not another route to the same bucket, so it is immutable
-    /// once the warehouse exists.
+    /// storage tenant, not another route to the same bucket, so the resolved
+    /// endpoint is immutable once the warehouse exists. An update may switch
+    /// between `endpoint` and `storage-service` if both resolve to the same
+    /// endpoint.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub endpoint: Option<Url>,
