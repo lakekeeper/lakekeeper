@@ -57,8 +57,8 @@ use crate::{
                 TabularNameContext,
             },
             validation::{
-                ReportBuilder, SKIPPED_BY_CONFIG, SKIPPED_PREREQUISITE, ValidationCheck,
-                ValidationCheckName, ValidationReport, elapsed_ms,
+                ProbeDeadlines, ReportBuilder, SKIPPED_BY_CONFIG, SKIPPED_PREREQUISITE,
+                ValidationCheck, ValidationCheckName, ValidationReport, before, elapsed_ms,
             },
         },
     },
@@ -666,8 +666,15 @@ impl StorageProfile {
             return report.build();
         }
 
+        let deadlines = ProbeDeadlines::from_request_limit(CONFIG.max_request_time);
         let started = Instant::now();
-        let io = match self.file_io(credential).await {
+        let io = match before(deadlines, async {
+            self.file_io(credential)
+                .await
+                .map_err(ValidationError::from)
+        })
+        .await
+        {
             Ok(io) => {
                 report.push(ValidationCheck::passed(
                     ValidationCheckName::StorageClientInitialized,
@@ -679,7 +686,7 @@ impl StorageProfile {
                 report.push(ValidationCheck::failed(
                     ValidationCheckName::StorageClientInitialized,
                     elapsed_ms(started),
-                    ValidationError::from(e),
+                    e,
                 ));
                 report.skip(
                     ValidationCheckName::LakekeeperReadWrite,
@@ -730,9 +737,11 @@ impl StorageProfile {
         // reports its own checks so that a failure on one does not mask the other.
         let direct_validation = async {
             let started = Instant::now();
-            let result = self
-                .validate_read_write_lakekeeper(&io, &test_location)
-                .await;
+            let result = before(
+                deadlines,
+                self.validate_read_write_lakekeeper(&io, &test_location),
+            )
+            .await;
             // Timed here, not after the join: otherwise this check would report
             // the slower concurrent branch's wall time.
             (elapsed_ms(started), result)
@@ -743,6 +752,7 @@ impl StorageProfile {
                     credential,
                     &test_location,
                     request_metadata,
+                    deadlines,
                 )
                 .await
             } else {
@@ -767,7 +777,20 @@ impl StorageProfile {
         );
         report.extend(vended_result);
 
-        report.push(self.validate_cleanup(&io, &test_location).await);
+        let started = Instant::now();
+        let cleanup = tokio::time::timeout_at(
+            deadlines.cleanup,
+            self.validate_cleanup(&io, &test_location),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            ValidationCheck::failed(
+                ValidationCheckName::Cleanup,
+                elapsed_ms(started),
+                deadlines.exceeded_error(),
+            )
+        });
+        report.push(cleanup);
         tracing::debug!("Access validation finished");
         report.build()
     }
@@ -822,6 +845,7 @@ impl StorageProfile {
         credential: Option<&StorageCredential>,
         test_location: &Location,
         request_metadata: &RequestMetadata,
+        deadlines: ProbeDeadlines,
     ) -> Vec<ValidationCheck> {
         tracing::debug!("Validating vended credentials access to: {test_location}");
 
@@ -847,9 +871,16 @@ impl StorageProfile {
         };
 
         let issue_started = Instant::now();
-        let sts_storage = self
-            .issue_vended_credentials(credential, &sub_location, request_metadata, &tabular_info)
-            .await;
+        let sts_storage = before(
+            deadlines,
+            self.issue_vended_credentials(
+                credential,
+                &sub_location,
+                request_metadata,
+                &tabular_info,
+            ),
+        )
+        .await;
         let sts_storage = match sts_storage {
             Ok(sts_storage) => sts_storage,
             Err(e) => {
@@ -882,16 +913,20 @@ impl StorageProfile {
         // Run both validations in parallel
         let read_write_validation = async {
             let started = Instant::now();
-            let result = self
-                .validate_read_write_lakekeeper(&sts_storage, &sub_location)
-                .await;
+            let result = before(
+                deadlines,
+                self.validate_read_write_lakekeeper(&sts_storage, &sub_location),
+            )
+            .await;
             (elapsed_ms(started), result)
         };
         let no_write_validation = async {
             let started = Instant::now();
-            let result = self
-                .validate_no_write_access_lakekeeper(&sts_storage, test_location)
-                .await;
+            let result = before(
+                deadlines,
+                self.validate_no_write_access_lakekeeper(&sts_storage, test_location),
+            )
+            .await;
             (elapsed_ms(started), result)
         };
 

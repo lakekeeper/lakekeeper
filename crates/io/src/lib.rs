@@ -41,6 +41,20 @@ pub mod s3;
 ))]
 pub mod iceberg_bridge;
 
+/// Bounds how long a single connect attempt to a storage backend may hang.
+///
+/// Without an explicit value, a stalled TCP connect runs to the OS default (tens
+/// of seconds, `os error 110`) and consumes the whole retry budget in one
+/// attempt. In-region connects complete well under a second, so a connect still
+/// pending after this long is almost always dropped by a firewall; keeping it
+/// short lets retries and callers' deadlines surface that quickly.
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-adls",
+    feature = "storage-gcs"
+))]
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
 /// Fallible usize→i32 conversion with additional context for diagnostics.
 pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Result<i32, IOError> {

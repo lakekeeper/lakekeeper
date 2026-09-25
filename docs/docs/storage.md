@@ -98,6 +98,8 @@ Validation is advisory: a concurrent request can still take the Warehouse name o
 
 Validation writes and deletes probe objects under the Warehouse location, so it needs the same storage permissions as normal operation. Cleanup removes the probe prefix recursively.
 
+Storage probes must finish within two thirds of `LAKEKEEPER__MAX_REQUEST_TIME` (20 seconds by default), and cleanup within the following sixth. A probe that runs out fails with `StorageProbeTimeout`, so storage that Lakekeeper cannot reach still produces a report that names the stalled check.
+
 ## Disabling Credential Vending & Remote Signing
 
 Lakekeeper provides multiple ways to control how credentials and remote signing information are provided to clients.

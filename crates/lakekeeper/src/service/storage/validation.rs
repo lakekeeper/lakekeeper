@@ -6,7 +6,10 @@
 //! with [`ValidationReport::into_result`]; callers that surface the outcome to a
 //! human (the `validate` management endpoints) return the whole report.
 
-use std::time::Instant;
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -354,12 +357,95 @@ pub(crate) const SKIPPED_BY_CONFIG: &str =
 /// Reason recorded when a check could not run because an earlier one failed.
 pub(crate) const SKIPPED_PREREQUISITE: &str = "Not attempted: a prerequisite check failed.";
 
+/// Time limits for the storage probes of one validation.
+///
+/// Derived from the server's request limit so that storage which never answers
+/// yields a report naming the stalled probe. Without them, one unreachable
+/// endpoint runs every probe into its connect timeouts and retries, and the
+/// request ends as a bare `408` from the request-timeout layer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeDeadlines {
+    /// Every probe except cleanup must finish by then.
+    pub(crate) probes: tokio::time::Instant,
+    /// Cleanup gets the time left after `probes`, so a probe that ran out does
+    /// not also leave its files behind.
+    pub(crate) cleanup: tokio::time::Instant,
+    probe_budget: Duration,
+}
+
+impl ProbeDeadlines {
+    /// Probes get two thirds of `request_limit` and cleanup the next sixth,
+    /// leaving the rest for the handler's own work and the response.
+    pub(crate) fn from_request_limit(request_limit: Duration) -> Self {
+        let now = tokio::time::Instant::now();
+        let probe_budget = request_limit * 2 / 3;
+        Self {
+            probes: now + probe_budget,
+            cleanup: now + probe_budget + request_limit / 6,
+            probe_budget,
+        }
+    }
+
+    pub(crate) fn exceeded_error(&self) -> ErrorModel {
+        ErrorModel::precondition_failed(
+            format!(
+                "Storage did not respond within {}s. Check that Lakekeeper can reach the storage \
+                 endpoint: DNS resolution, firewalls and egress rules. The limit is two thirds of \
+                 LAKEKEEPER__MAX_REQUEST_TIME.",
+                self.probe_budget.as_secs()
+            ),
+            "StorageProbeTimeout",
+            None,
+        )
+    }
+}
+
+/// Run a probe, failing it if it has not finished by `deadlines.probes`.
+pub(crate) async fn before<T, E: Into<ErrorModel>>(
+    deadlines: ProbeDeadlines,
+    probe: impl Future<Output = Result<T, E>>,
+) -> Result<T, ErrorModel> {
+    // Boxed: probes are large storage futures, and inlining them here would
+    // make every caller's future larger still.
+    match tokio::time::timeout_at(deadlines.probes, Box::pin(probe)).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Err(deadlines.exceeded_error()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn err(msg: &str) -> ErrorModel {
         ErrorModel::bad_request(msg, "TestError", None)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_deadlines_split_the_request_limit() {
+        let start = tokio::time::Instant::now();
+        let deadlines = ProbeDeadlines::from_request_limit(Duration::from_secs(30));
+        assert_eq!(deadlines.probes - start, Duration::from_secs(20));
+        assert_eq!(deadlines.cleanup - start, Duration::from_secs(25));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_that_finishes_in_time_keeps_its_result() {
+        let deadlines = ProbeDeadlines::from_request_limit(Duration::from_secs(30));
+        let ok = before(deadlines, async { Ok::<_, ErrorModel>(7) }).await;
+        assert_eq!(ok.unwrap(), 7);
+        let failed = before(deadlines, async { Err::<(), _>(err("no write")) }).await;
+        assert_eq!(failed.unwrap_err().r#type, "TestError");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_probe_fails_at_the_deadline() {
+        let deadlines = ProbeDeadlines::from_request_limit(Duration::from_secs(30));
+        let stalled = before(deadlines, std::future::pending::<Result<(), ErrorModel>>()).await;
+        let error = stalled.unwrap_err();
+        assert_eq!(error.r#type, "StorageProbeTimeout");
+        assert!(error.message.contains("20s"), "{error:?}");
+        assert!(tokio::time::Instant::now() >= deadlines.probes);
     }
 
     #[test]
