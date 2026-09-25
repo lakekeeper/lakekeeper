@@ -58,7 +58,7 @@ use crate::{
             },
             validation::{
                 ProbeDeadlines, ReportBuilder, SKIPPED_BY_CONFIG, SKIPPED_PREREQUISITE,
-                ValidationCheck, ValidationCheckName, ValidationReport, before, elapsed_ms,
+                ValidationCheck, ValidationCheckName, ValidationReport, elapsed_ms,
             },
         },
     },
@@ -666,14 +666,18 @@ impl StorageProfile {
             return report.build();
         }
 
-        let deadlines = ProbeDeadlines::from_request_limit(CONFIG.max_request_time);
+        let deadlines = ProbeDeadlines::from_request_limit(
+            request_metadata.received_at(),
+            CONFIG.max_request_time,
+        );
         let started = Instant::now();
-        let io = match before(deadlines, async {
-            self.file_io(credential)
-                .await
-                .map_err(ValidationError::from)
-        })
-        .await
+        let io = match deadlines
+            .probe(async {
+                self.file_io(credential)
+                    .await
+                    .map_err(ValidationError::from)
+            })
+            .await
         {
             Ok(io) => {
                 report.push(ValidationCheck::passed(
@@ -737,11 +741,9 @@ impl StorageProfile {
         // reports its own checks so that a failure on one does not mask the other.
         let direct_validation = async {
             let started = Instant::now();
-            let result = before(
-                deadlines,
-                self.validate_read_write_lakekeeper(&io, &test_location),
-            )
-            .await;
+            let result = deadlines
+                .probe(self.validate_read_write_lakekeeper(&io, &test_location))
+                .await;
             // Timed here, not after the join: otherwise this check would report
             // the slower concurrent branch's wall time.
             (elapsed_ms(started), result)
@@ -777,20 +779,11 @@ impl StorageProfile {
         );
         report.extend(vended_result);
 
-        let started = Instant::now();
-        let cleanup = tokio::time::timeout_at(
-            deadlines.cleanup,
-            self.validate_cleanup(&io, &test_location),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            ValidationCheck::failed(
-                ValidationCheckName::Cleanup,
-                elapsed_ms(started),
-                deadlines.exceeded_error(),
-            )
-        });
-        report.push(cleanup);
+        report.push(
+            deadlines
+                .cleanup(self.validate_cleanup(&io, &test_location))
+                .await,
+        );
         tracing::debug!("Access validation finished");
         report.build()
     }
@@ -871,16 +864,14 @@ impl StorageProfile {
         };
 
         let issue_started = Instant::now();
-        let sts_storage = before(
-            deadlines,
-            self.issue_vended_credentials(
+        let sts_storage = deadlines
+            .probe(self.issue_vended_credentials(
                 credential,
                 &sub_location,
                 request_metadata,
                 &tabular_info,
-            ),
-        )
-        .await;
+            ))
+            .await;
         let sts_storage = match sts_storage {
             Ok(sts_storage) => sts_storage,
             Err(e) => {
@@ -913,20 +904,16 @@ impl StorageProfile {
         // Run both validations in parallel
         let read_write_validation = async {
             let started = Instant::now();
-            let result = before(
-                deadlines,
-                self.validate_read_write_lakekeeper(&sts_storage, &sub_location),
-            )
-            .await;
+            let result = deadlines
+                .probe(self.validate_read_write_lakekeeper(&sts_storage, &sub_location))
+                .await;
             (elapsed_ms(started), result)
         };
         let no_write_validation = async {
             let started = Instant::now();
-            let result = before(
-                deadlines,
-                self.validate_no_write_access_lakekeeper(&sts_storage, test_location),
-            )
-            .await;
+            let result = deadlines
+                .probe(self.validate_no_write_access_lakekeeper(&sts_storage, test_location))
+                .await;
             (elapsed_ms(started), result)
         };
 
@@ -1683,6 +1670,69 @@ mod validate_access_report_tests {
             .find(|c| c.name == name)
             .unwrap_or_else(|| panic!("missing check {name}"))
             .status
+    }
+
+    /// Storage that accepts connections and never answers, so every request hangs.
+    async fn stalled_s3_profile() -> (StorageProfile, StorageCredential) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let (profile, credential) = unreachable_s3_profile();
+        let StorageProfile::S3(mut profile) = profile else {
+            unreachable!()
+        };
+        profile.endpoint = Some(format!("http://{addr}").parse().unwrap());
+        (profile.into(), credential)
+    }
+
+    #[tokio::test]
+    async fn stalled_storage_is_reported_within_the_request_limit() {
+        let (mut profile, credential) = stalled_s3_profile().await;
+        profile.normalize(Some(&credential)).expect("well-formed");
+        // Arrived 24s ago against the 30s default: the probes' two thirds are
+        // spent, and one second of cleanup time remains.
+        let received_at = tokio::time::Instant::now()
+            .checked_sub(Duration::from_secs(24))
+            .unwrap();
+        let request = RequestMetadata::new_unauthenticated().with_received_at(received_at);
+
+        let started = std::time::Instant::now();
+        let report = profile
+            .validate_access_report(Some(&credential), None, &request)
+            .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+
+        let error_of = |name| {
+            report
+                .checks
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.error.as_ref())
+                .map(|e| e.message.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            report.checks.iter().any(|c| c
+                .error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("probe time limit"))),
+            "{:?}",
+            report.checks
+        );
+        assert!(
+            error_of(ValidationCheckName::Cleanup).contains("cleanup time limit"),
+            "{:?}",
+            report.checks
+        );
     }
 
     #[tokio::test]

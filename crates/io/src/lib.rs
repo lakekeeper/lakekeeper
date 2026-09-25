@@ -53,7 +53,7 @@ pub mod iceberg_bridge;
     feature = "storage-adls",
     feature = "storage-gcs"
 ))]
-pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
 /// Fallible usize→i32 conversion with additional context for diagnostics.
