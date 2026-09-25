@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.6](https://github.com/lakekeeper/lakekeeper/compare/v0.13.6...v0.13.6) (2026-09-25)
+
+
+### Bug Fixes
+
+* **tests:** pull the legacy-md5 MinIO image from bitnamilegacy ([#2046](https://github.com/lakekeeper/lakekeeper/issues/2046)) ([068dedf](https://github.com/lakekeeper/lakekeeper/commit/068dedf2e704f3ee9c51be3db28e0a49ecc038fa))
+
 ## [0.13.6](https://github.com/lakekeeper/lakekeeper/compare/v0.13.5...v0.13.6) (2026-09-22)
 
 
