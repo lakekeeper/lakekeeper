@@ -114,6 +114,8 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         &warehouse.storage_profile,
     )?;
 
+    let unmodified_request = request.clone();
+
     // Update the request for event
     let mut request = request;
     request.location = Some(view_location.to_string());
@@ -150,7 +152,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     state
         .v1_state
         .contract_verifiers
-        .check_create_view(&request, &metadata_build_result.metadata)
+        .check_create_view(&unmodified_request, &metadata_build_result.metadata)
         .await?
         .into_result()?;
 
