@@ -645,6 +645,8 @@ If wanting to use a session tag in an ABAC policy, one can reference that tag vi
 
 Unlike for AWS, we do not need any special trust-setup for vended credentials / STS with most S3 compatible solutions like Minio. Instead, we just need a bucket and an access key / secret key combination that is able to read and write from it. If `sts-role-arn` is provided, it will be sent as part of the request to the STS service. Keep in mind that the specific S3 compatible solution may ignore the parameter. Conversely, if `sts-role-arn` is not specified, the request to the STS service will not contain it. Make sure to select `flavor` to have the value `s3-compat`! This setting should work for most self-hosted S3 solutions.
 
+Some S3-compatible vendors expose STS on a separate endpoint and require every statement of the attached session policy to carry an explicit `Principal` — for example Yandex Object Storage (`sts-endpoint: https://sts.yandexcloud.net`) fails with `MalformedPolicy: required field missed: principal should be specified` otherwise. Lakekeeper detects this combination (an `s3-compat` profile with a separate `sts-endpoint`) and adds `"Principal": "*"` to the downscoped policy automatically.
+
 An warehouse create call could look like this:
 
 ```json
