@@ -602,8 +602,9 @@ impl From<FromTabularRowError> for CreateTabularError {
 /// occupies `location`, sits under it, or contains it.
 ///
 /// This check is on its own: no index on `fs_location` is unique, so nothing at
-/// the schema level backstops it. It is also an unlocked read, so two concurrent
-/// creates can both pass it and both commit.
+/// the schema level backstops it. Concurrent callers at colliding locations
+/// serialize on advisory locks, which relies on READ COMMITTED: the check must
+/// take its snapshot after the lock wait to see the holder's committed row.
 ///
 /// Runs on create and on every view commit -- a view can move to a new location,
 /// where a table's `SetLocation` to a different value is refused.
