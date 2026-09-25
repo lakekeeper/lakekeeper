@@ -1,7 +1,7 @@
 # Heavy deps for the pipeline (Silver/Gold), the agent, and the UI.
 # CPU-only torch to keep the image sane.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.3.1
+torch==2.12.1+cpu
 torchvision==0.18.1
 open_clip_torch>=2.24.0
 pyiceberg[pyarrow]>=0.7.0
