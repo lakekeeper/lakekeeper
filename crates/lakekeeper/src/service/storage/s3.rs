@@ -58,7 +58,14 @@ use crate::{
 /// and the partition that S3-compatible stores expect in policy ARNs.
 const AWS_COMMERCIAL_PARTITION: &str = "aws";
 
-static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build S3 credential HTTP client")
+});
 
 #[derive(
     Hash, Debug, Eq, Clone, PartialEq, Serialize, Deserialize, typed_builder::TypedBuilder,

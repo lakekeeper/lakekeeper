@@ -1877,6 +1877,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        // Validated before the transaction opens: probing storage can take most
+        // of the request time limit, and a write connection and the warehouse's
+        // row lock must not be held across it.
+        Box::pin(warehouse.storage_profile.validate_access(
+            new_storage_credential.as_ref(),
+            None,
+            event_ctx.request_metadata(),
+        ))
+        .await?;
+
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1889,13 +1899,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let old_secret_id = warehouse.storage_secret_id;
-
-        Box::pin(warehouse.storage_profile.validate_access(
-            new_storage_credential.as_ref(),
-            None,
-            event_ctx.request_metadata(),
-        ))
-        .await?;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(

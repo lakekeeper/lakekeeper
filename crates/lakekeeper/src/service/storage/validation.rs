@@ -6,7 +6,10 @@
 //! with [`ValidationReport::into_result`]; callers that surface the outcome to a
 //! human (the `validate` management endpoints) return the whole report.
 
-use std::time::Instant;
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -354,12 +357,205 @@ pub(crate) const SKIPPED_BY_CONFIG: &str =
 /// Reason recorded when a check could not run because an earlier one failed.
 pub(crate) const SKIPPED_PREREQUISITE: &str = "Not attempted: a prerequisite check failed.";
 
+/// Time limits for the storage probes of one validation, counted from the
+/// request's arrival.
+///
+/// Probes get two thirds of `LAKEKEEPER__MAX_REQUEST_TIME` and cleanup the
+/// following sixth, so storage that never answers yields a report naming the
+/// stalled probe while the request-timeout layer still has time to spare.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeDeadlines {
+    /// Every probe except cleanup must finish by then.
+    pub(crate) probes: tokio::time::Instant,
+    /// Cleanup must finish by then. It starts after the probes, so a probe that
+    /// ran out does not also leave its files behind.
+    pub(crate) cleanup: tokio::time::Instant,
+    probe_budget: Duration,
+    cleanup_budget: Duration,
+}
+
+impl ProbeDeadlines {
+    /// Deadlines for a request that arrived at `received_at` and may take at
+    /// most `request_limit`.
+    pub(crate) fn from_request_limit(
+        received_at: tokio::time::Instant,
+        request_limit: Duration,
+    ) -> Self {
+        // Divided first so that an effectively unbounded limit cannot overflow.
+        let probe_budget = request_limit / 3 * 2;
+        let cleanup_budget = request_limit / 6;
+        let probes = received_at
+            .checked_add(probe_budget)
+            .unwrap_or_else(far_future);
+        let cleanup = probes
+            .checked_add(cleanup_budget)
+            .unwrap_or_else(far_future);
+        Self {
+            probes,
+            cleanup,
+            probe_budget,
+            cleanup_budget,
+        }
+    }
+
+    /// `probe`, failed if it has not finished by [`Self::probes`].
+    pub(crate) fn probe<T, E: Into<ErrorModel>>(
+        &self,
+        probe: impl Future<Output = Result<T, E>>,
+    ) -> impl Future<Output = Result<T, ErrorModel>> {
+        // Boxed before the returned future captures it: probes are large storage
+        // futures, and every caller awaits this one.
+        let probe = Box::pin(probe);
+        let deadline = self.probes;
+        let error = exceeded_error("probe", self.probe_budget, "two thirds");
+        async move {
+            match tokio::time::timeout_at(deadline, probe).await {
+                Ok(result) => result.map_err(Into::into),
+                Err(_) => Err(error),
+            }
+        }
+    }
+
+    /// The `cleanup` check from `cleanup`, failed if it has not finished by
+    /// [`Self::cleanup`].
+    pub(crate) fn cleanup(
+        &self,
+        cleanup: impl Future<Output = ValidationCheck>,
+    ) -> impl Future<Output = ValidationCheck> {
+        let cleanup = Box::pin(cleanup);
+        let deadline = self.cleanup;
+        let error = exceeded_error(
+            "cleanup",
+            self.cleanup_budget,
+            "the sixth after the probes' two thirds",
+        );
+        async move {
+            let started = Instant::now();
+            tokio::time::timeout_at(deadline, cleanup)
+                .await
+                .unwrap_or_else(|_| {
+                    ValidationCheck::failed(
+                        ValidationCheckName::Cleanup,
+                        elapsed_ms(started),
+                        error,
+                    )
+                })
+        }
+    }
+}
+
+/// An instant beyond any request, matching what `tokio::time::sleep` saturates to.
+fn far_future() -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_hours(24 * 365 * 30)
+}
+
+fn exceeded_error(stage: &str, budget: Duration, share: &str) -> ErrorModel {
+    ErrorModel::precondition_failed(
+        format!(
+            "Storage did not respond within the validation's {stage} time limit ({}, {share} of \
+             LAKEKEEPER__MAX_REQUEST_TIME counted from the request's arrival). Check that \
+             Lakekeeper can reach the storage and its credential endpoints: DNS resolution, \
+             firewalls and egress rules.",
+            format_budget(budget)
+        ),
+        "StorageProbeTimeout",
+        None,
+    )
+}
+
+fn format_budget(budget: Duration) -> String {
+    if budget.subsec_millis() == 0 && budget.as_secs() > 0 {
+        format!("{}s", budget.as_secs())
+    } else {
+        format!("{}ms", budget.as_millis())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn err(msg: &str) -> ErrorModel {
         ErrorModel::bad_request(msg, "TestError", None)
+    }
+
+    fn deadlines(limit: Duration) -> ProbeDeadlines {
+        ProbeDeadlines::from_request_limit(tokio::time::Instant::now(), limit)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_deadlines_split_the_request_limit() {
+        let start = tokio::time::Instant::now();
+        let deadlines = deadlines(Duration::from_secs(30));
+        assert_eq!(deadlines.probes - start, Duration::from_secs(20));
+        assert_eq!(deadlines.cleanup - start, Duration::from_secs(25));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_deadlines_count_from_the_request_arrival() {
+        let received_at = tokio::time::Instant::now();
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let deadlines = ProbeDeadlines::from_request_limit(received_at, Duration::from_secs(30));
+        assert_eq!(
+            deadlines.probes - tokio::time::Instant::now(),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unbounded_request_limit_does_not_overflow() {
+        let deadlines = deadlines(Duration::MAX);
+        assert!(deadlines.probes > tokio::time::Instant::now() + Duration::from_hours(24));
+        assert!(deadlines.cleanup >= deadlines.probes);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_that_finishes_in_time_keeps_its_result() {
+        let deadlines = deadlines(Duration::from_secs(30));
+        let ok = deadlines.probe(async { Ok::<_, ErrorModel>(7) }).await;
+        assert_eq!(ok.unwrap(), 7);
+        let failed = deadlines
+            .probe(async { Err::<(), _>(err("no write")) })
+            .await;
+        assert_eq!(failed.unwrap_err().r#type, "TestError");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_probe_fails_at_the_deadline() {
+        let deadlines = deadlines(Duration::from_secs(30));
+        let stalled = deadlines
+            .probe(std::future::pending::<Result<(), ErrorModel>>())
+            .await;
+        let error = stalled.unwrap_err();
+        assert_eq!(error.r#type, "StorageProbeTimeout");
+        assert!(error.message.contains("probe time limit (20s"), "{error:?}");
+        assert!(tokio::time::Instant::now() >= deadlines.probes);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_cleanup_fails_with_its_own_limit() {
+        let deadlines = deadlines(Duration::from_secs(30));
+        let check = deadlines
+            .cleanup(std::future::pending::<ValidationCheck>())
+            .await;
+        assert_eq!(check.name, ValidationCheckName::Cleanup);
+        assert_eq!(check.status, ValidationCheckStatus::Failed);
+        let error = check.error.unwrap();
+        assert!(
+            error.message.contains("cleanup time limit (5s"),
+            "{error:?}"
+        );
+        assert!(tokio::time::Instant::now() >= deadlines.cleanup);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sub_second_limits_are_reported_in_milliseconds() {
+        let deadlines = deadlines(Duration::from_millis(900));
+        let error = deadlines
+            .probe(std::future::pending::<Result<(), ErrorModel>>())
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("(600ms"), "{error:?}");
     }
 
     #[test]
