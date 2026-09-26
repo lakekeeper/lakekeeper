@@ -805,7 +805,7 @@ At least one of `sts-enabled` and `remote-signing-enabled` must be `true`.
 | `object-storage`  | `https://object.storage.<region>.onstackit.cloud` | All       |
 | `data-platform`   | `https://dataplatform.storage.<region>.onstackit.cloud` | `eu01` |
 
-Select the service that holds your bucket. Lakekeeper rejects `data-platform` in any other region.
+Select the service that holds your bucket. When the endpoint is derived, Lakekeeper rejects `data-platform` in any region other than `eu01`; an explicit `endpoint` takes precedence over `storage-service`, and the region check does not apply.
 
 ### Credentials
 
