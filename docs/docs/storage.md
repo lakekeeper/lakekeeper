@@ -69,7 +69,8 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
     { "name": "cleanup", "status": "passed", "duration-ms": 88 },
     { "name": "cors-origin-allowed", "status": "warning", "duration-ms": 41,
       "error": { "message": "CORS does not allow origin `https://lakekeeper.example.com` for `GET`, `HEAD`, `PUT`, `POST`, `DELETE`. ...", "type": "CorsOriginNotAllowed", "code": 412,
-        "stack": ["`GET`, `HEAD`, `PUT`, `POST`, `DELETE`: Access-Control-Allow-Origin expected `https://lakekeeper.example.com` or `*`, found no header"] } }
+        "stack": ["`GET`, `HEAD`, `PUT`, `POST`, `DELETE`: Access-Control-Allow-Origin expected `https://lakekeeper.example.com` or `*`, found no header"] } },
+    { "name": "bucket-policy-restricts-access", "status": "skipped", "reason": "Only checked for STACKIT, ..." }
   ]
 }
 ```
@@ -92,10 +93,11 @@ Checks:
 | `vended-credentials-scope-enforced` | Downscoped credentials are refused write access *outside* the table location |
 | `cleanup` | Everything written during validation was removed again |
 | `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does. Reported as `warning` when it does not. Skipped for ADLS and OneLake |
+| `bucket-policy-restricts-access` | The STACKIT bucket policy keeps out the project's other credentials groups, see [Restricting bucket access](#restricting-bucket-access). Reported as `warning` when the policy is missing, does not restrict access, or cannot be read. Skipped for other storage |
 
 A check is `skipped` when it does not apply (credential vending is disabled, or the check only applies to a different operation) or when a prerequisite failed; the `reason` field says which. Skipped checks do not make a configuration invalid.
 
-A check is `warning` when it found a problem that does not stop the Warehouse from working, such as a CORS policy that blocks the in-browser query console. Its `error` says what was found; for `cors-origin-allowed`, each `stack` line names the refused methods with the expected and the found response header. Warnings never make `valid` false and never block creating or updating a Warehouse.
+A check is `warning` when it found a problem that does not stop the Warehouse from working, such as a CORS policy that blocks the in-browser query console or a STACKIT bucket that every credentials group of the project can reach. Its `error` says what was found; for `cors-origin-allowed`, each `stack` line names the refused methods with the expected and the found response header. Warnings never make `valid` false and never block creating or updating a Warehouse.
 
 With `LAKEKEEPER__SKIP_STORAGE_VALIDATION=true` every storage check reports `skipped` rather than silently passing. Note that `valid` is still `true` in that case — nothing failed, but nothing was checked either, so read the individual checks before trusting a green result.
 
@@ -830,21 +832,7 @@ Select the service that holds your bucket. When the endpoint is derived, Lakekee
 
 ### Credentials
 
-Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials, so it needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`:
-
-```json
-{
-  "Statement": [
-    {
-      "Action": "sts:AssumeRole",
-      "Effect": "Allow",
-      "Principal": { "AWS": "urn:sgws:identity::<account>:user/<group-id>" }
-    }
-  ]
-}
-```
-
-The URN uses the credentials group's ID, not its display name. If your STACKIT storage does not offer STS yet, set `sts-enabled` to `false`; clients then use remote signing.
+Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name. If your STACKIT storage does not offer STS yet, set `sts-enabled` to `false`; clients then use remote signing.
 
 ### Example
 
@@ -870,6 +858,50 @@ A POST request to `/management/v1/warehouse` to create a warehouse on the data p
   }
 }
 ```
+
+### Restricting bucket access
+
+Every credentials group of a STACKIT project can read and write every bucket of the project, including groups created later for other applications. A bucket policy is the only way to narrow this. We recommend one that denies all access to every group except Lakekeeper's and an admin group:
+
+```json
+{
+  "Statement": [
+    {
+      "Sid": "OnlyLakekeeperAndAdmin",
+      "Effect": "Deny",
+      "NotPrincipal": {
+        "SGWS": [
+          "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3",
+          "urn:sgws:identity::12345678901234567890:group/credentials-group-d4e5f6"
+        ]
+      },
+      "Action": "s3:*",
+      "Resource": [
+        "urn:sgws:s3:::my-warehouse",
+        "urn:sgws:s3:::my-warehouse/*"
+      ]
+    }
+  ]
+}
+```
+
+List Lakekeeper's `credentials-group-urn` and the URN of your admin group, and replace `my-warehouse` with the bucket name. Credentials that Lakekeeper vends act as the group in `credentials-group-urn`, so they keep working. Apply the policy through the S3 API with an access key of either listed group:
+
+```bash
+aws s3api put-bucket-policy \
+  --endpoint-url https://object.storage.eu01.onstackit.cloud \
+  --bucket my-warehouse \
+  --policy file://policy.json
+```
+
+!!! warning "Lock-out risk"
+    The policy also denies the bucket to every group it does not list, including groups used by admin tooling. If Lakekeeper's group is the only one listed, only its access key can change or remove the policy again. Keep a dedicated admin or break-glass group in `NotPrincipal`, and store its access key safely.
+
+[Storage validation](#validating-a-storage-configuration) reads the bucket policy with the Warehouse's access key and reports a `bucket-policy-restricts-access` warning when the bucket has no policy, when no `Deny` statement uses `NotPrincipal`, or when the policy cannot be read. It checks the policy's structure only: the S3 API does not reveal which group an access key belongs to, so validation cannot confirm that the listed groups are the right ones. Access can also be restricted by other means, which is why the finding is a warning.
+
+### CORS
+
+The in-browser query console needs a CORS policy on the bucket. See [CORS on STACKIT](#cors-on-stackit).
 
 ### Immutability
 

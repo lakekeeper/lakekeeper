@@ -89,9 +89,8 @@ pub struct StackitProfile {
     pub endpoint: Option<Url>,
     /// Vend temporary downscoped credentials via STS. Defaults to enabled.
     ///
-    /// Requires `credentials-group-urn`, and requires the credentials group to
-    /// carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
-    /// to remote signing on storage that predates `StorageGRID` 12.0.
+    /// Requires `credentials-group-urn`. Disable it to fall back to remote
+    /// signing on STACKIT storage that does not offer STS yet.
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub sts_enabled: bool,

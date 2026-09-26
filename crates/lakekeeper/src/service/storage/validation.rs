@@ -92,6 +92,12 @@ pub enum ValidationCheckName {
     /// objects from a browser, as the in-browser query console (LoQE) does.
     /// Reported as `warning` when it does not: the warehouse works without it.
     CorsOriginAllowed,
+    /// The STACKIT bucket policy keeps out the project's other credentials
+    /// groups, which otherwise reach every bucket of the project. Passes when a
+    /// `Deny` statement spares only the groups in its `NotPrincipal`. Reported as
+    /// `warning` when the policy is missing, does not restrict access, or cannot
+    /// be read. Skipped for other storage.
+    BucketPolicyRestrictsAccess,
 }
 
 /// The outcome of a single check.
@@ -375,7 +381,7 @@ pub(crate) fn elapsed_ms(started: Instant) -> u64 {
 /// Every check [`StorageProfile::validate_access_report`] reports, in report order.
 ///
 /// [`StorageProfile::validate_access_report`]: super::StorageProfile::validate_access_report
-pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 7] = [
+pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 8] = [
     ValidationCheckName::StorageClientInitialized,
     ValidationCheckName::LakekeeperReadWrite,
     ValidationCheckName::VendedCredentialsIssued,
@@ -383,6 +389,7 @@ pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 7] = [
     ValidationCheckName::VendedCredentialsScopeEnforced,
     ValidationCheckName::Cleanup,
     ValidationCheckName::CorsOriginAllowed,
+    ValidationCheckName::BucketPolicyRestrictsAccess,
 ];
 
 /// Reason recorded when the server has storage validation switched off.

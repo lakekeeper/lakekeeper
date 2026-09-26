@@ -1,6 +1,7 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 pub(crate) mod az;
+mod bucket_policy;
 mod cache;
 mod cors;
 pub mod error;
@@ -664,18 +665,23 @@ impl StorageProfile {
             request_metadata.received_at(),
             CONFIG.max_request_time,
         );
-        // The CORS preflight needs no credential, so it runs alongside the access
-        // probes and is reported even when they stop early.
-        let (access, cors) = tokio::join!(
+        // The CORS preflight and the bucket-policy read are independent of the
+        // access probes, so they run alongside them and are reported even when
+        // the probes stop early.
+        let (access, cors, bucket_policy) = tokio::join!(
             Box::pin(self.access_probes(credential, location, request_metadata, deadlines)),
             Box::pin(cors::cors_check(
                 self,
                 request_metadata.base_url(),
                 deadlines
             )),
+            Box::pin(bucket_policy::bucket_policy_check(
+                self, credential, deadlines
+            )),
         );
         let mut checks = access.checks;
         checks.push(cors);
+        checks.push(bucket_policy);
         ValidationReport::new(checks)
     }
 
