@@ -89,8 +89,9 @@ pub struct StackitProfile {
     pub endpoint: Option<Url>,
     /// Vend temporary downscoped credentials via STS. Defaults to enabled.
     ///
-    /// Requires `credentials-group-urn`. Disable it to fall back to remote
-    /// signing on STACKIT storage that does not offer STS yet.
+    /// Requires `credentials-group-urn`, and a trust policy on that group
+    /// allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
+    /// STACKIT storage that does not offer STS yet.
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub sts_enabled: bool,

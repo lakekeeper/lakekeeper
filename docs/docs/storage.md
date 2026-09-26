@@ -832,7 +832,29 @@ Select the service that holds your bucket. When the endpoint is derived, Lakekee
 
 ### Credentials
 
-Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name. If your STACKIT storage does not offer STS yet, set `sts-enabled` to `false`; clients then use remote signing.
+Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name.
+
+To be assumed, the group needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`. Set it through the STACKIT API, authenticated with a STACKIT service account token. `<group-uuid>` is the credentials group's UUID from the STACKIT API or portal:
+
+```bash
+curl -X POST \
+  "https://dataplatform-storage.api.stackit.cloud/v2/project/<project-id>/regions/eu01/credentials-group/<group-uuid>/trust-policy" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trustPolicy": {
+      "Statement": [
+        {
+          "Action": "sts:AssumeRole",
+          "Effect": "Allow",
+          "Principal": { "AWS": "urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3" }
+        }
+      ]
+    }
+  }'
+```
+
+Not every STACKIT storage service offers STS and trust policies yet; the data platform storage service does. Where they are not available, set `sts-enabled` to `false`; clients then use remote signing.
 
 ### Example
 
