@@ -17001,11 +17001,14 @@ components:
           items:
             $ref: '#/components/schemas/ValidationCheck'
           description: |-
-            Every check that was considered, in execution order — passed, failed and
-            skipped alike, so the caller can see what was and was not covered.
+            Every check that was considered, in execution order — passed, failed,
+            warning and skipped alike, so the caller can see what was and was not
+            covered.
         valid:
           type: boolean
-          description: True when no check failed. Skipped checks do not make a configuration invalid.
+          description: |-
+            True when no check failed. Skipped and warning checks do not make a
+            configuration invalid.
     ValidationCheck:
       type: object
       required:
@@ -17023,7 +17026,7 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/ErrorModel'
-              description: What went wrong. Only set for `failed`.
+              description: What went wrong. Only set for `failed` and `warning`.
         name:
           $ref: '#/components/schemas/ValidationCheckName'
         reason:
@@ -17063,19 +17066,21 @@ components:
         - vended-credentials-read-write
         - vended-credentials-scope-enforced
         - cleanup
+        - cors-origin-allowed
     ValidationCheckStatus:
       type: string
       description: |-
         The outcome of a single check.
 
-        `passed` and `failed` are verdicts about the configuration. `skipped` is not
-        a verdict: the check did not apply, or a prerequisite failed, and `reason`
-        says which. Skipped checks never make a configuration invalid, so a report
+        `passed`, `failed` and `warning` are verdicts about the configuration; only
+        `failed` makes it invalid. `skipped` is not a verdict: the check did not
+        apply, or a prerequisite failed, and `reason` says which. Skipped checks never make a configuration invalid, so a report
         can be `valid` with nothing actually verified — read the individual checks.
       enum:
         - passed
         - failed
         - skipped
+        - warning
     ViewAction:
       type: string
       enum:

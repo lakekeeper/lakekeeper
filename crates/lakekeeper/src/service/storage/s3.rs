@@ -2612,6 +2612,38 @@ pub(crate) mod test {
         }
 
         #[test]
+        fn test_cors_preflight_against_the_test_storage() {
+            use crate::service::storage::validation::{ValidationCheckName, ValidationCheckStatus};
+
+            test_block_on(
+                async {
+                    let (profile, cred) =
+                        storage_profile(&format!("cors-{}", uuid::Uuid::now_v7()));
+                    let profile = StorageProfile::S3(profile);
+                    let report = profile
+                        .validate_access_report(
+                            Some(&StorageCredential::S3(cred)),
+                            None,
+                            &RequestMetadata::new_unauthenticated(),
+                        )
+                        .await;
+                    let check = report
+                        .checks
+                        .iter()
+                        .find(|c| c.name == ValidationCheckName::CorsOriginAllowed)
+                        .expect("report has a CORS check");
+                    // Silo allows every origin by default; other test stores may not.
+                    if std::env::var("LAKEKEEPER_TEST__S3_CORS_ALLOW_ALL").as_deref() == Ok("1") {
+                        assert_eq!(check.status, ValidationCheckStatus::Passed, "{check:?}");
+                    } else {
+                        assert_ne!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+                    }
+                },
+                true,
+            );
+        }
+
+        #[test]
         fn test_can_validate() {
             // we need to use a shared runtime since the static client is shared between tests here
             // and tokio::test creates a new runtime for each test. For now, we only encounter the

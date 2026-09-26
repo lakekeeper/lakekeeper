@@ -2,6 +2,7 @@
 
 pub(crate) mod az;
 mod cache;
+mod cors;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
@@ -60,7 +61,7 @@ use crate::{
             },
             validation::{
                 ProbeDeadlines, ReportBuilder, SKIPPED_BY_CONFIG, SKIPPED_PREREQUISITE,
-                ValidationCheck, ValidationCheckName, ValidationReport, elapsed_ms,
+                STORAGE_CHECKS, ValidationCheck, ValidationCheckName, ValidationReport, elapsed_ms,
             },
         },
     },
@@ -234,6 +235,13 @@ impl std::fmt::Display for ShortTermCredentialsRequest {
         )
     }
 }
+
+/// The checks that exercise credentials vended to clients.
+const VENDED_CHECKS: [ValidationCheckName; 3] = [
+    ValidationCheckName::VendedCredentialsIssued,
+    ValidationCheckName::VendedCredentialsReadWrite,
+    ValidationCheckName::VendedCredentialsScopeEnforced,
+];
 
 impl StorageProfile {
     #[must_use]
@@ -605,8 +613,9 @@ impl StorageProfile {
     ///
     /// If location is not provided, a dummy table location is used.
     ///
-    /// Collapses [`Self::validate_access_report`] into the first failure. Prefer
-    /// the report when the outcome is shown to a human.
+    /// The first failure among the checks of [`Self::validate_access_report`].
+    /// Prefer the report when the outcome is shown to a human. The CORS check is
+    /// not run: it can only warn, and warnings do not fail this call.
     ///
     /// # Errors
     /// Fails if a file cannot be written and deleted.
@@ -616,7 +625,14 @@ impl StorageProfile {
         location: Option<&Location>,
         request_metadata: &RequestMetadata,
     ) -> Result<(), ErrorModel> {
-        self.validate_access_report(credential, location, request_metadata)
+        if CONFIG.skip_storage_validation {
+            return Ok(());
+        }
+        let deadlines = ProbeDeadlines::from_request_limit(
+            request_metadata.received_at(),
+            CONFIG.max_request_time,
+        );
+        Box::pin(self.access_probes(credential, location, request_metadata, deadlines))
             .await
             .into_result()
     }
@@ -629,42 +645,18 @@ impl StorageProfile {
     /// for every probe.
     ///
     /// If location is not provided, a dummy table location is used.
-    #[allow(clippy::too_many_lines)]
     pub async fn validate_access_report(
         &self,
         credential: Option<&StorageCredential>,
         location: Option<&Location>,
         request_metadata: &RequestMetadata,
     ) -> ValidationReport {
-        let mut report = ReportBuilder::new();
-
-        // Test vended-credentials access
-        let test_vended_credentials = match self {
-            StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Stackit(profile) => profile.sts_enabled,
-            StorageProfile::Adls(profile) => profile.sas_enabled,
-            StorageProfile::OneLake(profile) => profile.sas_enabled,
-            StorageProfile::Gcs(profile) => profile.sts_enabled,
-            #[cfg(feature = "test-utils")]
-            StorageProfile::Memory(_) => false,
-        };
-        let vended_checks = [
-            ValidationCheckName::VendedCredentialsIssued,
-            ValidationCheckName::VendedCredentialsReadWrite,
-            ValidationCheckName::VendedCredentialsScopeEnforced,
-        ];
-
         if CONFIG.skip_storage_validation {
             tracing::debug!("Storage validation is disabled, skipping validation of credentials.");
-            report.skip(
-                ValidationCheckName::StorageClientInitialized,
-                SKIPPED_BY_CONFIG,
-            );
-            report.skip(ValidationCheckName::LakekeeperReadWrite, SKIPPED_BY_CONFIG);
-            for name in vended_checks {
+            let mut report = ReportBuilder::new();
+            for name in STORAGE_CHECKS {
                 report.skip(name, SKIPPED_BY_CONFIG);
             }
-            report.skip(ValidationCheckName::Cleanup, SKIPPED_BY_CONFIG);
             return report.build();
         }
 
@@ -672,6 +664,32 @@ impl StorageProfile {
             request_metadata.received_at(),
             CONFIG.max_request_time,
         );
+        // The CORS preflight needs no credential, so it runs alongside the access
+        // probes and is reported even when they stop early.
+        let (access, cors) = tokio::join!(
+            Box::pin(self.access_probes(credential, location, request_metadata, deadlines)),
+            Box::pin(cors::cors_check(
+                self,
+                request_metadata.base_url(),
+                deadlines
+            )),
+        );
+        let mut checks = access.checks;
+        checks.push(cors);
+        ValidationReport::new(checks)
+    }
+
+    /// The probes that exercise storage with Lakekeeper's own and vended
+    /// credentials. Always accounts for each of them, as passed, failed or skipped.
+    async fn access_probes(
+        &self,
+        credential: Option<&StorageCredential>,
+        location: Option<&Location>,
+        request_metadata: &RequestMetadata,
+        deadlines: ProbeDeadlines,
+    ) -> ValidationReport {
+        let mut report = ReportBuilder::new();
+
         let started = Instant::now();
         let io = match deadlines
             .probe(async {
@@ -698,7 +716,7 @@ impl StorageProfile {
                     ValidationCheckName::LakekeeperReadWrite,
                     SKIPPED_PREREQUISITE,
                 );
-                for name in vended_checks {
+                for name in VENDED_CHECKS {
                     report.skip(name, SKIPPED_PREREQUISITE);
                 }
                 report.skip(ValidationCheckName::Cleanup, SKIPPED_PREREQUISITE);
@@ -706,16 +724,8 @@ impl StorageProfile {
             }
         };
 
-        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
-            name: "test_namespace".to_string(),
-            uuid: Uuid::now_v7(),
-        }]);
-        let tabular_name_context = TabularNameContext {
-            name: "test_tabular".to_string(),
-            uuid: Uuid::now_v7(),
-        };
-        let ns_location = match self.default_namespace_location(&namespace_path) {
-            Ok(loc) => loc,
+        let test_location = match self.validation_test_location(location) {
+            Ok(test_location) => test_location,
             // Reported against the read/write probe on purpose: this function owns
             // only the physical-access checks, and profile shape has already been
             // reported by the caller. Without a location there is nothing to write
@@ -726,60 +736,23 @@ impl StorageProfile {
                     0,
                     e,
                 ));
-                for name in vended_checks {
+                for name in VENDED_CHECKS {
                     report.skip(name, SKIPPED_PREREQUISITE);
                 }
                 report.skip(ValidationCheckName::Cleanup, SKIPPED_PREREQUISITE);
                 return report.build();
             }
         };
-        let test_location = location.map_or_else(
-            || self.default_tabular_location(&ns_location, &tabular_name_context),
-            std::borrow::ToOwned::to_owned,
-        );
         tracing::debug!("Validating direct read/write access to {test_location}");
 
-        // Run direct and vended validation in parallel, as before. Each side
-        // reports its own checks so that a failure on one does not mask the other.
-        let direct_validation = async {
-            let started = Instant::now();
-            let result = deadlines
-                .probe(self.validate_read_write_lakekeeper(&io, &test_location))
-                .await;
-            // Timed here, not after the join: otherwise this check would report
-            // the slower concurrent branch's wall time.
-            (elapsed_ms(started), result)
-        };
-        let vended_validation = async {
-            if test_vended_credentials {
-                self.validate_vended_credentials_access(
-                    credential,
-                    &test_location,
-                    request_metadata,
-                    deadlines,
-                )
-                .await
-            } else {
-                vended_checks
-                    .into_iter()
-                    .map(|name| {
-                        ValidationCheck::skipped(
-                            name,
-                            "Credential vending is not enabled for this storage profile.",
-                        )
-                    })
-                    .collect()
-            }
-        };
-
-        let ((direct_ms, direct_result), vended_result) =
-            tokio::join!(direct_validation, vended_validation);
-        report.record_timed(
-            ValidationCheckName::LakekeeperReadWrite,
-            direct_ms,
-            direct_result,
+        // Direct and vended access run in parallel. Each side reports its own
+        // checks so that a failure on one does not mask the other.
+        let (direct, vended) = tokio::join!(
+            self.direct_read_write_check(&io, &test_location, deadlines),
+            self.vended_credentials_checks(credential, &test_location, request_metadata, deadlines),
         );
-        report.extend(vended_result);
+        report.push(direct);
+        report.extend(vended);
 
         report.push(
             deadlines
@@ -788,6 +761,87 @@ impl StorageProfile {
         );
         tracing::debug!("Access validation finished");
         report.build()
+    }
+
+    /// Whether the profile vends temporary credentials to clients.
+    fn credential_vending_enabled(&self) -> bool {
+        match self {
+            StorageProfile::S3(profile) => profile.sts_enabled,
+            StorageProfile::Stackit(profile) => profile.sts_enabled,
+            StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::OneLake(profile) => profile.sas_enabled,
+            StorageProfile::Gcs(profile) => profile.sts_enabled,
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => false,
+        }
+    }
+
+    /// `location` if given, else a fresh table location below a fresh namespace.
+    fn validation_test_location(
+        &self,
+        location: Option<&Location>,
+    ) -> Result<Location, ValidationError> {
+        if let Some(location) = location {
+            return Ok(location.clone());
+        }
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_namespace".to_string(),
+            uuid: Uuid::now_v7(),
+        }]);
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: Uuid::now_v7(),
+        };
+        let ns_location = self.default_namespace_location(&namespace_path)?;
+        Ok(self.default_tabular_location(&ns_location, &tabular_name_context))
+    }
+
+    /// The `lakekeeper-read-write` check, with the warehouse's own credential.
+    async fn direct_read_write_check(
+        &self,
+        io: &StorageBackend,
+        test_location: &Location,
+        deadlines: ProbeDeadlines,
+    ) -> ValidationCheck {
+        // Timed here, not after the caller's join: otherwise this check would
+        // report the slower concurrent branch's wall time.
+        let started = Instant::now();
+        let name = ValidationCheckName::LakekeeperReadWrite;
+        match deadlines
+            .probe(self.validate_read_write_lakekeeper(io, test_location))
+            .await
+        {
+            Ok(()) => ValidationCheck::passed(name, elapsed_ms(started)),
+            Err(e) => ValidationCheck::failed(name, elapsed_ms(started), e),
+        }
+    }
+
+    /// The vended-credentials checks, skipped when the profile vends none.
+    async fn vended_credentials_checks(
+        &self,
+        credential: Option<&StorageCredential>,
+        test_location: &Location,
+        request_metadata: &RequestMetadata,
+        deadlines: ProbeDeadlines,
+    ) -> Vec<ValidationCheck> {
+        if !self.credential_vending_enabled() {
+            return VENDED_CHECKS
+                .into_iter()
+                .map(|name| {
+                    ValidationCheck::skipped(
+                        name,
+                        "Credential vending is not enabled for this storage profile.",
+                    )
+                })
+                .collect();
+        }
+        self.validate_vended_credentials_access(
+            credential,
+            test_location,
+            request_metadata,
+            deadlines,
+        )
+        .await
     }
 
     /// Remove everything validation wrote and confirm the location is empty again.
@@ -1738,6 +1792,37 @@ mod validate_access_report_tests {
     }
 
     #[tokio::test]
+    async fn the_report_accounts_for_the_cors_check() {
+        let profile = StorageProfile::Memory(MemoryProfile::default());
+        let report = profile
+            .validate_access_report(None, None, &RequestMetadata::new_unauthenticated())
+            .await;
+        assert_eq!(
+            status_of(&report, ValidationCheckName::CorsOriginAllowed),
+            ValidationCheckStatus::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_storage_is_a_cors_warning_not_a_failure() {
+        let (mut profile, credential) = unreachable_s3_profile();
+        profile
+            .normalize(Some(&credential))
+            .expect("profile is well-formed");
+        let report = profile
+            .validate_access_report(
+                Some(&credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+        assert_eq!(
+            status_of(&report, ValidationCheckName::CorsOriginAllowed),
+            ValidationCheckStatus::Warning
+        );
+    }
+
+    #[tokio::test]
     async fn unreachable_storage_fails_the_probe_and_skips_vending() {
         let (mut profile, credential) = unreachable_s3_profile();
         profile
@@ -1805,16 +1890,8 @@ mod validate_access_report_tests {
             .await;
 
         // `validate_access_report` owns exactly the storage-side checks.
-        let expected = [
-            ValidationCheckName::StorageClientInitialized,
-            ValidationCheckName::LakekeeperReadWrite,
-            ValidationCheckName::VendedCredentialsIssued,
-            ValidationCheckName::VendedCredentialsReadWrite,
-            ValidationCheckName::VendedCredentialsScopeEnforced,
-            ValidationCheckName::Cleanup,
-        ];
         let names: Vec<_> = report.checks.iter().map(|c| c.name).collect();
-        assert_eq!(names, expected, "unexpected checks or order");
+        assert_eq!(names, STORAGE_CHECKS, "unexpected checks or order");
     }
 
     #[tokio::test]

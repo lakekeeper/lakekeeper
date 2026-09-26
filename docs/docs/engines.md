@@ -36,7 +36,7 @@ When using Lakekeeper with authentication enabled, remember that you can follow 
   <figcaption>LoQE: browse namespaces and tables, run SQL, then view the result as a table or chart — or export it as CSV.</figcaption>
 </figure>
 
-Because the queries execute in your browser rather than on the server, your S3 storage must return a CORS policy that allows requests from the Lakekeeper origin. See the [CORS Configuration guide](storage.md#cors-configuration) for setup instructions.
+Because the queries execute in your browser rather than on the server, your object storage (S3, STACKIT or Google Cloud Storage) must return a CORS policy that allows requests from the Lakekeeper origin. See the [CORS Configuration guide](storage.md#cors-configuration) for setup instructions.
 
 ## DuckDB { .engine data-icon="duckdb" }
 

@@ -66,7 +66,10 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
     { "name": "vended-credentials-read-write", "status": "failed", "duration-ms": 154,
       "error": { "message": "...", "type": "PermissionDenied", "code": 400 } },
     { "name": "vended-credentials-scope-enforced", "status": "passed", "duration-ms": 149 },
-    { "name": "cleanup", "status": "passed", "duration-ms": 88 }
+    { "name": "cleanup", "status": "passed", "duration-ms": 88 },
+    { "name": "cors-origin-allowed", "status": "warning", "duration-ms": 41,
+      "error": { "message": "CORS does not allow origin `https://lakekeeper.example.com` for `GET`, `HEAD`, `PUT`, `POST`, `DELETE`. ...", "type": "CorsOriginNotAllowed", "code": 412,
+        "stack": ["`GET`, `HEAD`, `PUT`, `POST`, `DELETE`: Access-Control-Allow-Origin expected `https://lakekeeper.example.com` or `*`, found no header"] } }
   ]
 }
 ```
@@ -88,8 +91,11 @@ Checks:
 | `vended-credentials-read-write` | Downscoped credentials work below the table location |
 | `vended-credentials-scope-enforced` | Downscoped credentials are refused write access *outside* the table location |
 | `cleanup` | Everything written during validation was removed again |
+| `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does. Reported as `warning` when it does not. Skipped for ADLS and OneLake |
 
 A check is `skipped` when it does not apply (credential vending is disabled, or the check only applies to a different operation) or when a prerequisite failed; the `reason` field says which. Skipped checks do not make a configuration invalid.
+
+A check is `warning` when it found a problem that does not stop the Warehouse from working, such as a CORS policy that blocks the in-browser query console. Its `error` says what was found; for `cors-origin-allowed`, each `stack` line names the refused methods with the expected and the found response header. Warnings never make `valid` false and never block creating or updating a Warehouse.
 
 With `LAKEKEEPER__SKIP_STORAGE_VALIDATION=true` every storage check reports `skipped` rather than silently passing. Note that `valid` is still `true` in that case — nothing failed, but nothing was checked either, so read the individual checks before trusting a green result.
 
@@ -115,6 +121,61 @@ For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additio
 
 - **S3 / AWS Warehouses**: Supports `s3a://` and `s3n://` in addition to `s3://`
 - **Azure Warehouses**: Supports `wasbs://` in addition to `abfss://`
+
+## CORS Configuration
+
+[LoQE, the in-browser query console](engines.md#loqe), reads and writes table data directly from object storage, so the bucket must return a CORS (Cross-Origin Resource Sharing) policy that allows requests from the Lakekeeper origin. This applies to S3, STACKIT and Google Cloud Storage; LoQE does not support ADLS. [Storage validation](#validating-a-storage-configuration) reports a `cors-origin-allowed` warning when the Lakekeeper origin is not allowed.
+
+Recommended policy for S3 and STACKIT:
+
+```json
+[
+    {
+        "AllowedHeaders": ["*"],
+        "AllowedMethods": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+        "AllowedOrigins": ["https://lakekeeper.example.com"],
+        "ExposeHeaders": ["ETag", "Content-Range"]
+    }
+]
+```
+
+Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted. `ETag` must be exposed for multipart uploads and `Content-Range` for reading file sizes from range requests. Validation sends the preflight a browser would send, which shows allowed origins, methods and request headers but not exposed response headers, so it cannot verify `ExposeHeaders`.
+
+### CORS on AWS
+
+1. In the AWS S3 Configuration Menu, click on the name of your bucket
+2. Choose **Permissions** Tab
+3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
+4. Paste the policy above into the CORS configuration editor. The text must be valid JSON.
+5. Choose **Save changes**
+
+### CORS on STACKIT
+
+STACKIT sets CORS through the S3 API, using an access key of the bucket's credentials group. Wrap the policy above as `{"CORSRules": [...]}` in `cors.json` and apply it:
+
+```bash
+aws s3api put-bucket-cors \
+  --endpoint-url https://object.storage.eu01.onstackit.cloud \
+  --bucket <bucket> \
+  --cors-configuration file://cors.json
+```
+
+For the data platform storage service, use `https://dataplatform.storage.eu01.onstackit.cloud` as the endpoint.
+
+### CORS on Google Cloud Storage
+
+```json
+[
+    {
+        "origin": ["https://lakekeeper.example.com"],
+        "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+        "responseHeader": ["*"],
+        "maxAgeSeconds": 3600
+    }
+]
+```
+
+Save the policy as `cors.json` and apply it with `gcloud storage buckets update gs://<bucket> --cors-file=cors.json`.
 
 ## Storage Layout
 
@@ -535,46 +596,6 @@ We are now ready to create the Warehouse using the system identity:
 ```
 
 The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the object store. It is also used as a default for `sts-role-arn`, which is the role that is assumed when generating vended credentials for clients (with an attached policy for the accessed table).
-
-#### CORS Configuration
-
-For browser-based access to S3 buckets (required for [LoQE, the in-browser query console](engines.md#loqe)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
-
-To configure CORS for your S3 bucket:
-
-1. In the AWS S3 Configuration Menu, click on the name of your bucket
-2. Choose **Permissions** Tab
-3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
-4. In the CORS configuration editor text box, type or copy and paste a new CORS configuration, or edit an existing configuration. The CORS configuration is a JSON file. The text that you type in the editor must be valid JSON. See below for an example.
-5. Choose **Save changes**
-
-Example CORS policy:
-
-```json
-[
-    {
-        "AllowedHeaders": [
-            "*"
-        ],
-        "AllowedMethods": [
-            "GET",
-            "POST",
-            "PUT",
-            "DELETE",
-            "HEAD"
-        ],
-        "AllowedOrigins": [
-            "https://lakekeeper.example.com"
-        ],
-        "ExposeHeaders": [
-            "ETag",
-            "x-amz-version-id"
-        ]
-    }
-]
-```
-
-Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted.
 
 #### STS Session Tags
 

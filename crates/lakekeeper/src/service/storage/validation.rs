@@ -88,13 +88,17 @@ pub enum ValidationCheckName {
     VendedCredentialsScopeEnforced,
     /// Everything written during validation was removed again.
     Cleanup,
+    /// The storage's CORS policy lets the Lakekeeper origin read and write
+    /// objects from a browser, as the in-browser query console (LoQE) does.
+    /// Reported as `warning` when it does not: the warehouse works without it.
+    CorsOriginAllowed,
 }
 
 /// The outcome of a single check.
 ///
-/// `passed` and `failed` are verdicts about the configuration. `skipped` is not
-/// a verdict: the check did not apply, or a prerequisite failed, and `reason`
-/// says which. Skipped checks never make a configuration invalid, so a report
+/// `passed`, `failed` and `warning` are verdicts about the configuration; only
+/// `failed` makes it invalid. `skipped` is not a verdict: the check did not
+/// apply, or a prerequisite failed, and `reason` says which. Skipped checks never make a configuration invalid, so a report
 /// can be `valid` with nothing actually verified — read the individual checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -105,6 +109,9 @@ pub enum ValidationCheckStatus {
     /// Not applicable to this configuration, or not attempted because a
     /// prerequisite check failed. Never counts as a failure.
     Skipped,
+    /// The check found a problem that does not make the configuration invalid.
+    /// `error` says what was found. Never counts as a failure.
+    Warning,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,7 +126,7 @@ pub struct ValidationCheck {
     /// Why the check was skipped. Only set for `skipped`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// What went wrong. Only set for `failed`.
+    /// What went wrong. Only set for `failed` and `warning`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorModel>,
 }
@@ -145,6 +152,21 @@ impl ValidationCheck {
         Self {
             name,
             status: ValidationCheckStatus::Failed,
+            duration_ms: Some(duration_ms),
+            reason: None,
+            error: Some(error.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn warning(
+        name: ValidationCheckName,
+        duration_ms: u64,
+        error: impl Into<ErrorModel>,
+    ) -> Self {
+        Self {
+            name,
+            status: ValidationCheckStatus::Warning,
             duration_ms: Some(duration_ms),
             reason: None,
             error: Some(error.into()),
@@ -202,8 +224,8 @@ fn sanitize_embedded_error(name: ValidationCheckName, error: ErrorModel) -> Erro
 
 /// The outcome of validating a warehouse configuration.
 ///
-/// `valid` is true exactly when no check failed — skipped checks do not make a
-/// configuration invalid.
+/// `valid` is true exactly when no check failed — skipped and warning checks do
+/// not make a configuration invalid.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -350,6 +372,19 @@ pub(crate) fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Every check [`StorageProfile::validate_access_report`] reports, in report order.
+///
+/// [`StorageProfile::validate_access_report`]: super::StorageProfile::validate_access_report
+pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 7] = [
+    ValidationCheckName::StorageClientInitialized,
+    ValidationCheckName::LakekeeperReadWrite,
+    ValidationCheckName::VendedCredentialsIssued,
+    ValidationCheckName::VendedCredentialsReadWrite,
+    ValidationCheckName::VendedCredentialsScopeEnforced,
+    ValidationCheckName::Cleanup,
+    ValidationCheckName::CorsOriginAllowed,
+];
+
 /// Reason recorded when the server has storage validation switched off.
 pub(crate) const SKIPPED_BY_CONFIG: &str =
     "Storage validation is disabled on this server (LAKEKEEPER__SKIP_STORAGE_VALIDATION).";
@@ -481,6 +516,27 @@ mod tests {
 
     fn deadlines(limit: Duration) -> ProbeDeadlines {
         ProbeDeadlines::from_request_limit(tokio::time::Instant::now(), limit)
+    }
+
+    #[test]
+    fn a_warning_does_not_make_the_report_invalid() {
+        let report = ValidationReport::new(vec![
+            ValidationCheck::passed(ValidationCheckName::ProfileWellFormed, 1),
+            ValidationCheck::warning(ValidationCheckName::Cleanup, 3, err("cors")),
+        ]);
+        assert!(report.valid);
+        assert!(report.into_result().is_ok());
+    }
+
+    #[test]
+    fn a_warning_carries_its_error_and_serializes_as_warning() {
+        let check = ValidationCheck::warning(ValidationCheckName::Cleanup, 3, err("cors"));
+        assert_eq!(check.status, ValidationCheckStatus::Warning);
+        assert_eq!(check.duration_ms, Some(3));
+        assert!(check.reason.is_none());
+        let json = serde_json::to_value(&check).unwrap();
+        assert_eq!(json["status"], "warning");
+        assert_eq!(json["error"]["message"], "cors");
     }
 
     #[tokio::test(start_paused = true)]

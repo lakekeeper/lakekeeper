@@ -56,7 +56,9 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::validation::{ReportBuilder, SKIPPED_PREREQUISITE, ValidationReport, elapsed_ms},
+        storage::validation::{
+            ReportBuilder, SKIPPED_PREREQUISITE, STORAGE_CHECKS, ValidationReport, elapsed_ms,
+        },
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
@@ -378,10 +380,12 @@ pub struct UpdateWarehouseCredentialRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ValidateWarehouseResponse {
-    /// True when no check failed. Skipped checks do not make a configuration invalid.
+    /// True when no check failed. Skipped and warning checks do not make a
+    /// configuration invalid.
     pub valid: bool,
-    /// Every check that was considered, in execution order — passed, failed and
-    /// skipped alike, so the caller can see what was and was not covered.
+    /// Every check that was considered, in execution order — passed, failed,
+    /// warning and skipped alike, so the caller can see what was and was not
+    /// covered.
     pub checks: Vec<ValidationCheck>,
 }
 
@@ -2401,17 +2405,10 @@ async fn ensure_no_storage_overlap<C: CatalogStore>(
 /// Keeps the report shape stable when the probes never ran, so a client can always
 /// tell which probes exist and why they are missing an outcome.
 fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
-    [
-        ValidationCheckName::StorageClientInitialized,
-        ValidationCheckName::LakekeeperReadWrite,
-        ValidationCheckName::VendedCredentialsIssued,
-        ValidationCheckName::VendedCredentialsReadWrite,
-        ValidationCheckName::VendedCredentialsScopeEnforced,
-        ValidationCheckName::Cleanup,
-    ]
-    .into_iter()
-    .map(|name| ValidationCheck::skipped(name, reason))
-    .collect()
+    STORAGE_CHECKS
+        .into_iter()
+        .map(|name| ValidationCheck::skipped(name, reason))
+        .collect()
 }
 
 /// Check that the name is well-formed and not already taken in the project.
@@ -2809,6 +2806,7 @@ mod test {
                     ValidationCheckName::VendedCredentialsReadWrite,
                     ValidationCheckName::VendedCredentialsScopeEnforced,
                     ValidationCheckName::Cleanup,
+                    ValidationCheckName::CorsOriginAllowed,
                 ]
             );
             assert!(
