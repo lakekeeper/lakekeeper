@@ -84,9 +84,14 @@ pub(crate) fn preflight_allows(
         });
     }
     let methods = tokens(response.allow_methods.as_deref());
-    if !methods
+    // Browsers accept CORS-safelisted methods whatever the preflight lists.
+    let safelisted = ["GET", "HEAD", "POST"]
         .iter()
-        .any(|m| m == "*" || m.eq_ignore_ascii_case(method))
+        .any(|m| m.eq_ignore_ascii_case(method));
+    if !safelisted
+        && !methods
+            .iter()
+            .any(|m| m == "*" || m.eq_ignore_ascii_case(method))
     {
         return Err(Mismatch {
             header: "Access-Control-Allow-Methods",
@@ -725,6 +730,30 @@ mod tests {
         assert_eq!(m.header, "Access-Control-Allow-Methods");
         assert_eq!(m.expected, "`PUT` or `*`");
         assert_eq!(m.found, "`GET`");
+    }
+
+    #[test]
+    fn safelisted_methods_pass_without_being_listed() {
+        let r = ok("https://lk.example.com", "PUT", "authorization, x-amz-date");
+        for method in ["GET", "HEAD", "POST"] {
+            assert_eq!(
+                preflight_allows(&r, "https://lk.example.com", method, &HEADERS),
+                Ok(()),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn safelisted_methods_pass_without_an_allow_methods_header() {
+        let mut r = ok("https://lk.example.com", "", "authorization, x-amz-date");
+        r.allow_methods = None;
+        assert_eq!(
+            preflight_allows(&r, "https://lk.example.com", "GET", &HEADERS),
+            Ok(())
+        );
+        let m = preflight_allows(&r, "https://lk.example.com", "DELETE", &HEADERS).unwrap_err();
+        assert_eq!(m.header, "Access-Control-Allow-Methods");
     }
 
     #[test]
