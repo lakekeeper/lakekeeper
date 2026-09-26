@@ -15297,9 +15297,9 @@ components:
           description: |-
             Vend temporary downscoped credentials via STS. Defaults to enabled.
 
-            Requires `credentials-group-urn`, and requires the credentials group to
-            carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
-            to remote signing on storage that predates `StorageGRID` 12.0.
+            Requires `credentials-group-urn`, and a trust policy on that group
+            allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
+            STACKIT storage that does not offer STS yet.
         sts-token-validity-seconds:
           type: integer
           format: int64
@@ -17067,6 +17067,7 @@ components:
         - vended-credentials-scope-enforced
         - cleanup
         - cors-origin-allowed
+        - bucket-policy-restricts-access
     ValidationCheckStatus:
       type: string
       description: |-
