@@ -76,7 +76,7 @@ pub(crate) fn preflight_allows(
         });
     }
     let allowed_origin = response.allow_origin.as_deref().map(str::trim);
-    if !allowed_origin.is_some_and(|o| o == "*" || o.eq_ignore_ascii_case(origin)) {
+    if !allowed_origin.is_some_and(|o| o == "*" || o == origin) {
         return Err(Mismatch {
             header: "Access-Control-Allow-Origin",
             expected: format!("`{origin}` or `*`"),
@@ -721,6 +721,14 @@ mod tests {
         assert_eq!(m.header, "Access-Control-Allow-Origin");
         assert_eq!(m.expected, "`https://lk.example.com` or `*`");
         assert_eq!(m.found, "`https://other.example.com`");
+    }
+
+    #[test]
+    fn an_origin_differing_in_case_is_not_allowed() {
+        let r = ok("https://LK.example.com", "*", "*");
+        let m = preflight_allows(&r, "https://lk.example.com", "PUT", &HEADERS).unwrap_err();
+        assert_eq!(m.header, "Access-Control-Allow-Origin");
+        assert_eq!(m.found, "`https://LK.example.com`");
     }
 
     #[test]
