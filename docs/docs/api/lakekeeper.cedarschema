@@ -89,9 +89,9 @@ namespace Lakekeeper {
   //                    project-scoped role UID it wants to match.
   //
   //   `project_roles` — flat records {provider_id, source_id} without a project
-  //                    field. Includes server-wide provider roles as well as any
-  //                    project-specific provider roles that apply to the current
-  //                    request. The recommended attribute for provider-backed
+  //                    field. The project is dropped from the shape only: the
+  //                    content is the same one project's roles that `roles`
+  //                    holds. The recommended attribute for provider-backed
   //                    policies; prefer it over `roles` when the policy does not
   //                    need to reference an exact project-scoped role UID.
   //                    Use `principal.project_roles.contains({provider_id: "ldap",
@@ -150,8 +150,14 @@ namespace Lakekeeper {
     provider_id: String,
     // The ID of this user in its authentication provider
     source_id: String,
-    // The project this request is scoped to (the caller's preferred/effective project).
-    // Absent for requests with no project context (e.g. server-level actions).
+    // The project this request is scoped to: the one the request names, or the
+    // configured default project when it names none. Present on server-level
+    // actions too. Absent only when the request names no project and no default
+    // project is configured.
+    //
+    // `principal has request_project && resource in principal.request_project`
+    // confines a policy to the project level: a Server or User resource is never
+    // inside a Project, so the policy cannot reach those actions.
     request_project?: Project,
     // Derived identity attributes, populated from configured regex derivations.
     // Configured via `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
@@ -194,49 +200,54 @@ namespace Lakekeeper {
 
   // ---------- Grants ----------
   //
-  // Every object below carries two records naming the privileges the principal
+  // Every object below carries one record naming the privileges the principal
   // being authorized holds, granted to them or to one of their roles:
   //
-  //   direct_privileges    — granted on this object.
-  //   inherited_privileges — granted on an object above it, up to the server.
+  //   principal_privileges.direct    — granted on this object.
+  //   principal_privileges.inherited — granted on an object above it, up to the
+  //                                    server.
   //
-  // Read a field: `resource.direct_privileges.select`. Every field is always
-  // set; with no grants they are all false. Values are relative to the
-  // principal being authorized.
+  // Read a field: `resource.principal_privileges.direct.select`. Every field is
+  // always set; with no grants they are all false.
   //
-  // Each level has its own record type below. Both records carry exactly the
-  // privileges grantable at that level, so an ancestor privilege outside this
-  // level's vocabulary stays out of `inherited_privileges`.
+  // The name says whose they are, because the position does not. The record
+  // belongs to the request's `principal` wherever it is read — on the decided
+  // resource, on an object above it, or on an object reached from the
+  // principal's or a grantee's side. It is never that object's owner's, and
+  // never the grantee's.
   //
-  // Three consequences worth knowing before writing a policy against an
-  // inherited field:
+  // Each level has its own record type below. Both `direct` and `inherited`
+  // carry exactly the privileges grantable at that level, so an ancestor
+  // privilege outside this level's vocabulary stays out of `inherited`.
+  //
+  // Three consequences worth knowing before writing a policy against
+  // `inherited`:
   //   - `create` is grantable from the server down to a namespace but not on a
   //     table, view or generic table, so a warehouse-level `create` grant does
   //     not appear in a table's inherited record. Creating a table is authorized
   //     on its namespace, which is where that grant does appear.
   //   - `apply` is grantable only on a tag, and a tag's only ancestor is a
-  //     project, so `Tag.inherited_privileges.apply` is always false. Read
-  //     `direct_privileges.apply` instead.
+  //     project, so `Tag.principal_privileges.inherited.apply` is always false.
+  //     Read `direct.apply` instead.
   //   - `manage_policies` is grantable on a project and a warehouse. A project's
-  //     only ancestor is the server, so `Project.inherited_privileges.manage_policies`
-  //     is always false; a warehouse inherits it from its project as usual.
+  //     only ancestor is the server, so
+  //     `Project.principal_privileges.inherited.manage_policies` is always
+  //     false; a warehouse inherits it from its project as usual.
   //
   // What a privilege allows is decided by the policies you load: these fields
   // are an input to a policy, never a decision on their own.
   // `GET /management/v1/grants/grantable-privileges` describes each name.
   //
-  // Read these records on the objects a request decides and on the objects above
-  // them, and nowhere else. A request fetches the grants held on every object it
-  // decides — each item of a batch included — and on their ancestors, so those
-  // records say what is really held. The same request also places objects it does
-  // not decide in the store: the grantee of a grant question, and the project a
-  // grantee's role belongs to. Their records are all `false` because nothing asked
-  // what is held there, so `false` there means "not asked" rather than "not held",
-  // and a policy cannot tell the two apart.
+  // A request resolves the grants held on every object it places — the objects
+  // it decides, each item of a batch included, their ancestors, and the objects
+  // it reaches from the principal's or a grantee's side — so `false` means the
+  // privilege is not held, wherever the record appears. An object supplied
+  // through an external entity source is the exception: it carries whatever that
+  // file declares.
   //
-  // In a `forbid`, read attributes of `resource` only. Besides the ambiguity
-  // above, a forbid that reads another entity is skipped when that entity is
-  // missing — and a skipped forbid lets the request through.
+  // In a `forbid`, prefer attributes of `resource`: a forbid that reads another
+  // entity is skipped when that entity is missing, and a skipped forbid lets the
+  // request through.
 
   // Grantable on the server.
   type ServerPrivileges = {
@@ -323,6 +334,42 @@ namespace Lakekeeper {
     manage_grants: Bool,
   };
 
+  // What the principal being authorized holds at each level: on the object
+  // itself, and on the objects above it. One pair per level, so each side
+  // carries that level's vocabulary and nothing else.
+  type ServerPrincipalPrivileges = {
+    direct: ServerPrivileges,
+    inherited: ServerPrivileges,
+  };
+  type ProjectPrincipalPrivileges = {
+    direct: ProjectPrivileges,
+    inherited: ProjectPrivileges,
+  };
+  type WarehousePrincipalPrivileges = {
+    direct: WarehousePrivileges,
+    inherited: WarehousePrivileges,
+  };
+  type NamespacePrincipalPrivileges = {
+    direct: NamespacePrivileges,
+    inherited: NamespacePrivileges,
+  };
+  type TablePrincipalPrivileges = {
+    direct: TablePrivileges,
+    inherited: TablePrivileges,
+  };
+  type ViewPrincipalPrivileges = {
+    direct: ViewPrivileges,
+    inherited: ViewPrivileges,
+  };
+  type GenericTablePrincipalPrivileges = {
+    direct: GenericTablePrivileges,
+    inherited: GenericTablePrivileges,
+  };
+  type TagPrincipalPrivileges = {
+    direct: TagPrivileges,
+    inherited: TagPrivileges,
+  };
+
   // A governance-tag definition: a project-scoped vocabulary entry that can be
   // attached to warehouses, namespaces, tables, views, generic tables and columns.
   // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a99f0029acbd"
@@ -330,10 +377,8 @@ namespace Lakekeeper {
     project: Project,
     // Name of the tag definition (e.g. "pii.classification").
     name: String,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: TagPrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: TagPrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: TagPrincipalPrivileges,
   };
 
   // ---------- Resource Hierarchy ----------
@@ -342,19 +387,16 @@ namespace Lakekeeper {
   // Server is the top-level administrative entity.
   // ID: UUID  e.g. "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
   entity Server {
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: ServerPrivileges,
-    // Always all false: the server has nothing above it.
-    inherited_privileges: ServerPrivileges,
+    // What the principal being authorized holds here; see `Grants` above.
+    // `inherited` is always all false: the server has nothing above it.
+    principal_privileges: ServerPrincipalPrivileges,
   };
 
   // Project is a container for warehouses.
   // ID: String (alphanumeric, hyphens, underscores)  e.g. "my-project"
   entity Project in [Server] {
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: ProjectPrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: ProjectPrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: ProjectPrincipalPrivileges,
   };
 
   // Warehouse is a container for namespaces.
@@ -372,10 +414,8 @@ namespace Lakekeeper {
     // drop bypasses the configured grace period and is irreversible immediately;
     // when false, drops are already hard deletes and `force` changes nothing.
     soft_delete_enabled: Bool,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: WarehousePrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: WarehousePrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: WarehousePrincipalPrivileges,
   };
 
   // Namespace can be nested within other namespaces or directly within a warehouse.
@@ -394,10 +434,8 @@ namespace Lakekeeper {
     // pending update. For properties being set during an update, see the
     // context of the UpdateNamespaceProperties action.
     properties: ResourceProperties,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: NamespacePrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: NamespacePrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: NamespacePrincipalPrivileges,
   };
 
   // Table entity for Iceberg tables.
@@ -417,10 +455,8 @@ namespace Lakekeeper {
     // pending update. For properties being set during an update, see the
     // context of the CommitTable action.
     properties: ResourceProperties,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: TablePrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: TablePrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: TablePrincipalPrivileges,
   };
 
   // View entity for Iceberg views.
@@ -440,10 +476,8 @@ namespace Lakekeeper {
     // pending update. For properties being set during an update, see the
     // context of the CommitView action.
     properties: ResourceProperties,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: ViewPrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: ViewPrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: ViewPrincipalPrivileges,
   };
 
   // GenericTable entity for non-Iceberg ("generic") tables.
@@ -461,10 +495,8 @@ namespace Lakekeeper {
     protected: Bool,
     // Current properties of this generic table.
     properties: ResourceProperties,
-    // Privileges held here by the principal being authorized; see `Grants` above.
-    direct_privileges: GenericTablePrivileges,
-    // Privileges the same principal holds on this object's ancestors.
-    inherited_privileges: GenericTablePrivileges,
+    // What the principal being authorized holds here and above; see `Grants`.
+    principal_privileges: GenericTablePrincipalPrivileges,
   };
 
   // ---------- Resource Properties ----------
@@ -906,8 +938,7 @@ namespace Lakekeeper {
         // Two effects at once. It deletes even though this namespace, a child
         // namespace, or a table or view inside it is protected against
         // deletion. And where the warehouse has soft-deletion configured, the
-        // contents are deleted right away instead of staying recoverable for
-        // the configured grace period.
+        // deletion is immediate and permanent.
         force: Bool,
         // Whether the underlying data/metadata files are physically purged.
         purge: Bool,
@@ -1043,9 +1074,7 @@ namespace Lakekeeper {
       context: {
         // Two effects at once. It drops the table even though it is protected
         // against deletion. And where the warehouse has soft-deletion
-        // configured, the table is deleted right away instead of staying
-        // recoverable for the configured grace period, so there is no undoing
-        // it.
+        // configured, the drop is immediate and permanent.
         force: Bool,
         // Whether the underlying data files are physically purged from storage.
         purge: Bool,
@@ -1094,9 +1123,7 @@ namespace Lakekeeper {
       context: {
         // Two effects at once. It drops the view even though it is protected
         // against deletion. And where the warehouse has soft-deletion
-        // configured, the view is deleted right away instead of staying
-        // recoverable for the configured grace period, so there is no undoing
-        // it.
+        // configured, the drop is immediate and permanent.
         force: Bool,
         // Whether the underlying metadata files are physically purged from storage.
         purge: Bool,
@@ -1163,6 +1190,9 @@ namespace Lakekeeper {
   //   GrantReadActions  — the read-only subset, across every level.
   //   XGrantActions     — reading and managing grants on one level.
   //
+  // The whole-subtree operations have their own groups, described under
+  // "Subtree Grant Administration" at the end of this section.
+  //
   // Each level's grant group belongs to `GrantActions` alone — not to that level's
   // `XActions` umbrella, nor to its `XModifyActions` group. So neither
   // `action in "WarehouseActions"` nor `action in "WarehouseModifyActions"` includes
@@ -1209,7 +1239,7 @@ namespace Lakekeeper {
   // One of the two is set: `user` when the grant names a user, `role` when it
   // names a role. Neither is set when the question names nobody — when the API
   // asks which privileges you could grant here to anyone, and when a revoke
-  // names a role that no longer exists.
+  // names a role this server has no record of.
   //
   // Check that the one you want is present before reading it. Cedar's strict
   // validation requires this, and it is also what keeps a policy written for a
@@ -1423,6 +1453,301 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Tag]
     };
+
+  // ---------- Subtree Grant Administration ----------
+  // Two operations act on a whole subtree at once: listing every grant held at and
+  // under a warehouse or namespace, and revoking those grants in bulk. A bulk
+  // revoke is permanent.
+  //
+  //   ReadWarehouseSubtreeGrants   — list every grant in a warehouse's subtree.
+  //   RevokeWarehouseSubtreeGrants — revoke them.
+  //   ReadNamespaceSubtreeGrants   — list every grant in a namespace's subtree.
+  //   RevokeNamespaceSubtreeGrants — revoke them.
+  //
+  //   SubtreeGrantActions       — all four.
+  //   SubtreeGrantReadActions   — the two listing actions.
+  //   SubtreeGrantRevokeActions — the two revoking actions.
+  //
+  // Both sit under `GrantActions`, the listing half also under
+  // `GrantReadActions`, and both stand outside `WarehouseGrantActions` and
+  // `NamespaceGrantActions`: authority over everything beneath an object is
+  // handed out on its own. A rule aimed at one of those two level groups does not
+  // reach these four actions. Aim at `GrantActions` to cover grant administration
+  // whole, or at the subtree groups to cover just these. A rule that permits either
+  // of those two wider groups therefore permits whole-subtree listing, and
+  // `GrantActions` permits bulk revoke with it.
+  //
+  // Like `ReadXGrants`, the two listing actions also make the root itself visible,
+  // with no separate read permission needed. That is enforced by the server, not by
+  // this schema, so a `forbid` hiding a warehouse or namespace does not hide it from
+  // someone who may list its subtree grants.
+  //
+  // The root is the warehouse or namespace the call names, and the whole subtree is
+  // one decision. The server asks once, on the root, and then acts on every grant
+  // beneath it. A policy on anything inside that subtree is never consulted, so a
+  // `forbid` there leaves the operation untouched.
+  //
+  // `resource` is that root, and a rule cannot look from it down into the subtree.
+  // The objects beneath the root take no part in the decision, so a condition that
+  // asks whether one of them is in reach reads false rather than matching:
+  //
+  //   // Does NOT protect that namespace from a call rooted above it.
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantActions", resource)
+  //   when { Lakekeeper::Namespace::"<id>" in resource };
+  //
+  // That rule is accepted, and it denies a call rooted at the namespace itself, so
+  // it looks like it works. A call rooted at the warehouse above is allowed.
+  //
+  // A rule here names roots, so it protects at warehouse and namespace granularity.
+  // A single table cannot be named: no subtree action takes a table as its resource.
+  // A rule whose condition rests on naming one can never hold, and the policies API
+  // refuses it as impossible; joined to another condition with `||`, that arm is
+  // simply dead. Either way it protects nothing, not even the namespace holding the
+  // table. To keep a table's grants out of reach, name the namespace it is in.
+  //
+  // To keep an object out of reach, forbid these actions at every root that reaches
+  // it. Naming the warehouse covers all of them at once, and leaves the operations
+  // available in every other warehouse:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantActions", resource)
+  //   when { resource in Lakekeeper::Warehouse::"<warehouse id>" };
+  //
+  // To keep them available for the rest of that warehouse, name the roots one by one:
+  // the warehouse, each namespace above the protected one, and the protected one
+  // itself.
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantActions", resource)
+  //   when {
+  //     resource == Lakekeeper::Warehouse::"<warehouse id>" ||
+  //     resource == Lakekeeper::Namespace::"<each namespace above it>" ||
+  //     resource in Lakekeeper::Namespace::"<the protected namespace>"
+  //   };
+  //
+  // Both forms name roots that exist when the rule is written, and a move changes
+  // which roots reach the object. Revisit the enumerated form whenever the protected
+  // object or any namespace above it is moved: a namespace re-parented under a new
+  // one puts a root the rule does not name above the object, and that root reaches
+  // it. Revisit the warehouse form when a namespace is moved into another warehouse,
+  // which carries the grants held inside it along. Neither move reports that a rule
+  // has stopped covering what it was written for, so the warehouse form is the one to
+  // prefer where the whole warehouse can be fenced.
+  //
+  // Note also that a condition which can only hold for a namespace leaves the
+  // warehouse root open, and that root reaches everything in the warehouse. Name the
+  // warehouse explicitly in any rule meant to cover it.
+  //
+  // Or keep these operations out of a deployment altogether by forbidding them with
+  // no condition on the resource, which leaves per-object grant administration and
+  // its own fences working as before.
+
+  // How far one subtree operation reaches.
+  //
+  // A concrete call carries every member. `context.subtree` is absent altogether
+  // when the question is whether the principal may run these operations here at
+  // all, which is what the API listing your permissions on an object asks. Read
+  // the record only behind a `has` guard:
+  //
+  //   when {
+  //     context has subtree &&
+  //     context.subtree.root_level == Lakekeeper::SubtreeRootLevel::"excluded"
+  //   }
+  //
+  // A guard naming something this record omits — a misspelling, or a member from
+  // an older release — reads false for every request. In a `when` that rests on it
+  // alone, Lakekeeper rejects the policy as impossible; joined to another condition
+  // with `||`, the misspelled arm is simply dead and the policy is accepted. In an
+  // `unless`, the policy is accepted and the `forbid` applies to every request,
+  // denying the operation outright. Spell member names with care, and take the
+  // server's answer over `cedar validate`.
+  //
+  // Guard on `context has subtree` only in a rule headed at these four actions or
+  // at `SubtreeGrantActions`. Under `GrantActions`, which also covers the
+  // per-object grant actions, that guard is false for every one of them, so an
+  // `unless` carrying it denies all grant administration.
+  type SubtreeGrantScope = {
+    // Every resource type the call reaches. Always at least one, and always a
+    // subset of the types the root covers: a call naming none carries the full
+    // set, so this states what the operation actually touches.
+    //
+    //   context.subtree.resource_types.contains(
+    //     Lakekeeper::SubtreeResourceType::"table")
+    resource_types: Set<SubtreeResourceType>,
+    // Whether the root object's own grants are in reach, alongside everything
+    // below it.
+    root_level: SubtreeRootLevel,
+    // Which privileges are in reach.
+    privileges: SubtreeGrantPrivileges,
+    // Whose grants are in reach.
+    principal: SubtreeGrantPrincipal,
+    // Whether the call only reports what it would do. A dry run reads the same
+    // grants as the live call and changes nothing, so a policy can allow a
+    // rehearsal and still refuse the revoke itself. A revoke makes two checks
+    // and both carry the same value. A listing carries false.
+    //
+    //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantRevokeActions", resource)
+    //   unless { context has subtree && context.subtree.dry_run };
+    dry_run: Bool,
+  };
+
+  // Which privileges a subtree operation covers.
+  //
+  // `every` is true when the call reaches every privilege a matching grant can
+  // carry, which is the form a call naming no privilege takes. It is the widest
+  // form, and a revoke in that form clears grant administration along with
+  // everything else — including the privilege that would let someone put the
+  // grants back. To keep an administrative escape hatch standing:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantRevokeActions", resource)
+  //   unless {
+  //     context has subtree &&
+  //     !context.subtree.privileges.every &&
+  //     context.subtree.privileges has names &&
+  //     !context.subtree.privileges.names.contains(
+  //       Lakekeeper::SubtreeGrantPrivilege::"manage_grants")
+  //   };
+  //
+  // Headed at the revokes, so listing stays available. Written as an `unless`,
+  // it also covers the permission listing, so these scopes stop reporting a bulk
+  // revoke as available.
+  //
+  // Test `every` in any rule about which privileges a call reaches. The widest
+  // call carries no `names`, so a condition reading only `names` is false for it,
+  // and a `forbid` written that way permits the very call it targets.
+  //
+  // When `every` is false the call names its privileges, and `names` holds them.
+  // Each is a name this server publishes for a type the root covers; the API
+  // refuses a call naming anything else. A grant recorded under a privilege this
+  // server has since stopped publishing is reached by the `every` form.
+  type SubtreeGrantPrivileges = {
+    every: Bool,
+    names?: Set<SubtreeGrantPrivilege>,
+  };
+
+  // A privilege a subtree call can name. Every privilege grantable on a type a
+  // subtree call reaches, so a misspelling here is refused when the policy is
+  // written. `unknown` is absent on purpose: the API refuses a call naming a
+  // privilege outside this vocabulary, so it can never arrive.
+  entity SubtreeGrantPrivilege enum
+    ["describe", "select", "write", "create", "manage", "manage_policies",
+     "pass_grants", "manage_grants"];
+
+  // Whose grants a subtree operation covers: every principal holding one, or a
+  // single named principal.
+  //
+  // `every` is always set when this record is present. It is true for the widest
+  // form of these operations, and false when the call names one principal.
+  //
+  // A call naming one principal usually carries exactly one of `user` and `role`,
+  // but it carries neither when the named role belongs to no role this project
+  // holds — there is no entity to name it by. Such a call reaches no grant, and the
+  // server answers it `404` once the decision has been taken, so a rule reading
+  // `role` behind the `has` guard simply does not match it.
+  //
+  // That last point matters for a rule that has to hold whatever a call names. A
+  // `forbid` written as `when { ... has role && ... }` states which calls it stops,
+  // so it lets this one through. Write the rule as an `unless` stating which calls
+  // it lets through, and it stops every other one, this case included:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantRevokeActions", resource)
+  //   unless {
+  //     context has subtree &&
+  //     (context.subtree.principal has user || context.subtree.principal has role)
+  //   };
+  //
+  // Guard with `has` before reading either member, and test `every` in any rule
+  // about a named principal: the widest call names nobody, so a condition reading
+  // only `user` or `role` is false for it as well.
+  //
+  // A `user` names an identity the server need hold no record of: a user id holds
+  // grants without one. Match a user by its entity id; the roles a rule reaches
+  // through it are the ones the server can resolve, which for an unknown id is
+  // none.
+  //
+  // Both are entities, like `context.grantee` on the `ManageXGrants` actions, so
+  // a rule can follow one with `in` and cover every role nested inside a role:
+  //
+  //   when {
+  //     context has subtree &&
+  //     context.subtree.principal has role &&
+  //     context.subtree.principal.role in Lakekeeper::Role::"prod/oidc~admins"
+  //   }
+  //
+  // To forbid the widest calls:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantActions", resource)
+  //   when { context has subtree && context.subtree.principal.every };
+  //
+  // That reaches real calls only: the permission listing carries no `subtree`, so
+  // the guard reads false there and the listing keeps reporting the operation as
+  // available. To withdraw that offer as well, forbid everything except a call
+  // naming a single principal:
+  //
+  //   forbid (principal, action in Lakekeeper::Action::"SubtreeGrantActions", resource)
+  //   unless { context has subtree && !context.subtree.principal.every };
+  type SubtreeGrantPrincipal = {
+    every: Bool,
+    user?: User,
+    role?: Role,
+  };
+
+  // Whether the root object's own grants are in reach: `"included"` when the call
+  // reaches the warehouse or namespace it names as well as everything below it,
+  // `"excluded"` when it reaches only what is below. `resource_types` can still
+  // exclude the root's own type.
+  entity SubtreeRootLevel enum ["included", "excluded"];
+
+  // A resource type, spelled as the grants API spells it. A warehouse-rooted call
+  // that includes its root level reaches `warehouse`, `namespace`, `table`, `view`
+  // and `generic-table`; with the root level excluded, and for every
+  // namespace-rooted call, the same set without `warehouse`. The enum also carries
+  // `server`, `project` and `tag-definition` to match the grants API, and a
+  // condition naming one of those matches nothing.
+  entity SubtreeResourceType enum
+    ["server", "project", "warehouse", "namespace", "table", "view",
+     "generic-table", "tag-definition"];
+
+  action "SubtreeGrantActions" in ["GrantActions"];
+  action "SubtreeGrantReadActions" in ["SubtreeGrantActions", "GrantReadActions"];
+  action "SubtreeGrantRevokeActions" in ["SubtreeGrantActions"];
+
+  action ReadWarehouseSubtreeGrants in ["SubtreeGrantReadActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // What this listing covers; see `SubtreeGrantScope` above.
+        subtree?: SubtreeGrantScope,
+      }
+    };
+  action RevokeWarehouseSubtreeGrants in ["SubtreeGrantRevokeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // What this revoke covers; see `SubtreeGrantScope` above.
+        subtree?: SubtreeGrantScope,
+      }
+    };
+
+  action ReadNamespaceSubtreeGrants in ["SubtreeGrantReadActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // What this listing covers; see `SubtreeGrantScope` above.
+        subtree?: SubtreeGrantScope,
+      }
+    };
+  action RevokeNamespaceSubtreeGrants in ["SubtreeGrantRevokeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // What this revoke covers; see `SubtreeGrantScope` above.
+        subtree?: SubtreeGrantScope,
+      }
+    };
+
   // ---------- Cedar Policy Actions ----------
   // Cedar policies decide every other action in this schema, so whoever may
   // rewrite them can decide their own access one request later. Like grant
