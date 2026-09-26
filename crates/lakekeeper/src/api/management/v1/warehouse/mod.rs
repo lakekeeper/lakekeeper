@@ -2807,6 +2807,7 @@ mod test {
                     ValidationCheckName::VendedCredentialsScopeEnforced,
                     ValidationCheckName::Cleanup,
                     ValidationCheckName::CorsOriginAllowed,
+                    ValidationCheckName::BucketPolicyRestrictsAccess,
                 ]
             );
             assert!(
