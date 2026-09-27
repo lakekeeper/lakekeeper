@@ -918,11 +918,11 @@ Every credentials group of a STACKIT project can read and write every bucket of 
 
 In the example, `credentials-group-a1b2c3` is Lakekeeper's `credentials-group-urn` and `credentials-group-d4e5f6` is the admin group; replace both and `my-warehouse` with your values. The second statement keeps Lakekeeper's access key, and anyone who obtains it, from changing or removing the policy. Credentials that Lakekeeper vends act as the group in `credentials-group-urn`, so they keep working.
 
-Apply the policy through the S3 API with the admin group's access key. Any group can set the first policy; afterwards only the admin group can change it. Use the endpoint of the Warehouse's storage service, e.g. `https://dataplatform.storage.eu01.onstackit.cloud` for the data platform storage service:
+Apply the policy through the S3 API with the admin group's access key. Any group can set the first policy; afterwards only the admin group can change it. Use the endpoint of the Warehouse's storage service; the example uses the data platform storage service, and the object storage service uses `https://object.storage.eu01.onstackit.cloud`:
 
 ```bash
 aws s3api put-bucket-policy \
-  --endpoint-url https://object.storage.eu01.onstackit.cloud \
+  --endpoint-url https://dataplatform.storage.eu01.onstackit.cloud \
   --bucket my-warehouse \
   --policy file://policy.json
 ```
