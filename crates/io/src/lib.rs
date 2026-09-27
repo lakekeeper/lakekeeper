@@ -414,6 +414,18 @@ where
             ),
         })
     }
+
+    /// Delete an empty directory entry without removing its contents.
+    ///
+    /// On hierarchical backends (ADLS, OneLake) this removes the directory
+    /// entity itself. The call should fail or return an error when the
+    /// directory still contains children, so callers get TOCTOU safety.
+    ///
+    /// Object stores (S3, GCS) and in-memory backends have no directory
+    /// entries, so the default implementation is a no-op.
+    async fn delete_empty_directory(&self, _path: &str) -> Result<(), DeleteError> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -561,6 +573,21 @@ impl LakekeeperStorage for StorageBackend {
             StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
         }
     }
+
+    async fn delete_empty_directory(&self, path: &str) -> Result<(), DeleteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.delete_empty_directory(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.delete_empty_directory(path).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.delete_empty_directory(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.delete_empty_directory(path).await,
+        }
+    }
 }
 
 // Delegating `LakekeeperStorage` impls for smart pointers.
@@ -649,6 +676,10 @@ macro_rules! impl_lakekeeper_storage_delegating {
 
                 async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
                     (**self).remove_all(path).await
+                }
+
+                async fn delete_empty_directory(&self, path: &str) -> Result<(), DeleteError> {
+                    (**self).delete_empty_directory(path).await
                 }
             }
         )+

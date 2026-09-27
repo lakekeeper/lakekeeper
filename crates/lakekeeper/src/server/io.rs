@@ -78,6 +78,15 @@ pub(crate) async fn remove_all(
     io.remove_all(location.as_str()).await.map_err(Into::into)
 }
 
+pub(crate) async fn delete_empty_directory(
+    io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<(), IOErrorExt> {
+    io.delete_empty_directory(location.as_str())
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn list_location<'a>(
     io: &'a impl LakekeeperStorage,
     location: &'a Location,

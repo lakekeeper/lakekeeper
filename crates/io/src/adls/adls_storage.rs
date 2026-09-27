@@ -506,6 +506,28 @@ impl LakekeeperStorage for AdlsStorage {
 
         Ok(())
     }
+
+    /// Delete an empty ADLS directory entry (non-recursive).
+    ///
+    /// Uses `DirectoryClient.delete()` without the `recursive` flag, so
+    /// Azure returns 409 Conflict if the directory still has children —
+    /// providing TOCTOU safety for namespace cleanup.
+    async fn delete_empty_directory(&self, path: &str) -> Result<(), DeleteError> {
+        let path = path.trim_end_matches('/');
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+
+        require_key(&adls_location)?;
+
+        let client = self.get_directory_client(&adls_location)?;
+        let mut delete_stream = client.delete(false).into_stream();
+
+        while let Some(result) = delete_stream.next().await {
+            let result = result.map(|_| ()).map_err(|e| parse_error(e, path));
+            delete_not_found_is_ok(result).map_err(DeleteError::IOError)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
