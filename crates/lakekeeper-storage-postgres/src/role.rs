@@ -6,9 +6,9 @@ use lakekeeper::{
     api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CreateRoleError,
-        ListRolesError, ListRolesResponse, OnRoleConflict, ProjectIdNotFoundError, Result, Role,
-        RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict,
-        RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
+        DeleteRoleError, ListRolesError, ListRolesResponse, OnRoleConflict, ProjectIdNotFoundError,
+        Result, Role, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists,
+        RoleSourceIdConflict, RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
     },
 };
 use uuid::Uuid;
@@ -397,6 +397,35 @@ pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postg
 /// accidental `DELETE FROM role` (with `role_assignment` cascading)
 /// from a caller that forgot to set a filter.
 ///
+/// Lock the role row for the rest of the transaction.
+///
+/// `FOR UPDATE` conflicts with the `KEY SHARE` lock a foreign-key check takes, so a
+/// sync inserting an assignment or a grant for this role waits until the transaction
+/// ends.
+pub(crate) async fn lock_role_for_update(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), DeleteRoleError> {
+    let locked = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM "role"
+        WHERE id = $1 AND project_id = $2
+        FOR UPDATE
+        "#,
+        *role_id,
+        project_id.as_str(),
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    match locked {
+        Some(_) => Ok(()),
+        None => Err(RoleIdNotFoundInProject::new(role_id, Arc::new(project_id.clone())).into()),
+    }
+}
+
 /// # Errors
 /// - `CatalogBackendError::Unexpected` on the refuse-to-run case
 ///   (mistaken caller).

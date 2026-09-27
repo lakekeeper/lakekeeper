@@ -29,7 +29,7 @@ Lakekeeper uses the built-in Cedar Authorizer to evaluate whether a request is a
 To evaluate authorization requests, Cedar requires the following information:
 
 1. **Policies**: Define which principals can perform which actions on which resources. Policies are provided via files (`LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`) or Kubernetes ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`). See [Policy Examples](#policy-examples) below.
-1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Generic Tables, Namespaces, Warehouses, etc.) for each decision. User roles are also included if present in the user's token and `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured. For scenarios where role information isn't available in tokens, you can provide external entities—see [External Entity Management](#external-entity-management).
+1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Generic Tables, Namespaces, Warehouses, etc.) for each decision. The user's roles are included too: roles from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from configured role providers such as LDAP, and [roles managed in Lakekeeper](#roles-managed-in-lakekeeper). You can also provide users and roles yourself—see [External Entity Management](#external-entity-management).
 1. **Context**: Transient request-specific data related to an action. For example, the `table_properties_updates` field is available when checking `Lakekeeper::Action::"CommitTable"`. Context is handled internally by Lakekeeper and requires no configuration.
 1. **Schema**: Defines entity types recognized by the application. Lakekeeper uses a built-in schema (downloadable above) that can be customized via `LAKEKEEPER__CEDAR__SCHEMA_*` environment variables. We recommend schema customization only for advanced use cases.
 
@@ -41,7 +41,7 @@ Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have 
 
 Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
 
-## Token-Based Role Matching with `project_roles`
+## Role Matching with `project_roles`
 
 Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records holding the user's role memberships in the request's project:
 
@@ -49,7 +49,7 @@ Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat s
 principal.project_roles  →  Set<{provider_id: String, source_id: String}>
 ```
 
-Lakekeeper populates this set automatically from the user's token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured) for the project context of the current request. In external entity mode (`EXTERNALLY_MANAGED_USER_AND_ROLES=true`) you populate it yourself in the entity JSON file.
+Lakekeeper populates this set automatically for the project of the current request: roles from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from configured role providers, and [roles managed in Lakekeeper](#roles-managed-in-lakekeeper), including every role they are nested in. In external entity mode (`EXTERNALLY_MANAGED_USER_AND_ROLES=true`) you populate it yourself in the entity JSON file.
 
 The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attributes identifying the user's own authentication provider and their ID within it:
 
@@ -57,8 +57,8 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 |--------------------------------|------------------------------------------------|-----|
 | `provider_id`                  | `"oidc"`                                       | Authentication provider of the user |
 | `source_id`                    | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP), resolved in the request's project. |
-| `global_role_ids` | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
+| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Role memberships as `{provider_id, source_id}` records: roles from token claims, role providers (e.g. LDAP) and roles managed in Lakekeeper, resolved in the request's project. |
+| `global_role_ids` | `["admins", "developers"]`                     | Names of the roles your identity and role providers assign, as a plain `Set<String>`. Roles managed in Lakekeeper are not included. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
 The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
 
@@ -67,13 +67,35 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 | Scenario                                                         | Recommended approach |
 |------------------------------------------------------------------|-----------|
 | Roles come from OIDC/token claims or a role provider (e.g. LDAP) | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
-| Role `source_id` values are globally unique across all providers | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
-| Roles are managed in Lakekeeper (via the management API)         | `principal in Lakekeeper::Role::"<project-id>/oidc~my-role"` |
+| Directory group names are unique across all your providers       | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
+| Roles are managed in Lakekeeper (via the management API)         | `principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})`, or `principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"` for one project's role. See [Roles managed in Lakekeeper](#roles-managed-in-lakekeeper) |
 | Roles come from an external entities file                        | Either approach works; `project_roles` is simpler |
 
 `project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
 
-`global_role_ids` further simplifies policies when all configured role providers use globally unique `source_id` values (e.g. a single LDAP server or OIDC provider where group names are unique). Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+`global_role_ids` holds the names of your directory groups: the roles your identity and role providers assign (token claims, LDAP, Entra ID, Okta), without the provider prefix. It simplifies policies when those names are unique across your providers (e.g. a single LDAP server or OIDC provider). Roles managed in Lakekeeper belong to one project and are named by whoever creates them, so they are not included: creating a role can never make someone match a `global_role_ids` check. Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+
+### Roles managed in Lakekeeper
+
+Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role made through the API can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`.
+
+A user holds every role they are assigned to and every role those are nested in, at any depth, so both ways of naming a role match its indirect members too:
+
+```cedar
+// The `analysts` role of whichever project the request is about.
+principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})
+
+// The `analysts` role of one specific project.
+principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"
+```
+
+Things to know:
+
+- Name a role by its `source_id`. The role's display name is not available to Cedar, and a role created with a `source-id` of its own cannot be named by its id.
+- The `project_roles` form without a project is safe for project, warehouse, namespace, table and view actions: a request about a resource must name that resource's project, so the roles it sees are that project's roles. For server-level and user-management actions the caller chooses the project, so name one project's role or add `resource in principal.request_project` — see [Role scope](#role-scope-one-project-per-request).
+- Changing a role's `source_id` through the source-system endpoint changes its name in Cedar: policies naming the old `source_id` stop matching it.
+- `global_role_ids` does not include these roles, and resource property tags (`role:` / `role-full:`) cannot reference them.
+- When a user acts as a role with `x-assume-role`, the principal is that role: `principal in Lakekeeper::Role::"…"` still matches the roles it is nested in, but `principal.project_roles` is not available, and a policy that starts with `principal is Lakekeeper::User` does not apply.
 
 ### Role scope: one project per request
 
@@ -219,7 +241,7 @@ principal in resource.properties.getTag("access-owners").roles ||
 principal in resource.properties.getTag("access-owners").users
 ```
 
-The `principal in <set-of-roles>` check leverages Cedar's entity hierarchy: a user is considered `in` a role if that role appears anywhere in the user's ancestry chain (as established by OIDC token claims or external entity definitions).
+The `principal in <set-of-roles>` check leverages Cedar's entity hierarchy: a user is considered `in` a role if that role appears anywhere in the user's ancestry chain (as established by token claims, role providers, roles managed in Lakekeeper or external entity definitions).
 
 ### Access-Control Property Keys
 
@@ -369,7 +391,7 @@ The following table documents the ID format used for each Cedar entity type. The
 | `Lakekeeper::Table`                              | `<warehouse-uuid>/<table-uuid>`             | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::View`                               | `<warehouse-uuid>/<view-uuid>`              | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::User`                               | `<provider_id>~<subject_in_idp>`            | `oidc~alice@example.com` |
-| `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins` |
+| `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins`, `my-project/lakekeeper~analysts` |
 | `Lakekeeper::UserDerivedAttributes` | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
 
 **Notes:**
@@ -380,9 +402,9 @@ The following table documents the ID format used for each Cedar entity type. The
 
 ## External Entity Management
 
-**Default Behavior**: Lakekeeper automatically includes `Lakekeeper::User` entities with information extracted from user tokens. When `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured, Lakekeeper also provides `Lakekeeper::Role` entities, enabling role-based policies.
+**Default Behavior**: Lakekeeper automatically includes the `Lakekeeper::User` entity with information extracted from the user's token, and a `Lakekeeper::Role` entity for every role the user holds — from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from role providers, and roles managed in Lakekeeper — enabling role-based policies.
 
-**External Management**: In scenarios where role information isn't available in tokens, you can manage users and roles externally:
+**External Management**: To manage users and roles yourself instead, provide them as external entities:
 
 1. Set `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` to `true`
 2. Provide entity definitions via `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES*` configurations
@@ -685,7 +707,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     !!! tip "Role resolution"
-        `principal in resource.properties.getTag("access-readers").roles` uses Cedar's built-in entity hierarchy. A user is considered `in` a role if that role appears as an ancestor in the user entity's parent chain — exactly the same mechanism used for static role-based policies. This means the access control lists stored in table properties work seamlessly with both token-extracted roles (`LAKEKEEPER__OPENID_ROLES_CLAIM`) and externally managed role assignments.
+        `principal in resource.properties.getTag("access-readers").roles` uses Cedar's built-in entity hierarchy. A user is considered `in` a role if that role appears as an ancestor in the user entity's parent chain — exactly the same mechanism used for static role-based policies. This means the access control lists stored in table properties work the same for token-extracted roles (`LAKEKEEPER__OPENID_ROLES_CLAIM`), roles from role providers, and externally managed role assignments.
 
 ??? example "ABAC: Namespace-level access control inherited by all tables"
 
@@ -739,7 +761,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ## Entity Definition Example
 
-Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View. Additionally, if `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, also User and Roles are provided to Cedar. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
+Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View, the requesting User, and a Role for every role the user holds. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
 
 ??? example "Entities provided to Cedar internally"
     ```json
@@ -881,20 +903,27 @@ Lakekeeper provides the following entities internally to Cedar: Server, Project,
                 "id": "oidc~2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
             "attrs": {
-                // Lakekeeper-managed roles the user belongs to (from the management API).
-                "roles": [],
-                // Token-sourced roles flattened for the current project context.
-                // Populated from LAKEKEEPER__OPENID_ROLES_CLAIM when present.
+                // Every role the user holds in the request's project, as Role
+                // entities — from the token, role providers and roles managed in
+                // Lakekeeper, including roles they are nested in.
+                "roles": [
+                    { "__entity": { "type": "Lakekeeper::Role", "id": "019c192f-0613-7422-90f1-7dd6b09f033c/oidc~analysts" } }
+                ],
+                // The same roles as {provider_id, source_id} records.
                 "project_roles": [
                     {"provider_id": "oidc", "source_id": "analysts"}
                 ],
-                // source_id of each provider-resolved role; only populated when
-                // LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true, otherwise [].
+                // Names of the roles from identity and role providers; only
+                // populated when LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true,
+                // otherwise [].
                 "global_role_ids": [],
                 "provider_id": "oidc",
                 "source_id": "2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
-            "parents": []
+            // Every role in `roles` is a parent, so `principal in Role::"…"` matches.
+            "parents": [
+                { "type": "Lakekeeper::Role", "id": "019c192f-0613-7422-90f1-7dd6b09f033c/oidc~analysts" }
+            ]
         }
     ]
     ```

@@ -61,7 +61,8 @@ pub mod v1 {
         RenameProjectRequest, Service as _,
     };
     use role::{
-        CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest, Service as _, UpdateRoleRequest,
+        CreateRoleRequest, DeleteRoleQuery, ListRolesQuery, Role, SearchRoleRequest, Service as _,
+        UpdateRoleRequest,
     };
     use role_membership::{
         AddRoleMembersRequest, AddRoleMembersResponse, ListMembersQuery, ListRoleMembersResponse,
@@ -532,12 +533,14 @@ pub mod v1 {
 
     /// Delete Role
     ///
-    /// Permanently removes a role and all its associated permissions.
+    /// Permanently removes a role, its members and its grants.
+    /// A role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`.
+    /// Roles maintained by a configured role provider can be deleted too; if the provider still reports the group, it recreates the role on its next sync, without the deleted grants.
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "role",
         path = ManagementV1Endpoint::DeleteRole.path(),
-        params(("role_id" = Uuid, Path, description = "Role ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(("role_id" = Uuid, Path, description = "Role ID"), DeleteRoleQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -545,10 +548,11 @@ pub mod v1 {
     ))]
     async fn delete_role<C: CatalogStore, A: Authorizer, S: SecretStore>(
         Path(role_id): Path<RoleId>,
+        Query(query): Query<DeleteRoleQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_role(api_context, metadata, role_id)
+        ApiServer::<C, A, S>::delete_role(api_context, metadata, role_id, query)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }

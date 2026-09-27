@@ -52,9 +52,12 @@ use std::sync::Arc;
 
 use iceberg::NamespaceIdent;
 use lakekeeper::{
-    api::iceberg::v1::{
-        DataAccess, NamespaceParameters, namespace::NamespaceService as _,
-        tables::TablesService as _,
+    api::{
+        iceberg::v1::{
+            DataAccess, NamespaceParameters, namespace::NamespaceService as _,
+            tables::TablesService as _,
+        },
+        management::v1::role::Service as _,
     },
     server::CatalogServer,
     service::{
@@ -76,7 +79,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 10;
+const EXPECTED_RECORDS: usize = 12;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -308,6 +311,31 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         )
         .await;
     }
+
+    // A role create that succeeds, then one the provider guard refuses after the
+    // authorizer allowed the action: that refusal is the request's one denial, a
+    // project-entity record with a `name` context and an identity-guard error.
+    let project_id = warehouse_response.project_id.clone();
+    let role_request =
+        |provider: Option<&str>| lakekeeper::api::management::v1::role::CreateRoleRequest {
+            name: format!("audited-role-{}", provider.unwrap_or("native")),
+            description: None,
+            project_id: Some((*project_id).clone()),
+            provider_id: provider.map(|p| p.parse().unwrap()),
+            source_id: provider.map(|_| "audited".parse().unwrap()),
+        };
+    let _ = lakekeeper::api::management::v1::ApiServer::create_role(
+        role_request(None),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let _ = lakekeeper::api::management::v1::ApiServer::create_role(
+        role_request(Some("system")),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
 
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(

@@ -835,6 +835,15 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
+    /// Lock the role row until the transaction ends, so no assignment, membership
+    /// edge or grant can be added to it concurrently. `RoleIdNotFoundInProject` if
+    /// the role is not in `project_id`.
+    async fn lock_role_for_update_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), DeleteRoleError>;
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -881,6 +890,12 @@ where
         user_id: &UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// Count the grants held by a role.
+    async fn count_grants_for_role_impl<'a>(
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, CatalogBackendError>;
 
     /// List direct grants matching `filter`.
     async fn list_grants_impl(

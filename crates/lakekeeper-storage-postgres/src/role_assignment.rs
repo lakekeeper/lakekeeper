@@ -13,12 +13,13 @@ use lakekeeper::{
         LAKEKEEPER_ROLE_PROVIDER_NAME, ListCatalogRoleMembersPage, ListRoleMembersResult,
         ListRolesPage, ListUserRoleAssignmentsResult, RemoveRoleMembersError,
         RemoveRoleMembersResult, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
-        RoleAssignmentUserNotFound, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleMemberKind,
-        RoleMembershipCycle, RoleMembershipDepthExceeded, RoleMembershipDirection,
-        RoleMembershipEntry, RoleMembershipLockTimeout, RoleNameAlreadyExists,
-        RoleNotManuallyAssignable, RoleProviderId, SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        UniqueMembers, UniqueRoles, UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
+        RoleAssignmentUserNotFound, RoleDeletedDuringSync, RoleId, RoleIdNotFoundInProject,
+        RoleIdent, RoleMemberKind, RoleMembershipCycle, RoleMembershipDepthExceeded,
+        RoleMembershipDirection, RoleMembershipEntry, RoleMembershipLockTimeout,
+        RoleNameAlreadyExists, RoleNotManuallyAssignable, RoleProviderId,
+        SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles,
+        UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
     },
 };
 use uuid::Uuid;
@@ -46,6 +47,21 @@ where
             .into();
     }
     e.into_catalog_backend_error().into()
+}
+
+/// [`map_role_upsert_error`] for the user-centric sync, which also inserts
+/// assignments: a role deleted after the statement read it fails the assignment's
+/// foreign key.
+fn map_user_sync_error(e: sqlx::Error) -> SyncUserRoleAssignmentsError {
+    if let sqlx::Error::Database(ref db) = e
+        && db.is_foreign_key_violation()
+        && db.constraint() == Some("role_assignment_role_id_fkey")
+    {
+        return RoleDeletedDuringSync::new()
+            .append_detail(db.message())
+            .into();
+    }
+    map_role_upsert_error(e)
 }
 
 fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
@@ -398,7 +414,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(map_role_upsert_error::<SyncUserRoleAssignmentsError>)?;
+    .map_err(map_user_sync_error)?;
 
     // Second query within the same transaction: the CTE-driven INSERT/DELETE
     // (added_assignments / removed_assignments) and sync_ts upsert writes are
@@ -2169,6 +2185,72 @@ mod tests {
         .await
         .unwrap();
         t.commit().await.unwrap();
+    }
+
+    /// A role deleted while a sync assigns it fails the sync's assignment insert on
+    /// the foreign key. The standalone sync retries once, and the retry recreates
+    /// the role the provider still reports, under a new id.
+    #[sqlx::test]
+    async fn sync_retries_when_its_role_is_deleted_concurrently(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&ident, "Group 1")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let first = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
+        let deleted_role_id = first.roles[0].role_id;
+
+        // Delete the role in an open transaction; the sync below starts while the
+        // row is locked and only proceeds once the delete commits.
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_for_update_impl(
+            &project_id,
+            deleted_role_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            .await
+            .unwrap();
+
+        let bob_id = Arc::new(UserId::new_unchecked("oidc", "bob"));
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&bob_id, "Bob"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        let commit_delete = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, commit_delete);
+
+        let synced = synced.expect("the retry succeeds");
+        assert_eq!(synced.roles.len(), 1);
+        assert_eq!(*synced.roles[0].role_ident, *ident);
+        assert_ne!(
+            synced.roles[0].role_id, deleted_role_id,
+            "the role is recreated under a new id"
+        );
     }
 
     // ── user→role assignment writes (management API) ───────────────────────

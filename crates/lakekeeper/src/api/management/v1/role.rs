@@ -15,11 +15,12 @@ use crate::{
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogBackendError,
         CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore,
-        CreateRoleError, DeleteRoleError, ManagedRoleImmutable, Result, RoleId, RoleProviderId,
-        RoleSourceId, SecretStore, State, SystemRoleImmutable, Transaction, UpdateRoleError,
+        CreateRoleError, DeleteRoleError, ManagedRoleImmutable, Result, RoleHasGrants, RoleId,
+        RoleProviderId, RoleProviderIdReserved, RoleProviderNotApiManaged, RoleSourceId,
+        SecretStore, State, SystemRoleImmutable, Transaction, UpdateRoleError,
         authz::{
-            AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
-            CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
+            ApiRoleProviders, AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer,
+            CatalogProjectAction, CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
         },
         events::{
             APIEventContext,
@@ -37,12 +38,14 @@ use crate::{
 /// itself. Guards decide which owners they refuse; this only says who owns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityOwner {
-    /// The management API. Create, rename, re-describe, rebind and delete are
-    /// the caller's to perform. Covers the native `lakekeeper` namespace and
-    /// every namespace nothing syncs — including one an external role provider
-    /// minted for itself, and one orphaned by a provider since removed from
-    /// config, which must stay writable so it can be cleaned up.
-    Api,
+    /// The management API, in the native `lakekeeper` namespace.
+    Native,
+    /// The management API, in a namespace nothing syncs — one an external
+    /// provisioning tool labels roles with, or one orphaned by a role provider
+    /// since removed from config, which must stay writable so it can be cleaned
+    /// up. Whether roles can be created in it or rebound into or out of it is the
+    /// authorizer's call ([`Authorizer::api_role_providers`]).
+    Unmanaged,
     /// The catalog itself (`system`), which seeds and retires these roles.
     Catalog,
     /// A configured role provider, which converges the role by sync. Manual
@@ -88,8 +91,10 @@ pub fn identity_owner<S: std::hash::BuildHasher>(
         IdentityOwner::Catalog
     } else if managed.contains(provider_id) {
         IdentityOwner::Provider
+    } else if provider_id.is_lakekeeper() {
+        IdentityOwner::Native
     } else {
-        IdentityOwner::Api
+        IdentityOwner::Unmanaged
     }
 }
 
@@ -109,41 +114,50 @@ pub fn membership_owner<S: std::hash::BuildHasher>(
     }
 }
 
-/// Rejects a `provider_id` **supplied in a request body** that is not writable
-/// through the role-management API: the catalog-managed `system` namespace (see
-/// [`crate::service::SYSTEM_ROLE_PROVIDER_ID`]), or any namespace owned by a
-/// configured role provider (`managed`, from
-/// [`Authorizer::managed_role_provider_ids`]) whose roles are maintained by
-/// provider sync. Used as a pre-authz check on endpoints that accept a provider
-/// in the request body (create, source-system rebind target). To guard the
-/// provider of an *already-resolved* role, use [`reject_managed_role`].
-fn reject_managed_provider(
+/// Rejects a `provider_id` **supplied in a request body** that the role-management
+/// API may not write roles into: the catalog-managed `system` namespace (see
+/// [`crate::service::SYSTEM_ROLE_PROVIDER_ID`]), a namespace owned by a configured
+/// role provider ([`Authorizer::managed_role_provider_ids`]), and — when the
+/// authorizer narrows [`Authorizer::api_role_providers`] to `lakekeeper` — every
+/// other namespace. Used by the endpoints that accept a provider in the request
+/// body (create, source-system rebind target), as part of the authorization
+/// decision so a refusal is audited. To guard the provider of an
+/// *already-resolved* role, use [`reject_managed_role`].
+fn reject_role_provider_target<A: Authorizer>(
+    authorizer: &A,
     provider_id: &RoleProviderId,
-    managed: &HashSet<RoleProviderId>,
-) -> Result<()> {
-    match identity_owner(provider_id, managed) {
-        IdentityOwner::Catalog => Err(ErrorModel::bad_request(
-            "provider_id `system` is reserved for catalog-managed roles \
-             and cannot be used in role-management requests.",
-            "RoleProviderIdReserved",
-            None,
-        )
-        .into()),
-        IdentityOwner::Provider => {
-            Err(ErrorModel::from(ManagedRoleImmutable::new(provider_id.to_string())).into())
-        }
-        IdentityOwner::Api => Ok(()),
+) -> Result<(), AuthZError> {
+    match identity_owner(provider_id, authorizer.managed_role_provider_ids()) {
+        IdentityOwner::Catalog => Err(RoleProviderIdReserved::new().into()),
+        IdentityOwner::Provider => Err(ManagedRoleImmutable::new(provider_id.to_string()).into()),
+        IdentityOwner::Unmanaged => reject_unmanaged_namespace(authorizer, provider_id),
+        IdentityOwner::Native => Ok(()),
     }
 }
 
-/// Rejects mutating an **already-resolved role** whose provider namespace is
-/// owned by a configured role provider (from
+/// Rejects a namespace nothing syncs when the authorizer lets the API manage only
+/// `lakekeeper` roles.
+fn reject_unmanaged_namespace<A: Authorizer>(
+    authorizer: &A,
+    provider_id: &RoleProviderId,
+) -> Result<(), AuthZError> {
+    match authorizer.api_role_providers() {
+        ApiRoleProviders::AnyUnmanaged => Ok(()),
+        ApiRoleProviders::LakekeeperOnly => {
+            Err(RoleProviderNotApiManaged::new(provider_id.to_string()).into())
+        }
+    }
+}
+
+/// Rejects renaming or rebinding an **already-resolved role** whose provider
+/// namespace is owned by a configured role provider (from
 /// [`Authorizer::managed_role_provider_ids`]) — such roles are maintained by
-/// provider sync and must not be changed through the API. The caller's error
-/// type is produced via its `From<ManagedRoleImmutable>` conversion (e.g.
-/// [`DeleteRoleError`], [`UpdateRoleError`], or [`ErrorModel`]).
+/// provider sync and must not be changed through the API. Deleting one is allowed,
+/// so the delete endpoint does not call this. The caller's error type is produced
+/// via its `From<ManagedRoleImmutable>` conversion (e.g. [`UpdateRoleError`] or
+/// [`ErrorModel`]).
 ///
-/// Complements [`reject_managed_provider`], which guards a provider taken from a
+/// Complements [`reject_role_provider_target`], which guards a provider taken from a
 /// request body. The reserved `system` namespace is **not** checked here: the
 /// mutate-existing-role sites (delete, update, source-system rebind) reject it
 /// separately with an `is_system()` check yielding `SystemRoleImmutable`, while
@@ -161,7 +175,7 @@ where
         IdentityOwner::Provider => Err(ManagedRoleImmutable::new(provider_id.to_string()).into()),
         // `Catalog` is deliberately permitted here: the lifecycle sites reject
         // `system` themselves with `SystemRoleImmutable`, which names the reason.
-        IdentityOwner::Catalog | IdentityOwner::Api => Ok(()),
+        IdentityOwner::Catalog | IdentityOwner::Native | IdentityOwner::Unmanaged => Ok(()),
     }
 }
 
@@ -208,7 +222,7 @@ pub struct CreateRoleRequest {
     pub project_id: Option<ProjectId>,
     /// Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
     /// Must be provided together with `source-id`. Omit both to let the server
-    /// assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
+    /// assign `provider-id = "lakekeeper"` and use the role's `id` as `source-id`.
     #[serde(default)]
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
@@ -324,6 +338,18 @@ pub struct UpdateRoleRequest {
     /// Description of the role. If not set, the description will be removed.
     #[serde(default)]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+pub struct DeleteRoleQuery {
+    /// Delete the role even though grants name it. Its grants are revoked with it.
+    #[serde(
+        deserialize_with = "crate::api::iceberg::types::deserialize_bool",
+        default
+    )]
+    #[builder(setter(strip_bool))]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,9 +478,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
-        if let Some(p) = &request.provider_id {
-            reject_managed_provider(p, context.v1_state.authz.managed_role_provider_ids())?;
-        }
         match (&request.provider_id, &request.source_id) {
             (None, None) | (Some(_), Some(_)) => {}
             _ => {
@@ -480,13 +503,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }),
         );
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorizer
-            .require_project_action(
-                event_ctx.request_metadata(),
-                &project_id,
-                event_ctx.action().clone(),
-            )
-            .await;
+        // The provider guard is decided with the action, so a refused provider is
+        // recorded as the request's one denial.
+        let authz_result: Result<(), AuthZError> = async {
+            authorizer
+                .require_project_action(
+                    event_ctx.request_metadata(),
+                    &project_id,
+                    event_ctx.action().clone(),
+                )
+                .await?;
+            if let Some(provider_id) = &request.provider_id {
+                reject_role_provider_target(&authorizer, provider_id)?;
+            }
+            Ok(())
+        }
+        .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
@@ -497,8 +529,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &project_id,
             request,
         )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        .await?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_created();
@@ -606,6 +637,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         role_id: RoleId,
+        query: DeleteRoleQuery,
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -618,9 +650,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result =
-            check_role_action::<A, C>(&authorizer, catalog_state.clone(), &event_ctx, &project_id)
-                .await;
+        // A role a configured provider owns can be deleted: if its group still exists,
+        // the provider recreates the role on its next sync.
+        let authz_result = authorize_role_action::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
+            &event_ctx,
+            &project_id,
+        )
+        .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
@@ -630,6 +668,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             event_ctx.request_metadata(),
             &project_id,
             &role,
+            query.force,
         )
         .await
         .map_err(authz_to_error_no_audit)?;
@@ -686,17 +725,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         role_id: RoleId,
         request: UpdateRoleSourceSystemRequest,
     ) -> Result<Role> {
-        // -------------------- VALIDATIONS --------------------
-        // Reject rebinding any role into the catalog-managed `system` namespace
-        // or into a namespace owned by a configured role provider. The check on
-        // the *current* role (cannot rebind a system- or provider-managed role
-        // to a different provider) lives in `check_role_action`, which resolves
-        // the role and so can decide it.
-        reject_managed_provider(
-            &request.provider_id,
-            context.v1_state.authz.managed_role_provider_ids(),
-        )?;
-
         let project_id = request_metadata.require_project_id(None)?;
 
         // -------------------- AUTHZ --------------------
@@ -713,9 +741,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result =
-            check_role_action::<A, C>(&authorizer, catalog_state.clone(), &event_ctx, &project_id)
-                .await;
+        let authz_result = check_rebind_role::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
+            &event_ctx,
+            &project_id,
+            &request.provider_id,
+        )
+        .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic --------------------
@@ -731,15 +764,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
 /// Create the role. The caller must have emitted the authorization event before
 /// calling this: authorization already succeeded, so a failure here is a write
-/// failure and must be mapped with `authz_to_error_no_audit` rather than logged
-/// as a second — mislabeled — authorization outcome.
+/// failure and is returned as is, with no second authorization outcome. An error
+/// from the authorizer's `create_role` hook keeps its own status and rolls the role
+/// back.
 async fn apply_create_role<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
     project_id: &ArcProjectId,
     request: CreateRoleRequest,
-) -> Result<ArcRole, AuthZError> {
+) -> Result<ArcRole> {
     let description = request.description.filter(|d| !d.is_empty());
     let role_id = RoleId::new_random();
     let mut t: <C as CatalogStore>::Transaction = C::Transaction::begin_write(catalog_state)
@@ -753,7 +787,7 @@ async fn apply_create_role<A: Authorizer, C: CatalogStore>(
     // No provider in the request → the catalog itself is the system of
     // record for this role (i.e. the `lakekeeper` provider). Not the
     // catalog-managed `system` provider — those are seeded internally and
-    // never accepted via this endpoint (see `reject_managed_provider`).
+    // never accepted via this endpoint (see `reject_role_provider_target`).
     let provider_id = request
         .provider_id
         .unwrap_or_else(RoleProviderId::lakekeeper);
@@ -767,8 +801,7 @@ async fn apply_create_role<A: Authorizer, C: CatalogStore>(
     let role = C::create_role(project_id, catalog_create_role_request, t.transaction()).await?;
     authorizer
         .create_role(request_metadata, role_id, project_id.clone())
-        .await
-        .map_err::<CreateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+        .await?;
     t.commit()
         .await
         .map_err::<CreateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
@@ -864,9 +897,9 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
 }
 
 /// Resolve the role addressed by `event_ctx` and authorize the context's action
-/// on it. Writes nothing, so the handler can emit the authorization event before
-/// applying any change.
-async fn check_role_action<A: Authorizer, C: CatalogStore>(
+/// on it, refusing `system` roles. Writes nothing, so the handler can emit the
+/// authorization event before applying any change.
+async fn authorize_role_action<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
@@ -895,24 +928,69 @@ async fn check_role_action<A: Authorizer, C: CatalogStore>(
     if role.ident.is_system() {
         return Err(SystemRoleImmutable::new().into());
     }
+    Ok(role)
+}
+
+/// [`authorize_role_action`], also refusing roles a configured role provider owns.
+async fn check_role_action<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
+    project_id: &ArcProjectId,
+) -> Result<ArcRole, AuthZError> {
+    let role =
+        authorize_role_action::<A, C>(authorizer, catalog_state, event_ctx, project_id).await?;
     reject_managed_role::<_, ManagedRoleImmutable>(authorizer, &role)?;
     Ok(role)
 }
 
-/// Delete the role authorized by [`check_role_action`]. See [`apply_create_role`]
+/// [`check_role_action`] for a source-system rebind: the target namespace must be
+/// one the API may write roles into, and so must the role's current one.
+async fn check_rebind_role<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
+    project_id: &ArcProjectId,
+    target_provider_id: &RoleProviderId,
+) -> Result<ArcRole, AuthZError> {
+    let role = check_role_action::<A, C>(authorizer, catalog_state, event_ctx, project_id).await?;
+    reject_role_provider_target(authorizer, target_provider_id)?;
+    let current_provider_id = role.ident.provider_id();
+    if !current_provider_id.is_lakekeeper() {
+        reject_unmanaged_namespace(authorizer, current_provider_id)?;
+    }
+    Ok(role)
+}
+
+/// Delete the role authorized by [`authorize_role_action`]. See [`apply_create_role`]
 /// for the ordering contract this must be called under.
+///
+/// The role's grants go with it through the foreign-key cascade. Without `force` a
+/// role that holds grants is refused, so none are revoked by accident.
 async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
     project_id: &ArcProjectId,
     role: &ArcRole,
+    force: bool,
 ) -> Result<(), AuthZError> {
     let role_id = role.id;
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+    // Lock first: until commit no sync can add an assignee this delete would miss
+    // below, and no grant can appear after the check.
+    C::lock_role_for_update_impl(project_id, role_id, t.transaction()).await?;
+    if !force {
+        let grant_count = C::count_grants_for_role_impl(role_id, t.transaction())
+            .await
+            .map_err(DeleteRoleError::from)?;
+        if grant_count > 0 {
+            return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
+        }
+    }
     // Read the affected-user closure PRE-commit: the `ON DELETE CASCADE` on
     // `delete_role` erases the `role_assignment`/`role_membership` rows, so after
     // the delete this walk would return nothing. These are exactly the users whose
@@ -1023,27 +1101,36 @@ async fn apply_update_role_source_system<C: CatalogStore>(
 mod tests {
     use std::collections::HashSet;
 
-    use super::{RoleProviderId, reject_managed_provider};
+    use super::{IdentityOwner, RoleProviderId, identity_owner};
 
     #[test]
-    fn reject_managed_provider_denies_system_and_configured_providers() {
+    fn identity_owner_classifies_each_namespace() {
         let okta = RoleProviderId::try_new("okta").unwrap();
         let entra = RoleProviderId::try_new("entra").unwrap();
+        let system = RoleProviderId::try_new("system").unwrap();
         let mut managed = HashSet::new();
         managed.insert(okta.clone());
 
-        // `system` is reserved and always rejected, regardless of the managed set.
-        let system = RoleProviderId::try_new("system").unwrap();
-        assert!(reject_managed_provider(&system, &managed).is_err());
-        assert!(reject_managed_provider(&system, &HashSet::new()).is_err());
+        // `system` is the catalog's, whatever the managed set says.
+        assert_eq!(identity_owner(&system, &managed), IdentityOwner::Catalog);
+        assert_eq!(
+            identity_owner(&system, &HashSet::new()),
+            IdentityOwner::Catalog
+        );
 
-        // A configured role provider's namespace is rejected.
-        assert!(reject_managed_provider(&okta, &managed).is_err());
+        // A configured role provider owns its namespace.
+        assert_eq!(identity_owner(&okta, &managed), IdentityOwner::Provider);
 
-        // The native `lakekeeper` namespace and any unconfigured namespace stay
-        // writable (deny-list: only `system` + currently-configured providers).
-        assert!(reject_managed_provider(&RoleProviderId::lakekeeper(), &managed).is_ok());
-        assert!(reject_managed_provider(&entra, &managed).is_ok());
-        assert!(reject_managed_provider(&okta, &HashSet::new()).is_ok());
+        // `lakekeeper` is native; any other namespace is unmanaged, including one
+        // whose provider was removed from config.
+        assert_eq!(
+            identity_owner(&RoleProviderId::lakekeeper(), &managed),
+            IdentityOwner::Native
+        );
+        assert_eq!(identity_owner(&entra, &managed), IdentityOwner::Unmanaged);
+        assert_eq!(
+            identity_owner(&okta, &HashSet::new()),
+            IdentityOwner::Unmanaged
+        );
     }
 }

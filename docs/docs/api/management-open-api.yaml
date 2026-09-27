@@ -2391,7 +2391,10 @@ paths:
       tags:
         - role
       summary: Delete Role
-      description: Permanently removes a role and all its associated permissions.
+      description: |-
+        Permanently removes a role, its members and its grants.
+        A role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`.
+        Roles maintained by a configured role provider can be deleted too; if the provider still reports the group, it recreates the role on its next sync, without the deleted grants.
       operationId: delete_role
       parameters:
         - name: role_id
@@ -2401,6 +2404,12 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: force
+          in: query
+          description: Delete the role even though grants name it. Its grants are revoked with it.
+          required: false
+          schema:
+            type: boolean
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
@@ -8778,7 +8787,7 @@ components:
           description: |-
             Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
             Must be provided together with `source-id`. Omit both to let the server
-            assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
+            assign `provider-id = "lakekeeper"` and use the role's `id` as `source-id`.
         source-id:
           type:
             - string

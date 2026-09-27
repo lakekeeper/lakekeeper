@@ -346,6 +346,33 @@ impl From<ReservedRoleProvider> for ErrorModel {
     }
 }
 
+/// A role this sync assigns was deleted while the sync ran: its row was present when
+/// the statement started, but gone by the time the assignment was inserted. Nothing
+/// was written. The sync is retried once, which recreates the role if the provider
+/// still reports it.
+#[derive(thiserror::Error, Debug, PartialEq, Default)]
+#[error("A role was deleted while the role assignments were being synced. Retry the request.")]
+pub struct RoleDeletedDuringSync {
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleDeletedDuringSync);
+impl RoleDeletedDuringSync {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl From<RoleDeletedDuringSync> for ErrorModel {
+    fn from(err: RoleDeletedDuringSync) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleDeletedDuringSync")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 /// Reject an external role-provider sync that targets a reserved provider
 /// (`system` / `lakekeeper`). Backend-independent — enforced here in the
 /// `*Ops` layer so every storage backend and every sync entry point is covered.
@@ -502,7 +529,8 @@ define_transparent_error! {
         RoleNameAlreadyExists,
         DuplicateRoleError,
         RoleProviderMismatchError,
-        ReservedRoleProvider
+        ReservedRoleProvider,
+        RoleDeletedDuringSync
     ]
 }
 
@@ -1084,16 +1112,31 @@ where
                 .into(),
             );
         }
-        let mut t = Self::Transaction::begin_write(catalog_state).await?;
-        let sync_result = Self::sync_user_role_assignments_by_provider_impl(
-            &user,
-            project_id,
-            provider_id,
-            roles,
-            t.transaction(),
-        )
-        .await?;
-        t.commit().await?;
+        // One retry: a role deleted while the first attempt ran is recreated by the
+        // second, which reads the committed delete.
+        let mut retried = false;
+        let sync_result = loop {
+            let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+            match Self::sync_user_role_assignments_by_provider_impl(
+                &user,
+                project_id,
+                provider_id,
+                roles,
+                t.transaction(),
+            )
+            .await
+            {
+                Ok(sync_result) => {
+                    t.commit().await?;
+                    break sync_result;
+                }
+                Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) if !retried => {
+                    retried = true;
+                    t.rollback().await?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
 
         let mut list = ListUserRoleAssignmentsResult {
             roles: sync_result.all_roles,

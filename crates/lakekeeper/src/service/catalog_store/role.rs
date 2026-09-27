@@ -476,15 +476,124 @@ impl AuthorizationFailureSource for SystemRoleMemberRolesNotSupported {
     }
 }
 
-// Raised when a customer-facing role-management endpoint targets a role whose
-// provider namespace is owned by a configured role provider (LDAP/Entra/Okta/
-// token). Such roles are maintained by provider sync and are immutable through
-// the role-management API — they change only when the provider re-syncs. The
+// Raised when a create or source-system rebind names the reserved `system`
+// namespace. Catalog-managed roles are seeded by the catalog itself.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "provider_id `system` is reserved for catalog-managed roles and cannot be used in role-management requests."
+)]
+pub struct RoleProviderIdReserved {
+    pub stack: Vec<String>,
+}
+impl RoleProviderIdReserved {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(RoleProviderIdReserved);
+impl From<RoleProviderIdReserved> for ErrorModel {
+    fn from(err: RoleProviderIdReserved) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleProviderIdReserved")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for RoleProviderIdReserved {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised when a create or source-system rebind names, or starts from, a
+// namespace the authorizer does not let the API manage
+// (`Authorizer::api_role_providers`).
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Roles in the `{provider_id}` namespace cannot be created or rebound through the role-management API under this authorizer. Only `lakekeeper` roles can."
+)]
+pub struct RoleProviderNotApiManaged {
+    pub provider_id: String,
+    pub stack: Vec<String>,
+}
+impl RoleProviderNotApiManaged {
+    #[must_use]
+    pub fn new(provider_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(RoleProviderNotApiManaged);
+impl From<RoleProviderNotApiManaged> for ErrorModel {
+    fn from(err: RoleProviderNotApiManaged) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleProviderNotApiManaged")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for RoleProviderNotApiManaged {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised when a role is deleted without `force` while grants name it. Deleting it
+// would revoke them, so the caller confirms that explicitly.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "The role holds {grant_count} grant(s). Deleting it revokes them; repeat the request with `force=true` to delete the role together with its grants."
+)]
+pub struct RoleHasGrants {
+    pub grant_count: u64,
+    pub stack: Vec<String>,
+}
+impl RoleHasGrants {
+    #[must_use]
+    pub fn new(grant_count: u64) -> Self {
+        Self {
+            grant_count,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(RoleHasGrants);
+impl From<RoleHasGrants> for ErrorModel {
+    fn from(err: RoleHasGrants) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleHasGrants")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// Raised when a customer-facing role-management endpoint creates, modifies or
+// assigns a role whose provider namespace is owned by a configured role provider
+// (LDAP/Entra/Okta/token). Such roles are maintained by provider sync — they
+// change only when the provider re-syncs. Deleting one stays possible: the
+// provider recreates the role on its next sync if the group still exists. The
 // `system` namespace has its own error (`SystemRoleImmutable`); this covers the
 // external, configurable providers.
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
 #[error(
-    "Cannot create, modify, delete, or assign a role in the `{provider_id}` namespace through the role-management API: it is managed by a configured role provider and is maintained by provider sync."
+    "Cannot create, modify, or assign a role in the `{provider_id}` namespace through the role-management API: it is managed by a configured role provider and is maintained by provider sync."
 )]
 pub struct ManagedRoleImmutable {
     pub provider_id: String,
@@ -529,7 +638,8 @@ define_transparent_error! {
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFoundInProject
+        RoleIdNotFoundInProject,
+        RoleHasGrants
     ]
 }
 

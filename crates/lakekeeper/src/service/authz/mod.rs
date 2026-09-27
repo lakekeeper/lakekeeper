@@ -2321,6 +2321,16 @@ impl MustUse<Vec<AuthorizationDecision>> {
     }
 }
 
+/// Provider namespaces the management API may create roles in and rebind roles
+/// into or out of. See [`Authorizer::api_role_providers`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiRoleProviders {
+    /// `lakekeeper`, plus every namespace no configured role provider owns.
+    AnyUnmanaged,
+    /// `lakekeeper` only.
+    LakekeeperOnly,
+}
+
 #[async_trait::async_trait]
 /// Interface to provide Authorization functions to the catalog.
 /// For metadata passed into all methods except `check_actor`, the `actor()` in `RequestMetadata`
@@ -2386,6 +2396,19 @@ where
         static EMPTY: std::sync::LazyLock<std::collections::HashSet<RoleProviderId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         &EMPTY
+    }
+
+    /// Which provider namespaces the management API may create roles in, and rebind
+    /// roles into or out of. [`Self::managed_role_provider_ids`] and the reserved
+    /// `system` namespace are refused either way.
+    ///
+    /// The default, [`ApiRoleProviders::AnyUnmanaged`], suits authorizers that treat a
+    /// role's provider and source id as a label, so external provisioning can name
+    /// roles in its own namespace. An authorizer that reads role rows of other
+    /// providers as that provider's roles returns [`ApiRoleProviders::LakekeeperOnly`],
+    /// so a role made through the API can never pass for a directory group.
+    fn api_role_providers(&self) -> ApiRoleProviders {
+        ApiRoleProviders::AnyUnmanaged
     }
 
     /// API Doc
@@ -2532,8 +2555,9 @@ where
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
 
-    /// Hook that is called when a new project is created.
-    /// This is used to set up the initial permissions for the project.
+    /// Hook that is called when a new role is created, inside the transaction that
+    /// inserts it. This is used to set up the initial permissions for the role. An
+    /// error rolls the role back and reaches the caller with its own status.
     async fn create_role(
         &self,
         metadata: &RequestMetadata,
@@ -3855,6 +3879,11 @@ pub mod tests {
         /// the non-empty path, which OSS otherwise cannot reach (no role providers
         /// ship here, so the production set is always empty).
         managed_role_providers: HashSet<RoleProviderId>,
+        /// Reported from [`Authorizer::api_role_providers`]. The trait default unless a
+        /// test narrows it.
+        api_role_providers: ApiRoleProviders,
+        /// Error type the `create_role` hook fails with, as a 409. `None` lets it pass.
+        create_role_rejection: Option<&'static str>,
     }
 
     impl Default for HidingAuthorizer {
@@ -3874,6 +3903,8 @@ pub mod tests {
                 bootstrap: &[],
                 grant_ops: &[],
                 managed_role_providers: HashSet::new(),
+                api_role_providers: ApiRoleProviders::AnyUnmanaged,
+                create_role_rejection: None,
             }
         }
 
@@ -3885,6 +3916,20 @@ pub mod tests {
             providers: impl IntoIterator<Item = RoleProviderId>,
         ) -> Self {
             self.managed_role_providers = providers.into_iter().collect();
+            self
+        }
+
+        /// Report `providers` from [`Authorizer::api_role_providers`].
+        #[must_use]
+        pub fn with_api_role_providers(mut self, providers: ApiRoleProviders) -> Self {
+            self.api_role_providers = providers;
+            self
+        }
+
+        /// Make the `create_role` hook fail with a 409 of type `error_type`.
+        #[must_use]
+        pub fn with_create_role_rejection(mut self, error_type: &'static str) -> Self {
+            self.create_role_rejection = Some(error_type);
             self
         }
 
@@ -4014,6 +4059,10 @@ pub mod tests {
 
         fn managed_role_provider_ids(&self) -> &HashSet<RoleProviderId> {
             &self.managed_role_providers
+        }
+
+        fn api_role_providers(&self) -> ApiRoleProviders {
+            self.api_role_providers
         }
 
         fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
@@ -4337,7 +4386,15 @@ pub mod tests {
             _role_id: RoleId,
             _parent_project_id: ArcProjectId,
         ) -> Result<()> {
-            Ok(())
+            match self.create_role_rejection {
+                Some(error_type) => Err(iceberg_ext::catalog::rest::ErrorModel::conflict(
+                    "Rejected by the test authorizer",
+                    error_type,
+                    None,
+                )
+                .into()),
+                None => Ok(()),
+            }
         }
 
         async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {

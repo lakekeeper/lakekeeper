@@ -35,27 +35,27 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
-        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
-        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
-        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
-        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
-        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
-        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError,
-        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
-        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        DeleteRoleError, DeleteTagDefinitionError, DropGenericTableError, DropTabularError,
+        EffectiveTagCandidate, EnsureWarehouseSpecMutableError, GenericTableCreation,
+        GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
+        GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
+        ListCatalogRoleMembersPage, ListGenericTablesError, ListGrantsStoreError,
+        ListNamespacesQuery, ListRoleMembersResult, ListRolesError, ListRolesPage,
+        ListRolesResponse, ListTabularsError, ListTagAttachmentsError, ListTagAttachmentsResponse,
+        ListTagDefinitionsError, ListTagDefinitionsResponse, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
+        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
+        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
         TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
         Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
         UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
@@ -82,16 +82,20 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
     grant::{
-        SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
-        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
-        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
+        SubtreeBounds, apply_grants, count_grants_for_role, count_subtree_namespaces,
+        delete_grants_for_user, insert_grants_bounded, list_grants, list_grants_in_subtree,
+        list_grants_on_resources, resolve_ceiling, revoke_grant_candidates,
+        select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
         repair_namespace_path_casing, update_namespace_properties,
     },
     pagination::to_token_precision,
-    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
+    role::{
+        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_for_update,
+        update_role,
+    },
     tabular::table::load_tables,
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
@@ -412,6 +416,14 @@ impl CatalogStore for super::PostgresBackend {
         delete_roles(project_id, filter, &mut **transaction).await
     }
 
+    async fn lock_role_for_update_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), DeleteRoleError> {
+        lock_role_for_update(project_id, role_id, transaction).await
+    }
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -449,6 +461,13 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
         delete_grants_for_user(user_id, transaction).await
+    }
+
+    async fn count_grants_for_role_impl<'a>(
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<u64, CatalogBackendError> {
+        count_grants_for_role(role_id, transaction).await
     }
 
     async fn list_grants_impl(
