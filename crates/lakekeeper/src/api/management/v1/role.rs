@@ -977,9 +977,10 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     // below, and no grant can appear after the count.
     let grant_count =
         C::lock_role_and_count_grants_impl(project_id, role_id, t.transaction()).await?;
-    // Only catalog-stored grants need `force`. An authorizer with its own grant store
-    // removes the role's grants in its `delete_role` hook, and rows an earlier
-    // authorizer left in `grant_assignment` confer nothing.
+    // `force` guards the grants the catalog stores. An authorizer with its own grant
+    // store (`grants()` is `Some`) removes the role's grants in its `delete_role`
+    // hook, and for it the rows in `grant_assignment` are leftovers that confer
+    // nothing.
     if !force && authorizer.grants().is_none() && grant_count > 0 {
         return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
     }

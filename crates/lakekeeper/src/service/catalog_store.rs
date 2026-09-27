@@ -827,8 +827,8 @@ where
     /// drives both reads and writes. Returns the IDs of deleted rows.
     ///
     /// Deleting a role also drops the role-provider sync record of each direct
-    /// assignee for that role's provider, so a provider re-syncs the user on their
-    /// next request.
+    /// assignee for that role's provider, so a provider re-syncs the user once the
+    /// caller has evicted the user's role-assignments cache entry.
     ///
     /// The implementation must refuse to run when `project_id` is `None`
     /// **and** every filter is `None` — that combination would erase every

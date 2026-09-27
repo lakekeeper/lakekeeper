@@ -2566,8 +2566,8 @@ where
         parent_project_id: ArcProjectId,
     ) -> Result<()>;
 
-    /// Hook that is called when a role is deleted.
-    /// This is used to clean up permissions for the role.
+    /// Hook that is called after a role delete commits. This is used to clean up
+    /// permissions for the role. An error is logged; the role stays deleted.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
 
     /// Hook that is called when a new tag definition is created, inside the

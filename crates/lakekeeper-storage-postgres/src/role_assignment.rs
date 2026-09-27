@@ -2241,24 +2241,7 @@ mod tests {
         // Commit only once the sync waits on the locked row, so its first attempt
         // always collides with the delete and only the retry can succeed.
         let commit_delete = async {
-            let sync_waits = async {
-                loop {
-                    let waiting: i64 = sqlx::query_scalar(
-                        "SELECT count(*) FROM pg_stat_activity \
-                         WHERE datname = current_database() AND wait_event_type = 'Lock'",
-                    )
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-                    if waiting > 0 {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            };
-            tokio::time::timeout(std::time::Duration::from_secs(10), sync_waits)
-                .await
-                .expect("the sync waits on the role lock");
+            wait_for_lock_waiter(&pool).await;
             delete_tx.commit().await.unwrap();
         };
         let (synced, ()) = tokio::join!(sync, commit_delete);
@@ -2309,6 +2292,19 @@ mod tests {
         )
         .await
         .unwrap();
+        // Alice's record for another provider is outside the deleted role's scope.
+        let other_provider = RoleProviderId::new_unchecked("okta");
+        let other_ident = Arc::new(RoleIdent::new_unchecked("okta", "engineering"));
+        PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &other_provider,
+            &[make_role(&other_ident, "Engineering")],
+            state.clone(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
         let deleted_role_id = alice
             .roles
             .iter()
@@ -2328,16 +2324,105 @@ mod tests {
         let alice_after = list_role_assignments_for_user(&alice_id, &pool)
             .await
             .unwrap();
-        assert!(
-            alice_after.provider_sync_times.is_empty(),
-            "the assignee's sync record is gone: {:?}",
-            alice_after.provider_sync_times
+        let alice_providers: Vec<_> = alice_after
+            .provider_sync_times
+            .iter()
+            .map(|s| s.provider_id.clone())
+            .collect();
+        assert_eq!(
+            alice_providers,
+            vec![other_provider],
+            "only the deleted role's provider record is gone"
         );
-        assert_eq!(alice_after.roles.len(), 1, "the other role stays assigned");
+        assert_eq!(alice_after.roles.len(), 2, "the other roles stay assigned");
         let bob_after = list_role_assignments_for_user(&bob_id, &pool)
             .await
             .unwrap();
         assert_eq!(bob_after.provider_sync_times.len(), 1);
+    }
+
+    /// A member's sync that already holds its sync record when a role delete runs
+    /// completes without a deadlock: the delete leaves the locked record to that sync,
+    /// which retries after the delete commits and recreates the role.
+    #[sqlx::test]
+    async fn role_delete_and_member_sync_do_not_deadlock(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&ident, "Group 1")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let first = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
+        let deleted_role_id = first.roles[0].role_id;
+
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            deleted_role_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Alice's re-sync locks her sync record, then waits on the locked role row.
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        // Only then does the delete statement run, while the sync holds her record.
+        let delete = async {
+            wait_for_lock_waiter(&pool).await;
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+                .await
+                .unwrap();
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, delete);
+
+        let synced = synced.expect("the sync retries after the delete commits");
+        assert_eq!(synced.roles.len(), 1);
+        assert_ne!(synced.roles[0].role_id, deleted_role_id);
+        assert_eq!(synced.provider_sync_times.len(), 1);
+    }
+
+    /// Returns once a session of this test's database waits on a lock.
+    async fn wait_for_lock_waiter(pool: &sqlx::PgPool) {
+        let waiting = async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if waiting > 0 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("a session waits on a lock");
     }
 
     // ── user→role assignment writes (management API) ───────────────────────

@@ -471,6 +471,12 @@ pub(crate) async fn delete_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
     // statements read the pre-delete snapshot, so the assignments the cascade
     // removes are still visible here. `lakekeeper` and `system` roles have no sync
     // records.
+    //
+    // A record that is locked belongs to a sync of that user in flight, which locks
+    // its record before the roles it upserts. `SKIP LOCKED` leaves it to that sync:
+    // waiting would deadlock against it, and the record it commits reflects this
+    // delete, because a sync that still reports the role waits on the role row and
+    // retries once the delete commits.
     let deleted_ids = sqlx::query_scalar!(
         r#"
         WITH deleted AS (
@@ -482,12 +488,16 @@ pub(crate) async fn delete_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
             RETURNING id, project_id, provider_id
         ),
         stale_syncs AS (
-            DELETE FROM role_assignment_sync s
-            USING role_assignment a, deleted d
-            WHERE a.role_id = d.id
-                AND s.user_id = a.user_id
-                AND s.project_id = d.project_id
-                AND s.provider_id = d.provider_id
+            DELETE FROM role_assignment_sync
+            WHERE (user_id, project_id, provider_id) IN (
+                SELECT s.user_id, s.project_id, s.provider_id
+                FROM role_assignment_sync s
+                JOIN role_assignment a ON a.user_id = s.user_id
+                JOIN deleted d ON d.id = a.role_id
+                    AND d.project_id = s.project_id
+                    AND d.provider_id = s.provider_id
+                FOR UPDATE OF s SKIP LOCKED
+            )
         )
         SELECT id AS "id!" FROM deleted
         "#,

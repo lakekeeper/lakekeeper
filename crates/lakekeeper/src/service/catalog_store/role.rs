@@ -22,7 +22,6 @@ use crate::{
             },
         },
         define_transparent_error,
-        events::{AuthorizationFailureReason, AuthorizationFailureSource},
         identifier::role::ArcRoleIdent,
         impl_error_stack_methods, impl_from_with_detail,
     },
@@ -390,15 +389,7 @@ impl From<SystemRoleImmutable> for ErrorModel {
 // The resource authorizer already allowed the action; this invariant is the
 // decision that refused it, so it is recorded as an authorization failure rather
 // than a bare error response. Mirrors `WarehouseSpecLocked`.
-impl AuthorizationFailureSource for SystemRoleImmutable {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(SystemRoleImmutable => ActionForbidden);
 
 // Raised on a membership write (`POST /role/{id}/members`, `DELETE
 // /role/{id}/members/{type}/{id}`) against a catalog-managed system role when the
@@ -430,15 +421,7 @@ impl From<SystemRoleMembershipRequiresInstanceAdmin> for ErrorModel {
             .build()
     }
 }
-impl AuthorizationFailureSource for SystemRoleMembershipRequiresInstanceAdmin {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(SystemRoleMembershipRequiresInstanceAdmin => ActionForbidden);
 
 // Raised when an instance admin's `POST /role/{id}/members` would add a role
 // (rather than a user) as a member of a system role. System roles hold users
@@ -466,15 +449,7 @@ impl From<SystemRoleMemberRolesNotSupported> for ErrorModel {
             .build()
     }
 }
-impl AuthorizationFailureSource for SystemRoleMemberRolesNotSupported {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(SystemRoleMemberRolesNotSupported => ActionForbidden);
 
 // Raised when a create or source-system rebind names the reserved `system`
 // namespace. Catalog-managed roles are seeded by the catalog itself.
@@ -537,8 +512,9 @@ impl From<RoleProviderNotApiManaged> for ErrorModel {
 }
 impl_authorization_failure_source!(RoleProviderNotApiManaged => ActionForbidden);
 
-// Raised when a role is deleted without `force` while grants name it. Deleting it
-// would revoke them, so the caller confirms that explicitly.
+// Raised when a role that holds grants in the catalog's grant store is deleted
+// without `force`. Deleting it would revoke them, so the caller confirms that
+// explicitly.
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
 #[error(
     "The role holds {grant_count} grant(s). Deleting it revokes them; repeat the request with `force=true` to delete the role together with its grants."
@@ -606,15 +582,7 @@ impl From<ManagedRoleImmutable> for ErrorModel {
 
 // As for `SystemRoleImmutable`: the provider owns this role, so the refusal is
 // the authorization outcome and belongs on the authorization stream.
-impl AuthorizationFailureSource for ManagedRoleImmutable {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(ManagedRoleImmutable => ActionForbidden);
 
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
