@@ -2087,14 +2087,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
         let request_metadata = event_ctx.request_metadata().clone();
-        let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
             pagination_query.page_size,
             pagination_query.page_token,
+            catalog.clone(),
             |page_size, page_token, t| {
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                let warehouse = warehouse.clone();
                 async move {
                     let query = PaginationQuery {
                         page_size: Some(page_size),
@@ -2113,18 +2110,31 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     let (ids, items, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         page.into_iter_with_page_tokens().multiunzip();
 
-                    let authz_decisions = if can_list_everything {
-                        vec![true; ids.len()]
+                    let namespaces = if can_list_everything {
+                        None
                     } else {
-                        let namespaces = C::get_namespaces_by_id(
-                            warehouse_id,
-                            &items
-                                .iter()
-                                .map(ViewOrTableDeletionInfo::namespace_id)
-                                .collect_vec(),
-                            t.transaction(),
+                        Some(
+                            C::get_namespaces_by_id(
+                                warehouse_id,
+                                &items
+                                    .iter()
+                                    .map(ViewOrTableDeletionInfo::namespace_id)
+                                    .collect_vec(),
+                                t.transaction(),
+                            )
+                            .await?,
                         )
-                        .await?;
+                    };
+                    Ok((ids, items, tokens, namespaces))
+                }
+                .boxed()
+            },
+            |page_size, (ids, items, tokens, namespaces)| {
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
+                async move {
+                    let authz_decisions = if let Some(namespaces) = namespaces {
                         let actions = items
                             .iter()
                             .map(|t| {
@@ -2151,6 +2161,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             .await
                             .map_err(authz_to_error_no_audit)?
                             .into_allowed()
+                    } else {
+                        vec![true; ids.len()]
                     };
 
                     let (next_idents, next_uuids, next_page_tokens, mask): (
@@ -2179,7 +2191,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 }
                 .boxed()
             },
-            &mut t,
         )
         .await?;
 
@@ -2207,8 +2218,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 })
             })
             .collect::<Vec<_>>();
-
-        t.commit().await?;
 
         Ok(ListDeletedTabularsResponse {
             tabulars: Arc::new(tabulars),
