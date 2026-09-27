@@ -348,8 +348,9 @@ impl From<ReservedRoleProvider> for ErrorModel {
 
 /// A role this sync assigns was deleted while the sync ran: its row was present when
 /// the statement started, but gone by the time the assignment was inserted. Nothing
-/// was written. The sync is retried once, which recreates the role if the provider
-/// still reports it.
+/// was written. The standalone `sync_user_role_assignments` retries once, which
+/// recreates the role if the provider still reports it; the variant that runs in
+/// the caller's transaction returns this error for the caller to retry.
 #[derive(thiserror::Error, Debug, PartialEq, Default)]
 #[error("A role was deleted while the role assignments were being synced. Retry the request.")]
 pub struct RoleDeletedDuringSync {

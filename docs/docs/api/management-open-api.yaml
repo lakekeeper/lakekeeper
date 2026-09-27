@@ -2393,7 +2393,7 @@ paths:
       summary: Delete Role
       description: |-
         Permanently removes a role, its members and its grants.
-        A role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`.
+        Where Lakekeeper stores grants in its database (every authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`. Under OpenFGA the role's grants are removed with it.
         Roles maintained by a configured role provider can be deleted too; if the provider still reports the group, it recreates the role on its next sync, without the deleted grants.
       operationId: delete_role
       parameters:
@@ -2406,7 +2406,10 @@ paths:
             format: uuid
         - name: force
           in: query
-          description: Delete the role even though grants name it. Its grants are revoked with it.
+          description: |-
+            Delete the role even though grants name it. Its grants are revoked with it.
+            Checked where Lakekeeper stores grants in its database; under OpenFGA a role's
+            grants are always removed with it.
           required: false
           schema:
             type: boolean
@@ -15073,18 +15076,21 @@ components:
             Role-provider namespaces whose roles are maintained by a configured role
             provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
             appears here are the provider's to maintain: creating one, or renaming,
-            re-describing, rebinding, or deleting an existing one, is rejected with
-            `ManagedRoleImmutable` so provider sync cannot be clobbered.
+            re-describing or rebinding an existing one, is rejected with
+            `ManagedRoleImmutable` so provider sync cannot be clobbered. Deleting one
+            is allowed; if the provider still reports the group, it creates the role
+            again on its next sync.
 
             This is live server configuration, not a property of the namespace
             string. A provider removed from config drops out of the list, and the
-            roles it left behind become renamable and deletable again so they can be
-            cleaned up.
+            roles it left behind become renamable again so they can be cleaned up.
 
             Empty when no role provider is configured. Two namespaces never appear,
             and a client gating on this list must handle both itself: `lakekeeper`,
             which is always writable, and the reserved `system`, whose roles reject
-            the same mutations with `SystemRoleImmutable`.
+            the same mutations and deletion with `SystemRoleImmutable`. Some
+            authorizers create and rebind roles only in `lakekeeper` and refuse every
+            other namespace with `RoleProviderNotApiManaged`.
 
             **Membership is gated differently — do not derive it from this list.**
             Adding or removing a role's members requires the `lakekeeper` namespace

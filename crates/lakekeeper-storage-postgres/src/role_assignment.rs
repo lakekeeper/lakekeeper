@@ -2218,7 +2218,7 @@ mod tests {
         let mut delete_tx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::lock_role_for_update_impl(
+        PostgresBackend::lock_role_for_delete_impl(
             &project_id,
             deleted_role_id,
             delete_tx.transaction(),
@@ -2238,8 +2238,27 @@ mod tests {
             state.clone(),
             &dispatcher,
         );
+        // Commit only once the sync waits on the locked row, so its first attempt
+        // always collides with the delete and only the retry can succeed.
         let commit_delete = async {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if waiting > 0 {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the sync never waited on the role lock"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
             delete_tx.commit().await.unwrap();
         };
         let (synced, ()) = tokio::join!(sync, commit_delete);

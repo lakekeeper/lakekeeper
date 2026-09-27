@@ -517,7 +517,7 @@ impl AuthorizationFailureSource for RoleProviderIdReserved {
 // (`Authorizer::api_role_providers`).
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
 #[error(
-    "Roles in the `{provider_id}` namespace cannot be created or rebound through the role-management API under this authorizer. Only `lakekeeper` roles can."
+    "Roles in the `{provider_id}` namespace cannot be created or rebound through the role-management API on this server. Only `lakekeeper` roles can."
 )]
 pub struct RoleProviderNotApiManaged {
     pub provider_id: String,

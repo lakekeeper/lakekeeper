@@ -344,6 +344,8 @@ pub struct UpdateRoleRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 pub struct DeleteRoleQuery {
     /// Delete the role even though grants name it. Its grants are revoked with it.
+    /// Checked where Lakekeeper stores grants in its database; under OpenFGA a role's
+    /// grants are always removed with it.
     #[serde(
         deserialize_with = "crate::api::iceberg::types::deserialize_bool",
         default
@@ -981,15 +983,10 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // Lock first: until commit no sync can add an assignee this delete would miss
-    // below, and no grant can appear after the check.
-    C::lock_role_for_update_impl(project_id, role_id, t.transaction()).await?;
-    if !force {
-        let grant_count = C::count_grants_for_role_impl(role_id, t.transaction())
-            .await
-            .map_err(DeleteRoleError::from)?;
-        if grant_count > 0 {
-            return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
-        }
+    // below, and no grant can appear after the count.
+    let grant_count = C::lock_role_for_delete_impl(project_id, role_id, t.transaction()).await?;
+    if !force && grant_count > 0 {
+        return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
     }
     // Read the affected-user closure PRE-commit: the `ON DELETE CASCADE` on
     // `delete_role` erases the `role_assignment`/`role_membership` rows, so after

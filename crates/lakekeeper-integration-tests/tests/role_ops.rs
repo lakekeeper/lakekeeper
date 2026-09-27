@@ -12,10 +12,12 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
-        CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
-        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
-        authz::AllowAllAuthorizer, events::EventListener, role_cache::ROLE_CACHE,
+        ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogGrantOps as _,
+        CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
+        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
+        authz::{AllowAllAuthorizer, GrantResource, GrantSpec, UserOrRoleId},
+        events::EventListener,
+        role_cache::ROLE_CACHE,
     },
 };
 use lakekeeper_integration_tests::{
@@ -936,6 +938,45 @@ async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
     assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
 }
 
+/// A caller who may not create roles is refused by the authorizer before the
+/// provider guard runs, so a reserved `provider_id` reveals nothing to them.
+#[sqlx::test]
+async fn test_create_role_authz_denial_precedes_provider_guard(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authorizer = HidingAuthorizer::new();
+    authorizer.block_action("project:CreateRole");
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(authorizer)
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let err = ApiServer::create_role(
+        create_request(
+            &warehouse_resp.project_id,
+            "my-attempted-system-role",
+            Some(("system", "custom-admin")),
+        ),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+    assert_ne!(err.error.r#type, "RoleProviderIdReserved");
+    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
+}
+
 /// Create a system role directly via the catalog layer (bypasses the
 /// `reject_role_provider_target` API guard). Used as fixture by tests that need
 /// an existing system row to verify the immutability guards.
@@ -1573,15 +1614,38 @@ async fn test_managed_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
         vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 2],
     );
 
-    ApiServer::delete_role(
+    // A provider-managed role holding a grant needs `force`, like any other role.
+    PostgresBackend::apply_grants(
+        &[GrantSpec {
+            principal: UserOrRoleId::Role(role_id),
+            resource: GrantResource::Warehouse(warehouse_resp.warehouse_id),
+            privilege: "get_metadata".to_string(),
+        }],
+        &[],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    let delete_err = ApiServer::delete_role(
         ctx.clone(),
         request_metadata_with_project(project_id),
         role_id,
         DeleteRoleQuery::default(),
     )
     .await
-    .expect("a provider-managed role can be deleted");
+    .unwrap_err();
+    assert_eq!(delete_err.error.r#type, "RoleHasGrants");
     assert_eq!(listener.settled_counts(1, 2).await, (1, 2));
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::builder().force().build(),
+    )
+    .await
+    .expect("a provider-managed role can be deleted");
+    assert_eq!(listener.settled_counts(2, 2).await, (2, 2));
     assert!(
         PostgresBackend::get_role_by_id(project_id, role_id, ctx.v1_state.catalog.clone())
             .await

@@ -388,25 +388,17 @@ pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postg
     })
 }
 
-/// Delete role rows matching `filter`, optionally scoped to a single
-/// project. Mirrors the shape of `list_roles` so the same filter type
-/// drives both reads and writes. Returns the IDs of deleted rows.
-///
-/// Refuses to run when *every* selector is None (no project, no
-/// `role_ids`, no `source_ids`, no `provider_ids`), to prevent an
-/// accidental `DELETE FROM role` (with `role_assignment` cascading)
-/// from a caller that forgot to set a filter.
-///
-/// Lock the role row for the rest of the transaction.
+/// Lock the role row for the rest of the transaction and count its grants.
 ///
 /// `FOR UPDATE` conflicts with the `KEY SHARE` lock a foreign-key check takes, so a
 /// sync inserting an assignment or a grant for this role waits until the transaction
-/// ends.
-pub(crate) async fn lock_role_for_update(
+/// ends. The count runs as a separate statement after the lock: under READ COMMITTED
+/// it then sees every grant committed while the lock was awaited.
+pub(crate) async fn lock_role_for_delete(
     project_id: &ProjectId,
     role_id: RoleId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(), DeleteRoleError> {
+) -> Result<u64, DeleteRoleError> {
     let locked = sqlx::query_scalar!(
         r#"
         SELECT id FROM "role"
@@ -420,12 +412,21 @@ pub(crate) async fn lock_role_for_update(
     .await
     .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
-    match locked {
-        Some(_) => Ok(()),
-        None => Err(RoleIdNotFoundInProject::new(role_id, Arc::new(project_id.clone())).into()),
+    if locked.is_none() {
+        return Err(RoleIdNotFoundInProject::new(role_id, Arc::new(project_id.clone())).into());
     }
+    Ok(crate::grant::count_grants_for_role(role_id, transaction).await?)
 }
 
+/// Delete role rows matching `filter`, optionally scoped to a single
+/// project. Mirrors the shape of `list_roles` so the same filter type
+/// drives both reads and writes. Returns the IDs of deleted rows.
+///
+/// Refuses to run when *every* selector is None (no project, no
+/// `role_ids`, no `source_ids`, no `provider_ids`), to prevent an
+/// accidental `DELETE FROM role` (with `role_assignment` cascading)
+/// from a caller that forgot to set a filter.
+///
 /// # Errors
 /// - `CatalogBackendError::Unexpected` on the refuse-to-run case
 ///   (mistaken caller).

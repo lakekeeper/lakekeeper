@@ -82,10 +82,9 @@ use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
     grant::{
-        SubtreeBounds, apply_grants, count_grants_for_role, count_subtree_namespaces,
-        delete_grants_for_user, insert_grants_bounded, list_grants, list_grants_in_subtree,
-        list_grants_on_resources, resolve_ceiling, revoke_grant_candidates,
-        select_subtree_grant_candidates,
+        SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
+        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
+        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
@@ -93,7 +92,7 @@ use super::{
     },
     pagination::to_token_precision,
     role::{
-        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_for_update,
+        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_for_delete,
         update_role,
     },
     tabular::table::load_tables,
@@ -416,12 +415,12 @@ impl CatalogStore for super::PostgresBackend {
         delete_roles(project_id, filter, &mut **transaction).await
     }
 
-    async fn lock_role_for_update_impl<'a>(
+    async fn lock_role_for_delete_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<(), DeleteRoleError> {
-        lock_role_for_update(project_id, role_id, transaction).await
+    ) -> Result<u64, DeleteRoleError> {
+        lock_role_for_delete(project_id, role_id, transaction).await
     }
 
     async fn search_role_impl(
@@ -461,13 +460,6 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
         delete_grants_for_user(user_id, transaction).await
-    }
-
-    async fn count_grants_for_role_impl<'a>(
-        role_id: RoleId,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<u64, CatalogBackendError> {
-        count_grants_for_role(role_id, transaction).await
     }
 
     async fn list_grants_impl(
