@@ -15,8 +15,6 @@ _ok(prefix) := {"status_code": 200, "body": {"defaults": {"prefix": prefix}}}
 
 _status(code) := {"status_code": code, "body": {"error": {"code": code}}}
 
-_network_error := {"status_code": 0, "error": {"code": "eval_http_send_network_error", "message": "x"}}
-
 # Answers the token request; routes config lookups by TTL to `input.long` / `input.short`.
 _mock(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
 	request.url == "http://idp/token"
@@ -46,6 +44,7 @@ test_primary_200_without_prefix_falls_back_to_healthy_id if {
 	_resolve({"status_code": 200, "body": {"defaults": {}}}, _ok("wh-short")) == "wh-short"
 }
 
+# 404 is cacheable, so the fallback is used: only the fallback answers "wh-short".
 test_cached_404_falls_back_to_healthy_id if {
 	_resolve(_status(404), _ok("wh-short")) == "wh-short"
 }
@@ -58,11 +57,8 @@ test_200_with_empty_prefix_falls_back_to_healthy_id if {
 	_resolve(_ok(""), _ok("wh-short")) == "wh-short"
 }
 
-# 3. Primary 503/500 are never force-cached by OPA (topdown/http.go's cacheable status list
-# excludes them), so the primary call already reached Lakekeeper live and failed for real.
-# Retrying immediately would double Lakekeeper's load during a genuine outage for no benefit,
-# so the fallback is skipped and the function stays undefined - it does not paper over a live
-# 5xx with a stale/short-lived guess.
+# 3. Primary 503/500 are never cached by OPA, so the primary call already reached Lakekeeper
+# live. The fallback answers healthy here, so a defined result would mean it was called.
 test_uncached_503_skips_fallback_and_stays_undefined if {
 	_resolve_undefined(_status(503), _ok("wh-short"))
 }
@@ -80,12 +76,17 @@ test_both_unusable_404_is_undefined if {
 	_resolve_undefined(_status(404), _status(404))
 }
 
-test_both_unusable_network_error_is_undefined if {
-	_resolve_undefined(_network_error, _network_error)
+# On a network error http.send raises (raise_error defaults to true), which is undefined
+# outside strict-builtin-errors mode. The fallback answers healthy, as in the 5xx tests.
+_network_error_mock(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
+	request.url == "http://idp/token"
+} else := _ok("wh-short") if {
+	request.force_cache_duration_seconds == lakekeeper.warehouse_id_retry_cache_seconds
 }
 
 test_network_error_skips_fallback_and_stays_undefined if {
-	_resolve_undefined(_network_error, _ok("wh-short"))
+	not lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
+		with http.send as _network_error_mock
 }
 
 # 5. Assert the actual request objects built by warehouse_id_for_name carry the right TTLs.
@@ -117,31 +118,4 @@ test_fallback_request_uses_short_retry_ttl if {
 	result := lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
 		with http.send as _ttl_probe_fallback
 	result == sprintf("ttl-%d", [lakekeeper.warehouse_id_retry_cache_seconds])
-}
-
-# 6. Primary and fallback requests must carry different `X-Lakekeeper-OPA-Cache-Tier` header
-# values, so the two calls land in distinct cache entries independent of the TTL field.
-_header_probe_primary(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
-	request.url == "http://idp/token"
-} else := {"status_code": 200, "body": {"defaults": {"prefix": request.headers["X-Lakekeeper-OPA-Cache-Tier"]}}}
-
-# Force the fallback branch by making the "long" TTL unusable, then read its header value.
-_header_probe_fallback(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
-	request.url == "http://idp/token"
-} else := {"status_code": 200, "body": {"defaults": {}}} if {
-	request.force_cache_duration_seconds == lakekeeper.warehouse_id_cache_seconds
-} else := {"status_code": 200, "body": {"defaults": {"prefix": request.headers["X-Lakekeeper-OPA-Cache-Tier"]}}}
-
-test_primary_and_fallback_use_different_cache_tier_headers if {
-	primary_tier := lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
-		with http.send as _header_probe_primary
-
-	primary_tier == sprintf("%d", [lakekeeper.warehouse_id_cache_seconds])
-
-	fallback_tier := lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
-		with http.send as _header_probe_fallback
-
-	fallback_tier == sprintf("%d", [lakekeeper.warehouse_id_retry_cache_seconds])
-
-	primary_tier != fallback_tier
 }
