@@ -118,3 +118,30 @@ test_fallback_request_uses_short_retry_ttl if {
 		with http.send as _ttl_probe_fallback
 	result == sprintf("ttl-%d", [lakekeeper.warehouse_id_retry_cache_seconds])
 }
+
+# 6. Primary and fallback requests must carry different `X-Lakekeeper-OPA-Cache-Tier` header
+# values, so the two calls land in distinct cache entries independent of the TTL field.
+_header_probe_primary(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
+	request.url == "http://idp/token"
+} else := {"status_code": 200, "body": {"defaults": {"prefix": request.headers["X-Lakekeeper-OPA-Cache-Tier"]}}}
+
+# Force the fallback branch by making the "long" TTL unusable, then read its header value.
+_header_probe_fallback(request) := {"status_code": 200, "body": {"access_token": "t"}} if {
+	request.url == "http://idp/token"
+} else := {"status_code": 200, "body": {"defaults": {}}} if {
+	request.force_cache_duration_seconds == lakekeeper.warehouse_id_cache_seconds
+} else := {"status_code": 200, "body": {"defaults": {"prefix": request.headers["X-Lakekeeper-OPA-Cache-Tier"]}}}
+
+test_primary_and_fallback_use_different_cache_tier_headers if {
+	primary_tier := lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
+		with http.send as _header_probe_primary
+
+	primary_tier == sprintf("%d", [lakekeeper.warehouse_id_cache_seconds])
+
+	fallback_tier := lakekeeper.warehouse_id_for_name("default", "wh") with data.configuration.lakekeeper as _lakekeeper_config
+		with http.send as _header_probe_fallback
+
+	fallback_tier == sprintf("%d", [lakekeeper.warehouse_id_retry_cache_seconds])
+
+	primary_tier != fallback_tier
+}

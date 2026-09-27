@@ -42,7 +42,12 @@ _warehouse_config(lakekeeper_id, warehouse_name, cache_seconds) := response if {
 	response := http.send({
 		"method": "GET",
 		"url": url,
-		"headers": {"Authorization": sprintf("Bearer %v", [access_token[lakekeeper_id]])},
+		"headers": {
+			"Authorization": sprintf("Bearer %v", [access_token[lakekeeper_id]]),
+			# Makes the two cache entries distinct even if OPA's http.send cache key ever stops
+			# covering `force_cache_duration_seconds`. Not in `cache_ignored_headers`.
+			"X-Lakekeeper-OPA-Cache-Tier": sprintf("%d", [cache_seconds]),
+		},
 		"force_cache": true,
 		"force_cache_duration_seconds": cache_seconds,
 		"caching_mode": "deserialized",
