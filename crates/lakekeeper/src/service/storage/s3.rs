@@ -2053,6 +2053,9 @@ mod sts_rejection_tests {
             assert_eq!(rejection.message.as_deref(), Some(expected), "{error:?}");
             assert!(rejection.code.is_none());
             let summary = rejection.summary();
+            if rejection.http_status.is_none() {
+                assert_eq!(summary, expected);
+            }
             for raw in ["raw ", "SdkBody", "Headers", "x-leaky-header"] {
                 assert!(!summary.contains(raw), "{summary}");
             }
@@ -2066,6 +2069,24 @@ mod sts_rejection_tests {
             raw_response(405),
         ));
         assert_eq!(rejection.http_status, Some(405));
+    }
+
+    #[test]
+    fn an_unreadable_answer_reaches_the_error_model_without_its_raw_response() {
+        let error = AssumeRoleSdkError::response_error("raw parse", raw_response(405));
+        let model = ErrorModel::from(CredentialsError::StsRejected {
+            rejection: sts_rejection(&error),
+            source: Box::new(error),
+        });
+        assert_eq!(
+            model.message,
+            "Failed to create short-term credential: STS request failed: HTTP 405: STS sent an \
+             answer that could not be read"
+        );
+        let shown = format!("{} {:?}", model.message, model.stack);
+        for raw in ["raw ", "SdkBody", "Headers", "x-leaky-header"] {
+            assert!(!shown.contains(raw), "{shown}");
+        }
     }
 
     #[test]

@@ -379,7 +379,12 @@ impl StsRejection {
             (Some(code), Some(status)) => format!("{code} ({status})"),
             (Some(code), None) => code.clone(),
             (None, Some(status)) => status,
-            (None, None) => "no response".to_string(),
+            (None, None) => {
+                return self
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "no response".to_string());
+            }
         };
         match &self.message {
             Some(message) => format!("{head}: {message}"),

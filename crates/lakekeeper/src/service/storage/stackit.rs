@@ -501,13 +501,24 @@ impl StackitProfile {
         // Every branch keeps the one fact needed to act: engines show only the
         // message, not the details.
         if rejection.http_status == Some(405) || code == Some("MethodNotAllowed") {
+            let storage = self.endpoint().map_or_else(
+                |_| format!("in region `{}`", self.region),
+                |e| format!("at `{e}`"),
+            );
+            // A bucket on the data platform storage, reached through the object
+            // storage endpoint, fails the same way.
+            let data_platform_hint = self.endpoint.is_none()
+                && self.storage_service != StackitStorageService::DataPlatform
+                && StackitStorageService::DataPlatform.is_offered_in(&self.region);
+            let fix = if data_platform_hint {
+                "If the bucket is on the STACKIT data platform storage, set `storage-service` to \
+                 `data-platform`. Otherwise set `sts-enabled` to false to use remote signing."
+            } else {
+                "Set `sts-enabled` to false to use remote signing."
+            };
             Some((
                 "StackitStsUnavailable",
-                format!(
-                    "This STACKIT storage in region `{}` does not offer STS yet. Set \
-                     `sts-enabled` to false to use remote signing.",
-                    self.region
-                ),
+                format!("The STACKIT storage {storage} does not offer STS. {fix}"),
             ))
         } else if message.contains("cannot be found") {
             Some((
@@ -527,7 +538,9 @@ impl StackitProfile {
                      It must look like `urn:sgws:identity::<account>:group/credentials-group-<id>`."
                 ),
             ))
-        } else if code == Some("AccessDenied") {
+        } else if code == Some("AccessDenied")
+            && message.contains("not authorized to perform: sts:AssumeRole")
+        {
             let principal = assuming_principal(message)
                 .map_or_else(|| urn.replace(":group/", ":user/"), ToString::to_string);
             Some((
@@ -1045,7 +1058,13 @@ mod tests {
 
     #[test]
     fn a_trust_policy_hint_falls_back_to_the_user_form_of_the_group() {
-        let model = explained(sts_failure(403, Some("AccessDenied"), None));
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(&format!(
+                "Principal is not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            )),
+        ));
         assert!(
             model.message.contains(
                 r#""AWS":"urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3""#
@@ -1053,6 +1072,21 @@ mod tests {
             "{}",
             model.message
         );
+    }
+
+    #[test]
+    fn other_access_denied_answers_are_passed_through() {
+        for message in [None, Some("Access Denied")] {
+            let error =
+                profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), message));
+            assert!(
+                matches!(
+                    error,
+                    TableConfigError::Credentials(CredentialsError::StsRejected { .. })
+                ),
+                "{message:?}: {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -1087,6 +1121,40 @@ mod tests {
     }
 
     #[test]
+    fn storage_without_sts_points_to_the_data_platform_storage() {
+        let model = explained(sts_failure(405, None, None));
+        assert!(
+            model
+                .message
+                .contains("`https://object.storage.eu01.onstackit.cloud/`"),
+            "{}",
+            model.message
+        );
+        assert!(
+            model
+                .message
+                .contains("set `storage-service` to `data-platform`"),
+            "{}",
+            model.message
+        );
+
+        let mut data_platform = profile();
+        data_platform.storage_service = StackitStorageService::DataPlatform;
+        let error = data_platform.explain_sts_failure(sts_failure(405, None, None));
+        let model = iceberg_ext::catalog::rest::ErrorModel::from(error);
+        assert!(
+            !model.message.contains("`storage-service`"),
+            "{}",
+            model.message
+        );
+        assert!(
+            model.message.contains("`sts-enabled` to false"),
+            "{}",
+            model.message
+        );
+    }
+
+    #[test]
     fn storage_without_sts_is_explained_without_naming_internals() {
         // The endpoint answers with an S3 error document STS cannot parse.
         let model = explained(sts_failure(405, None, None));
@@ -1114,7 +1182,10 @@ mod tests {
     #[test]
     fn validation_and_table_loads_report_the_same_explained_error() {
         let failure = || {
-            profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), Some("denied")))
+            profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), Some(&format!(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is \
+                 not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            ))))
         };
         let from_validation =
             iceberg_ext::catalog::rest::ErrorModel::from(ValidationError::from(failure()));
@@ -1137,7 +1208,14 @@ mod tests {
 
     #[test]
     fn explained_messages_hold_no_raw_response() {
-        let model = explained(sts_failure(403, Some("AccessDenied"), Some("denied")));
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(&format!(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is \
+                 not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            )),
+        ));
         for raw in ["ErrorMetadata", "SdkBody", "Headers", "ServiceError"] {
             assert!(!model.message.contains(raw), "{}", model.message);
         }
