@@ -511,8 +511,9 @@ impl StackitProfile {
                 && self.storage_service != StackitStorageService::DataPlatform
                 && StackitStorageService::DataPlatform.is_offered_in(&self.region);
             let fix = if data_platform_hint {
-                "If the bucket is on the STACKIT data platform storage, set `storage-service` to \
-                 `data-platform`. Otherwise set `sts-enabled` to false to use remote signing."
+                "If the bucket is on the STACKIT data platform storage, create the warehouse with \
+                 `storage-service` set to `data-platform`: an existing warehouse cannot change its \
+                 storage service. Otherwise set `sts-enabled` to false to use remote signing."
             } else {
                 "Set `sts-enabled` to false to use remote signing."
             };
@@ -1133,7 +1134,7 @@ mod tests {
         assert!(
             model
                 .message
-                .contains("set `storage-service` to `data-platform`"),
+                .contains("create the warehouse with `storage-service` set to `data-platform`"),
             "{}",
             model.message
         );
