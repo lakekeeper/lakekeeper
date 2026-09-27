@@ -2325,7 +2325,8 @@ impl MustUse<Vec<AuthorizationDecision>> {
 /// into or out of. See [`Authorizer::api_role_providers`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiRoleProviders {
-    /// `lakekeeper`, plus every namespace no configured role provider owns.
+    /// `lakekeeper`, plus every namespace other than `system` that no configured
+    /// role provider owns.
     AnyUnmanaged,
     /// `lakekeeper` only.
     LakekeeperOnly,
@@ -2569,8 +2570,10 @@ where
     /// This is used to clean up permissions for the role.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
 
-    /// Hook that is called when a new tag definition is created.
-    /// Sets up its parent (project) and ownership permissions.
+    /// Hook that is called when a new tag definition is created, inside the
+    /// transaction that inserts it. Sets up its parent (project) and ownership
+    /// permissions. An error rolls the tag definition back and reaches the caller
+    /// with its own status.
     async fn create_tag(
         &self,
         metadata: &RequestMetadata,

@@ -1115,29 +1115,31 @@ where
         }
         // One retry: a role deleted while the first attempt ran is recreated by the
         // second, which reads the committed delete.
-        let mut retried = false;
-        let sync_result = loop {
-            let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-            match Self::sync_user_role_assignments_by_provider_impl(
-                &user,
-                project_id,
-                provider_id,
-                roles,
-                t.transaction(),
-            )
-            .await
-            {
-                Ok(sync_result) => {
-                    t.commit().await?;
-                    break sync_result;
-                }
-                Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) if !retried => {
-                    retried = true;
-                    t.rollback().await?;
-                }
-                Err(e) => return Err(e.into()),
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let first = Self::sync_user_role_assignments_by_provider_impl(
+            &user,
+            project_id,
+            provider_id,
+            roles,
+            t.transaction(),
+        )
+        .await;
+        let sync_result = match first {
+            Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) => {
+                t.rollback().await?;
+                t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+                Self::sync_user_role_assignments_by_provider_impl(
+                    &user,
+                    project_id,
+                    provider_id,
+                    roles,
+                    t.transaction(),
+                )
+                .await?
             }
+            result => result?,
         };
+        t.commit().await?;
 
         let mut list = ListUserRoleAssignmentsResult {
             roles: sync_result.all_roles,

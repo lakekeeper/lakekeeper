@@ -502,15 +502,7 @@ impl From<RoleProviderIdReserved> for ErrorModel {
             .build()
     }
 }
-impl AuthorizationFailureSource for RoleProviderIdReserved {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(RoleProviderIdReserved => ActionForbidden);
 
 // Raised when a create or source-system rebind names, or starts from, a
 // namespace the authorizer does not let the API manage
@@ -543,15 +535,7 @@ impl From<RoleProviderNotApiManaged> for ErrorModel {
             .build()
     }
 }
-impl AuthorizationFailureSource for RoleProviderNotApiManaged {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::ActionForbidden
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.into()
-    }
-}
+impl_authorization_failure_source!(RoleProviderNotApiManaged => ActionForbidden);
 
 // Raised when a role is deleted without `force` while grants name it. Deleting it
 // would revoke them, so the caller confirms that explicitly.

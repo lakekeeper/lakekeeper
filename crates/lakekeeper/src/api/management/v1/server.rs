@@ -187,14 +187,16 @@ pub struct ServerInfo {
     ///
     /// This is live server configuration, not a property of the namespace
     /// string. A provider removed from config drops out of the list, and the
-    /// roles it left behind become renamable again so they can be cleaned up.
+    /// roles it left behind become renamable again.
     ///
     /// Empty when no role provider is configured. Two namespaces never appear,
     /// and a client gating on this list must handle both itself: `lakekeeper`,
-    /// which is always writable, and the reserved `system`, whose roles reject
-    /// the same mutations and deletion with `SystemRoleImmutable`. Some
-    /// authorizers create and rebind roles only in `lakekeeper` and refuse every
-    /// other namespace with `RoleProviderNotApiManaged`.
+    /// which is always writable, and the reserved `system`: its existing roles
+    /// reject the same mutations and deletion with `SystemRoleImmutable`, and
+    /// naming it on create or rebind returns `RoleProviderIdReserved`. Some
+    /// authorizers create and rebind roles only in `lakekeeper`; they refuse a
+    /// namespace that is neither `lakekeeper`, `system` nor listed here with
+    /// `RoleProviderNotApiManaged`.
     ///
     /// **Membership is gated differently — do not derive it from this list.**
     /// Adding or removing a role's members requires the `lakekeeper` namespace

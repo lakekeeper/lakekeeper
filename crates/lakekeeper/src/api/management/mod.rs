@@ -533,9 +533,9 @@ pub mod v1 {
 
     /// Delete Role
     ///
-    /// Permanently removes a role, its members and its grants.
-    /// Where Lakekeeper stores grants in its database (every authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`. Under OpenFGA the role's grants are removed with it.
-    /// Roles maintained by a configured role provider can be deleted too; if the provider still reports the group, it recreates the role on its next sync, without the deleted grants.
+    /// Permanently removes a role, its member assignments and its grants.
+    /// Where Lakekeeper stores grants in its database (every built-in authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`. Under OpenFGA the role's grants are removed with it.
+    /// Roles maintained by a configured role provider can be deleted too. Their members are re-synced from the provider on their next request, and if the provider still reports the group, it recreates the role, without the deleted grants.
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "role",

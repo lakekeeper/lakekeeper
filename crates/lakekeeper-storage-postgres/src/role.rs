@@ -394,7 +394,7 @@ pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postg
 /// sync inserting an assignment or a grant for this role waits until the transaction
 /// ends. The count runs as a separate statement after the lock: under READ COMMITTED
 /// it then sees every grant committed while the lock was awaited.
-pub(crate) async fn lock_role_for_delete(
+pub(crate) async fn lock_role_and_count_grants(
     project_id: &ProjectId,
     role_id: RoleId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -426,6 +426,9 @@ pub(crate) async fn lock_role_for_delete(
 /// `role_ids`, no `source_ids`, no `provider_ids`), to prevent an
 /// accidental `DELETE FROM role` (with `role_assignment` cascading)
 /// from a caller that forgot to set a filter.
+///
+/// Also removes the role-provider sync record of each direct assignee for the
+/// deleted role's provider, so their next request re-syncs.
 ///
 /// # Errors
 /// - `CatalogBackendError::Unexpected` on the refuse-to-run case
@@ -461,14 +464,32 @@ pub(crate) async fn delete_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
         .map(|ids| ids.iter().map(|i| i.as_str()).collect::<Vec<_>>())
         .unwrap_or_default();
 
+    // `stale_syncs` drops the sync record of every direct assignee for the deleted
+    // role's (project, provider). A fresh record would otherwise let a role provider
+    // serve that user's stored roles, now missing this one, until the record ages
+    // out; without it the user's next request re-syncs from the provider. Both
+    // statements read the pre-delete snapshot, so the assignments the cascade
+    // removes are still visible here. `lakekeeper` and `system` roles have no sync
+    // records.
     let deleted_ids = sqlx::query_scalar!(
         r#"
-        DELETE FROM role
-        WHERE ($1 OR project_id = $2)
-            AND ($3 OR id = ANY($4::UUID[]))
-            AND ($5 OR source_id = ANY($6::TEXT[]))
-            AND ($7 OR provider_id = ANY($8::TEXT[]))
-        RETURNING id
+        WITH deleted AS (
+            DELETE FROM role
+            WHERE ($1 OR project_id = $2)
+                AND ($3 OR id = ANY($4::UUID[]))
+                AND ($5 OR source_id = ANY($6::TEXT[]))
+                AND ($7 OR provider_id = ANY($8::TEXT[]))
+            RETURNING id, project_id, provider_id
+        ),
+        stale_syncs AS (
+            DELETE FROM role_assignment_sync s
+            USING role_assignment a, deleted d
+            WHERE a.role_id = d.id
+                AND s.user_id = a.user_id
+                AND s.project_id = d.project_id
+                AND s.provider_id = d.provider_id
+        )
+        SELECT id AS "id!" FROM deleted
         "#,
         project_id.is_none(),
         project_id.map(ProjectId::as_str).unwrap_or_default(),

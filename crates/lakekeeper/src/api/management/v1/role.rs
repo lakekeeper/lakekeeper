@@ -49,7 +49,8 @@ pub enum IdentityOwner {
     /// The catalog itself (`system`), which seeds and retires these roles.
     Catalog,
     /// A configured role provider, which converges the role by sync. Manual
-    /// edits would be clobbered by the next run.
+    /// edits would be clobbered by the next run. Deleting the role through the API
+    /// is allowed; the provider creates it again while its group exists.
     Provider,
 }
 
@@ -130,22 +131,13 @@ fn reject_role_provider_target<A: Authorizer>(
     match identity_owner(provider_id, authorizer.managed_role_provider_ids()) {
         IdentityOwner::Catalog => Err(RoleProviderIdReserved::new().into()),
         IdentityOwner::Provider => Err(ManagedRoleImmutable::new(provider_id.to_string()).into()),
-        IdentityOwner::Unmanaged => reject_unmanaged_namespace(authorizer, provider_id),
+        IdentityOwner::Unmanaged => match authorizer.api_role_providers() {
+            ApiRoleProviders::AnyUnmanaged => Ok(()),
+            ApiRoleProviders::LakekeeperOnly => {
+                Err(RoleProviderNotApiManaged::new(provider_id.to_string()).into())
+            }
+        },
         IdentityOwner::Native => Ok(()),
-    }
-}
-
-/// Rejects a namespace nothing syncs when the authorizer lets the API manage only
-/// `lakekeeper` roles.
-fn reject_unmanaged_namespace<A: Authorizer>(
-    authorizer: &A,
-    provider_id: &RoleProviderId,
-) -> Result<(), AuthZError> {
-    match authorizer.api_role_providers() {
-        ApiRoleProviders::AnyUnmanaged => Ok(()),
-        ApiRoleProviders::LakekeeperOnly => {
-            Err(RoleProviderNotApiManaged::new(provider_id.to_string()).into())
-        }
     }
 }
 
@@ -343,7 +335,7 @@ pub struct UpdateRoleRequest {
 #[derive(Debug, Default, Deserialize, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 pub struct DeleteRoleQuery {
-    /// Delete the role even though grants name it. Its grants are revoked with it.
+    /// Delete the role even if it holds grants. Its grants are revoked with it.
     /// Checked where Lakekeeper stores grants in its database; under OpenFGA a role's
     /// grants are always removed with it.
     #[serde(
@@ -957,10 +949,9 @@ async fn check_rebind_role<A: Authorizer, C: CatalogStore>(
 ) -> Result<ArcRole, AuthZError> {
     let role = check_role_action::<A, C>(authorizer, catalog_state, event_ctx, project_id).await?;
     reject_role_provider_target(authorizer, target_provider_id)?;
-    let current_provider_id = role.ident.provider_id();
-    if !current_provider_id.is_lakekeeper() {
-        reject_unmanaged_namespace(authorizer, current_provider_id)?;
-    }
+    // `check_role_action` has refused a `system` or provider-owned current namespace,
+    // so this only decides a current namespace nothing syncs.
+    reject_role_provider_target(authorizer, role.ident.provider_id())?;
     Ok(role)
 }
 
@@ -984,8 +975,12 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // Lock first: until commit no sync can add an assignee this delete would miss
     // below, and no grant can appear after the count.
-    let grant_count = C::lock_role_for_delete_impl(project_id, role_id, t.transaction()).await?;
-    if !force && grant_count > 0 {
+    let grant_count =
+        C::lock_role_and_count_grants_impl(project_id, role_id, t.transaction()).await?;
+    // Only catalog-stored grants need `force`. An authorizer with its own grant store
+    // removes the role's grants in its `delete_role` hook, and rows an earlier
+    // authorizer left in `grant_assignment` confer nothing.
+    if !force && authorizer.grants().is_none() && grant_count > 0 {
         return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
     }
     // Read the affected-user closure PRE-commit: the `ON DELETE CASCADE` on

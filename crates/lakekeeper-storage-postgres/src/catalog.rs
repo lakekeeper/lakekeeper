@@ -92,7 +92,7 @@ use super::{
     },
     pagination::to_token_precision,
     role::{
-        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_for_delete,
+        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_and_count_grants,
         update_role,
     },
     tabular::table::load_tables,
@@ -415,12 +415,12 @@ impl CatalogStore for super::PostgresBackend {
         delete_roles(project_id, filter, &mut **transaction).await
     }
 
-    async fn lock_role_for_delete_impl<'a>(
+    async fn lock_role_and_count_grants_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<u64, DeleteRoleError> {
-        lock_role_for_delete(project_id, role_id, transaction).await
+        lock_role_and_count_grants(project_id, role_id, transaction).await
     }
 
     async fn search_role_impl(

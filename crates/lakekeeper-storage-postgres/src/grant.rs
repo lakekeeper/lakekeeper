@@ -953,7 +953,7 @@ pub(crate) async fn delete_grants_for_user(
 /// Count the grants held by `role_id`, in the caller's transaction.
 ///
 /// `role_id` is set only on role grants (`grant_principal_shape`), so filtering on it
-/// alone lets `grant_role_idx` answer the count without reading table rows.
+/// alone lets the count use `grant_role_idx`.
 pub(crate) async fn count_grants_for_role(
     role_id: RoleId,
     transaction: &mut Transaction<'_, Postgres>,

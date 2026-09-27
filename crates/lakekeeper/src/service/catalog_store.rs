@@ -826,6 +826,10 @@ where
     /// project. Mirrors [`Self::list_roles_impl`] so the same filter type
     /// drives both reads and writes. Returns the IDs of deleted rows.
     ///
+    /// Deleting a role also drops the role-provider sync record of each direct
+    /// assignee for that role's provider, so a provider re-syncs the user on their
+    /// next request.
+    ///
     /// The implementation must refuse to run when `project_id` is `None`
     /// **and** every filter is `None` — that combination would erase every
     /// role row across every project.
@@ -839,7 +843,7 @@ where
     /// the role holds. While the lock is held no assignment, membership edge or grant
     /// naming this role can be added, so the count stays exact until commit.
     /// `RoleIdNotFoundInProject` if the role is not in `project_id`.
-    async fn lock_role_for_delete_impl<'a>(
+    async fn lock_role_and_count_grants_impl<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

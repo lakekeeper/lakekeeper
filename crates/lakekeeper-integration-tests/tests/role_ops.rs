@@ -1555,7 +1555,7 @@ async fn test_system_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
 /// `reject_role_provider_target` refuses a managed provider-id on create, so the API
 /// cannot produce this state.
 #[sqlx::test]
-async fn test_managed_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
+async fn test_managed_role_refuses_edits_allows_delete(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
     let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
