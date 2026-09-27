@@ -1058,6 +1058,29 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
+    /// The direct tags on each of `targets`, with the definition's name. Each row echoes the
+    /// `targets` entry it belongs to.
+    ///
+    /// The batched form of [`list_tags_for_target_impl`](Self::list_tags_for_target_impl):
+    /// one round trip for a whole containment chain instead of one per object.
+    ///
+    /// Direct tags only: no ancestors are walked and no children expanded. For inherited
+    /// tags, also name each object's ancestors — built with [`tag_ancestors`], nearest
+    /// first — and fold the rows with [`resolve_effective_tags_from_chain`], one object at a
+    /// time. An ancestor left out silently costs that object the tags it would inherit.
+    ///
+    /// A tabular carries only its own tags; its columns are separate targets.
+    ///
+    /// Unpaginated and unordered, with no cap: the row count is the sum over `targets` of
+    /// the definitions on each, and definitions are customer data. The caller bounds the
+    /// batch. Repeating a target is harmless. Naming one tabular under two kinds is not: the
+    /// later entry takes all its rows. A target that does not exist gives no rows rather
+    /// than an error, and a soft-deleted tabular keeps its tags.
+    async fn list_tags_on_targets_impl(
+        targets: &[TagTarget],
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
     /// All direct column tags on `tabular_id` (every column with a tag), each paired
     /// with its definition's name; the column is carried as the field-id in each
     /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.

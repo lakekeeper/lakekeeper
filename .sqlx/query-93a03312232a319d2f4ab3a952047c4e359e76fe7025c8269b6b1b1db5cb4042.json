@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular SET deleted_at = now() WHERE warehouse_id = $1 AND tabular_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93a03312232a319d2f4ab3a952047c4e359e76fe7025c8269b6b1b1db5cb4042"
+}

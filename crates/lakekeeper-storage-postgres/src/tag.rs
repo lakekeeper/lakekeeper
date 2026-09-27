@@ -1,6 +1,8 @@
 //! Postgres storage for governance tags. Mirrors the role module: free functions
 //! taking a connection/transaction, with constraint-name -> typed-error mapping.
 
+use std::collections::HashMap;
+
 use lakekeeper::{
     CONFIG, ProjectId,
     api::iceberg::v1::PaginationQuery,
@@ -764,6 +766,163 @@ where
         .collect())
 }
 
+/// The direct tags on every target in `targets`, echoing the caller's own `TagTarget`.
+///
+/// The batched form of [`list_tags_for_target`]. One arm per target shape, so each arm keeps
+/// the sargable predicates the single-target read needs: the unique index serves the
+/// warehouse and namespace arms, `tag_tabular_idx` the tabular and column arms.
+///
+/// No join back to `tabular`, so a tabular's kind is echoed from the caller's entry and tags
+/// on soft-deleted tabulars are included. Two entries naming one tabular under different
+/// kinds collide, and the later one takes every row.
+///
+/// Unordered — the caller buckets per target anyway.
+///
+/// Row count is the sum over `targets` of the definitions on each. Tag definitions are
+/// customer data with no cap, so a large batch can return thousands of rows.
+///
+/// Every arm with more than one array over-matches: the namespace and tabular arms cross
+/// two arrays, the column arm three. The maps below drop what was not asked for, so the
+/// result is exact, but more rows may be fetched than returned.
+pub(crate) async fn list_tags_on_targets<'e, 'c: 'e, E>(
+    targets: &[TagTarget],
+    connection: E,
+) -> Result<Vec<TagWithName>, CatalogBackendError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The arrays match as a cross product, and the maps tighten it afterwards. They key on
+    // the full tuple because a tabular id can exist in two warehouses, so a bare id would
+    // echo one warehouse's tag onto the other's object.
+    let mut warehouse_ids: Vec<Uuid> = Vec::new();
+    let mut namespace_warehouses: Vec<Uuid> = Vec::new();
+    let mut namespace_ids: Vec<Uuid> = Vec::new();
+    let mut tabular_warehouses: Vec<Uuid> = Vec::new();
+    let mut tabular_ids: Vec<Uuid> = Vec::new();
+    let mut column_warehouses: Vec<Uuid> = Vec::new();
+    let mut column_tabulars: Vec<Uuid> = Vec::new();
+    let mut column_fields: Vec<i32> = Vec::new();
+    let mut warehouses: HashMap<Uuid, TagTarget> = HashMap::new();
+    let mut namespaces: HashMap<(Uuid, Uuid), TagTarget> = HashMap::new();
+    let mut tabulars: HashMap<(Uuid, Uuid), TagTarget> = HashMap::new();
+    let mut columns: HashMap<(Uuid, Uuid, i32), TagTarget> = HashMap::new();
+    for target in targets {
+        let wh = *target.warehouse_id();
+        match target {
+            TagTarget::Warehouse(_) => {
+                warehouse_ids.push(wh);
+                warehouses.insert(wh, *target);
+            }
+            TagTarget::Namespace { namespace_id, .. } => {
+                namespace_warehouses.push(wh);
+                namespace_ids.push(**namespace_id);
+                namespaces.insert((wh, **namespace_id), *target);
+            }
+            TagTarget::Tabular { tabular_id, .. } => {
+                tabular_warehouses.push(wh);
+                tabular_ids.push(*tabular_id.as_ref());
+                tabulars.insert((wh, *tabular_id.as_ref()), *target);
+            }
+            TagTarget::Column {
+                tabular_id,
+                field_id,
+                ..
+            } => {
+                column_warehouses.push(wh);
+                column_tabulars.push(*tabular_id.as_ref());
+                column_fields.push(*field_id);
+                columns.insert((wh, *tabular_id.as_ref(), *field_id), *target);
+            }
+        }
+    }
+
+    // Needed for the query plan, not for the result: duplicates change no row. Postgres
+    // costs `= ANY` as one index descent per element, so repeating the warehouse once per
+    // target inflates the estimate by the number of targets. With enough tabulars the
+    // planner then picks a sequential scan of `tag`, measured ~30x slower than the index
+    // scan. The arrays are independent `= ANY` sets, not zipped by position. Do not remove.
+    for ids in [
+        &mut warehouse_ids,
+        &mut namespace_warehouses,
+        &mut namespace_ids,
+        &mut tabular_warehouses,
+        &mut tabular_ids,
+        &mut column_warehouses,
+        &mut column_tabulars,
+    ] {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+    column_fields.sort_unstable();
+    column_fields.dedup();
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            t.tag_id, t.tag_definition_id,
+            t.warehouse_id, t.namespace_id, t.tabular_id, t.field_id,
+            t.value, t.source AS "source: TagSource",
+            t.created_at, t.updated_at, td.name
+        FROM tag t JOIN tag_definition td USING (tag_definition_id)
+        WHERE (t.warehouse_id = ANY($1) AND t.namespace_id IS NULL
+               AND t.tabular_id IS NULL AND t.field_id IS NULL)
+           OR (t.warehouse_id = ANY($2) AND t.namespace_id = ANY($3)
+               AND t.tabular_id IS NULL AND t.field_id IS NULL)
+           -- field_id IS NULL keeps a table's column tags out of the table's own rows.
+           -- The match below would drop them anyway, so this is selectivity, not
+           -- correctness -- unlike in `list_tags_for_target`, which has no post-filter.
+           OR (t.warehouse_id = ANY($4) AND t.tabular_id = ANY($5)
+               AND t.namespace_id IS NULL AND t.field_id IS NULL)
+           OR (t.warehouse_id = ANY($6) AND t.tabular_id = ANY($7)
+               AND t.namespace_id IS NULL AND t.field_id = ANY($8))
+        "#,
+        &warehouse_ids,
+        &namespace_warehouses,
+        &namespace_ids,
+        &tabular_warehouses,
+        &tabular_ids,
+        &column_warehouses,
+        &column_tabulars,
+        &column_fields,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            // Most specific first: field_id means a column, tabular_id a tabular.
+            let target = match (r.namespace_id, r.tabular_id, r.field_id) {
+                (_, Some(tabular_id), Some(field_id)) => {
+                    columns.get(&(r.warehouse_id, tabular_id, field_id))
+                }
+                (_, Some(tabular_id), None) => tabulars.get(&(r.warehouse_id, tabular_id)),
+                (Some(namespace_id), None, _) => namespaces.get(&(r.warehouse_id, namespace_id)),
+                (None, None, _) => warehouses.get(&r.warehouse_id),
+            };
+            // A miss is the cross product over-matching: not asked for, so drop the row.
+            let target = *target?;
+            Some(TagWithName {
+                tag: Tag {
+                    tag_id: TagId::new(r.tag_id),
+                    tag_definition_id: TagDefinitionId::new(r.tag_definition_id),
+                    target,
+                    value: r.value,
+                    source: r.source,
+                    created_at: r.created_at,
+                    updated_at: r.updated_at,
+                },
+                definition_name: r.name,
+            })
+        })
+        .collect())
+}
+
 /// All governance tags attached to any column of `tabular_id` (`field_id IS NOT NULL`),
 /// each carrying its column's field-id in the reconstructed `Column` target. Ordered by
 /// field-id so the caller can group per column. Unpaginated, like the other forward
@@ -1232,18 +1391,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+    use iceberg::{
+        NamespaceIdent,
+        spec::{NestedField, PrimitiveType, Schema, Type},
+    };
     use lakekeeper::{
         api::iceberg::types::PageToken,
         service::{
-            CatalogStore, TabularId, TagScope, TagValueKind, TagValueSpec, Transaction as _,
+            CatalogNamespaceOps, CatalogStore, NamespaceHierarchy, TabularId, TagScope,
+            TagValueKind, TagValueSpec, Transaction as _, resolve_effective_tags,
+            resolve_effective_tags_from_chain, tag_ancestors,
         },
     };
 
     use super::*;
     use crate::{
         CatalogState, PostgresBackend, PostgresTransaction,
-        tabular::table::tests::create_table_with_schema, warehouse::test::initialize_warehouse,
+        namespace::tests::initialize_namespace,
+        tabular::table::tests::{create_table_with_schema, initialize_table},
+        warehouse::test::initialize_warehouse,
     };
 
     fn two_col_schema() -> Schema {
@@ -2442,6 +2608,682 @@ mod tests {
         .unwrap();
         assert!(unknown.tags.is_empty());
         assert_eq!(unknown.next_page_token, None);
+    }
+
+    /// Each row lands on the target it belongs to, with the definition name joined, and a
+    /// tabular's column tags stay out of the tabular's own set.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _schema) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+
+        let namespace_id = sqlx::query_scalar!(
+            "SELECT namespace_id FROM tabular WHERE warehouse_id = $1 AND tabular_id = $2",
+            *warehouse_id,
+            *table_id,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let namespace_id = NamespaceId::new(namespace_id);
+
+        let def_pii = TagDefinitionId::new_random();
+        let def_tier = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        for (id, name, spec) in [
+            (def_pii, "pii", TagValueSpec::Marker),
+            (def_tier, "tier", TagValueSpec::FreeText),
+        ] {
+            create_tag_definition(
+                &project_id,
+                CatalogCreateTagDefinitionRequest::builder()
+                    .tag_definition_id(id)
+                    .name(name)
+                    .scope(&[
+                        TagScope::Warehouse,
+                        TagScope::Namespace,
+                        TagScope::Table,
+                        TagScope::Column,
+                    ])
+                    .value_spec(spec)
+                    .build(),
+                &mut txn,
+            )
+            .await
+            .unwrap();
+        }
+        txn.commit().await.unwrap();
+
+        let wh_target = TagTarget::Warehouse(warehouse_id);
+        let ns_target = TagTarget::Namespace {
+            warehouse_id,
+            namespace_id,
+        };
+        let table_target = TagTarget::Tabular {
+            warehouse_id,
+            tabular_id: TabularId::Table(table_id),
+        };
+        let column_target = TagTarget::Column {
+            warehouse_id,
+            tabular_id: TabularId::Table(table_id),
+            field_id: 1,
+        };
+
+        // `pii` at every level, plus a valued `tier` on the table only.
+        let mut txn = pool.begin().await.unwrap();
+        for target in [wh_target, ns_target, table_target, column_target] {
+            apply_tag(
+                TagId::new_random(),
+                def_pii,
+                target,
+                None,
+                TagSource::Manual,
+                &mut txn,
+            )
+            .await
+            .unwrap();
+        }
+        apply_tag(
+            TagId::new_random(),
+            def_tier,
+            table_target,
+            Some("gold"),
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        // No targets: answered without a query.
+        assert!(list_tags_on_targets(&[], &pool).await.unwrap().is_empty());
+
+        // The chain an authorizer would ask for. The column tag is not in it: nobody
+        // named that target.
+        let rows = list_tags_on_targets(&[wh_target, ns_target, table_target], &pool)
+            .await
+            .unwrap();
+        let mut got: Vec<(TagTarget, &str, Option<&str>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.tag.target,
+                    r.definition_name.as_str(),
+                    r.tag.value.as_deref(),
+                )
+            })
+            .collect();
+        got.sort_by_key(|(target, name, _)| {
+            let level = match target {
+                TagTarget::Warehouse(_) => 0,
+                TagTarget::Namespace { .. } => 1,
+                TagTarget::Tabular { .. } => 2,
+                TagTarget::Column { .. } => 3,
+            };
+            (level, *name)
+        });
+        assert_eq!(
+            got,
+            vec![
+                (wh_target, "pii", None),
+                (ns_target, "pii", None),
+                (table_target, "pii", None),
+                (table_target, "tier", Some("gold")),
+            ]
+        );
+
+        // Named explicitly, the column returns its own tag and nothing else.
+        let rows = list_tags_on_targets(&[column_target], &pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tag.target, column_target);
+        assert_eq!(rows[0].definition_name, "pii");
+
+        // A target that does not exist gives no rows and no error, like the per-target read.
+        let untagged = TagTarget::Warehouse(WarehouseId::from(Uuid::now_v7()));
+        assert!(
+            list_tags_on_targets(&[untagged], &pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // The kind is echoed from the caller's entry, never re-read: the row holds a bare
+        // `tabular_id`. This is what lets the statement skip the join to `tabular`.
+        let as_view = TagTarget::Tabular {
+            warehouse_id,
+            tabular_id: TabularId::View(ViewId::from(*table_id)),
+        };
+        let rows = list_tags_on_targets(&[as_view], &pool).await.unwrap();
+        let mut names: Vec<&str> = rows.iter().map(|r| r.definition_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["pii", "tier"]);
+        assert!(rows.iter().all(|r| r.tag.target == as_view));
+    }
+
+    /// Column targets match as a cross product of three arrays, so a tag on a pair nobody
+    /// asked for can satisfy the SQL. The per-tuple tightening drops it.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets_drops_unrequested_column_pairs(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_one, _) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+        let (table_two, _) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+
+        let def = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        create_tag_definition(
+            &project_id,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(def)
+                .name("pii")
+                .scope(&[TagScope::Column])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let column = |table: TableId, field_id: i32| TagTarget::Column {
+            warehouse_id,
+            tabular_id: TabularId::Table(table),
+            field_id,
+        };
+
+        // Tagged (table_one, field 2). Requested (table_one, field 1) and (table_two,
+        // field 2), so the tagged pair is in both arrays but is not a requested target.
+        let mut txn = pool.begin().await.unwrap();
+        apply_tag(
+            TagId::new_random(),
+            def,
+            column(table_one, 2),
+            None,
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let rows = list_tags_on_targets(&[column(table_one, 1), column(table_two, 2)], &pool)
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "unrequested (tabular, field) pair leaked");
+
+        // Asking for the pair that is actually tagged returns it.
+        let rows = list_tags_on_targets(&[column(table_one, 2)], &pool)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tag.target, column(table_one, 2));
+    }
+
+    /// One marker definition, scoped to warehouse, namespace, table and column.
+    async fn marker_definition(
+        pool: &sqlx::PgPool,
+        project_id: &ProjectId,
+        name: &str,
+    ) -> TagDefinitionId {
+        let id = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        create_tag_definition(
+            project_id,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(id)
+                .name(name)
+                .scope(&[
+                    TagScope::Warehouse,
+                    TagScope::Namespace,
+                    TagScope::Table,
+                    TagScope::Column,
+                ])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+        id
+    }
+
+    /// Two requested targets can together name a pair neither of them is. Only the
+    /// tuple-keyed map stops it being reported, and a tabular id can be reused across
+    /// warehouses, so that pair can really exist.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets_drops_cross_warehouse_tabular_pairs(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let other_project = ProjectId::new_random();
+        let (project_b, warehouse_b) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+        let (table_x, _) =
+            create_table_with_schema(state.clone(), warehouse_b, two_col_schema()).await;
+        let def = marker_definition(&pool, &project_b, "pii").await;
+
+        let tagged = TagTarget::Tabular {
+            warehouse_id: warehouse_b,
+            tabular_id: TabularId::Table(table_x),
+        };
+        let mut txn = pool.begin().await.unwrap();
+        apply_tag(
+            TagId::new_random(),
+            def,
+            tagged,
+            None,
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        // `(A, X)` shares only the id, `(B, Y)` only the warehouse. Together they
+        // cross-match the tagged `(B, X)`, which neither of them is.
+        let requested = [
+            TagTarget::Tabular {
+                warehouse_id: warehouse_a,
+                tabular_id: TabularId::Table(table_x),
+            },
+            TagTarget::Tabular {
+                warehouse_id: warehouse_b,
+                tabular_id: TabularId::Table(TableId::from(Uuid::now_v7())),
+            },
+        ];
+        assert_eq!(
+            list_tags_on_targets(&requested, &pool).await.unwrap(),
+            Vec::new()
+        );
+
+        // The target that really carries it still gets it.
+        let rows = list_tags_on_targets(&[tagged], &pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tag.target, tagged);
+    }
+
+    /// The namespace arm cross-matches the same way, through separate code. A namespace id
+    /// is unique today, so the crossed pair cannot exist — but the map keying is still the
+    /// only thing enforcing it.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets_drops_cross_warehouse_namespace_pairs(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let other_project = ProjectId::new_random();
+        let (project_b, warehouse_b) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+        let (table_x, _) =
+            create_table_with_schema(state.clone(), warehouse_b, two_col_schema()).await;
+        let namespace_b = NamespaceId::new(
+            sqlx::query_scalar!(
+                "SELECT namespace_id FROM tabular WHERE warehouse_id = $1 AND tabular_id = $2",
+                *warehouse_b,
+                *table_x,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        );
+        let def = marker_definition(&pool, &project_b, "pii").await;
+
+        let tagged = TagTarget::Namespace {
+            warehouse_id: warehouse_b,
+            namespace_id: namespace_b,
+        };
+        let mut txn = pool.begin().await.unwrap();
+        apply_tag(
+            TagId::new_random(),
+            def,
+            tagged,
+            None,
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let requested = [
+            TagTarget::Namespace {
+                warehouse_id: warehouse_a,
+                namespace_id: namespace_b,
+            },
+            TagTarget::Namespace {
+                warehouse_id: warehouse_b,
+                namespace_id: NamespaceId::new(Uuid::now_v7()),
+            },
+        ];
+        assert_eq!(
+            list_tags_on_targets(&requested, &pool).await.unwrap(),
+            Vec::new()
+        );
+    }
+
+    /// These four WHERE arms duplicate four in `list_tags_for_target` and will drift. For a
+    /// single target both must answer the same, as a set: only the per-target read orders.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets_agrees_with_the_per_target_read(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+        let namespace_id = NamespaceId::new(
+            sqlx::query_scalar!(
+                "SELECT namespace_id FROM tabular WHERE warehouse_id = $1 AND tabular_id = $2",
+                *warehouse_id,
+                *table_id,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        );
+        let def = marker_definition(&pool, &project_id, "pii").await;
+
+        let targets = [
+            TagTarget::Warehouse(warehouse_id),
+            TagTarget::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            TagTarget::Tabular {
+                warehouse_id,
+                tabular_id: TabularId::Table(table_id),
+            },
+            TagTarget::Column {
+                warehouse_id,
+                tabular_id: TabularId::Table(table_id),
+                field_id: 1,
+            },
+        ];
+        let mut txn = pool.begin().await.unwrap();
+        for target in targets {
+            apply_tag(
+                TagId::new_random(),
+                def,
+                target,
+                None,
+                TagSource::Manual,
+                &mut txn,
+            )
+            .await
+            .unwrap();
+        }
+        txn.commit().await.unwrap();
+
+        for target in targets {
+            let mut batched = list_tags_on_targets(&[target], &pool).await.unwrap();
+            let mut single = list_tags_for_target(target, &pool).await.unwrap();
+            batched.sort_by_key(|r| *r.tag.tag_id);
+            single.sort_by_key(|r| *r.tag.tag_id);
+            assert_eq!(batched, single, "divergence on {target:?}");
+            assert_eq!(
+                batched.len(),
+                1,
+                "fixture should tag {target:?} exactly once"
+            );
+        }
+    }
+
+    /// Nothing joins back to `tabular`, so a soft-deleted table keeps its tags — like the
+    /// per-target read and the grant fetch, which keep a dropped table's state for undrop.
+    /// A `deleted_at` filter added here would break it silently.
+    #[sqlx::test]
+    async fn test_list_tags_on_targets_includes_soft_deleted_tabulars(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _) =
+            create_table_with_schema(state.clone(), warehouse_id, two_col_schema()).await;
+        let def = marker_definition(&pool, &project_id, "pii").await;
+
+        let target = TagTarget::Tabular {
+            warehouse_id,
+            tabular_id: TabularId::Table(table_id),
+        };
+        let mut txn = pool.begin().await.unwrap();
+        apply_tag(
+            TagId::new_random(),
+            def,
+            target,
+            None,
+            TagSource::Manual,
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        sqlx::query!(
+            "UPDATE tabular SET deleted_at = now() WHERE warehouse_id = $1 AND tabular_id = $2",
+            *warehouse_id,
+            *table_id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let rows = list_tags_on_targets(&[target], &pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tag.target, target);
+        assert_eq!(rows[0].definition_name, "pii");
+    }
+
+    /// The batched read plus [`resolve_effective_tags_from_chain`] must answer what the API
+    /// answers for the same object, or what a user is shown and what a policy enforces
+    /// drift apart.
+    ///
+    /// Ancestors come from real store hierarchies through [`tag_ancestors`], as a caller
+    /// builds them. The fixture: a table under `x.y`, a sibling branch `x.z` in the same
+    /// batch, one definition at every level, one on the two `x` namespaces only, one on the
+    /// warehouse only, and a column tag.
+    #[sqlx::test]
+    async fn test_folded_chain_matches_the_effective_tags_api(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ident = |parts: &[&str]| {
+            NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+        };
+        let (outer, inner, sibling) = (ident(&["x"]), ident(&["x", "y"]), ident(&["x", "z"]));
+        for namespace in [&outer, &inner, &sibling] {
+            initialize_namespace(state.clone(), warehouse_id, namespace, None).await;
+        }
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(inner.clone()),
+            None,
+            None,
+        )
+        .await;
+        let sibling_table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(sibling.clone()),
+            None,
+            None,
+        )
+        .await;
+
+        // Hierarchies as the catalog hands them out.
+        let mut hierarchies = Vec::new();
+        for namespace in [outer, inner, sibling] {
+            hierarchies.push(
+                PostgresBackend::get_namespace(warehouse_id, namespace, state.clone())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let [outer_h, inner_h, sibling_h]: [NamespaceHierarchy; 3] =
+            hierarchies.try_into().unwrap();
+        let namespace_target = |hierarchy: &NamespaceHierarchy| TagTarget::Namespace {
+            warehouse_id,
+            namespace_id: hierarchy.namespace.namespace_id(),
+        };
+        let tabular_target = |table_id| TagTarget::Tabular {
+            warehouse_id,
+            tabular_id: TabularId::Table(table_id),
+        };
+        let wh_target = TagTarget::Warehouse(warehouse_id);
+        let outer_target = namespace_target(&outer_h);
+        let inner_target = namespace_target(&inner_h);
+        let sibling_target = namespace_target(&sibling_h);
+        let table_target = tabular_target(table.table_id);
+        let sibling_table_target = tabular_target(sibling_table.table_id);
+        let column_target = TagTarget::Column {
+            warehouse_id,
+            tabular_id: TabularId::Table(table.table_id),
+            field_id: 1,
+        };
+
+        let sensitivity = TagDefinitionId::new_random();
+        let owner = TagDefinitionId::new_random();
+        let wh_only = marker_definition(&pool, &project_id, "wh_only").await;
+        let pii = marker_definition(&pool, &project_id, "pii").await;
+        let mut txn = pool.begin().await.unwrap();
+        for (id, name) in [(sensitivity, "sensitivity"), (owner, "owner")] {
+            create_tag_definition(
+                &project_id,
+                CatalogCreateTagDefinitionRequest::builder()
+                    .tag_definition_id(id)
+                    .name(name)
+                    .scope(&[TagScope::Warehouse, TagScope::Namespace, TagScope::Table])
+                    .value_spec(TagValueSpec::FreeText)
+                    .build(),
+                &mut txn,
+            )
+            .await
+            .unwrap();
+        }
+        txn.commit().await.unwrap();
+
+        // At every level, so only the nearest may win. The sibling's copy must never leak
+        // into the `x.y` branch.
+        let mut applied = vec![
+            (sensitivity, wh_target, Some("from-warehouse")),
+            (sensitivity, outer_target, Some("from-outer")),
+            (sensitivity, inner_target, Some("from-inner")),
+            (sensitivity, sibling_target, Some("from-sibling")),
+            (sensitivity, table_target, Some("from-table")),
+        ];
+        // On the two `x` namespaces only: for the table nothing sits at distance 0, so the
+        // winner turns purely on which ancestor is nearer.
+        applied.push((owner, outer_target, Some("outer-owner")));
+        applied.push((owner, inner_target, Some("inner-owner")));
+        applied.push((wh_only, wh_target, None));
+        applied.push((pii, column_target, None));
+        let mut txn = pool.begin().await.unwrap();
+        for (definition, target, value) in applied {
+            apply_tag(
+                TagId::new_random(),
+                definition,
+                target,
+                value,
+                TagSource::Manual,
+                &mut txn,
+            )
+            .await
+            .unwrap();
+        }
+        txn.commit().await.unwrap();
+
+        // One read serves every object below, as an authorizer would use it.
+        let rows = list_tags_on_targets(
+            &[
+                table_target,
+                inner_target,
+                outer_target,
+                wh_target,
+                sibling_target,
+                sibling_table_target,
+                column_target,
+            ],
+            &pool,
+        )
+        .await
+        .unwrap();
+
+        for (target, ancestors) in [
+            (table_target, tag_ancestors(table_target, &inner_h)),
+            (inner_target, tag_ancestors(inner_target, &inner_h)),
+            (outer_target, tag_ancestors(outer_target, &outer_h)),
+            (sibling_target, tag_ancestors(sibling_target, &sibling_h)),
+            (
+                sibling_table_target,
+                tag_ancestors(sibling_table_target, &sibling_h),
+            ),
+            (wh_target, Vec::new()),
+            // Given ancestors on purpose: a column must ignore them.
+            (
+                column_target,
+                vec![table_target, inner_target, outer_target, wh_target],
+            ),
+        ] {
+            let folded = resolve_effective_tags_from_chain(target, &ancestors, &rows);
+            let from_api =
+                resolve_effective_tags(list_effective_tag_candidates(target, &pool).await.unwrap());
+            assert_eq!(
+                folded, from_api,
+                "folded chain diverges from the API for {target:?}"
+            );
+        }
+
+        // And the answer is the right one, not just the same on both paths.
+        let shape = |target, ancestors: &[TagTarget]| {
+            let mut shape: Vec<(String, Option<String>, i32, EffectiveTagSource)> =
+                resolve_effective_tags_from_chain(target, ancestors, &rows)
+                    .into_iter()
+                    .map(|c| (c.name, c.value, c.distance, c.origin))
+                    .collect();
+            shape.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            shape
+        };
+        let text = |s: &str| Some(s.to_string());
+        assert_eq!(
+            shape(table_target, &tag_ancestors(table_target, &inner_h)),
+            vec![
+                // The nearer of two namespaces wins.
+                (
+                    "owner".to_string(),
+                    text("inner-owner"),
+                    1,
+                    EffectiveTagSource::Namespace {
+                        warehouse_id,
+                        namespace_id: inner_h.namespace.namespace_id(),
+                    }
+                ),
+                // The table's own tag beats its ancestors; the sibling's never appears.
+                (
+                    "sensitivity".to_string(),
+                    text("from-table"),
+                    0,
+                    EffectiveTagSource::Direct
+                ),
+                // Survives from the far end, at the full chain length.
+                (
+                    "wh_only".to_string(),
+                    None,
+                    3,
+                    EffectiveTagSource::Warehouse { warehouse_id }
+                ),
+            ]
+        );
+        // A column carries only its own tag, never the table's.
+        assert_eq!(
+            shape(column_target, &[table_target, inner_target]),
+            vec![("pii".to_string(), None, 0, EffectiveTagSource::Direct)]
+        );
     }
 
     #[sqlx::test]

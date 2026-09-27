@@ -1410,11 +1410,32 @@ where
         }
     }
 
+    // Needed for the query plan, not for the result: duplicates change no row. Postgres
+    // costs `= ANY` as one index descent per element, so repeating the warehouse once per
+    // tabular inflates the tabular arm by the number of tabulars. For a principal holding
+    // many grants — an ingestion account owns every table it created — the planner then
+    // picks a sequential scan, measured ~20x slower. The arrays are independent `= ANY`
+    // sets, not zipped by position. Do not remove.
+    for ids in [
+        &mut role_ids,
+        &mut warehouse_ids,
+        &mut namespace_warehouses,
+        &mut namespace_ids,
+        &mut tabular_warehouses,
+        &mut tabular_ids,
+        &mut tag_ids,
+    ] {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+    for ids in [&mut user_ids, &mut project_ids] {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+
     let rows = sqlx::query_as!(
         GrantAssignmentRow,
         r#"
-        -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and
-        -- without one sqlx's nullability inference reports every output as nullable.
         SELECT
             ga.grant_id AS "grant_id!",
             ga.principal_type AS "principal_type!: PrincipalType", ga.user_id, ga.role_id,
@@ -3015,6 +3036,57 @@ mod tests {
     /// `tabular`'s primary key is composite — the same id can exist in two warehouses —
     /// so the echo must key on the full pair and drop the cross-match; a bare-id echo
     /// would report the grant on a resource nobody holds it on.
+    /// The bound arrays are deduplicated one by one, so a warehouse array ends up shorter
+    /// than the id array beside it. They must stay independent `= ANY` sets: zipping them
+    /// positionally would drop every object after the first. Two namespaces and two tables
+    /// in one warehouse is the shape that shows it.
+    #[sqlx::test]
+    async fn the_evaluation_fetch_matches_every_object_in_one_warehouse(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+
+        let mut resources = Vec::new();
+        for _ in 0..2 {
+            let (table_id, _) =
+                create_table_with_schema(state.clone(), warehouse_id, simple_schema()).await;
+            let namespace_id: Uuid =
+                sqlx::query_scalar("SELECT namespace_id FROM tabular WHERE tabular_id = $1")
+                    .bind(*table_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            resources.push(GrantResource::Namespace {
+                warehouse_id,
+                namespace_id: namespace_id.into(),
+            });
+            resources.push(GrantResource::Table {
+                warehouse_id,
+                table_id,
+            });
+        }
+
+        let mut txn = pool.begin().await.unwrap();
+        let specs: Vec<GrantSpec> = resources
+            .iter()
+            .map(|resource| user_spec(&user, resource.clone(), "select"))
+            .collect();
+        insert_grants(&specs, &mut txn).await.unwrap();
+        txn.commit().await.unwrap();
+
+        let principals = [UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap())];
+        let mut fetched: Vec<GrantResource> =
+            list_grants_on_resources(&principals, &resources, &pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|grant| grant.resource)
+                .collect();
+        fetched.sort_by_key(|resource| format!("{resource:?}"));
+        resources.sort_by_key(|resource| format!("{resource:?}"));
+        assert_eq!(fetched, resources);
+    }
+
     #[sqlx::test]
     async fn a_cross_warehouse_id_match_is_dropped_not_echoed(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
