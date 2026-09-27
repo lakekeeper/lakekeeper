@@ -26,7 +26,7 @@ All committers need to sign the CLA in GitHub before a PR can be merged.
 
 ```
 # start postgres
-docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+docker run -d --name postgres-16 -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
 
 # set envs
 echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
