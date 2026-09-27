@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -10,7 +12,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
-        authz::Authorizer,
+        authz::{Authorizer, GrantResource, emit_bootstrap_grants_async, write_bootstrap_grants},
         tasks::{
             ScheduleTaskMetadata, TaskEntity,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
@@ -175,14 +177,55 @@ pub struct ServerInfo {
     pub gcp_system_identities_enabled: bool,
     /// List of queues that are registered for the server.
     pub queues: Vec<String>,
+    /// Role-provider namespaces whose roles are maintained by a configured role
+    /// provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
+    /// appears here are the provider's to maintain: creating one, or renaming,
+    /// re-describing, rebinding, or deleting an existing one, is rejected with
+    /// `ManagedRoleImmutable` so provider sync cannot be clobbered.
+    ///
+    /// This is live server configuration, not a property of the namespace
+    /// string. A provider removed from config drops out of the list, and the
+    /// roles it left behind become renamable and deletable again so they can be
+    /// cleaned up.
+    ///
+    /// Empty when no role provider is configured. Two namespaces never appear,
+    /// and a client gating on this list must handle both itself: `lakekeeper`,
+    /// which is always writable, and the reserved `system`, whose roles reject
+    /// the same mutations with `SystemRoleImmutable`.
+    ///
+    /// **Membership is gated differently — do not derive it from this list.**
+    /// Adding or removing a role's members requires the `lakekeeper` namespace
+    /// (or `system`, for an instance admin); every other namespace is refused
+    /// with `RoleNotManuallyAssignable` whether or not it appears here. So an
+    /// orphaned role from a since-removed provider is renamable and deletable
+    /// but still not assignable — gate member editing on
+    /// `provider-id == "lakekeeper"`, not on absence from this list.
+    pub managed_role_providers: Vec<String>,
     /// License status information
     pub license_status: LicenseStatus,
+}
+
+/// The authorizer's provider-managed namespaces as a sorted list, for
+/// [`ServerInfo::managed_role_providers`].
+///
+/// Sorted because the source is a `HashSet` with no inherent order: without this
+/// the same server would emit different orderings across restarts and replicas,
+/// which reads as a configuration change to any client diffing the response.
+fn managed_role_providers_sorted<A: Authorizer>(authorizer: &A) -> Vec<String> {
+    let mut ids: Vec<String> = authorizer
+        .managed_role_provider_ids()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    ids.sort_unstable();
+    ids
 }
 
 impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+    #[allow(clippy::too_many_lines)]
     async fn bootstrap(
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -261,7 +304,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
 
         authorizer.bootstrap(&request_metadata, is_operator).await?;
+
+        // The one grant resource nothing creates: the server comes into existence here,
+        // in this transaction, and the bootstrapping user's row is written above it.
+        let server_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            &request_metadata,
+            &GrantResource::Server,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
+
+        emit_bootstrap_grants_async(
+            &state.v1_state.events,
+            Arc::new(request_metadata.clone()),
+            server_grants,
+        );
 
         // If default project is specified, and the project does not exist, create it
         if let Some(default_project_id) = DEFAULT_PROJECT_ID.as_ref() {
@@ -294,7 +353,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 authorizer
                     .create_project(&request_metadata, default_project_id)
                     .await?;
+                // Bootstrapping without authentication has no acting identity, so the
+                // default project starts with no owner. The helper answers that.
+                let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                    &authorizer,
+                    &request_metadata,
+                    &GrantResource::Project((**default_project_id).clone()),
+                    t.transaction(),
+                )
+                .await?;
                 t.commit().await?;
+
+                emit_bootstrap_grants_async(
+                    &state.v1_state.events,
+                    Arc::new(request_metadata.clone()),
+                    bootstrap_grants,
+                );
             }
         }
 
@@ -343,7 +417,40 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 names.sort_unstable();
                 names.into_iter().map(ToString::to_string).collect()
             },
+            managed_role_providers: managed_role_providers_sorted(&state.v1_state.authz),
             license_status: state.v1_state.license_status.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::managed_role_providers_sorted;
+    use crate::service::{RoleProviderId, authz::tests::HidingAuthorizer};
+
+    /// The list must mirror the authorizer's deny-set, sorted. A client gates its
+    /// role-editing affordances on this, so a drift between the two would offer
+    /// writes the management API then rejects.
+    #[test]
+    fn managed_role_providers_mirror_the_authorizer_sorted() {
+        let pid = |s: &str| RoleProviderId::try_new(s).expect("valid provider id");
+
+        // No role providers — the shape every OSS authorizer produces.
+        assert!(managed_role_providers_sorted(&HidingAuthorizer::new()).is_empty());
+
+        // Non-empty: inserted out of order, reported in order.
+        let authorizer = HidingAuthorizer::new().with_managed_role_providers([
+            pid("okta"),
+            pid("corporate-ldap"),
+            pid("entra"),
+        ]);
+        assert_eq!(
+            managed_role_providers_sorted(&authorizer),
+            vec![
+                "corporate-ldap".to_string(),
+                "entra".to_string(),
+                "okta".to_string()
+            ],
+        );
     }
 }

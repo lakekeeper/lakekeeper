@@ -6,6 +6,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper::{
     SecretId,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
             tables::LoadTableFilters,
@@ -22,38 +23,50 @@ use lakekeeper::{
     },
     service::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
-        AddUserRoleAssignmentsResult, ArcProjectId, CatalogBackendError,
-        CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
+        AddUserRoleAssignmentsResult, ApplyGrantsStoreError, ApplyTagError, ArcProjectId,
+        AssignedRole, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
+        CatalogCreateTagDefinitionRequest, CatalogCreateWarehouseError,
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
         CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
+        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
+        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
-        DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
-        GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
+        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
+        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
-        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
-        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
+        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
+        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
+        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
+        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
+        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError,
+        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
+        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
+        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
+        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
+        authz::{
+            AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
+        },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -68,9 +81,24 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
+    grant::{
+        SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
+        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
+        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
+    },
+    namespace::{
+        create_namespace, drop_namespace, list_namespaces, move_namespace,
+        repair_namespace_path_casing, update_namespace_properties,
+    },
+    pagination::to_token_precision,
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
+    tag::{
+        apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
+        get_tag_definition, get_tag_definition_by_name, list_column_tags_for_tabular,
+        list_effective_tag_candidates, list_tag_attachments, list_tag_definitions,
+        list_tags_for_target, remove_tag, remove_tag_for_target, update_tag_definition,
+    },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
         get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
@@ -85,7 +113,8 @@ use crate::{
     tabular::{
         clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
         get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
-        mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
+        mark_tabular_as_deleted, rename_tabular, repair_tabular_namespace_path_casing,
+        search_tabular, set_tabular_protected,
         table::{commit_table_transaction, create_table},
         view::{commit_existing_view, create_view, load_view},
     },
@@ -228,11 +257,22 @@ impl CatalogStore for super::PostgresBackend {
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, RenameTabularError> {
-        rename_tabular(warehouse_id, source_id, source, destination, transaction).await
+        rename_tabular(
+            warehouse_id,
+            source_id,
+            source_namespace_id,
+            destination_namespace_id,
+            source,
+            destination,
+            transaction,
+        )
+        .await
     }
 
     async fn drop_tabular_impl<'a>(
@@ -388,6 +428,226 @@ impl CatalogStore for super::PostgresBackend {
         list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
     }
 
+    // ---------------- Grants ----------------
+    async fn apply_grants_impl<'a>(
+        writes: &[GrantSpec],
+        deletes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<AppliedGrants, ApplyGrantsStoreError> {
+        apply_grants(writes, deletes, transaction).await
+    }
+
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+        insert_grants_bounded(writes, transaction).await
+    }
+
+    async fn delete_grants_for_user_impl<'a>(
+        user_id: &UserId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+        delete_grants_for_user(user_id, transaction).await
+    }
+
+    async fn list_grants_impl(
+        filter: &GrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListGrantsResultPage, ListGrantsStoreError> {
+        list_grants(filter, pagination, &catalog_state.read_pool()).await
+    }
+
+    async fn list_grants_in_subtree_impl(
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
+        // The token pins the walk's ceiling; page one resolves it, from the caller's
+        // `created_before` or from the clock. Truncated to what a token round-trips, so
+        // every page of the walk reports and compares the same instant.
+        //
+        // Ceiling and page come from the primary, together. `as-of` is handed to a revoke
+        // that compares it against primary-stamped `created_at`, so it cannot be a replica
+        // clock; and rows committed within a replica's lag sort last in the walk, so a
+        // lagging page would end it early and drop exactly the newest grants below the
+        // ceiling. The revoke's own read is on the primary for the same reason.
+        let pool = catalog_state.write_pool();
+        let bounds = SubtreeBounds::of(pagination, filter.created_before)?;
+        let as_of = match bounds.ceiling {
+            Some(pinned) => pinned,
+            None => to_token_precision(resolve_ceiling(filter.created_before, &pool).await?),
+        };
+        list_grants_in_subtree(root, filter, bounds.page, as_of, &pool).await
+    }
+
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError> {
+        count_subtree_namespaces(warehouse_id, namespace_id, &catalog_state.read_pool()).await
+    }
+
+    async fn select_subtree_grant_candidates_impl(
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
+        limit: usize,
+        catalog_state: Self::State,
+    ) -> Result<GrantRevokeCandidates, ListGrantsStoreError> {
+        // The primary, not the read pool: this read decides what a delete removes and
+        // whether `has_more` reports the subtree clear. A lagging replica would answer
+        // "nothing left" while grants remain.
+        select_subtree_grant_candidates(root, filter, limit, &catalog_state.write_pool()).await
+    }
+
+    async fn revoke_grant_candidates_impl<'a>(
+        root: SubtreeGrantRoot,
+        candidates: &[GrantCandidate],
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError> {
+        revoke_grant_candidates(root, candidates, transaction).await
+    }
+
+    async fn list_grants_on_resources_impl(
+        principals: &[UserOrRoleId],
+        resources: &[GrantResource],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantSpec>, ListGrantsStoreError> {
+        list_grants_on_resources(principals, resources, &catalog_state.read_pool()).await
+    }
+
+    // ---------------- Tag Management ----------------
+    async fn create_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        request: CatalogCreateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<TagDefinition, CreateTagDefinitionError> {
+        create_tag_definition(project_id, request, transaction).await
+    }
+
+    async fn get_tag_definition_impl(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        get_tag_definition(project_id, tag_definition_id, &catalog_state.read_pool()).await
+    }
+
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        get_tag_definition_by_name(project_id, name, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tag_definitions_impl(
+        project_id: &ProjectId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagDefinitionsResponse, ListTagDefinitionsError> {
+        list_tag_definitions(project_id, pagination, &catalog_state.read_pool()).await
+    }
+
+    async fn get_tag_allowed_values_impl(
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<String>, CatalogBackendError> {
+        get_tag_allowed_values(tag_definition_id, &catalog_state.read_pool()).await
+    }
+
+    async fn update_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        request: UpdateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError> {
+        update_tag_definition(project_id, tag_definition_id, request, transaction).await
+    }
+
+    async fn delete_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(), DeleteTagDefinitionError> {
+        delete_tag_definition(project_id, tag_definition_id, transaction).await
+    }
+
+    async fn apply_tag_impl<'a>(
+        tag_id: TagId,
+        tag_definition_id: TagDefinitionId,
+        target: TagTarget,
+        value: Option<&str>,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(Tag, bool), ApplyTagError> {
+        apply_tag(
+            tag_id,
+            tag_definition_id,
+            target,
+            value,
+            source,
+            transaction,
+        )
+        .await
+    }
+
+    async fn remove_tag_impl<'a>(
+        tag_id: TagId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(), RemoveTagError> {
+        remove_tag(tag_id, transaction).await
+    }
+
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError> {
+        remove_tag_for_target(target, tag_definition_id, source, transaction).await
+    }
+
+    async fn list_tags_for_target_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        list_tags_for_target(target, &catalog_state.read_pool()).await
+    }
+
+    async fn list_column_tags_for_tabular_impl(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        list_column_tags_for_tabular(warehouse_id, tabular_id, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        filter: &TagAttachmentFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
+        list_tag_attachments(
+            tag_definition_id,
+            filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError> {
+        list_effective_tag_candidates(target, &catalog_state.read_pool()).await
+    }
+
     // ---------------- Role Assignment Management ----------------
     async fn sync_role_members_by_ident_impl<'a>(
         project_id: &ProjectId,
@@ -448,6 +708,13 @@ impl CatalogStore for super::PostgresBackend {
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError> {
         super::role_assignment::list_role_assignments_for_role(role_id, &catalog_state.read_pool())
             .await
+    }
+
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
+        super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
     }
 
     async fn list_role_assignments_for_role_by_ident_impl(
@@ -774,7 +1041,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
@@ -918,6 +1185,28 @@ impl CatalogStore for super::PostgresBackend {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
     }
 
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+        move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
+    }
+
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_namespace_path_casing(transaction).await
+    }
+
+    async fn repair_tabular_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError> {
+        repair_tabular_namespace_path_casing(transaction).await
+    }
+
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
         protect: bool,
@@ -952,12 +1241,14 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
         pick_task(
             &state.write_pool(),
             queue_name,
+            legacy_queue_names,
             default_max_time_since_last_heartbeat,
         )
         .await
@@ -1023,11 +1314,19 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
+        legacy_queue_names: &[&TaskQueueName],
         filter: CancelTasksFilter,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
+        cancel_scheduled_tasks(
+            &mut *transaction,
+            filter,
+            queue_name,
+            legacy_queue_names,
+            force,
+        )
+        .await
     }
 
     async fn check_and_heartbeat_task_impl(
@@ -1084,9 +1383,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: Self::State,
     ) -> Result<IdempotencyCheck> {
-        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+        Self::check_idempotency_key_impl(warehouse_id, key, endpoint, state).await
     }
 
     async fn try_insert_idempotency_key_impl<'a>(

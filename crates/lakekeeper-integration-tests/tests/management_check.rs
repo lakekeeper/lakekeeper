@@ -938,6 +938,8 @@ fn test_table_action_update_property_serde() {
             map.insert("format_version".to_string(), "2".to_string());
             map
         }),
+        target_refs: Arc::default(),
+        update_kinds: Arc::default(),
     };
     let item = CatalogActionCheckItem {
         id: None,

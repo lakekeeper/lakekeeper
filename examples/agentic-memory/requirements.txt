@@ -1,0 +1,24 @@
+# Deliberately light: no torch, no CLIP. Embeddings come from Ollama
+# (nomic-embed-text, ~275 MB), so the whole example is ~2.5 GB of models
+# instead of the medallion example's ~6 GB.
+jupyterlab>=4.2.0
+# tornado 6.5 added StaticFileHandler._resolve_symlink_target, which reads an
+# `allowed_symlink_directory` attribute that jupyter-server's FileFindHandler subclass
+# does not define. Every /static/lab/*.js request then 500s and JupyterLab renders a
+# blank white page — with the HTML itself still returning 200, so it looks healthy.
+tornado<6.5
+ipywidgets>=8.1.0
+# 7.x emits a curve-encryption kernelspec many frontends cannot attach to.
+ipykernel>=6,<7
+requests>=2.31.0
+PyJWT>=2.8.0
+pyarrow>=17.0.0
+pylance>=0.20.0
+boto3>=1.34.0
+# The decision log is an Iceberg table — central, append-only, and the one query an
+# auditor actually writes. See decisions.py for why this and not another dataset.
+pyiceberg>=0.10.0
+langgraph>=0.2
+
+# The catalog client: governed memory and skills, plus the LangGraph store.
+pylakekeeper[agents,langgraph]>=0.4.0

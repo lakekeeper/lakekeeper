@@ -296,6 +296,10 @@ pub trait AuthZGenericTableOps: Authorizer {
                     AuthZGenericTableActionForbidden::new(warehouse_id, ident.clone(), &action)
                         .into()
                 })
+            } else if is_allowed && action == CatalogGenericTableAction::ReadGrants.into() {
+                // The grant-read action doubles as visibility; see the same arm in
+                // require_warehouse_action.
+                Ok(info)
             } else {
                 Err(cant_see_err)
             }

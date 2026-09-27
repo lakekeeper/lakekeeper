@@ -11,10 +11,10 @@ use crate::{
     WarehouseId,
     api::{RequestMetadata, iceberg::v1::DataAccessMode},
     service::{
-        NamespaceWithParent, ResolvedWarehouse,
+        MovedNamespace, NamespaceId, NamespaceIdent, NamespaceWithParent, ResolvedWarehouse,
         authz::{CatalogNamespaceAction, CatalogWarehouseAction},
         events::{
-            APIEventContext, AuthorizationFailureSource,
+            APIEventContext, AuthorizationFailureSource, EventDispatcher,
             context::{
                 AuthzChecked, AuthzState, AuthzUnchecked, ResolutionState, Resolved,
                 ResolvedNamespace, UserProvidedNamespace,
@@ -37,6 +37,24 @@ pub struct CreateNamespaceEvent {
 #[derive(Clone, Debug)]
 pub struct DropNamespaceEvent {
     pub namespace: NamespaceWithParent,
+    pub request_metadata: Arc<RequestMetadata>,
+}
+
+/// Event emitted when a namespace is moved (re-parented and/or renamed)
+///
+/// `previous_ident` and `previous_parent` describe the namespace before the move.
+/// Consumers that mirror the hierarchy — the namespace cache, the authorizer — need them
+/// to retire the old path; a listener that only sees the new state cannot tell what to
+/// evict. Never emitted for a no-op move.
+#[derive(Clone, Debug)]
+pub struct MoveNamespaceEvent {
+    pub warehouse_id: WarehouseId,
+    /// The namespace after the move.
+    pub namespace: NamespaceWithParent,
+    /// Canonical path the namespace had before the move.
+    pub previous_ident: NamespaceIdent,
+    /// Parent before the move. `None` if the namespace was top-level.
+    pub previous_parent: Option<NamespaceId>,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
@@ -84,6 +102,10 @@ pub struct RegisterTableEvent {
     pub request: Arc<RegisterTableRequest>,
     pub metadata: TableMetadataRef,
     pub metadata_location: Arc<Location>,
+    /// The delegation the response was built for. Register vends credentials, so
+    /// without this a subscriber cannot tell a registration that handed out
+    /// read-write-delete credentials from one that handed out none.
+    pub data_access: DataAccessMode,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
@@ -115,6 +137,15 @@ impl<RW: ResolutionState, RN: ResolutionState, Z: AuthzState>
         match self {
             NamespaceOrWarehouseAPIContext::Warehouse(ctx) => &ctx.request_metadata,
             NamespaceOrWarehouseAPIContext::Namespace(ctx) => &ctx.request_metadata,
+        }
+    }
+
+    /// Either arm carries the same dispatcher — namespace creation is authorized against
+    /// the warehouse or the parent namespace, but emits into one event stream.
+    pub fn dispatcher(&self) -> &EventDispatcher {
+        match self {
+            NamespaceOrWarehouseAPIContext::Warehouse(ctx) => ctx.dispatcher(),
+            NamespaceOrWarehouseAPIContext::Namespace(ctx) => ctx.dispatcher(),
         }
     }
 }
@@ -228,6 +259,29 @@ impl
         });
     }
 
+    /// Emit `namespace_moved`.
+    ///
+    /// Takes the whole [`MovedNamespace`] rather than the new state alone, because
+    /// listeners that mirror the hierarchy have to retire the old path. Does nothing when
+    /// the move changed nothing — there is no state transition to announce, and emitting
+    /// would make the namespace cache evict and re-insert an unchanged entry.
+    pub(crate) fn emit_namespace_moved_async(self, moved: MovedNamespace) {
+        if moved.is_noop() {
+            return;
+        }
+        let event = MoveNamespaceEvent {
+            warehouse_id: self.resolved().warehouse.warehouse_id,
+            namespace: moved.namespace,
+            previous_ident: moved.previous_ident,
+            previous_parent: moved.previous_parent,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.namespace_moved(event).await;
+        });
+    }
+
     pub(crate) fn emit_namespace_protection_set(
         self,
         requested_protected: bool,
@@ -274,12 +328,14 @@ impl
         request: Arc<RegisterTableRequest>,
         metadata: TableMetadataRef,
         metadata_location: Arc<Location>,
+        data_access: DataAccessMode,
     ) {
         let event = RegisterTableEvent {
             namespace: self.resolved_entity.data,
             request,
             metadata,
             metadata_location,
+            data_access,
             request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;

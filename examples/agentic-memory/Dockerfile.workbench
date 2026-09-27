@@ -1,0 +1,13 @@
+# JupyterLab workbench. Every notebook runs in here, inside the compose network,
+# so vended credentials (which carry the in-network silo:9000 endpoint) resolve.
+FROM python:3.12-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl jq git \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/build
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+WORKDIR /work

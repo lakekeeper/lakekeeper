@@ -415,6 +415,7 @@ pub(super) fn adls_catalog_config() -> CatalogConfig {
         defaults: HashMap::default(),
         overrides: HashMap::default(),
         endpoints: supported_endpoints().to_vec(),
+        idempotency_key_lifetime: None,
     }
 }
 
@@ -443,16 +444,13 @@ pub(super) fn key_prefix_overlaps(a: Option<&str>, b: Option<&str>) -> bool {
 /// starting with `adls.sas-token`, including `…-expires-at-ms.*`, which breaks
 /// endpoint detection. Skip the expires-at key for those versions.
 pub(super) fn should_emit_sas_expires_at_key(request_metadata: &RequestMetadata) -> bool {
-    let pyiceberg_version = match request_metadata.user_agent() {
-        Some(UserAgent::PyIceberg { version }) => Some(version),
-        _ => None,
-    };
-    let Some(version) = pyiceberg_version else {
+    let Some(version) = request_metadata
+        .user_agent()
+        .and_then(UserAgent::pyiceberg_version)
+    else {
         return true;
     };
-    semver::Version::parse(version)
-        .ok()
-        .is_some_and(|v| v > semver::Version::new(0, 10, 0))
+    semver::Version::parse(version).is_ok_and(|v| v > semver::Version::new(0, 10, 0))
 }
 
 /// All inputs both ADLS profile types need to produce a `TableConfig` for a
@@ -527,6 +525,7 @@ pub(super) async fn generate_adls_table_config<T: BasicTabularInfo>(
         config: creds.clone(),
         creds,
         credentials_expiration_ms: Some(expiration_ms),
+        remote_signing: None,
     })
 }
 

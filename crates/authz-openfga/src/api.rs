@@ -13,16 +13,19 @@ use lakekeeper::{
         management::v1::{
             check::UserOrRole,
             lakekeeper_actions::{GetAccessQuery, ParsedAccessQuery},
+            role_membership::reject_system_role_membership,
         },
     },
     axum::{
         Extension, Json, Router,
-        extract::{Path, Query, State as AxumState},
+        extract::{Path, State as AxumState},
         routing::{get, post},
     },
+    axum_extra::extract::Query,
     service::{
-        Actor, CatalogStore, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
-        TableId, ViewId,
+        Actor, CachePolicy, CatalogRoleOps, CatalogStore, GenericTableId,
+        GetRoleAcrossProjectsError, NamespaceId, Result, RoleId, SecretStore, State, TableId,
+        TagDefinitionId, ViewId,
         authz::ActionDescriptor,
         events::{
             APIEventContext,
@@ -46,14 +49,15 @@ use super::{
         APIProjectRelation as ProjectRelation, APIRoleAction as RoleAction,
         APIRoleRelation as RoleRelation, APIServerAction as ServerAction,
         APIServerRelation as ServerRelation, APITableAction as TableAction,
-        APITableRelation as TableRelation, APIViewAction as ViewAction,
-        APIViewRelation as ViewRelation, APIWarehouseAction as WarehouseAction,
-        APIWarehouseRelation as WarehouseRelation, Assignment, GenericTableAssignment,
-        GenericTableRelation as AllGenericTableRelations, GrantableRelation, NamespaceAssignment,
-        NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
-        ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
-        RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-        TableAssignment, TableRelation as AllTableRelations, ViewAssignment,
+        APITableRelation as TableRelation, APITagRelation as TagRelation,
+        APIViewAction as ViewAction, APIViewRelation as ViewRelation,
+        APIWarehouseAction as WarehouseAction, APIWarehouseRelation as WarehouseRelation,
+        Assignment, GenericTableAssignment, GenericTableRelation as AllGenericTableRelations,
+        GrantableRelation, NamespaceAssignment, NamespaceRelation as AllNamespaceRelations,
+        ProjectAssignment, ProjectRelation as AllProjectRelations, ReducedRelation,
+        RevocableRelation, RoleAssignment, RoleRelation as AllRoleRelations, ServerAssignment,
+        ServerRelation as AllServerAction, TableAssignment, TableRelation as AllTableRelations,
+        TagAssignment, TagRelation as AllTagRelations, ViewAssignment,
         ViewRelation as AllViewRelations, WarehouseAssignment,
         WarehouseRelation as AllWarehouseRelation,
     },
@@ -281,6 +285,70 @@ struct GetGenericTableAssignmentsResponse {
     assignments: Vec<GenericTableAssignment>,
 }
 
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+struct GetTagAssignmentsQuery {
+    /// Relations to be loaded. If not specified, all relations are returned.
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
+    relations: Option<Vec<TagRelation>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+struct GetTagAssignmentsResponse {
+    assignments: Vec<TagAssignment>,
+}
+
+/// The `action_name` values the assignment endpoints emit.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+// The shared `Update` prefix is not redundant naming: each variant's wire value is the
+// full `update_<resource>_assignments` string a consumer matches on, so trimming the
+// prefix would rename nine audit log values.
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum AssignmentAction {
+    UpdateTagAssignments,
+    UpdateServerAssignments,
+    UpdateProjectAssignments,
+    UpdateWarehouseAssignments,
+    UpdateNamespaceAssignments,
+    UpdateTableAssignments,
+    UpdateViewAssignments,
+    UpdateGenericTableAssignments,
+    UpdateRoleAssignments,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+struct UpdateTagAssignmentsRequest {
+    #[serde(default)]
+    writes: Vec<TagAssignment>,
+    #[serde(default)]
+    deletes: Vec<TagAssignment>,
+}
+impl APIEventActions for UpdateTagAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name(AssignmentAction::UpdateTagAssignments.into())
+                .build(),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -294,7 +362,7 @@ impl APIEventActions for UpdateServerAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_server_assignments")
+                .action_name(AssignmentAction::UpdateServerAssignments.into())
                 .build(),
         ]
     }
@@ -313,7 +381,7 @@ impl APIEventActions for UpdateProjectAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_project_assignments")
+                .action_name(AssignmentAction::UpdateProjectAssignments.into())
                 .build(),
         ]
     }
@@ -332,7 +400,7 @@ impl APIEventActions for UpdateWarehouseAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_warehouse_assignments")
+                .action_name(AssignmentAction::UpdateWarehouseAssignments.into())
                 .build(),
         ]
     }
@@ -351,7 +419,7 @@ impl APIEventActions for UpdateNamespaceAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_namespace_assignments")
+                .action_name(AssignmentAction::UpdateNamespaceAssignments.into())
                 .build(),
         ]
     }
@@ -370,7 +438,7 @@ impl APIEventActions for UpdateTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_table_assignments")
+                .action_name(AssignmentAction::UpdateTableAssignments.into())
                 .build(),
         ]
     }
@@ -389,7 +457,7 @@ impl APIEventActions for UpdateViewAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_view_assignments")
+                .action_name(AssignmentAction::UpdateViewAssignments.into())
                 .build(),
         ]
     }
@@ -408,7 +476,7 @@ impl APIEventActions for UpdateGenericTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_generic_table_assignments")
+                .action_name(AssignmentAction::UpdateGenericTableAssignments.into())
                 .build(),
         ]
     }
@@ -427,7 +495,7 @@ impl APIEventActions for UpdateRoleAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("update_role_assignments")
+                .action_name(AssignmentAction::UpdateRoleAssignments.into())
                 .build(),
         ]
     }
@@ -1521,6 +1589,58 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
+/// Get user and role assignments of a tag definition (who may apply it / owns it)
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/tag/{tag_definition_id}/assignments",
+    params(
+        GetTagAssignmentsQuery,
+        ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"),
+    ),
+    responses(
+            (status = 200, body = GetTagAssignmentsResponse),
+    )
+))]
+async fn get_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
+    Path(tag_definition_id): Path<TagDefinitionId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetTagAssignmentsQuery>,
+) -> Result<(StatusCode, Json<GetTagAssignmentsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+
+    let event_ctx = APIEventContext::for_tag(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        tag_definition_id,
+        AllTagRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
+            &tag_definition_id.to_openfga(),
+        )
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &tag_definition_id.to_openfga())
+        .await
+        .map_err(authz_to_error_no_audit)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(
+            GetTagAssignmentsResponse::builder()
+                .assignments(assignments)
+                .build(),
+        ),
+    ))
+}
+
 /// Get user and role assignments of the server
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
@@ -1884,15 +2004,19 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
         request.clone(),
         lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
+        &request.writes,
+        &request.deletes,
         &server_id,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &server_id)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1924,15 +2048,20 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
         project_id,
         Arc::new(request.clone()),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1964,15 +2093,20 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
         project_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2004,15 +2138,20 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
         warehouse_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2044,15 +2183,20 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
         namespace_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = namespace_id.to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &namespace_id.to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2086,15 +2230,20 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
         table_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, table_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, table_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2128,15 +2277,20 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
         view_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, view_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, view_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2217,15 +2371,20 @@ async fn update_generic_table_assignments_by_id<C: CatalogStore, S: SecretStore>
         generic_table_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, generic_table_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, generic_table_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2258,6 +2417,52 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         request.clone(),
     );
 
+    // Refuse an unauthenticated caller before any catalog work. The authorization
+    // check below refuses it too, but only after the uncached lookup has spent a
+    // connection — so without this an anonymous request can drive catalog load, and
+    // a catalog fault would answer it with a backend error instead of a 401.
+    if event_ctx.request_metadata().actor() == &Actor::Anonymous {
+        return Err(event_ctx
+            .emit_early_authz_failure(OpenFGAError::AuthenticationRequired)
+            .into());
+    }
+
+    // A `system` role's membership is also writable here: `assignee` is the same
+    // tuple the role-membership API writes, and `ownership` confers `assignee`. The
+    // catalog's rule has to hold on this path too, or it only covers whichever
+    // writer happens to be gated. Read with the cache bypassed, from the same
+    // source as the catalog-side gate: a role's `system`-ness cannot change once
+    // set, so the only thing replica lag can hide is a role too new to have
+    // replicated — which resolves as not-found and is then refused by the
+    // authorization check below, having no tuples yet.
+    let role = match C::get_role_by_id_across_projects_cache_aware(
+        role_id,
+        CachePolicy::Skip,
+        api_context.v1_state.catalog.clone(),
+    )
+    .await
+    {
+        Ok(role) => Some(role),
+        // No catalog row anywhere: a dangling authorizer tuple, never a system
+        // role, so there is nothing for the rule to apply to.
+        Err(GetRoleAcrossProjectsError::RoleIdNotFound(_)) => None,
+        // Any other failure is an unanswered question, not a `no`. Treating it as
+        // "not a system role" would let a backend fault — one a caller can provoke
+        // by loading the pool — wave the write past the rule.
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(role) = role {
+        let adds_role_member = request.writes.iter().any(|assignment| {
+            let (RoleAssignment::Assignee(subject) | RoleAssignment::Ownership(subject)) =
+                assignment;
+            matches!(subject, UserOrRole::Role(_))
+        });
+        reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
+            .map_err(|violation| event_ctx.emit_early_authz_failure(violation))?;
+    }
+
+    let object = role_id.to_openfga();
+
     // Improve error message of role being assigned to itself
     let authz_result = 'authz: {
         for assignment in &request.writes {
@@ -2268,16 +2473,68 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
                 break 'authz Err(OpenFGAError::SelfAssignment(role_id.to_string()));
             }
         }
-        checked_write(
-            authorizer,
+        check_assignment_writes(
+            &authorizer,
             event_ctx.request_metadata().actor(),
-            request.writes,
-            request.deletes,
-            &role_id.to_openfga(),
+            &request.writes,
+            &request.deletes,
+            &object,
         )
         .await
     };
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Update user and role assignments of a tag definition (grant/revoke apply, transfer ownership)
+#[cfg_attr(feature = "open-api", utoipa::path(
+    post,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/tag/{tag_definition_id}/assignments",
+    request_body = UpdateTagAssignmentsRequest,
+    params(
+        ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"),
+    ),
+    responses(
+            (status = 204, description = "Permissions updated successfully"),
+    )
+))]
+async fn update_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
+    Path(tag_definition_id): Path<TagDefinitionId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Json(request): Json<UpdateTagAssignmentsRequest>,
+) -> Result<StatusCode> {
+    let authorizer = api_context.v1_state.authz;
+
+    let event_ctx = APIEventContext::for_tag(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        tag_definition_id,
+        request.clone(),
+    );
+
+    // A tag definition is never a valid assignment subject, so there is no
+    // self-assignment case to guard (unlike roles).
+    let object = tag_definition_id.to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
+        event_ctx.request_metadata().actor(),
+        &request.writes,
+        &request.deletes,
+        &object,
+    )
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2311,6 +2568,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         get_server_assignments,
         get_table_access_by_id,
         get_table_assignments_by_id,
+        get_tag_assignments_by_id,
         get_view_access_by_id,
         get_view_assignments_by_id,
         get_warehouse_access_by_id,
@@ -2325,6 +2583,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         update_role_assignments_by_id,
         update_server_assignments,
         update_table_assignments_by_id,
+        update_tag_assignments_by_id,
         update_view_assignments_by_id,
         update_warehouse_assignments_by_id,
     ),
@@ -2335,6 +2594,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
                        RoleRelation,
                        ServerRelation,
                        TableRelation,
+                       TagRelation,
                        ViewRelation,
                        WarehouseRelation))
 ))]
@@ -2427,6 +2687,10 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>()
         .route(
             "/permissions/role/{role_id}/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
+        )
+        .route(
+            "/permissions/tag/{tag_definition_id}/assignments",
+            get(get_tag_assignments_by_id).post(update_tag_assignments_by_id),
         )
         .route(
             "/permissions/server/assignments",
@@ -2531,7 +2795,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
         let allowed = authorizer.clone().check(key).await?;
 
-        OpenFGAResult::Ok(Some(action.clone()).filter(|_| allowed))
+        OpenFGAResult::Ok(allowed.then(|| action.clone()))
     });
     let actions = futures::future::try_join_all(actions)
         .await?
@@ -2542,24 +2806,36 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     Ok(actions)
 }
 
-async fn checked_write<RA: Assignment>(
-    authorizer: OpenFGAAuthorizer,
+/// Authorize an assignment update without applying it.
+///
+/// Split out from the write so that callers can emit the authorization audit
+/// event *before* the OpenFGA write is issued. Apply the writes with
+/// [`apply_assignment_writes`] once the event has been emitted.
+async fn check_assignment_writes<RA: Assignment>(
+    authorizer: &OpenFGAAuthorizer,
     actor: &Actor,
-    writes: Vec<RA>,
-    deletes: Vec<RA>,
+    writes: &[RA],
+    deletes: &[RA],
     object: &str,
 ) -> OpenFGAResult<()> {
     // Fail fast
     if actor == &Actor::Anonymous {
         return Err(OpenFGAError::AuthenticationRequired);
     }
-    let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
     // ---------------------------- AUTHZ CHECKS ----------------------------
     let openfga_actor = actor.to_openfga();
 
-    let grant_relations = all_modifications
+    // Handing an assignment out is delegation, which `pass_grants` can confer; taking one
+    // back is administration, which only `manage_grants` confers. The two directions
+    // therefore ask different relations for the privileges `pass_grants` can delegate.
+    let grant_relations = writes
         .iter()
         .map(|action| action.relation().grant_relation())
+        .chain(
+            deletes
+                .iter()
+                .map(|action| action.relation().revoke_relation()),
+        )
         .collect::<HashSet<_>>();
 
     if matches!(
@@ -2584,7 +2860,7 @@ async fn checked_write<RA: Assignment>(
             object: object.to_string(),
         };
 
-        let allowed = authorizer.clone().check(key).await?;
+        let allowed = authorizer.check(key).await?;
         if allowed {
             Ok(())
         } else {
@@ -2596,7 +2872,21 @@ async fn checked_write<RA: Assignment>(
     }))
     .await?;
 
-    // ---------------------- APPLY WRITE OPERATIONS -----------------------
+    Ok(())
+}
+
+/// Apply an assignment update that [`check_assignment_writes`] has authorized.
+///
+/// Callers must have emitted the authorization event before calling this.
+/// Endpoint callers must additionally map failures with `authz_to_error_no_audit`
+/// — the authorization outcome has already been logged, so a failing write must
+/// not emit a second event.
+async fn apply_assignment_writes<RA: Assignment>(
+    authorizer: OpenFGAAuthorizer,
+    writes: Vec<RA>,
+    deletes: Vec<RA>,
+    object: &str,
+) -> OpenFGAResult<()> {
     let writes = writes
         .into_iter()
         .map(|ra| TupleKey {
@@ -2733,6 +3023,33 @@ mod tests {
         assert_eq!(serialized, expected);
     }
 
+    #[test]
+    fn test_get_tag_assignments_response_serde() {
+        let response = GetTagAssignmentsResponse::builder()
+            .assignments(vec![
+                TagAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
+                TagAssignment::Apply(UserOrRole::Role(
+                    RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
+                        .into_api_assignee(),
+                )),
+            ])
+            .build();
+        let serialized = serde_json::to_value(&response).unwrap();
+        let expected = serde_json::json!({
+          "assignments": [
+            {
+              "type": "ownership",
+              "user": "oidc~user1"
+            },
+            {
+              "type": "apply",
+              "role": "b0ef03ea-f314-42df-ae26-dc5eeea8259f"
+            }
+          ]
+        });
+        assert_eq!(serialized, expected);
+    }
+
     mod openfga_integration_tests {
         use std::collections::HashMap;
 
@@ -2741,14 +3058,32 @@ mod tests {
                 ArcProjectId, ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
+                events::EventListener,
             },
             tokio,
         };
+        use lakekeeper_integration_tests::SetupTestCatalog;
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
-        use super::{super::*, *};
+        use super::*;
         use crate::migration::tests::authorizer_for_empty_store;
+
+        /// Run both halves of an assignment update back to back.
+        ///
+        /// Production endpoints keep them apart so the authorization event is
+        /// emitted in between (see [`check_assignment_writes`]); tests that only
+        /// assert on the resulting tuples don't care about that seam.
+        async fn checked_write<RA: Assignment>(
+            authorizer: OpenFGAAuthorizer,
+            actor: &Actor,
+            writes: Vec<RA>,
+            deletes: Vec<RA>,
+            object: &str,
+        ) -> OpenFGAResult<()> {
+            check_assignment_writes(&authorizer, actor, &writes, &deletes, object).await?;
+            apply_assignment_writes(authorizer, writes, deletes, object).await
+        }
 
         #[tokio::test]
         async fn test_cannot_assign_role_to_itself() {
@@ -3137,6 +3472,55 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_assign_to_tag() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
+            let tag_id = TagDefinitionId::new(Uuid::now_v7());
+            let user_id_applier = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role_id = RoleId::new(Uuid::now_v7());
+
+            // Seed ownership so the owner satisfies `can_grant_apply`.
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: TagRelation::Ownership.to_openfga().to_string(),
+                        object: tag_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let expected_owner = TagAssignment::Ownership(user_id_owner.clone().into());
+            let expected_user_apply = TagAssignment::Apply(user_id_applier.into());
+            let expected_role_apply = TagAssignment::Apply(role_id.into_api_assignee().into());
+
+            // Owner grants `apply` to a user and a role.
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![expected_user_apply.clone(), expected_role_apply.clone()],
+                vec![],
+                &tag_id.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<TagAssignment> =
+                get_relations(authorizer.clone(), None, &tag_id.to_openfga())
+                    .await
+                    .unwrap();
+            // ownership (seeded) + two applies, with exact principals and variants
+            assert_eq!(relations.len(), 3);
+            assert!(relations.contains(&expected_owner));
+            assert!(relations.contains(&expected_user_apply));
+            assert!(relations.contains(&expected_role_apply));
+        }
+
+        #[tokio::test]
         async fn test_assign_to_project() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
@@ -3158,6 +3542,8 @@ mod tests {
                 .await
                 .unwrap();
 
+            let tag_creator =
+                ProjectAssignment::TagCreator(UserOrRole::User(user_id_assignee.clone()));
             checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
@@ -3165,6 +3551,7 @@ mod tests {
                     ProjectAssignment::Describe(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
+                    tag_creator.clone(),
                 ],
                 vec![],
                 &project_id.to_openfga(),
@@ -3176,7 +3563,9 @@ mod tests {
                 get_relations(authorizer.clone(), None, &project_id.to_openfga())
                     .await
                     .unwrap();
-            assert_eq!(relations.len(), 4);
+            // project_admin (seeded) + describe + 2x data_admin + tag_creator
+            assert_eq!(relations.len(), 5);
+            assert!(relations.contains(&tag_creator));
         }
 
         #[tokio::test]
@@ -3652,6 +4041,228 @@ mod tests {
             assert!(
                 result.is_err(),
                 "User A with assumed role should NOT be able to grant select when warehouse has managed access enabled"
+            );
+        }
+
+        /// The authorization check must not touch OpenFGA state.
+        ///
+        /// Endpoints emit the audit event between the check and the write, so a
+        /// check that also wrote would commit the side-effect before the attempt
+        /// was ever logged — the ordering bug this split exists to prevent.
+        #[tokio::test]
+        async fn test_check_assignment_writes_has_no_side_effects() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let admin_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let grantee_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let openfga_server = authorizer.openfga_server();
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: admin_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
+                        object: openfga_server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let writes = vec![ServerAssignment::Admin(grantee_id.clone().into())];
+            check_assignment_writes(
+                &authorizer,
+                &Actor::Principal(admin_id.clone()),
+                &writes,
+                &[],
+                &openfga_server,
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<ServerAssignment> =
+                get_relations(authorizer.clone(), None, &openfga_server)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                relations,
+                vec![ServerAssignment::Admin(admin_id.into())],
+                "check_assignment_writes must not apply the assignment - only the \
+                 pre-existing admin tuple should be present"
+            );
+
+            // The write still lands when applied explicitly.
+            apply_assignment_writes(authorizer.clone(), writes, vec![], &openfga_server)
+                .await
+                .unwrap();
+            let relations: Vec<ServerAssignment> = get_relations(authorizer, None, &openfga_server)
+                .await
+                .unwrap();
+            assert_eq!(relations.len(), 2);
+        }
+
+        /// `pass_grants` delegates one direction only: a holder may hand out a privilege
+        /// they hold, but taking one back is administration and needs `manage_grants`.
+        ///
+        /// Covers the assignments endpoints specifically. The `/grants` diff asks the same
+        /// question through `grant_authority`, but this path authorizes writes and deletes
+        /// separately in `check_assignment_writes`, so it needs its own pin — it is also
+        /// the path that shipped, which makes the asymmetry a behaviour change here.
+        #[tokio::test]
+        async fn test_pass_grants_hands_out_but_cannot_take_back() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let delegator = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let grantee = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let object = warehouse_id.to_openfga();
+
+            // The delegator holds `select` and may pass it on, but no grant administration.
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: delegator.to_openfga(),
+                            relation: AllWarehouseRelation::Select.to_string(),
+                            object: object.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: delegator.to_openfga(),
+                            relation: AllWarehouseRelation::PassGrants.to_string(),
+                            object: object.clone(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(delegator.clone()),
+                vec![WarehouseAssignment::Select(grantee.clone().into())],
+                vec![],
+                &object,
+            )
+            .await
+            .expect("passing on a privilege the delegator holds is delegation");
+
+            let error = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(delegator.clone()),
+                vec![],
+                vec![WarehouseAssignment::Select(grantee.clone().into())],
+                &object,
+            )
+            .await
+            .expect_err("taking it back is administration, not delegation");
+            assert!(
+                matches!(
+                    &error,
+                    OpenFGAError::Unauthorized { relation, .. }
+                        if relation == &AllWarehouseRelation::CanRevokeSelect.to_string()
+                ),
+                "the denial must name the revoke relation, not the grant one: {error:?}"
+            );
+
+            let relations: Vec<WarehouseAssignment> =
+                get_relations(authorizer.clone(), None, &object)
+                    .await
+                    .unwrap();
+            assert!(
+                relations.contains(&WarehouseAssignment::Select(grantee.clone().into())),
+                "the refused delete must leave the assignment in place: {relations:?}"
+            );
+
+            // The same delete succeeds for a principal holding grant administration.
+            let admin = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: admin.to_openfga(),
+                        relation: AllWarehouseRelation::ManageGrants.to_string(),
+                        object: object.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(admin),
+                vec![],
+                vec![WarehouseAssignment::Select(grantee.into())],
+                &object,
+            )
+            .await
+            .expect("manage_grants administers both directions");
+        }
+
+        /// Drives the real endpoint: a write that fails *after* authorization
+        /// succeeded must still leave the authorization attempt in the audit log,
+        /// and must not log it twice.
+        ///
+        /// The second call is byte-identical to the first, so the authorization
+        /// check passes again while OpenFGA rejects the duplicate tuple - a write
+        /// failure reachable only once authorization has already been decided.
+        #[sqlx::test]
+        async fn test_endpoint_audits_authz_before_failing_write(pool: sqlx::PgPool) {
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let authorizer = authorizer_for_empty_store().await.1;
+            let (ctx, warehouse) = SetupTestCatalog::builder()
+                .pool(pool)
+                .authorizer(authorizer)
+                .user_id(Some(operator_id.clone()))
+                .build()
+                .setup()
+                .await;
+
+            // Attach after setup so only the two calls below are captured.
+            let listener =
+                Arc::new(lakekeeper_integration_tests::CapturingAuthzListener::default());
+            ctx.v1_state
+                .events
+                .append(listener.clone() as Arc<dyn EventListener>)
+                .await;
+
+            let grantee_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let request = UpdateWarehouseAssignmentsRequest {
+                writes: vec![WarehouseAssignment::Select(grantee_id.into())],
+                deletes: vec![],
+            };
+            let metadata = RequestMetadata::test_user(operator_id);
+
+            update_warehouse_assignments_by_id(
+                Path(warehouse.warehouse_id),
+                AxumState(ctx.clone()),
+                Extension(metadata.clone()),
+                Json(request.clone()),
+            )
+            .await
+            .expect("first assignment update succeeds");
+            assert_eq!(
+                listener.settled_counts(1, 0).await,
+                (1, 0),
+                "the successful call must be audited exactly once"
+            );
+
+            let write_error = update_warehouse_assignments_by_id(
+                Path(warehouse.warehouse_id),
+                AxumState(ctx),
+                Extension(metadata),
+                Json(request),
+            )
+            .await
+            .expect_err("re-writing an existing tuple must fail");
+
+            assert_eq!(
+                listener.settled_counts(2, 0).await,
+                (2, 0),
+                "the second authorization attempt must be audited exactly once even \
+                 though the write that followed it failed: {write_error:?}"
             );
         }
     }

@@ -129,7 +129,8 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 
     let (token_ts, token_id): (_, Option<&String>) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(PaginateToken::v1_parts)
+        .transpose()?
         .unzip();
 
     // The name filter matches the raw `name` column. A nameless role-provider stub

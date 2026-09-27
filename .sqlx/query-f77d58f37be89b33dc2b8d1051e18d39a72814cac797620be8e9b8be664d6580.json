@@ -1,0 +1,164 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.tag_id,\n            t.warehouse_id,\n            t.namespace_id,\n            t.tabular_id,\n            t.field_id,\n            t.value,\n            t.source AS \"source: TagSource\",\n            t.created_at,\n            t.updated_at,\n            tab.typ AS \"tabular_type?: TabularType\"\n        FROM tag t\n        LEFT JOIN tabular tab\n            ON tab.warehouse_id = t.warehouse_id AND tab.tabular_id = t.tabular_id\n        WHERE t.tag_definition_id = $1\n            -- Exclude attachments on soft-deleted (recycle-bin) tabulars: a \"which\n            -- objects carry this tag\" view lists live objects only. Warehouse/namespace\n            -- rows have no tabular (tab.tabular_id IS NULL) and are always kept.\n            AND (tab.tabular_id IS NULL OR tab.deleted_at IS NULL)\n            AND ($5::text IS NULL OR t.value = $5)\n            AND ($6::uuid IS NULL OR t.warehouse_id = $6)\n            AND ($7::timestamptz IS NULL OR t.created_at >= $7)\n            AND ($8::timestamptz IS NULL OR t.created_at <= $8)\n            -- Target-type filter: derive each row's object type from its column shape\n            -- (columns/namespaces/warehouses) and the joined tabular subtype. `tab.typ`\n            -- and `TagScope::as_str` are both kebab-case, so the strings line up.\n            AND ($9::text IS NULL OR $9 = CASE\n                WHEN t.field_id IS NOT NULL THEN 'column'\n                WHEN t.tabular_id IS NOT NULL THEN tab.typ::text\n                WHEN t.namespace_id IS NOT NULL THEN 'namespace'\n                ELSE 'warehouse' END)\n            AND ((t.created_at > $2 OR $2 IS NULL) OR (t.created_at = $2 AND t.tag_id > $3))\n        ORDER BY t.created_at, t.tag_id ASC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "field_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "field_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "source: TagSource",
+        "type_info": {
+          "Custom": {
+            "name": "tag_source",
+            "kind": {
+              "Enum": [
+                "manual"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_type?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "f77d58f37be89b33dc2b8d1051e18d39a72814cac797620be8e9b8be664d6580"
+}

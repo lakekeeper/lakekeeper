@@ -154,6 +154,23 @@ pub async fn create_view_helper(
 /// signature for tests extracted from lakekeeper that pre-date the
 /// num-warehouses / project-id arguments.
 #[allow(clippy::too_many_arguments)]
+/// Assert a `loadTable`-shaped response advertises client-side scan planning.
+///
+/// `loadTable`, `createTable` and `registerTable` all return the same body, so all
+/// three must carry it; asserting on the response rather than on the server-side
+/// helper is what catches a path that was never wired up.
+pub fn assert_advertises_client_planning(
+    config: Option<&std::collections::HashMap<String, String>>,
+    endpoint: &str,
+) {
+    let config = config.unwrap_or_else(|| panic!("{endpoint} must carry a config"));
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "{endpoint} must advertise client-side planning: {config:?}"
+    );
+}
+
 pub async fn setup_simple<T: lakekeeper::service::authz::Authorizer>(
     pool: sqlx::PgPool,
     storage_profile: lakekeeper::service::storage::StorageProfile,
@@ -188,6 +205,100 @@ pub use lakekeeper_storage_postgres::test_utils::{
     memory_io_profile, random_request_metadata, s3_compatible_profile, setup, setup_with_registry,
     spawn_build_in_queues, tabular_test_multi_warehouse_setup,
 };
+
+/// Records the authorization outcomes a handler dispatches, so a test can assert
+/// *what* was audited and *how often*.
+///
+/// Append it to `ctx.v1_state.events` after setup so only the calls under test
+/// are captured.
+#[derive(Debug, Default)]
+pub struct CapturingAuthzListener {
+    /// Both event vectors live under one lock so a count pair is a snapshot of a
+    /// single instant: a dispatch cannot land between reading one and the other.
+    events: std::sync::Mutex<CapturedAuthzEvents>,
+}
+
+#[derive(Debug, Default)]
+struct CapturedAuthzEvents {
+    succeeded: Vec<lakekeeper::service::events::AuthorizationSucceededEvent>,
+    failed: Vec<lakekeeper::service::events::AuthorizationFailedEvent>,
+}
+
+impl std::fmt::Display for CapturingAuthzListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CapturingAuthzListener")
+    }
+}
+
+#[lakekeeper::async_trait::async_trait]
+impl lakekeeper::service::events::EventListener for CapturingAuthzListener {
+    async fn authorization_succeeded(
+        &self,
+        event: lakekeeper::service::events::AuthorizationSucceededEvent,
+    ) -> anyhow::Result<()> {
+        self.events.lock().unwrap().succeeded.push(event);
+        Ok(())
+    }
+
+    async fn authorization_failed(
+        &self,
+        event: lakekeeper::service::events::AuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        self.events.lock().unwrap().failed.push(event);
+        Ok(())
+    }
+}
+
+impl CapturingAuthzListener {
+    /// The succeeded and failed counts as of one instant, read under a single
+    /// lock acquisition.
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize) {
+        let events = self.events.lock().unwrap();
+        (events.succeeded.len(), events.failed.len())
+    }
+
+    /// Both counts, after letting the dispatch settle.
+    ///
+    /// Events are dispatched from a spawned task, so wait until each count has
+    /// reached what the caller expects, then drain the run queue so a *surplus*
+    /// emit is caught rather than raced past. Both counts come from one lock
+    /// acquisition, so the returned pair is a snapshot of a single instant.
+    ///
+    /// Assert on the tuple (`assert_eq!(l.settled_counts(2, 0).await, (2, 0))`)
+    /// so both dimensions are pinned to exact values.
+    #[must_use]
+    pub async fn settled_counts(
+        &self,
+        expected_succeeded: usize,
+        expected_failed: usize,
+    ) -> (usize, usize) {
+        for _ in 0..100 {
+            let (succeeded, failed) = self.counts();
+            if succeeded >= expected_succeeded && failed >= expected_failed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.counts()
+    }
+
+    /// The failure reasons recorded so far, in order — so a test can pin *why* a
+    /// request was denied, not merely that it was.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn failure_reasons(&self) -> Vec<lakekeeper::service::events::AuthorizationFailureReason> {
+        self.events
+            .lock()
+            .unwrap()
+            .failed
+            .iter()
+            .map(|e| e.failure_reason.clone())
+            .collect()
+    }
+}
 
 /// Test-only public reach into [`lakekeeper::service::post_migration_hooks`]'s
 /// `pub(crate)` backfill helper. Downstream test crates

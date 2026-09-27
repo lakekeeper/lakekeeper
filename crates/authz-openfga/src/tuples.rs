@@ -15,7 +15,8 @@
 use lakekeeper::{
     ProjectId, WarehouseId,
     service::{
-        Actor, GenericTableId, NamespaceId, RoleId, TableId, ViewId, authz::NamespaceParent,
+        Actor, GenericTableId, NamespaceId, RoleId, TableId, TabularId, TagDefinitionId, ViewId,
+        authz::NamespaceParent,
     },
 };
 use openfga_client::client::TupleKey;
@@ -24,7 +25,7 @@ use crate::{
     entities::OpenFgaEntity,
     relations::{
         GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation,
-        TableRelation, ViewRelation, WarehouseRelation,
+        TableRelation, TagRelation, ViewRelation, WarehouseRelation,
     },
 };
 
@@ -224,6 +225,24 @@ pub(crate) fn ownership_tuples_for_view(
     )]
 }
 
+/// Hierarchy tuples for any tabular: `namespace ↔ table | view | generic_table`.
+///
+/// Dispatches to the per-type helper rather than rebuilding the edge, so a re-parent
+/// cannot drift from what `create_*` wrote.
+pub(crate) fn hierarchy_tuples_for_tabular(
+    warehouse: WarehouseId,
+    tabular: TabularId,
+    parent_namespace: NamespaceId,
+) -> Vec<TupleKey> {
+    match tabular {
+        TabularId::Table(table) => hierarchy_tuples_for_table(warehouse, table, parent_namespace),
+        TabularId::View(view) => hierarchy_tuples_for_view(warehouse, view, parent_namespace),
+        TabularId::GenericTable(generic_table) => {
+            hierarchy_tuples_for_generic_table(warehouse, generic_table, parent_namespace)
+        }
+    }
+}
+
 /// Hierarchy tuples for a role: `project -[project]-> role`.
 ///
 /// Note: there is no inverse `role → project` edge in the v4 schema; the role
@@ -242,6 +261,33 @@ pub(crate) fn ownership_tuples_for_role(actor: &Actor, role: RoleId) -> Vec<Tupl
         actor.to_openfga(),
         RoleRelation::Ownership.to_string(),
         role.to_openfga(),
+    )]
+}
+
+/// Hierarchy tuples for a tag definition: `project -[project]-> tag`.
+///
+/// Mirrors the role hierarchy: there is no inverse `tag → project` edge in the
+/// v4 schema; the project type does not expose a tag-child relation.
+pub(crate) fn hierarchy_tuples_for_tag(
+    project: &ProjectId,
+    tag_definition_id: TagDefinitionId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        project.to_openfga(),
+        TagRelation::Project.to_string(),
+        tag_definition_id.to_openfga(),
+    )]
+}
+
+/// Ownership tuple for a tag definition.
+pub(crate) fn ownership_tuples_for_tag(
+    actor: &Actor,
+    tag_definition_id: TagDefinitionId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        actor.to_openfga(),
+        TagRelation::Ownership.to_string(),
+        tag_definition_id.to_openfga(),
     )]
 }
 
@@ -299,6 +345,10 @@ mod tests {
         RoleId::new(uuid_of('6'))
     }
 
+    fn fixed_tag_definition_id() -> TagDefinitionId {
+        TagDefinitionId::new(uuid_of('8'))
+    }
+
     fn fixed_server_string() -> String {
         use crate::entities::OpenFgaEntity;
         let server = ServerId::new(uuid_of('7'));
@@ -340,6 +390,34 @@ mod tests {
                 "user:oidc~alice".to_string(),
                 "project_admin".to_string(),
                 "project:11111111-1111-1111-1111-111111111111".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(tuple_set(combined), expected);
+    }
+
+    /// Golden tuples for a tag definition: `project → tag` plus actor → `ownership`.
+    #[test]
+    fn create_tag_tuples_are_exactly_specified() {
+        let project = fixed_project_id();
+        let tag = fixed_tag_definition_id();
+        let actor = fixed_actor();
+
+        let mut combined = hierarchy_tuples_for_tag(&project, tag);
+        combined.extend(ownership_tuples_for_tag(&actor, tag));
+
+        let expected: HashSet<(String, String, String)> = [
+            (
+                "project:11111111-1111-1111-1111-111111111111".to_string(),
+                "project".to_string(),
+                "lakekeeper_catalog_tag:88888888-8888-8888-8888-888888888888".to_string(),
+            ),
+            (
+                "user:oidc~alice".to_string(),
+                "ownership".to_string(),
+                "lakekeeper_catalog_tag:88888888-8888-8888-8888-888888888888".to_string(),
             ),
         ]
         .into_iter()
@@ -411,6 +489,150 @@ mod tests {
         .collect();
 
         assert_eq!(tuple_set(combined), expected);
+    }
+
+    /// Golden tuples for a move: the hook writes the destination's hierarchy pair and
+    /// deletes the source's, so both halves come from the same helper.
+    ///
+    /// Pins the shape the original move-namespace attempt got wrong by hand-rolling it: the
+    /// inverse relation differs by parent kind (`namespace` for a warehouse, `child` for a
+    /// namespace), so a re-parent that crosses those kinds must not reuse one form for both.
+    #[test]
+    fn move_namespace_out_of_namespace_to_warehouse_root_tuples_are_exactly_specified() {
+        let warehouse = fixed_warehouse_id();
+        let old_parent_ns = NamespaceId::new(uuid_of('8'));
+        let moved = fixed_namespace_id();
+
+        let writes = hierarchy_tuples_for_namespace(&NamespaceParent::Warehouse(warehouse), moved);
+        let deletes =
+            hierarchy_tuples_for_namespace(&NamespaceParent::Namespace(old_parent_ns), moved);
+
+        // Added: the namespace becomes a direct child of the warehouse.
+        assert_eq!(
+            tuple_set(writes),
+            [
+                (
+                    "warehouse:22222222-2222-2222-2222-222222222222".to_string(),
+                    "parent".to_string(),
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                ),
+                (
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                    "namespace".to_string(),
+                    "warehouse:22222222-2222-2222-2222-222222222222".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>()
+        );
+
+        // Removed: the edges to the former parent namespace. Note `child`, not `namespace` —
+        // deleting the warehouse-shaped inverse here would leave the old edge in place.
+        assert_eq!(
+            tuple_set(deletes),
+            [
+                (
+                    "namespace:88888888-8888-8888-8888-888888888888".to_string(),
+                    "parent".to_string(),
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                ),
+                (
+                    "namespace:33333333-3333-3333-3333-333333333333".to_string(),
+                    "child".to_string(),
+                    "namespace:88888888-8888-8888-8888-888888888888".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>()
+        );
+    }
+
+    /// The tabular dispatcher must be exactly the per-type helper, for every variant.
+    ///
+    /// `detach_tabular_parent` deletes what this returns and `attach_tabular_parent` writes
+    /// it, so a dispatcher that reached for the wrong variant's helper would delete tuples
+    /// that do not exist (silently, since the delete is idempotent) and leave the real
+    /// parent edge live — the exact stale-inheritance bug the hooks exist to prevent.
+    #[test]
+    fn tabular_hierarchy_dispatch_matches_the_per_type_helpers() {
+        let warehouse = fixed_warehouse_id();
+        let parent = fixed_namespace_id();
+        let table = fixed_table_id();
+        let view = fixed_view_id();
+        let generic = GenericTableId::new(uuid_of('9'));
+
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::Table(table),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_table(warehouse, table, parent)),
+        );
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::View(view),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_view(warehouse, view, parent)),
+        );
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_tabular(
+                warehouse,
+                TabularId::GenericTable(generic),
+                parent
+            )),
+            tuple_set(hierarchy_tuples_for_generic_table(
+                warehouse, generic, parent
+            )),
+        );
+    }
+
+    /// The three variants must not collapse onto one another.
+    ///
+    /// The equality test above would still pass if two of the per-type helpers emitted the
+    /// same object type — say a future edit gave views the `lakekeeper_table` prefix — and
+    /// then a view rename would delete a table's parent edge.
+    #[test]
+    fn tabular_hierarchy_variants_are_distinct() {
+        let warehouse = fixed_warehouse_id();
+        let parent = fixed_namespace_id();
+        let id = uuid_of('4');
+
+        let table = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::Table(TableId::new(id)),
+            parent,
+        ));
+        let view = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::View(ViewId::new(id)),
+            parent,
+        ));
+        let generic = tuple_set(hierarchy_tuples_for_tabular(
+            warehouse,
+            TabularId::GenericTable(GenericTableId::new(id)),
+            parent,
+        ));
+
+        // Same uuid, same parent, same warehouse — only the type prefix differs.
+        assert_ne!(table, view);
+        assert_ne!(table, generic);
+        assert_ne!(view, generic);
+    }
+
+    /// A rename leaves the parent unchanged, so writes and deletes are identical — which is
+    /// why the caller must skip the hook entirely rather than apply both halves.
+    #[test]
+    fn move_namespace_within_same_parent_produces_identical_write_and_delete_sets() {
+        let parent = NamespaceParent::Namespace(NamespaceId::new(uuid_of('8')));
+        let moved = fixed_namespace_id();
+
+        assert_eq!(
+            tuple_set(hierarchy_tuples_for_namespace(&parent, moved)),
+            tuple_set(hierarchy_tuples_for_namespace(&parent, moved)),
+        );
     }
 
     #[test]

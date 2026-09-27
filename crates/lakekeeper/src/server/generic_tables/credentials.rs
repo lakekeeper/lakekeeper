@@ -1,9 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use iceberg_ext::catalog::rest::StorageCredential;
-
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::{
         ApiContext,
         data::v1::generic_tables::{
@@ -26,7 +24,7 @@ use crate::{
             get_relevant_namespaces_to_authorize_load_tabular,
             get_relevant_tabulars_to_authorize_load_tabular,
             load_objects_to_authorize_load_tabular, resolve_users_for_authorize_load_tabular,
-            sort_tabulars_for_authorize_load_tabular,
+            sort_tabulars_for_authorize_load_tabular, validate_referenced_by,
         },
     },
     service::{
@@ -62,6 +60,10 @@ pub(super) async fn load_generic_table_credentials<
         table_name,
     } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+    validate_referenced_by(
+        referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
 
@@ -115,14 +117,9 @@ pub(super) async fn load_generic_table_credentials<
         )
         .await?;
 
-    let storage_credentials = if storage_config.creds.inner().is_empty() {
-        vec![]
-    } else {
-        vec![StorageCredential {
-            prefix: gt_info.location.to_string(),
-            config: storage_config.creds.into(),
-        }]
-    };
+    let storage_credentials = storage_config
+        .storage_credentials(&gt_info.location)
+        .unwrap_or_default();
 
     Ok(LoadGenericTableCredentialsResponse {
         storage_credentials,
@@ -219,6 +216,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
     // 9. Build actions and authorize in batch.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
+        &table,
     );
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)

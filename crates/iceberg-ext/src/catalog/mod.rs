@@ -3,12 +3,15 @@ pub use iceberg::{NamespaceIdent, TableIdent, TableRequirement, TableUpdate};
 mod view_requirement;
 pub use view_requirement::{AssertViewUuid, ViewRequirement};
 
+mod table_update_kind;
+pub use table_update_kind::TableUpdateKind;
+
 pub mod rest {
     mod catalog_config;
     pub use catalog_config::CatalogConfig;
 
     mod s3_signer;
-    pub use s3_signer::{S3SignRequest, S3SignResponse};
+    pub use s3_signer::{RemoteSigningConfig, S3SignRequest, S3SignResponse};
 
     mod view_update;
     pub use view_update::ViewUpdate;
@@ -28,7 +31,7 @@ pub mod rest {
     pub use table::{
         CommitTableRequest, CommitTableResponse, CommitTransactionRequest, CreateTableRequest,
         ETag, ListTablesResponse, LoadCredentialsResponse, LoadTableResult, RegisterTableRequest,
-        RenameTableRequest, StorageCredential, TableETag, create_etag,
+        RenameTableRequest, StorageCredential,
     };
 
     mod view;

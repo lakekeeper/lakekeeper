@@ -1,6 +1,7 @@
 ---
 hide:
   - toc
+description: "Interactive OpenAPI reference for the Lakekeeper Management API: projects, warehouses, users, roles and permissions."
 ---
 <style>
 /*
@@ -11,13 +12,12 @@ hide:
   display: none;
 }
 
-
 /*
  * Remove margins around the center body to gain space
  */
 .md-content__inner.md-typeset > p,
 .md-content__inner.md-typeset {
-  margin: 0; 
+  margin: 0;
   padding: 0;
 }
 

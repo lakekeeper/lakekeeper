@@ -1,0 +1,19 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "operation": "grant_created",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "outcome": "success",
+  "context": {
+    "principal": {
+      "user": "oidc~alice"
+    },
+    "privilege": "select",
+    "resource_type": "table",
+    "resource_id": "019684ff-0000-7000-8000-000000000002",
+    "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH root AS (\n            SELECT namespace_name AS path, array_length(namespace_name, 1) AS depth\n            FROM namespace\n            WHERE warehouse_id = $1 AND namespace_id = $2\n        )\n        SELECT count(*) AS \"count!\"\n        FROM namespace n, root r\n        WHERE n.warehouse_id = $1\n          AND n.namespace_name >= r.path\n          AND n.namespace_name[1:r.depth] = r.path\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6697236f9d97f780bd1f4b462f66290b382faa42a2bf92d1000425529daae620"
+}

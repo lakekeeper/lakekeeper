@@ -1482,6 +1482,7 @@ define_transparent_error! {
         CatalogBackendError,
         InvalidNamespaceIdentifier,
         InternalParseLocationError,
+        TabularAlreadyExists,
         TabularNotFound
     ]
 }
@@ -1609,9 +1610,27 @@ where
         Self::search_tabular_impl(warehouse_id, search_term, catalog_state).await
     }
 
+    /// Rename a tabular, optionally into a different namespace.
+    ///
+    /// Both namespaces are the ones the caller resolved and authorized, and both are
+    /// enforced by the implementation.
+    ///
+    /// `source_namespace_id` locates the tabular together with its id and source name, so a
+    /// rename that lost a race against a concurrent one fails instead of acting on whatever
+    /// the winner left behind. The authorizer's re-parenting depends on this: it detaches
+    /// the caller's source namespace, which is only correct while that is still the
+    /// tabular's real parent.
+    ///
+    /// `destination_namespace_id` is where the tabular lands. Resolving the destination
+    /// ident a second time at write time would let it land in a namespace the request was
+    /// never authorized against, whenever the caller's resolution and the write disagree
+    /// about which namespace bears that name. The destination ident is still required to
+    /// name that id, so a destination renamed away under the request fails.
     async fn rename_tabular(
         warehouse_id: WarehouseId,
         source_id: impl Into<TabularId> + Send,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source_ident: &TableIdent,
         destination_ident: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -1619,6 +1638,8 @@ where
         Self::rename_tabular_impl(
             warehouse_id,
             source_id.into(),
+            source_namespace_id,
+            destination_namespace_id,
             source_ident,
             destination_ident,
             transaction,
@@ -1670,6 +1691,38 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
         Self::get_tabular_infos_by_id_impl(warehouse_id, tabulars, list_flags, catalog_state).await
+    }
+
+    /// Resolve a tabular from a bare UUID, i.e. without knowing its type.
+    ///
+    /// Prefer the typed lookups ([`Self::get_table_info`], [`Self::get_view_info`],
+    /// [`Self::get_generic_table_info`]) — this is for the few routes that are
+    /// deliberately type-agnostic, such as the S3 signer's `tabular-id/{uuid}`.
+    async fn get_tabular_info_by_uuid(
+        warehouse_id: WarehouseId,
+        tabular_id: uuid::Uuid,
+        list_flags: TabularListFlags,
+        catalog_state: Self::State,
+    ) -> Result<Option<ViewOrTableInfo>, GetTabularInfoError> {
+        let candidates = [
+            TabularId::Table(TableId::from(tabular_id)),
+            TabularId::View(ViewId::from(tabular_id)),
+            TabularId::GenericTable(GenericTableId::from(tabular_id)),
+        ];
+        let mut infos =
+            Self::get_tabular_infos_by_id(warehouse_id, &candidates, list_flags, catalog_state)
+                .await?;
+
+        if infos.len() > 1 {
+            return Err(UnexpectedTabularInResponse::new()
+                .append_detail(format!(
+                    "Expected at most one tabular for id {tabular_id}, got {}",
+                    infos.len()
+                ))
+                .into());
+        }
+
+        Ok(infos.pop())
     }
 
     async fn get_tabular_infos_by_s3_location(
@@ -1916,6 +1969,16 @@ where
             },
         )?;
         Ok(tables)
+    }
+
+    /// Repair denormalised tabular copies of namespace paths stored with the wrong casing,
+    /// returning the number of rows changed. See
+    /// [`CatalogStore::repair_tabular_namespace_path_casing_impl`]. Maintenance only — called from
+    /// the post-migration hooks, never from a request path.
+    async fn repair_tabular_namespace_path_casing(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<u64, CatalogBackendError> {
+        Self::repair_tabular_namespace_path_casing_impl(transaction).await
     }
 }
 

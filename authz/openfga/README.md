@@ -4,6 +4,91 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.12`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
+
+Supersedes `v4.11`, which reached no release. `v4.11` carried the subtree grant relations; `v4.12` adds the privilege split on top. A store already provisioned with `v4.11` from a `main` build must see a higher version to pick up the new relations, hence the bump. `v4.11` is no longer registered; stores on it migrate straight to `v4.12`.
+
+### Subtree grant relations
+
+`warehouse`, `namespace`:
+
+- Add `can_read_subtree_assignments` and `can_revoke_subtree_assignments`, both from `manage_grants`. Reading or revoking every grant in a subtree is administration-grade, and `manage_grants` is the relation whose reach is the subtree. These arrived with `v4.11` and are listed here because `v4.12` is the first released version to carry them.
+
+### Split privileges
+
+`project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- `describe`, `select`, `modify`, and `create` where the level has it, now hold only what was granted on the object itself — they are `[user, role#assignee]` and nothing more. Existing tuples are already exactly this, which is why nothing has to be rewritten. The tabular types have no `create`.
+- A `_effective` twin for each carries what the grant implies: the weaker privileges it subsumes, plus what flows down from the parent. A project sits at the top of the privilege hierarchy, so its twins add only the subsumed privileges. Their definitions are the former bodies of the bare relations. Every action reads the `_effective` twin, so what an action authorizes is unchanged.
+
+A `Check` issued directly against OpenFGA for a bare privilege answers "granted on this object" where it previously answered "holds it here"; the previous answer is `<privilege>_effective`. Grants written and listed through Lakekeeper are unaffected, because those name the stored relation. Nothing Lakekeeper checks names a bare privilege — every check goes through a `can_*` action.
+
+### Visibility
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- New `visible_below`: a grant on this object or anywhere below it. It reads the bare privilege relations plus `ownership` and recurses downward, so each object it reaches contributes only its own stored tuples and none of them re-ask the question of their parent.
+- `warehouse.can_get_metadata` and `namespace.can_get_metadata` now read `describe_effective or visible_below from …`. `project.can_get_metadata` reads `describe_effective or visible_below from warehouse or admin from server`, which also bounds the cost of listing the warehouses in a project.
+
+Bottom-up visibility is unchanged: a principal granted `select` on one deep table still reaches `can_use`, `can_get_config` and the listings above it. What changes is the cost. Previously each descendant re-resolved `describe from parent` back up to the project, so a check that had to visit every object in a warehouse paid a full upward walk per object. The bare relations carry no inheritance, so each visit is now local; whatever a descendant inherits from above is already answered by `describe_effective` on the object being checked.
+
+## `v4.10`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Adds namespace moves, governance tags, and revoke authority. No tuple rewrites. Existing tuples authorize the same model actions; what changed is which relation the server asks on a revoke — `pass_grants` no longer confers revoking. See below.
+
+Supersedes `v4.9`, which reached no release. `v4.9` carried the namespace-move and governance-tag additions; `v4.10` adds revoke authority on top. Because the model is selected by version, a store already provisioned with `v4.9` from a `main` build must see a higher version to pick up the new relations — hence the bump rather than an in-place edit. `v4.9` is no longer registered; stores on it migrate straight to `v4.10`.
+
+### Namespace moves
+
+`namespace`:
+
+- Add `can_move` (from `manage_grants and modify`). A move re-issues every privilege the destination subtree confers onto this namespace's contents, leaving no assignment record — so it requires grant authority on top of ordinary write access: if you can already grant at the destination, the move confers nothing you could not have granted directly. Under `managed_access` ownership does not confer `manage_grants`, so this also blocks moving out of a managed subtree to escape that control. `can_move` is therefore strictly stronger than `can_delete`: everyone who may move may also delete, but not vice versa.
+- Add `can_accept_moved_namespace` (from `manage_grants and create`) — the destination-side check, strictly stronger than `can_create_namespace` (from `create`): `create` adds an empty child (exposing nothing), whereas a move arrives carrying contents and their direct grants. Gating acceptance on `create` alone would let a namespace be populated and granted under a permissive parent and then moved in, smuggling those grants past the `managed_access` control the destination subtree relies on.
+
+`warehouse`:
+
+- Add `can_accept_moved_namespace` (from `manage_grants and create`) — same gate for moves targeting the warehouse root.
+
+### Revoke authority
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- Add `can_revoke_describe`, `can_revoke_select`, `can_revoke_modify` (and `can_revoke_create` where the level has it), each from `manage_grants`. These are the privileges `pass_grants` can delegate; the rest are already `manage_grants`-only to grant, so both directions keep sharing one relation.
+
+A privilege name this version does not publish has no revoke action either: an unknown privilege is refused in both directions. A name never declared has no tuple to remove. A tuple left by a privilege an *older* version declared is unreachable through the API in any case — it is absent from listings too — and is removed in OpenFGA directly.
+
+**Behaviour change.** `pass_grants` now delegates in one direction only: a holder may hand out a privilege they hold, but no longer take one back — including one they granted themselves. Revoking requires `manage_grants`. This applies to both the `/grants` diff and the older `/permissions/{type}/{id}/assignments` deletes. Existing tuples are unchanged; a principal holding `pass_grants` without `manage_grants` loses the ability to remove other principals' grants, which they had in `v4.7` and earlier. `pass_grants` is directly assignable at every level and never inherits — unlike `manage_grants`, which does — so the loss is confined to the objects where `pass_grants` was granted directly, not to their subtrees. Restoring it means granting `manage_grants`, which is strictly broader: it also confers granting privileges the holder does not hold, ownership transfer, and administration of the subtree below.
+
+The point is delegation depth: every grant is now one hop from someone holding `manage_grants`, so there is no chain of delegated grants to unwind when access is withdrawn — which is what makes storing no grantor on a grant safe.
+
+### Governance tags
+
+New type `lakekeeper_catalog_tag` (one instance per tag definition):
+
+- `project` parent, `ownership`, and a directly-assignable `apply` relation — the per-tag delegation point ("may attach/detach THIS tag" without owning the definition).
+- Actions `can_read`, `can_update`, `can_delete`, `can_apply`, `can_read_attachments` (reverse lookup — which objects carry the tag); grants `can_grant_apply`, `can_change_ownership`, `can_read_assignments` (who may apply/owns). Management derives from `ownership` or `security_admin from project`.
+
+`project`:
+
+- Add `tag_creator` relation (`[user, role#assignee] or security_admin`) — delegates tag-definition creation without granting full `security_admin`, mirroring `role_creator`.
+- Add `can_create_tag` (from `tag_creator`), `can_list_tags` (from `can_get_metadata`), and `can_grant_tag_creator` (from `security_admin or admin from server`).
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- Add `manage_tags` relation, `can_manage_tags` action, `can_grant_manage_tags` grant. `manage_tags` is independent of `modify` (separation of duties: classify without holding data/DDL rights) and inherits down the resource hierarchy. Attaching a tag to a resource requires `can_manage_tags` on the resource **and** `can_apply` on the tag definition.
+
 ## `v4.7`
 
 ```
@@ -59,8 +144,8 @@ ADDS_TUPLES:     TRUE
 ```
 
 - Adds types `lakekeeper_table` and `lakekeeper_view`. Their definitions are copied from `table` and `view`, however the way these objects are represented changes.
-  - For `table` it is `table_id`, for `lakekeeper_table` it is `warehouse_id/table_id`.
-  - For `view` it is `view_id`, for `lakekeeper_view` it is `warehouse_id/view_id`.
-  - This reflects the change that view and table ids can be re-used across warehouses.
+    - For `table` it is `table_id`, for `lakekeeper_table` it is `warehouse_id/table_id`.
+    - For `view` it is `view_id`, for `lakekeeper_view` it is `warehouse_id/view_id`.
+    - This reflects the change that view and table ids can be re-used across warehouses.
 - For each tuple referencing a table or view, the migration adds a new tuple according to the new object representation.
 - Types `table` and `view` are deprecated and scheduled for deletion.

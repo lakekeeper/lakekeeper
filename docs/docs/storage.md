@@ -1,10 +1,15 @@
+---
+description: "Configure Lakekeeper warehouse storage profiles for S3, Google Cloud Storage, Azure Data Lake Storage and other backends, including credential vending."
+---
+
 # Storage
 
 Storage in Lakekeeper is bound to a Warehouse. Each Warehouse stores data in a location defined by a `StorageProfile` attached to it.
 
 Currently, we support the following storages:
 
-- S3 (tested with AWS & Minio)
+- S3 (tested with AWS, Silo and SeaweedFS)
+- STACKIT Object Storage
 - Azure Data Lake Storage Gen 2
 - OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
@@ -13,11 +18,94 @@ When creating a Warehouse or updating storage information, Lakekeeper validates 
 
 By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
 
-- **S3 / AWS Warehouses**: Must start with `s3://`
+- **S3 / AWS / STACKIT Warehouses**: Must start with `s3://`
 - **Azure / ADLS Warehouses**: Must start with `abfss://`
 - **GCP Warehouses**: Must start with `gs://`
 
 When a new table is created without an explicitly specified location, Lakekeeper automatically assigns the appropriate protocol based on the storage type. If a location is explicitly provided by the client, it must adhere to the required schema.
+
+## Validating a Storage Configuration
+
+Creating a Warehouse or updating its storage rejects the request with a single error if any check fails. To see the full picture before committing to a change — or to find out whether an existing Warehouse's storage still works — use the validation endpoints. They run the same storage and configuration checks, persist nothing, and report the outcome of every check individually.
+
+| Endpoint | Validates |
+| --- | --- |
+| `POST /management/v1/warehouse-creation-validation` | A configuration you are about to create |
+| `POST /management/v1/warehouse/{warehouse_id}/storage/validate-profile` | A storage profile update |
+| `POST /management/v1/warehouse/{warehouse_id}/storage/validate-credential` | A replacement credential |
+| `POST /management/v1/warehouse/{warehouse_id}/storage/validate-access` | The storage the Warehouse currently runs with |
+
+Each returns `200 OK` regardless of the outcome — a failing check is a result, not a request error. Inspect `valid` and the per-check entries. A non-200 is returned only when the request itself cannot be processed: missing project (400), insufficient permission (403), unknown Warehouse (404), or an unreachable secret store (500). A caller who cannot see the Warehouse at all gets 404 rather than 403, so an unknown Warehouse and one the caller may not access are indistinguishable by design.
+
+Validation requires the same permission as the operation it stands in for: validating a new Warehouse requires `create_warehouse` on the project, the others require `update_storage` on the Warehouse.
+
+Request bodies are exactly the bodies of the endpoints they stand in for — validating a new Warehouse takes the `Create Warehouse` body verbatim, so a dry-run cannot drift from what it predicts:
+
+```json
+{
+  "warehouse-name": "analytics",
+  "storage-profile": { "type": "s3", "bucket": "my-bucket", "region": "us-east-1", "sts-enabled": true },
+  "storage-credential": { "type": "s3", "credential-type": "access-key", "aws-access-key-id": "...", "aws-secret-access-key": "..." }
+}
+```
+
+```json
+{
+  "valid": false,
+  "checks": [
+    { "name": "profile-well-formed", "status": "passed", "duration-ms": 0 },
+    { "name": "profile-compatible", "status": "skipped", "reason": "Only applies when updating an existing warehouse." },
+    { "name": "warehouse-name-valid", "status": "passed", "duration-ms": 3 },
+    { "name": "location-exclusive", "status": "passed", "duration-ms": 3 },
+    { "name": "spec-mutable", "status": "skipped", "reason": "Only applies when updating an existing warehouse." },
+    { "name": "format-version-policy-consistent", "status": "passed", "duration-ms": 0 },
+    { "name": "managed-by-allowed", "status": "passed", "duration-ms": 0 },
+    { "name": "storage-client-initialized", "status": "passed", "duration-ms": 41 },
+    { "name": "lakekeeper-read-write", "status": "passed", "duration-ms": 212 },
+    { "name": "vended-credentials-issued", "status": "passed", "duration-ms": 180 },
+    { "name": "vended-credentials-read-write", "status": "failed", "duration-ms": 154,
+      "error": { "message": "...", "type": "PermissionDenied", "code": 400 } },
+    { "name": "vended-credentials-scope-enforced", "status": "passed", "duration-ms": 149 },
+    { "name": "cleanup", "status": "passed", "duration-ms": 88 },
+    { "name": "cors-origin-allowed", "status": "warning", "duration-ms": 41,
+      "error": { "message": "CORS does not allow origin `https://lakekeeper.example.com` for `GET`, `HEAD`, `PUT`, `POST`, `DELETE`. ...", "type": "CorsOriginNotAllowed", "code": 412,
+        "stack": ["`GET`, `HEAD`, `PUT`, `POST`, `DELETE`: Access-Control-Allow-Origin expected `https://lakekeeper.example.com` or `*`, found no header"] } }
+  ]
+}
+```
+
+Checks:
+
+| Check | Meaning |
+| --- | --- |
+| `profile-well-formed` | The storage profile is internally consistent and can be normalized |
+| `profile-compatible` | The new profile is a permitted evolution of the current one |
+| `warehouse-name-valid` | The name is well-formed and not already used in the project. Compared case-insensitively, matching the database's uniqueness constraint |
+| `location-exclusive` | No other Warehouse in the project already occupies this location |
+| `spec-mutable` | The Warehouse's spec is not locked to an external control plane |
+| `format-version-policy-consistent` | The Iceberg format-version policy is self-consistent |
+| `managed-by-allowed` | The caller may create a Warehouse under the requested `managed-by` |
+| `storage-client-initialized` | A storage client can be built from the profile and credential |
+| `lakekeeper-read-write` | Lakekeeper itself can write, read back and delete a probe file in the Warehouse's object storage |
+| `vended-credentials-issued` | Temporary downscoped credentials can be issued |
+| `vended-credentials-read-write` | Downscoped credentials work below the table location |
+| `vended-credentials-scope-enforced` | Downscoped credentials are refused write access *outside* the table location |
+| `cleanup` | Everything written during validation was removed again |
+| `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does. Reported as `warning` when it does not. Skipped for ADLS and OneLake |
+
+A check is `skipped` when it does not apply (credential vending is disabled, or the check only applies to a different operation) or when a prerequisite failed; the `reason` field says which. Skipped checks do not make a configuration invalid.
+
+A check is `warning` when it found a problem that does not stop the Warehouse from working, such as a CORS policy that blocks the in-browser query console. Its `error` says what was found; for `cors-origin-allowed`, each `stack` line names the refused methods with the expected and the found response header. Warnings never make `valid` false and never block creating or updating a Warehouse.
+
+With `LAKEKEEPER__SKIP_STORAGE_VALIDATION=true` every storage check reports `skipped` rather than silently passing. Note that `valid` is still `true` in that case — nothing failed, but nothing was checked either, so read the individual checks before trusting a green result.
+
+New checks may be added in future releases. `duration-ms` is reported for diagnostics only and is not a performance guarantee.
+
+Validation is advisory: a concurrent request can still take the Warehouse name or change a bucket policy between validating and creating.
+
+Validation writes and deletes probe objects under the Warehouse location, so it needs the same storage permissions as normal operation. Cleanup removes the probe prefix recursively.
+
+Storage probes must finish within two thirds of `LAKEKEEPER__MAX_REQUEST_TIME` (20 seconds by default), counted from the request's arrival, and cleanup within the following sixth. A probe or cleanup that runs out fails with `StorageProbeTimeout`, so storage that Lakekeeper cannot reach still produces a report that names the stalled check instead of the request timing out. Connections to storage and to its credential endpoints (STS, token services) time out after 5 seconds.
 
 ## Disabling Credential Vending & Remote Signing
 
@@ -34,6 +122,61 @@ For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additio
 - **S3 / AWS Warehouses**: Supports `s3a://` and `s3n://` in addition to `s3://`
 - **Azure Warehouses**: Supports `wasbs://` in addition to `abfss://`
 
+## CORS Configuration
+
+[LoQE, the in-browser query console](engines.md#loqe), reads and writes table data directly from object storage, so the bucket must return a CORS (Cross-Origin Resource Sharing) policy that allows requests from the Lakekeeper origin. This applies to S3, STACKIT and Google Cloud Storage; LoQE does not support ADLS. [Storage validation](#validating-a-storage-configuration) reports a `cors-origin-allowed` warning when the Lakekeeper origin is not allowed.
+
+Recommended policy for S3 and STACKIT:
+
+```json
+[
+    {
+        "AllowedHeaders": ["*"],
+        "AllowedMethods": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+        "AllowedOrigins": ["https://lakekeeper.example.com"],
+        "ExposeHeaders": ["ETag", "Content-Range"]
+    }
+]
+```
+
+Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted. `ETag` must be exposed for multipart uploads and `Content-Range` for reading file sizes from range requests. Validation sends the preflight a browser would send, which shows allowed origins, methods and request headers but not exposed response headers, so it cannot verify `ExposeHeaders`.
+
+### CORS on AWS
+
+1. In the AWS S3 Configuration Menu, click on the name of your bucket
+2. Choose **Permissions** Tab
+3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
+4. Paste the policy above into the CORS configuration editor. The text must be valid JSON.
+5. Choose **Save changes**
+
+### CORS on STACKIT
+
+STACKIT sets CORS through the S3 API, using an access key of the bucket's credentials group. Wrap the policy above as `{"CORSRules": [...]}` in `cors.json` and apply it:
+
+```bash
+aws s3api put-bucket-cors \
+  --endpoint-url https://object.storage.eu01.onstackit.cloud \
+  --bucket <bucket> \
+  --cors-configuration file://cors.json
+```
+
+For the data platform storage service, use `https://dataplatform.storage.eu01.onstackit.cloud` as the endpoint.
+
+### CORS on Google Cloud Storage
+
+```json
+[
+    {
+        "origin": ["https://lakekeeper.example.com"],
+        "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+        "responseHeader": ["*"],
+        "maxAgeSeconds": 3600
+    }
+]
+```
+
+Save the policy as `cors.json` and apply it with `gcloud storage buckets update gs://<bucket> --cors-file=cors.json`.
+
 ## Storage Layout
 
 The storage layout controls how namespace and tabular directories are structured under the warehouse base location. It is configured via the `storage-layout` field inside the `storage-profile` when creating or updating a warehouse. The layout applies to all new tabulars created in the warehouse; existing tabular locations are not changed.
@@ -48,6 +191,17 @@ The storage layout controls how namespace and tabular directories are structured
 
 !!! note "OneLake supports only the default layout"
     The [OneLake](#onelake-microsoft-fabric) storage profile currently rejects `tabular-only` and `full-hierarchy` at warehouse-creation time because OneLake silently percent-decodes `%XX` in blob paths, which would alias `{name}` segments that differ only by URL-encoding. See the [OneLake storage-layout note](#onelake-microsoft-fabric) for details.
+
+!!! warning "Some layouts prevent moving namespaces"
+    A namespace's location is computed once when it is created and then frozen, so moving a namespace never relocates existing data. Under layouts that derive the location from the namespace hierarchy or from namespace *names*, a move would leave later-created child namespaces outside the moved namespace's location, fragmenting the layout. Lakekeeper therefore rejects the move with `StorageLayoutForbidsNamespaceMove` in those cases:
+
+    | Layout | `namespace` template contains `{name}` | Rename | Re-parent |
+    |--------|----------------------------------------|--------|-----------|
+    | `default` / `tabular-only` | n/a — no namespace directories are emitted | allowed | allowed |
+    | `full-hierarchy` | yes | **rejected** | **rejected** |
+    | `full-hierarchy` | `{uuid}` only | allowed | **rejected** — the ancestor chain itself changes |
+
+    The default layout emits no namespace directories, so this restriction only affects warehouses that explicitly configure `full-hierarchy`.
 
 ### Default
 
@@ -175,7 +329,7 @@ We support remote signing and vended-credentials with S3-compatible storages & A
 - **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 - **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
-Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
+Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Silo (a maintained MinIO fork), SeaweedFS and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
 
 When a client requests table configuration, Lakekeeper selects between remote signing and vended credentials based on the `X-Iceberg-Access-Delegation` header and storage profile settings:
 
@@ -183,8 +337,13 @@ When a client requests table configuration, Lakekeeper selects between remote si
 - If the header specifies `vended-credentials` or `remote-signing`, that method is used if enabled in the storage profile
 - If both methods are requested or neither is specified, Lakekeeper attempts to provide vended credentials first (if STS is enabled), then falls back to remote signing (if enabled)
 - If both methods are disabled at the storage profile level, no credentials are returned regardless of the header value
+- If the method Lakekeeper offers is not implemented by the client — DuckDB, for example, does not support remote signing — the client needs its own S3 credentials. Region, endpoint and path-style settings are still returned in the table `config`, but no `storage-credentials` entry is returned.
 
 For maximum client compatibility, we recommend enabling both STS and remote signing when your S3 storage supports it.
+
+Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables — see [Remote signing for generic tables](./generic-tables.md#remote-signing-s3-without-sts).
+
+Remote signing also covers prefix listings (`ListObjectsV2`), which clients use for maintenance operations such as Spark's `remove_orphan_files` with `prefix_listing => true` (requires `iceberg-spark-runtime` 1.10 or newer). The `prefix` must address a directory inside the table's location, i.e. it has to end with a `/` when listing the table location itself. S3 matches list prefixes as raw strings, so the prefix `warehouse/ns/table` would also return the keys of a sibling `warehouse/ns/table_other`, and is rejected. Iceberg's `FileSystemWalker` appends the `/` before listing; clients that don't are expected to normalize their prefix.
 
 For some older remote signing clients that cannot handle table-specific remote signing endpoint locations, Lakekeeper needs to identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
@@ -195,7 +354,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | Parameter                     | Type    | Required | Default                    | Description |
 |-------------------------------|---------|----------|----------------------------|-----|
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
-| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
+| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). For `flavor` `aws` without an explicit `endpoint`, a `us-gov-*`, `cn-*`, ISO or `eusc-de-*` region also selects the AWS partition of the vended-credential policy; otherwise the role ARN does. |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
 | `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
@@ -216,7 +375,7 @@ The following table describes all configuration parameters for an S3 storage pro
 
 ### AWS
 
-###### Direct File-Access with Access Key
+#### Direct File-Access with Access Key
 
 First create a new S3 bucket for the warehouse. Buckets can be re-used for multiple Warehouses as long as the `key-prefix` is different. We recommend to block all public access.
 
@@ -309,7 +468,26 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
 
-##### System Identities / Managed Identities
+##### AWS Partitions (GovCloud, China, ISO)
+
+Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are prefixed with `arn:aws-us-gov:` and `arn:aws-cn:` instead of `arn:aws:`. Lakekeeper builds the S3 ARNs of the downscoped policy it sends when vending credentials with the matching prefix, so there is nothing to configure beyond using ARNs of that partition for `sts-role-arn`, `assume-role-arn` and `aws-kms-key-arn`:
+
+```json
+{
+    "storage-profile": {
+        "type": "s3",
+        "bucket": "<name of the bucket>",
+        "region": "us-gov-west-1",
+        "sts-enabled": true,
+        "flavor": "aws",
+        "sts-role-arn": "arn:aws-us-gov:iam::<aws account id>:role/LakekeeperWarehouseDevRole"
+    }
+}
+```
+
+A `us-gov-*` or `cn-*` region determines the partition, as do the ISO regions (`us-iso-*`, `us-isob-*`, `us-isof-*`, `eu-isoe-*`) and the European Sovereign Cloud (`eusc-de-*`). This applies to profiles that let the AWS SDK resolve the endpoint from the region. For every other profile — an explicit `endpoint`, a commercial region, or a region of a partition newer than your Lakekeeper release — the partition of `sts-role-arn` or `assume-role-arn` is used, and `aws` if neither names an AWS partition. Storage profiles with a `flavor` other than `aws` always use `aws`.
+
+#### System Identities / Managed Identities
 
 Since Lakekeeper version 0.8, credentials for S3 access can also be loaded directly from the environment. Lakekeeper integrates with the AWS SDK to support standard environment-based authentication, including all common configuration options through AWS_* environment variables.
 
@@ -419,47 +597,7 @@ We are now ready to create the Warehouse using the system identity:
 
 The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the object store. It is also used as a default for `sts-role-arn`, which is the role that is assumed when generating vended credentials for clients (with an attached policy for the accessed table).
 
-##### CORS Configuration
-
-For browser-based access to S3 buckets (required for [DuckDB WASM](engines.md#duckdb-wasm)), you need to configure CORS (Cross-Origin Resource Sharing) on your S3 bucket.
-
-To configure CORS for your S3 bucket:
-
-1. In the AWS S3 Configuration Menu, click on the name of your bucket
-2. Choose **Permissions** Tab
-3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
-4. In the CORS configuration editor text box, type or copy and paste a new CORS configuration, or edit an existing configuration. The CORS configuration is a JSON file. The text that you type in the editor must be valid JSON. See below for an example.
-5. Choose **Save changes**
-
-Example CORS policy:
-
-```json
-[
-    {
-        "AllowedHeaders": [
-            "*"
-        ],
-        "AllowedMethods": [
-            "GET",
-            "POST",
-            "PUT",
-            "DELETE",
-            "HEAD"
-        ],
-        "AllowedOrigins": [
-            "https://lakekeeper.example.com"
-        ],
-        "ExposeHeaders": [
-            "ETag",
-            "x-amz-version-id"
-        ]
-    }
-]
-```
-
-Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted.
-
-##### STS Session Tags
+#### STS Session Tags
 
 The optional `sts-session-tags` setting can be used to provide Session Tags when assuming roles via STS. Doing so requires that the IAM Role's Trust Relationship also allow `sts:TagSession`. Here's the above example with this addition:
 
@@ -602,6 +740,141 @@ For cloudflare R2 credentials, the following parameters are automatically set:
 
 It is required to specify the `endpoint`. Use a [Data Location Hint](https://developers.cloudflare.com/r2/reference/data-location/#available-hints) as region.
 
+### Alibaba Cloud OSS
+
+!!! warning "Beta"
+    Alibaba Cloud OSS support is in **beta**. The API and behavior may change in a future release.
+
+Lakekeeper supports Alibaba Cloud Object Storage Service (OSS) with all S3 compatible clients, including vended credentials via the Alibaba Cloud STS [`AssumeRole`](https://www.alibabacloud.com/help/en/ram/developer-reference/api-sts-2015-04-01-assumerole) API. OSS is S3-compatible for data-plane operations, but its STS uses the Alibaba Cloud RPC signing scheme rather than AWS SigV4, so a dedicated `aliyun-oss` credential type is required.
+
+First, create a Bucket in the OSS console and note down its name and the region (e.g. `cn-hangzhou`). Lakekeeper accesses OSS through its S3-compatible interface, so use the S3-compatible endpoint — the `s3.`-prefixed host `https://s3.oss-<region>.aliyuncs.com` (e.g. `https://s3.oss-cn-hangzhou.aliyuncs.com`), as documented in [Use Amazon S3 SDKs to access OSS](https://www.alibabacloud.com/help/en/oss/developer-reference/use-amazon-s3-sdks-to-access-oss).
+
+Secondly, create the identity Lakekeeper authenticates with and the role it assumes to vend downscoped credentials:
+
+1. In the RAM console, create a RAM user for Lakekeeper and generate an AccessKey pair for it. Note down the "AccessKey ID" and "AccessKey Secret".
+1. Create a RAM role that Lakekeeper assumes to vend credentials (e.g. `lakekeeper-oss`). Grant this role the OSS permissions on your bucket, and configure its trust policy so the RAM user above is allowed to assume it (`sts:AssumeRole`). Note down the role's ARN (e.g. `acs:ram::123456789012:role/lakekeeper-oss`).
+
+Finally, create the Warehouse in Lakekeeper via the UI or API. A POST request to `/management/v1/warehouse` expects the following body:
+
+```json
+{
+  "warehouse-name": "oss_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential":
+    {
+        "credential-type": "aliyun-oss",
+        "access-key-id": "<AccessKey ID of the RAM user>",
+        "secret-access-key": "<AccessKey Secret of the RAM user>"
+    },
+  "storage-profile":
+    {
+        "type": "s3",
+        "bucket": "<name of your OSS bucket>",
+        "region": "<OSS region, i.e. cn-hangzhou>",
+        "key-prefix": "path/to/my/warehouse",
+        "endpoint": "<S3-compatible OSS endpoint, i.e. https://s3.oss-cn-hangzhou.aliyuncs.com>",
+        "sts-role-arn": "<ARN of the RAM role, i.e. acs:ram::123456789012:role/lakekeeper-oss>"
+    }
+}
+```
+
+For `aliyun-oss` credentials, the following parameters are automatically set:
+
+- `flavor` is set to `s3-compat`
+- `sts-enabled` is set to `true`
+
+It is required to specify the `endpoint`, and either `sts-role-arn` or `assume-role-arn` (the ARN of the RAM role Lakekeeper assumes). The STS endpoint is derived from the `region` (`https://sts.<region>.aliyuncs.com`); set `sts-endpoint` explicitly to override it, for example to use a VPC endpoint. If the RAM role's trust policy requires an [`sts:ExternalId`](https://www.alibabacloud.com/help/en/ram/user-guide/use-externalid-to-prevent-the-confused-deputy-problem) condition, provide it as `external-id` in the storage credential.
+
+OSS supports only [virtual-hosted-style addressing](https://www.alibabacloud.com/help/en/oss/developer-reference/compatibility-with-amazon-s3), so `path-style-access` must not be enabled for `aliyun-oss` warehouses (Lakekeeper rejects the profile if it is).
+
+!!! warning "Client checksum configuration required for OSS"
+    OSS does not support the `aws-chunked` streaming-checksum uploads (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`) that AWS SDKs released since early 2025 enable by default, and rejects them with `NotImplemented: Aws MultiChunkedEncoding STREAMING-UNSIGNED-PAYLOAD-TRAILER is not supported` (see [Use Amazon S3 SDKs to access OSS](https://www.alibabacloud.com/help/en/oss/developer-reference/use-amazon-s3-sdks-to-access-oss)). Any engine that receives vended credentials and writes to OSS directly — PyIceberg (both its PyArrow and FSSpec/boto3 file IO), Spark, Trino, Flink, … — fails on its first write unless the request-checksum mode is set to *when required*:
+
+    - **Universal** (honored by all recent AWS SDKs — Python, Java, Go): set the environment variables `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` in the client's environment.
+    - **Spark** (Iceberg `S3FileIO`): equivalently as JVM options — `--conf "spark.driver.extraJavaOptions=-Daws.requestChecksumCalculation=when_required"` and the same for `spark.executor.extraJavaOptions`.
+    - **Trino / Flink** (AWS SDK for Java): the environment variables above, or `-Daws.requestChecksumCalculation=when_required` in the JVM config.
+    - **boto3** configured directly: `Config(request_checksum_calculation="when_required")`.
+
+    This affects only clients writing to OSS directly; Lakekeeper's own metadata I/O is unaffected.
+
+## STACKIT Object Storage
+
+STACKIT Object Storage is S3-compatible, and Lakekeeper backs warehouses with it through a dedicated `stackit` storage profile. The profile exposes only the settings that apply to STACKIT: it derives the endpoint from `region` and `storage-service`, pins addressing and S3 flavor, and vends downscoped credentials through a STACKIT credentials group. Table locations use `s3://`, so engines read and write with their regular S3 file IO.
+
+### Configuration Parameters
+
+| Parameter                    | Type    | Required | Default               | Description |
+|------------------------------|---------|----------|-----------------------|-------------|
+| `bucket`                     | String  | Yes      | -                     | Name of the STACKIT bucket. Must not contain `.`. |
+| `region`                     | String  | Yes      | -                     | STACKIT region, e.g. `eu01`. |
+| `storage-service`            | String  | No       | `object-storage`      | STACKIT storage service that holds the bucket. See [Storage services](#storage-services) below. |
+| `key-prefix`                 | String  | No       | None                  | Subpath within the bucket to use. |
+| `endpoint`                   | URL     | No       | Derived               | Endpoint override for a STACKIT endpoint outside the public naming scheme, which STACKIT hands out per customer. Takes precedence over `storage-service`. |
+| `sts-enabled`                | Boolean | No       | `true`                | Vend temporary downscoped credentials via STS. Requires `credentials-group-urn`. |
+| `credentials-group-urn`      | String  | If STS   | None                  | URN of the STACKIT credentials group to assume when vending credentials, e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`. Copy it verbatim from the credentials group. |
+| `sts-token-validity-seconds` | Integer | No       | `3600`                | Validity of vended credentials in seconds. |
+| `remote-signing-enabled`     | Boolean | No       | `true`                | Allow clients to have Lakekeeper sign their S3 requests. The only client path when `sts-enabled` is `false`. |
+| `push-s3-delete-disabled`    | Boolean | No       | `true`                | Push `s3.delete-enabled=false` to clients, discouraging Spark from deleting files directly and bypassing soft-deletion. |
+| `storage-layout`             | Object  | No       | `{"type": "default"}` | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout). |
+
+At least one of `sts-enabled` and `remote-signing-enabled` must be `true`.
+
+### Storage services
+
+| `storage-service` | Endpoint                                          | Regions   |
+|-------------------|---------------------------------------------------|-----------|
+| `object-storage`  | `https://object.storage.<region>.onstackit.cloud` | All       |
+| `data-platform`   | `https://dataplatform.storage.<region>.onstackit.cloud` | `eu01` |
+
+Select the service that holds your bucket. When the endpoint is derived, Lakekeeper rejects `data-platform` in any region other than `eu01`; an explicit `endpoint` takes precedence over `storage-service`, and the region check does not apply.
+
+### Credentials
+
+Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials, so it needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`:
+
+```json
+{
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Effect": "Allow",
+      "Principal": { "AWS": "urn:sgws:identity::<account>:user/<group-id>" }
+    }
+  ]
+}
+```
+
+The URN uses the credentials group's ID, not its display name. If your STACKIT storage does not offer STS yet, set `sts-enabled` to `false`; clients then use remote signing.
+
+### Example
+
+A POST request to `/management/v1/warehouse` to create a warehouse on the data platform storage:
+
+```json
+{
+  "warehouse-name": "stackit_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential": {
+    "type": "stackit",
+    "credential-type": "access-key",
+    "access-key-id": "...",
+    "secret-access-key": "..."
+  },
+  "storage-profile": {
+    "type": "stackit",
+    "bucket": "my-warehouse",
+    "region": "eu01",
+    "storage-service": "data-platform",
+    "key-prefix": "lakekeeper-dev",
+    "credentials-group-urn": "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3"
+  }
+}
+```
+
+### Immutability
+
+`bucket`, `key-prefix`, `region` and the resolved endpoint are immutable on `update-storage-profile`: each storage service and endpoint is a distinct storage tenant, so changing them would point the warehouse at other data. `storage-service` and `endpoint` can be exchanged for each other as long as they resolve to the same endpoint, e.g. replacing `"endpoint": "https://dataplatform.storage.eu01.onstackit.cloud"` with `"storage-service": "data-platform"`. All other fields can be updated.
+
 ## Azure Data Lake Storage Gen 2
 
 To add a Warehouse backed by ADLS, we need two Azure objects: The Storage Account itself and an App Registration which Lakekeeper can use to access it and delegate access to compute engines.
@@ -666,7 +939,7 @@ A POST request to `/management/v1/warehouse` would expects the following body:
 }
 ```
 
-##### Azure System Identity
+#### Azure System Identity
 
 !!! warning
     Enabling Azure system identities allows Lakekeeper to access any storage location that the managed identity has permissions for. To minimize security risks, ensure the managed identity is restricted to only the necessary resources. Additionally, limit Warehouse creation permission in Lakekeeper to users who are authorized to access all locations that the system identity can access.
@@ -756,7 +1029,9 @@ OneLake does not have a storage-account key. Only Microsoft Entra credentials ar
 
 Supplying `shared-access-key` to a OneLake warehouse is rejected at validation time.
 
-The OneLake tenant setting **"Authenticate with OneLake user-delegated SAS tokens"** must be enabled for the workspace before vended credentials work. This is a Fabric-side setting and cannot be configured from Lakekeeper.
+Vended credentials are user-delegated SAS tokens, which depend on two Fabric settings under *OneLake settings*. **"Use short-lived user-delegated SAS tokens"** lets Lakekeeper obtain the delegation key, and **"Authenticate with OneLake user-delegated SAS tokens"** lets OneLake accept requests signed with it. Enable the second one tenant-wide, or, when the tenant admin delegates it to workspaces, in the settings of the workspace that holds the lakehouse. Both are Fabric-side settings and cannot be configured from Lakekeeper.
+
+With only the first setting enabled, creating the warehouse fails storage validation at the `vended-credentials-read-write` step with a 401 `Authentication Failed with Access token validation failed`.
 
 ### Example
 
@@ -814,7 +1089,7 @@ The service account should have appropriate permissions (such as Storage Admin r
 
 Lakekeeper supports two primary authentication methods for GCS:
 
-##### Service Account Key
+#### Service Account Key
 
 You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
 
@@ -848,7 +1123,7 @@ You can provide a service account key directly when creating a warehouse. This i
 
 The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (typically Storage Admin role on the bucket).
 
-##### GCP System Identity
+#### GCP System Identity
 
 !!! warning
     Enabling GCP system identities grants Lakekeeper access to any storage location the service account has permissions for. Carefully review and limit the permissions of the service account to avoid unintended access to sensitive resources. Additionally, limit Warehouse creation permissions in Lakekeeper to users who are authorized to access all locations that the system identity can access.

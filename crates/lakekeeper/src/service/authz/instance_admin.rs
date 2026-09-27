@@ -39,7 +39,17 @@ use crate::{
 /// authorizer, and never represented in OpenFGA, `/actions`, or batch-check.
 ///
 /// Add a variant here for each new instance-admin-only operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::IntoStaticStr)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum_macros::Display,
+    strum_macros::IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum InstanceAdminAction {
     /// Set or clear a warehouse's managed-by marker.
@@ -98,7 +108,7 @@ impl InstanceAdminAuthorizer {
     }
 }
 
-/// Resolves whether an [`Actor`] holds instance-admin (break-glass) status.
+/// Resolves whether an [`Actor`] holds instance-admin status.
 ///
 /// The decision is made **once per request** on the authn path and cached on
 /// [`RequestMetadata`] as a binary flag ([`RequestMetadata::is_instance_admin`]);

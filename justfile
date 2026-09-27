@@ -4,7 +4,7 @@ set export
 RUST_LOG := "debug"
 
 check-format:
-	cargo +nightly fmt --all -- --check
+	cargo fmt --all -- --check
 
 check-clippy:
     cargo clippy --no-default-features --all-targets --workspace -- -D warnings
@@ -23,12 +23,12 @@ check-cargo-sort:
 check: check-clippy check-format check-cargo-sort
 
 fix-format:
-    cargo +nightly fmt --all
+    cargo fmt --all
     cargo sort -w
 
 fix:
     cargo clippy --all-targets --all-features --workspace --fix --allow-staged
-    cargo +nightly fmt --all
+    cargo fmt --all
     cargo sort -w
 
 sqlx-prepare:
@@ -62,12 +62,12 @@ update-rest-openapi:
 
 update-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
-    LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
+    LAST_VERSION=$(ls $BASE_PATH | sort -rV | head -n 1); \
     fga model transform --file $BASE_PATH/$LAST_VERSION/fga.mod > $BASE_PATH/$LAST_VERSION/schema.json'
 
 test-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
-    LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
+    LAST_VERSION=$(ls $BASE_PATH | sort -rV | head -n 1); \
     fga model test --tests $BASE_PATH/$LAST_VERSION/store.fga.yaml'
 
 check-opa:
@@ -75,6 +75,51 @@ check-opa:
     cd authz/opa-bridge && opa fmt --diff --fail policies/ tests/
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
+
+# Compares the committed fixtures either side of the merge base, so it needs a base.
+# Check that an audit log format change is recorded and that AUDIT_FORMAT is the version it implies
+check-audit-format base="origin/main":
+    python3 .github/scripts/check-audit-format.py {{base}}
+
+# Print the audit log block for the release notes. Mutates nothing — see .github/RELEASING.md.
+audit-format-release-notes:
+    @python3 .github/scripts/check-audit-format.py --release-notes
+
+# Refuses until every fragment's text is in this release's section of the release notes —
+# their prose exists nowhere else. Run `audit-format-release-notes` and paste it first.
+# Move the audit format baseline to the version this release ships and clear the fragments
+audit-format-release version:
+    python3 .github/scripts/check-audit-format.py --release {{version}}
+
+# Drives real requests through the service layer and checks every audit record against the
+# format contract. Needs the local Postgres from the initial setup (see the developer guide).
+# Run it after adding a call: EXPECTED_RECORDS in that file is maintained by hand, and this is
+# where a stale count shows up — in seconds, rather than from CI.
+# Run the audit log corpus test on its own
+test-audit-corpus:
+    cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
+
+# AUDIT_FORMAT first, because everything after it depends on the value: the fixture
+# directory is named for the major, so a fragment that raises it also renames the directory,
+# and regenerating before that would write goldens into the outgoing one. The version is
+# computed from audit-format/released.json and audit-format/unreleased/ — write a fragment,
+# never a version number.
+#
+# Then two passes over the fixtures: the first writes, the second verifies (the writing pass
+# returns before it compares). The first is filtered to the writers; the second runs the whole
+# module, so it also reports the work a regeneration creates — a new field
+# `docs/docs/logging.md` does not document, an orphan fixture, a contract rule the new records
+# break.
+# Review the diff — it is exactly what consumers will see.
+# Recompute AUDIT_FORMAT, then regenerate the committed audit log fixtures and wire-value manifests
+update-audit-fixtures:
+    python3 .github/scripts/check-audit-format.py --write-version
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper --lib \
+      service::events::backends::audit::tests::fixture_
+    cargo test -p lakekeeper --lib service::events::backends::audit::tests
+    # Each crate owns the audit values it contributes, so each regenerates its own manifest.
+    LAKEKEEPER_UPDATE_AUDIT_FIXTURES=1 cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
+    cargo test -p lakekeeper-authz-openfga --lib audit_wire_values
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
@@ -104,9 +149,14 @@ add-return-protection-status-to-rest-openapi:
 add-namespace-delete-extension-to-rest-openapi:
     yq eval '.paths."/v1/{prefix}/namespaces/{namespace}/tables/{table}".delete.parameters += [{"name": "force", "in": "query", "description": "If true, ignore `protection-status` when dropping.", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.paths."/v1/{prefix}/namespaces/{namespace}/views/{view}".delete.parameters += [{"name": "force", "in": "query", "description": "If true, ignore `protection-status` when dropping.", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
-    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.parameters += [{"name": "force", "in": "query", "description": "If force and recursive are set to true, immediately delete all contents of the namespace without considering soft-delete policies. Force has no effect without recursive=true.", "required": false, "schema": {"type": "boolean", "default": false}}, {"name": "recursive", "in": "query", "description": "Delete a namespace and its contents. This means all tables, views, and namespaces under this namespace will be deleted. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending `tabular_expiration` will be cancelled. If there is a running `tabular_expiration`, this call will fail with a `409 Conflict` error.", "required": false, "schema": {"type": "boolean", "default": false}},{"name": "purge", "in": "query", "description": "If recursive is true, also deletes table and view data. If false, only metadata is dropped from the catalog, table location remains untouched. Defaults to true for all tables managed by Lakekeeper.", "required": false, "schema": {"type": "boolean", "default": true}}]' -i docs/docs/api/rest-catalog-open-api.yaml
+    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.parameters += [{"name": "force", "in": "query", "description": "If force and recursive are set to true, immediately delete all contents of the namespace without considering soft-delete policies. Force has no effect without recursive=true.", "required": false, "schema": {"type": "boolean", "default": false}}, {"name": "recursive", "in": "query", "description": "Delete a namespace and its contents. This means all tables, views, and namespaces under this namespace will be deleted. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending soft-deletion expiration will be cancelled. If there is a running soft-deletion expiration, this call will fail with a `409 Conflict` error.", "required": false, "schema": {"type": "boolean", "default": false}},{"name": "purge", "in": "query", "description": "If recursive is true, also deletes table and view data. If false, only metadata is dropped from the catalog, table location remains untouched. Defaults to true for all tables managed by Lakekeeper.", "required": false, "schema": {"type": "boolean", "default": true}}]' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.summary = "Drop a namespace from the catalog."' -i docs/docs/api/rest-catalog-open-api.yaml
-    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.description = "Drop a namespace from the catalog. By default, the namespace needs to be empty. You can however set `recursive=true` which will delete all tables, views and namespaces under this namespace. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending `tabular_expiration` will be cancelled. If there is a running `tabular_expiration`, this call will fail with a `409 Conflict` error."' -i docs/docs/api/rest-catalog-open-api.yaml
+    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.description = "Drop a namespace from the catalog. By default, the namespace needs to be empty. You can however set `recursive=true` which will delete all tables, views and namespaces under this namespace. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending soft-deletion expiration will be cancelled. If there is a running soft-deletion expiration, this call will fail with a `409 Conflict` error."' -i docs/docs/api/rest-catalog-open-api.yaml
+    # The 409 upstream only documents the "namespace not empty" case. Recursive
+    # force-deletion adds a second 409: a soft-deletion expiration is running for
+    # a contained table/view. Broaden the description and add an example.
+    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.responses."409".description = "Conflict - the namespace cannot be deleted. Either it is not empty and `recursive=true` was not provided (NamespaceNotEmptyError), or a soft-deletion expiration is currently running for a contained table or view, which blocks force-deletion (NamespaceHasRunningTabularExpirations); retry once it completes."' -i docs/docs/api/rest-catalog-open-api.yaml
+    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".delete.responses."409".content."application/json".examples.NamespaceHasRunningTabularExpirationsExample = {"summary": "A soft-deletion expiration is running for a table or view in the namespace", "value": {"error": {"message": "A soft-deletion expiration is currently running for a table or view in this namespace. Retry once it completes.", "type": "NamespaceHasRunningTabularExpirations", "code": 409}}}' -i docs/docs/api/rest-catalog-open-api.yaml
 
 # Keep the Iceberg-standard default (false) on purgeRequested, but document Lakekeeper's actual behaviour: an omitted flag is treated as purge=true for managed tables (see crates/lakekeeper/src/api/iceberg/types.rs). Clarifies the doc mismatch reported in #1832 without diverging the schema from the standard.
 clarify-table-purge-default-rest-openapi:

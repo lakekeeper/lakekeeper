@@ -1,0 +1,149 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            n.namespace_id as \"namespace_id!\",\n            n.namespace_name as \"namespace_name!\",\n            -- Addressed by id, so there is no user-requested case to preserve.\n            n.namespace_name as \"requested_name!\",\n            n.warehouse_id as \"warehouse_id!\",\n            n.protected as \"protected!\",\n            n.namespace_properties as \"properties!: Json<Option<HashMap<String, String>>>\",\n            n.created_at as \"created_at!\",\n            n.updated_at,\n            n.version as \"version!\",\n            p.namespace_id as \"parent_namespace_id?\",\n            p.version as \"parent_version?\"\n        FROM namespace n\n            INNER JOIN warehouse w\n                ON n.warehouse_id = w.warehouse_id AND w.status = 'active'\n            LEFT JOIN namespace p\n                ON p.warehouse_id = n.warehouse_id\n                AND array_length(n.namespace_name, 1) > 1\n                AND p.namespace_name = n.namespace_name[1:array_length(n.namespace_name, 1) - 1]\n        WHERE n.warehouse_id = $1 AND n.namespace_id = $2\n        FOR UPDATE OF n\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_name!",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "requested_name!",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "warehouse_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "protected!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "protected"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "properties!: Json<Option<HashMap<String, String>>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_properties"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_namespace_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "parent_version?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5e503068657b00e84ebdb319f70bc6de552a5ed49fdda39afd955a563392b384"
+}

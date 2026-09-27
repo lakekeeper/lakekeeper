@@ -11,7 +11,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.94.1
   RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
@@ -34,6 +33,7 @@ jobs:
       - test
       - msrv-check
       - unused-deps
+      - check-audit-format
     steps:
       - run: exit 0
 
@@ -79,8 +79,6 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-machete
         uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
@@ -112,8 +110,6 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install sqlx-cli and migrate database
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -139,9 +135,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: rustfmt
-          toolchain: ${{ env.RUST_TOOLCHAIN }},nightly
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Cargo format
         run: just check-format
@@ -163,14 +158,13 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Cargo clippy
         run: just check-clippy
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
   check-generated-openapi-matches:
     runs-on: ubuntu-24.04
@@ -184,9 +178,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Regenerate generic-table openapi
@@ -197,7 +190,28 @@ jobs:
         with:
           node-version: 24
       - name: Build TS Client
-        run: npx @hey-api/openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
+        # Pin both the generator and typescript: typescript 7.x (native rewrite)
+        # dropped ts.SyntaxKind, which openapi-ts relies on, and the tool's dep
+        # range would otherwise float to it and crash codegen.
+        run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
+      - name: Build TS Client (generic tables)
+        run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/generic-table-open-api.yaml -o src/gen/generic-tables -c @hey-api/client-fetch
+      # Smoke-test the generator the downstream SDKs actually use. hey-api above
+      # exercises a different code path and has repeatedly been happy with specs
+      # openapi-generator rejects. This asserts only that generation succeeds —
+      # whether the emitted client behaves correctly is covered by the SDK repos.
+      # Pinned to the version go-lakekeeper generates with.
+      - name: Generate clients with openapi-generator
+        run: |
+          for spec in management-open-api generic-table-open-api; do
+            for lang in go python typescript-fetch; do
+              echo "=== $spec -> $lang"
+              docker run --rm -v "$PWD:/local" \
+                openapitools/openapi-generator-cli:v7.10.0 generate \
+                -i "/local/docs/docs/api/$spec.yaml" -g "$lang" -o "/local/target/openapi-smoke/$spec-$lang" \
+                --global-property=apiDocs=false,apiTests=false,modelDocs=false,modelTests=false
+            done
+          done
 
   test:
     runs-on: ubuntu-24.04
@@ -250,7 +264,7 @@ jobs:
           docker run -d --name minio -p 9000:9000 -p 9001:9001 \
             -e "MINIO_ROOT_USER=minio-root-user" \
             -e "MINIO_ROOT_PASSWORD=minio-root-password" \
-            minio/minio:RELEASE.2025-07-23T15-54-02Z server --console-address ":9001" /data
+            pgsty/silo:RELEASE.2026-09-03T13-18-01Z server --console-address ":9001" /data
 
       - name: Wait for Minio to be healthy
         shell: bash
@@ -285,10 +299,8 @@ jobs:
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
         uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
@@ -308,7 +320,7 @@ jobs:
 
       - name: Migrate database
         run: |
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           sqlx database create
@@ -319,7 +331,7 @@ jobs:
       - name: Setup vault
         run: |
           export VAULT_ADDR=http://localhost:8200
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt update && sudo apt install gpg wget
           wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
           gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
@@ -355,6 +367,7 @@ jobs:
           LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
           LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
           LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
+          LAKEKEEPER_TEST__S3_CORS_ALLOW_ALL: "1"
 
           LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
           LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
@@ -390,6 +403,23 @@ jobs:
           LAKEKEEPER_TEST__R2_ACCOUNT_ID: ${{ secrets.LAKEKEEPER_TEST__R2_ACCOUNT_ID }}
           LAKEKEEPER_TEST__R2_ENDPOINT: ${{ secrets.LAKEKEEPER_TEST__R2_ENDPOINT }}
 
+          LAKEKEEPER_TEST__OSS_BUCKET: ${{ secrets.LAKEKEEPER_TEST__OSS_BUCKET }}
+          LAKEKEEPER_TEST__OSS_REGION: ${{ secrets.LAKEKEEPER_TEST__OSS_REGION }}
+          LAKEKEEPER_TEST__OSS_ENDPOINT: ${{ secrets.LAKEKEEPER_TEST__OSS_ENDPOINT }}
+          LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID: ${{ secrets.LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__OSS_STS_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__OSS_STS_ROLE_ARN }}
+
+          # Only the secret key is a credential; the rest are repo variables.
+          # _ENDPOINT is the interim dataplatform grid, the only STACKIT storage
+          # with an STS endpoint until object.storage reaches StorageGRID 12.0.
+          LAKEKEEPER_TEST__STACKIT_BUCKET: ${{ vars.LAKEKEEPER_TEST__STACKIT_BUCKET }}
+          LAKEKEEPER_TEST__STACKIT_REGION: ${{ vars.LAKEKEEPER_TEST__STACKIT_REGION }}
+          LAKEKEEPER_TEST__STACKIT_ENDPOINT: ${{ vars.LAKEKEEPER_TEST__STACKIT_ENDPOINT }}
+          LAKEKEEPER_TEST__STACKIT_ACCESS_KEY_ID: ${{ vars.LAKEKEEPER_TEST__STACKIT_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__STACKIT_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__STACKIT_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__STACKIT_CREDENTIALS_GROUP_URN: ${{ vars.LAKEKEEPER_TEST__STACKIT_CREDENTIALS_GROUP_URN }}
+
           LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
@@ -402,3 +432,67 @@ jobs:
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  check-audit-format:
+    name: audit log format change is recorded
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Only a pull request has a merge base to compare against; this workflow also runs on
+    # pushes and manual dispatches, where there is nothing to gate. The condition sits on
+    # the steps rather than on the job: a skipped job skips everything that `needs` it,
+    # which would stop `tests-pass` reporting on pushes to main. With no job-level
+    # condition the job runs, does nothing, and succeeds.
+    #
+    # Nothing here reads the pull request title or body. What a format change owes is a
+    # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
+    # read and the release recipe can assemble. A description gate could do neither.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          # The base commit has to be present to diff against it. The default shallow
+          # fetch does not include it.
+          fetch-depth: 0
+      - name: Check the change is recorded and AUDIT_FORMAT is the version it implies
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The branch this pull request targets. A `rel-*` branch freezes the audit log
+          # format: a patch that moved it would give one version number two meanings, one
+          # per release line, with no way for a consumer to tell them apart.
+          BASE_BRANCH: ${{ github.base_ref }}
+        run: |
+          python3 .github/scripts/check-audit-format.py "${BASE_SHA}" --base-branch "${BASE_BRANCH}"
+      - name: Self-test the checker
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/check-audit-format.py --self-test
+      - name: Audit records are emitted from one site that stamps the version
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          # Every audit record must go through `__audit_emit!`, which stamps
+          # `audit_format`. Counted tree-wide: the macro is `#[macro_export]`ed and
+          # `tracing::info!` is callable anywhere, so a second site can appear in any
+          # crate. Comments are skipped — the AUDIT_FORMAT docs quote both needles.
+          hits() { git grep -nE "$1" -- '*.rs' | grep -vE ':[0-9]+:[[:space:]]*//' || true; }
+
+          EMISSIONS="$(hits 'event_source[[:space:]]*=[[:space:]]*"audit"')"
+          STAMPS="$(hits 'audit_format[[:space:]]*=')"
+          N_EMISSIONS="$(printf '%s' "${EMISSIONS}" | grep -c . || true)"
+          N_STAMPS="$(printf '%s' "${STAMPS}" | grep -c . || true)"
+
+          STATUS=0
+          if [ "${N_EMISSIONS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that emits \`event_source = \"audit\"\`, found ${N_EMISSIONS}. Route every audit record through \`__audit_emit!\`, which is what stamps \`audit_format\`; a second site can silently omit the version."
+            printf '%s\n' "${EMISSIONS}" >&2
+            STATUS=1
+          fi
+          if [ "${N_STAMPS}" -ne 1 ]; then
+            echo "::error::expected exactly one place that sets \`audit_format\`, found ${N_STAMPS}."
+            printf '%s\n' "${STAMPS}" >&2
+            STATUS=1
+          fi
+          exit "${STATUS}"

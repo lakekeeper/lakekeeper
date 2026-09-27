@@ -130,16 +130,14 @@ pub(crate) async fn list_tasks(
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let previous_page_token = page_token.clone();
-    let token = page_token.map(PaginateToken::try_from).transpose()?;
+    let token: Option<PaginateToken<Uuid>> = page_token.map(PaginateToken::try_from).transpose()?;
 
-    let (pagination_ts, pagination_task_id) = token // token_id is the last returned task_id.
+    // token_id is the last returned task_id.
+    let (pagination_ts, pagination_task_id) = token
         .as_ref()
-        .map(
-            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
-                (created_at, id)
-            },
-        )
-        .map_or((None, None), |(ts, task_id)| (Some(ts), Some(task_id)));
+        .map(PaginateToken::v1_parts)
+        .transpose()?
+        .unzip();
 
     let queue_names_is_none = queue_names.is_none();
     let queue_names = queue_names
@@ -674,7 +672,7 @@ mod tests {
         .unwrap();
 
         // Pick up one task to make it running
-        let _picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1124,10 +1122,11 @@ mod tests {
 
         // Complete some tasks (first 4)
         for &task_id in &task_ids[0..4] {
-            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+            let picked_task =
+                pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(picked_task.task_id(), task_id);
             record_success(&picked_task, &mut conn, Some("Completed successfully"))
                 .await
@@ -1136,10 +1135,11 @@ mod tests {
 
         // Fail some tasks (next 2)
         for &task_id in &task_ids[4..6] {
-            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+            let picked_task =
+                pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(picked_task.task_id(), task_id);
             record_failure(&picked_task, 1, "Task failed", &mut conn)
                 .await
@@ -1151,6 +1151,7 @@ mod tests {
             &mut conn,
             lakekeeper::service::tasks::CancelTasksFilter::TaskIds(task_ids[6..8].to_vec()),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
@@ -1257,10 +1258,11 @@ mod tests {
             task_ids.push(task_id);
 
             // Pick up and complete immediately
-            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+            let picked_task =
+                pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(picked_task.task_id(), task_id);
             record_success(
                 &picked_task,
@@ -1354,7 +1356,7 @@ mod tests {
         }
 
         // Task 0: Success on first try
-        let task0 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task0 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1363,7 +1365,7 @@ mod tests {
             .unwrap();
 
         // Task 1: Fail once, then succeed
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1371,7 +1373,7 @@ mod tests {
             .await
             .unwrap();
 
-        let task1_retry = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1_retry = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1381,7 +1383,7 @@ mod tests {
             .unwrap();
 
         // Task 2: Fail multiple times, eventually fail permanently
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1394,13 +1396,14 @@ mod tests {
             &mut conn,
             lakekeeper::service::tasks::CancelTasksFilter::TaskIds(vec![task_ids[3]]),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
         .unwrap();
 
         // Task 4: Pick up and leave running
-        let _task4_running = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _task4_running = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1525,7 +1528,7 @@ mod tests {
         }
 
         // Complete some tasks from queue 1
-        let task_q1_1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task_q1_1 = pick_task(&pool, &tq_name1, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1534,7 +1537,7 @@ mod tests {
             .unwrap();
 
         // Fail a task from queue 2
-        let task_q2_1 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task_q2_1 = pick_task(&pool, &tq_name2, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1619,7 +1622,7 @@ mod tests {
         .unwrap();
 
         // Pick up the task
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1697,7 +1700,7 @@ mod tests {
         .unwrap();
 
         // Complete first task
-        let picked_task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1706,7 +1709,7 @@ mod tests {
             .unwrap();
 
         // Pick up second task (keep it running)
-        let _picked_task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _picked_task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1771,7 +1774,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1780,7 +1783,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick and succeed
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();

@@ -1,20 +1,24 @@
 # AGENTS.md
 
 ## Meta-rules for this file
+
 - Keep this file concise. For each line, ask: would removing it cause mistakes? If not, cut it.
 - Write commands and rules, not prose. Be imperative.
 - Don't repeat what's in Cargo.toml, CI configs, or code comments.
 - Update this file like code — review changes in PRs.
 
 ## Project
+
 Lakekeeper — open-source Apache Iceberg REST catalog, written in Rust.
 
-Repository: https://github.com/lakekeeper/lakekeeper
+Repository: <https://github.com/lakekeeper/lakekeeper>
 
 ## Build & Test
+
 Uses [just](https://github.com/casey/just) as task runner. See `justfile` for all available recipes.
 
 Key commands:
+
 - Build: `cargo build`
 - Test all: `just test` (includes doc tests)
 - Unit tests only: `just unit-test`
@@ -26,9 +30,11 @@ Key commands:
 Clippy runs with multiple feature flag combinations — don't just run `cargo clippy --all-features`. Use `just check-clippy`.
 
 ## Workspace Crates
+
 | Crate | Path | Purpose |
 |-------|------|---------|
 | lakekeeper | crates/lakekeeper | Core catalog logic |
+| lakekeeper-alloc | crates/alloc | Allocator configuration and observability |
 | lakekeeper-bin | crates/lakekeeper-bin | Server binary |
 | lakekeeper-io | crates/io | Storage I/O (S3, GCS, Azure, etc.) |
 | iceberg-ext | crates/iceberg-ext | Iceberg format extensions |
@@ -36,19 +42,23 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | catalog-error-macros | crates/catalog-error-macros | Error derive macros |
 
 ## Authz
+
 - OpenFGA model: `authz/openfga/` — validate with `just test-openfga`, update JSON with `just update-openfga`
 - OPA policies: `authz/opa-bridge/` — check with `just check-opa` (requires `opa` and `regal` CLIs)
 
 ## Code Style
+
 - Follow existing patterns in adjacent files.
 - Use `thiserror` for error types, `tracing` for logging.
 - Use `typed-builder` for struct construction.
 - Use workspace dependencies (`{ workspace = true }`) — don't add versions directly.
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
+- Describe current behavior in comments: no "rather than", "instead of", "no longer", "previously", and no plan or task labels. Version changelogs are exempt — stating the delta is their purpose.
 - Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
 
 ## Architecture
+
 - Before adding new code, check if existing crates already solve the problem. Reuse over reinvention.
 - Challenge duplication — if similar logic exists elsewhere, refactor to share it.
 - New features should extend existing traits/interfaces where possible rather than introducing parallel abstractions.
@@ -57,7 +67,18 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - After any write: invalidate the local replica's in-memory cache immediately.
 - Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
 
+## Audit Log
+
+Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format" — it has the decision table, the registration lists, and what each check does and does not cover.
+
+- `AUDIT_FORMAT` is derived from `audit-format/`. Write a fragment; never edit a version number.
+- Never pass a string literal to `action_name`, `operation` or `outcome` — it reaches no manifest, so a later rename breaks consumers silently. Add an enum variant and emit `Variant::as_str()`.
+- Never add a `_ =>` arm to an `as_str` or `action_descriptor` match. The missing wildcard is the mechanism, and it fails `just check`, not `cargo build`.
+- Add a fixture for every new emission path — fixtures pin only the scenarios they cover. Extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record *shape*; that file is meant to grow.
+- Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
+
 ## Rules
+
 - Never skip or disable tests.
 - Do not modify generated or vendored files.
 - Release versioning is managed by release-please (`release-please/`).

@@ -2,13 +2,14 @@ use lakekeeper::{
     ProjectId,
     api::iceberg::v1::{PageToken, PaginationQuery},
     service::{
-        CatalogListRolesByIdFilter, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSpec,
-        Transaction as _, run_post_migration_hooks,
+        CatalogListRolesByIdFilter, NamespaceId, NamespaceIdent, PostMigrationHookOptions,
+        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSpec, Transaction as _,
+        run_post_migration_hooks,
     },
 };
 use lakekeeper_integration_tests::upsert_system_roles_in_all_projects;
 use lakekeeper_storage_postgres::{
-    CatalogState, PostgresBackend, PostgresTransaction, migrations::migrate_core_only,
+    CatalogState, PostgresBackend, PostgresTransaction, migrations, migrations::migrate_core_only,
     role::list_roles,
 };
 use sqlx::PgPool;
@@ -189,7 +190,7 @@ async fn test_run_post_migration_hooks_oss_no_registry_is_ok(pool: PgPool) {
     .unwrap();
     t.commit().await.unwrap();
 
-    run_post_migration_hooks::<PostgresBackend>(state, Vec::new())
+    run_post_migration_hooks::<PostgresBackend>(state, Vec::new(), Default::default())
         .await
         .unwrap();
 
@@ -214,5 +215,189 @@ async fn test_upsert_system_roles_in_all_projects_propagates_errors(pool: PgPool
     assert!(
         result.is_err(),
         "closed pool must propagate as Err, got: {result:?}"
+    );
+}
+
+/// The casing repair is pinned to the move-namespace migration, which ships in 0.14.0 and is in no
+/// earlier release. So `applied_versions` taken before a migration run must not contain it for any
+/// database that predates 0.14.0 — that "not there before" is the whole gate, and a pin to an
+/// already-released version would silently never fire.
+#[sqlx::test(migrations = false)]
+async fn test_casing_repair_pin_is_absent_before_migrating(pool: PgPool) {
+    // A database that has never been migrated has no tracker table at all.
+    let before = migrations::applied_versions(&pool).await.unwrap();
+    assert!(
+        before.is_empty(),
+        "an unmigrated database reports no applied versions, so the gate opens"
+    );
+    assert!(
+        !before.contains(&migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+        "the pin must be absent before migrating, or the repair would never run on upgrade"
+    );
+
+    migrations::migrate_core_only(&pool).await.unwrap();
+
+    let after = migrations::applied_versions(&pool).await.unwrap();
+    assert!(
+        after.contains(&migrations::NAMESPACE_PATH_CASING_REPAIR_AFTER),
+        "migrating applies the pinned version, so a second run of the gate stays closed"
+    );
+}
+
+/// The casing repair is gated, so the flag on `PostMigrationHookOptions` has to be what decides
+/// whether it runs — that is the whole mechanism behind
+/// `migrate --force-idempotent-post-migration-hooks`, and a gate that silently ignored its flag
+/// would leave a failed repair unrecoverable.
+#[sqlx::test]
+async fn test_casing_repair_hook_runs_only_when_its_gate_is_open(pool: PgPool) {
+    use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
+
+    migrate_core_only(&pool).await.unwrap();
+    let state = CatalogState::from_pools(pool.clone(), pool.clone());
+    let (_, warehouse_id) = lakekeeper_storage_postgres::warehouse::test::initialize_warehouse(
+        state.clone(),
+        None,
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    let parent = NamespaceIdent::from_vec(vec!["a".to_string(), "B".to_string()]).unwrap();
+    initialize_namespace(
+        state.clone(),
+        warehouse_id,
+        &NamespaceIdent::from_vec(vec!["a".to_string()]).unwrap(),
+        None,
+    )
+    .await;
+    initialize_namespace(state.clone(), warehouse_id, &parent, None).await;
+
+    // Drift has to be inserted directly — the write paths no longer produce it.
+    let drifted = NamespaceId::new_random();
+    sqlx::query(
+        "INSERT INTO namespace (warehouse_id, namespace_id, namespace_name, namespace_properties)
+         VALUES ($1, $2, $3, '{}'::jsonb)",
+    )
+    .bind(*warehouse_id)
+    .bind(*drifted)
+    .bind(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A tabular in `a.B`, whose own path needs no repair, so only the tabular statement can fix
+    // the denormalised copy. Accepted by the foreign key because the collation ignores the case.
+    let namespace_id = lakekeeper_storage_postgres::namespace::tests::initialize_namespace(
+        state.clone(),
+        warehouse_id,
+        &NamespaceIdent::from_vec(vec!["a".to_string(), "B".to_string(), "d".to_string()]).unwrap(),
+        None,
+    )
+    .await
+    .namespace_id();
+    let plant_tabular = |namespace_id: NamespaceId, name: &'static str, path: Vec<String>| {
+        let pool = pool.clone();
+        async move {
+            let tabular_id = uuid::Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO tabular (warehouse_id, tabular_id, namespace_id, name, typ,
+                                      fs_protocol, fs_location, tabular_namespace_name)
+                 VALUES ($1, $2, $3, $4, 'table', 's3', $5, $6)",
+            )
+            .bind(*warehouse_id)
+            .bind(tabular_id)
+            .bind(*namespace_id)
+            .bind(name)
+            .bind(format!("bucket/{name}"))
+            .bind(path)
+            .execute(&pool)
+            .await
+            .unwrap();
+            tabular_id
+        }
+    };
+
+    let tabular_id = plant_tabular(
+        namespace_id,
+        "tbl",
+        vec!["a".to_string(), "b".to_string(), "d".to_string()],
+    )
+    .await;
+    // A tabular whose copy *and* whose namespace need repairing. Its end state depends on the two
+    // statements composing: the copy must not keep a spelling the namespace no longer has.
+    let in_drifted_id = plant_tabular(
+        drifted,
+        "drifted_tbl",
+        vec!["A".to_string(), "b".to_string(), "c".to_string()],
+    )
+    .await;
+
+    let stored = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, Vec<String>>(
+            "SELECT namespace_name FROM namespace WHERE namespace_id = $1",
+        )
+        .bind(*drifted)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let stored_tabular = |pool: PgPool, tabular_id: uuid::Uuid| async move {
+        sqlx::query_scalar::<_, Vec<String>>(
+            "SELECT tabular_namespace_name FROM tabular WHERE tabular_id = $1",
+        )
+        .bind(tabular_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // Gate closed: the hook must leave the drift alone.
+    run_post_migration_hooks::<PostgresBackend>(
+        state.clone(),
+        Vec::new(),
+        PostMigrationHookOptions {
+            repair_namespace_path_casing: false,
+            fail_on_idempotent_hook_error: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stored(pool.clone()).await,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        "with its gate closed the repair must not run"
+    );
+    assert_eq!(
+        stored_tabular(pool.clone(), tabular_id).await,
+        vec!["a".to_string(), "b".to_string(), "d".to_string()],
+        "with its gate closed the repair must not run"
+    );
+
+    // Gate open — what the break-glass flag sets, even though the pinned migration is long applied.
+    run_post_migration_hooks::<PostgresBackend>(
+        state,
+        Vec::new(),
+        PostMigrationHookOptions {
+            repair_namespace_path_casing: true,
+            fail_on_idempotent_hook_error: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stored(pool.clone()).await,
+        vec!["a".to_string(), "B".to_string(), "c".to_string()],
+        "with its gate open the repair adopts the parent's stored casing"
+    );
+    assert_eq!(
+        stored_tabular(pool.clone(), tabular_id).await,
+        vec!["a".to_string(), "B".to_string(), "d".to_string()],
+        "with its gate open the repair adopts the namespace's stored casing"
+    );
+    assert_eq!(
+        stored_tabular(pool, in_drifted_id).await,
+        vec!["a".to_string(), "B".to_string(), "c".to_string()],
+        "a copy inside a repaired namespace must end on the repaired path"
     );
 }

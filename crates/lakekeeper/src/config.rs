@@ -22,21 +22,33 @@ use url::Url;
 use crate::{
     WarehouseId,
     service::{
-        ArcProjectId, UserId,
-        authn::{K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
+        ArcProjectId, ProjectId, UserId,
+        authn::{ClaimRuleConfig, K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
     },
 };
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
-pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> = LazyLock::new(|| {
-    CONFIG
-        .enable_default_project
-        .then_some(Arc::new(uuid::Uuid::nil().into()))
-});
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> =
+    LazyLock::new(|| resolve_default_project_id(&CONFIG));
 
-fn get_config() -> DynAppConfig {
+/// Resolve the effective default project id: the configured `default_project_id` when set,
+/// otherwise the NIL uuid — both gated on `enable_default_project`. `None` disables the default.
+fn resolve_default_project_id(config: &DynAppConfig) -> Option<ArcProjectId> {
+    config.enable_default_project.then(|| {
+        config
+            .default_project_id
+            .clone()
+            .map_or_else(|| Arc::new(uuid::Uuid::nil().into()), Arc::new)
+    })
+}
+
+/// Load and validate configuration from the environment.
+///
+/// `pub(crate)` so tests can drive the whole seam from environment variables through to
+/// enforcement — a rule that never reaches a field is invisible to config-level tests.
+pub(crate) fn get_config() -> DynAppConfig {
     let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
 
     #[cfg(not(test))]
@@ -65,11 +77,14 @@ fn get_config() -> DynAppConfig {
         config = config.merge(env);
     }
 
+    // `Display` renders figment's "for key ... in LAKEKEEPER__ environment variable(s)"
+    // pointer; `Debug` (what `expect` prints) loses it.
     let mut config = config
         .extract::<DynAppConfig>()
-        .expect("Valid Configuration");
+        .unwrap_or_else(|e| panic!("Invalid configuration: {e}"));
 
     validate_openid_provider_ids(&config);
+    validate_required_claims(&config);
 
     if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
         tracing::warn!(
@@ -129,13 +144,19 @@ fn get_config() -> DynAppConfig {
         uri.join("management").expect("Valid URL");
     }
 
-    // `UserAssignmentsCache` entries may reference roles that are still live
-    // in the role cache.  If `user_assignments.time_to_live_secs` exceeds
-    // `role.time_to_live_secs` a deleted role can remain visible through
-    // user-assignment cache entries after it has been evicted from the role
-    // cache, violating the documented invariant.
-    // The constraint is only meaningful when both caches are active; if either
-    // is disabled the TTL relationship has no effect at runtime.
+    validate_cache_ttls(&mut config);
+
+    config
+}
+
+/// Caches whose entries name roles must not outlive the role cache: a deleted role would
+/// stay visible through them after the role cache evicted it.
+///
+/// Only meaningful while both caches are active; with either disabled the TTL relationship
+/// has no effect at runtime.
+fn validate_cache_ttls(config: &mut DynAppConfig) {
+    // Rejected rather than lowered: both settings predate this check, so a deployment
+    // reaching it wrote them itself.
     if config.cache.user_assignments.enabled && config.cache.role.enabled {
         assert!(
             config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
@@ -145,7 +166,26 @@ fn get_config() -> DynAppConfig {
         );
     }
 
-    config
+    // Same reasoning for role ancestors: entries name roles, so outliving the role cache
+    // would keep a deleted role visible through them.
+    //
+    // Lowered to the role TTL rather than rejected. This cache is newer than the role cache,
+    // so a deployment that lowered `role` (and `user_assignments` with it, which the check
+    // above already required) has no ancestors setting of its own, and refusing to start
+    // would fail on a value the operator never wrote.
+    if config.cache.role_ancestors.enabled
+        && config.cache.role.enabled
+        && config.cache.role_ancestors.time_to_live_secs > config.cache.role.time_to_live_secs
+    {
+        tracing::warn!(
+            "cache.role_ancestors.time_to_live_secs ({}) exceeds cache.role.time_to_live_secs \
+             ({}); using the role TTL for both, so an evicted role cannot stay visible \
+             through its ancestors",
+            config.cache.role_ancestors.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+        config.cache.role_ancestors.time_to_live_secs = config.cache.role.time_to_live_secs;
+    }
 }
 
 fn validate_openid_provider_ids(config: &DynAppConfig) {
@@ -175,6 +215,109 @@ fn validate_openid_provider_ids(config: &DynAppConfig) {
             idp_id != OIDC_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
         );
+    }
+}
+
+fn validate_required_claims(config: &DynAppConfig) {
+    assert!(
+        config.openid_required_claims.is_empty() || config.openid_provider_uri.is_some(),
+        "`openid_required_claims` is set but `openid_provider_uri` is not; the rules would \
+         never apply. Configure the provider, or move the rules under \
+         `openid_providers.<idp_id>.required_claims`."
+    );
+    assert!(
+        config.openid_scope.is_none() || config.openid_provider_uri.is_some(),
+        "`openid_scope` is set but `openid_provider_uri` is not; the scope would never be \
+         enforced. Configure the provider, or move the scope under \
+         `openid_providers.<idp_id>.scope`."
+    );
+    let scopes = std::iter::once((OIDC_IDP_ID, &config.openid_scope)).chain(
+        config
+            .openid_providers
+            .iter()
+            .map(|(id, p)| (id.as_str(), &p.scope)),
+    );
+    for (idp_id, scope) in scopes {
+        if let Some(scope) = scope {
+            assert!(
+                !scope.is_empty() && !scope.contains(char::is_whitespace),
+                "Invalid `scope` for OIDC provider '{idp_id}': a single non-empty scope \
+                 without whitespace is required; no token could ever satisfy '{scope}'. An \
+                 empty value does not mean `no scope` — unset the variable entirely."
+            );
+        }
+    }
+    // The Kubernetes authenticator is configured with no issuers, so without an audience it
+    // accepts every JWT. It sits last in the chain, which means it takes exactly the tokens a
+    // guarded OIDC provider declined on audience — and admits them with no rules at all.
+    let any_guarded = !config.openid_required_claims.is_empty()
+        || config.openid_scope.is_some()
+        || config
+            .openid_providers
+            .values()
+            .any(OidcProviderConfig::is_guarded);
+    assert!(
+        !(any_guarded
+            && config.enable_kubernetes_authentication
+            && config
+                .kubernetes_authentication_audience
+                .as_ref()
+                .is_none_or(Vec::is_empty)),
+        "An OIDC provider enforces a scope or required claims while Kubernetes \
+         authentication is enabled without `KUBERNETES_AUTHENTICATION_AUDIENCE`. The \
+         Kubernetes authenticator then accepts any token the OIDC providers decline, \
+         admitting them without those rules. Set the audience, or disable Kubernetes \
+         authentication."
+    );
+    for (idp_id, provider) in &config.openid_providers {
+        let guarded = provider.is_guarded();
+        assert!(
+            !guarded || provider.require_connected_on_startup,
+            "OIDC provider '{idp_id}' enforces a scope or required claims but sets \
+             `require_connected_on_startup=false`. A provider skipped at boot enforces \
+             nothing, and another provider publishing the same issuer would admit its \
+             tokens unchecked. Set `require_connected_on_startup=true`."
+        );
+    }
+    let providers = std::iter::once((OIDC_IDP_ID, &config.openid_required_claims)).chain(
+        config
+            .openid_providers
+            .iter()
+            .map(|(id, p)| (id.as_str(), &p.required_claims)),
+    );
+    for (idp_id, rules) in providers {
+        for (name, rule) in rules {
+            assert!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': rule name \
+                 must match `[a-z0-9-]+`; write `tenant-filter`, not `tenant_filter`"
+            );
+            // For a deny, splitting on any whitespace finds everything a whitespace literal
+            // finds and the values it misses, so the literal form is dominated — and its one
+            // distinguishing behaviour is to admit a token it was written to reject.
+            assert!(
+                !(rule.none_of.is_some()
+                    && rule
+                        .separator
+                        .as_deref()
+                        .is_some_and(|s| { !s.is_empty() && s.chars().all(char::is_whitespace) })),
+                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': a \
+                 whitespace `separator` on `none_of` reads only that exact character, so a \
+                 value delimited by any other whitespace is admitted. Write \
+                 `SEPARATOR=whitespace`."
+            );
+            assert!(
+                !(rule.exists.is_some() && rule.separator.is_some()),
+                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': `separator` \
+                 has no effect on `exists`; remove one of them"
+            );
+            if let Err(e) = rule.to_rule() {
+                panic!("Invalid required claim rule '{name}' for OIDC provider '{idp_id}': {e}");
+            }
+        }
     }
 }
 
@@ -345,8 +488,17 @@ pub struct DynAppConfig {
     /// If x-forwarded-x headers should be respected.
     /// Defaults to true
     pub use_x_forwarded_headers: bool,
-    /// If true (default), the NIL uuid is used as default project id.
+    /// If true (default), a default project id is used when a request does not
+    /// specify one (via the `x-project-id` header). The value is
+    /// `default_project_id` if set, otherwise the NIL uuid.
     pub enable_default_project: bool,
+    /// Project id to use as the default when a request does not specify one and
+    /// `enable_default_project` is true. When unset, the NIL uuid is used.
+    ///
+    /// Set this to serve a single non-NIL project without requiring clients to
+    /// send the `x-project-id` header (e.g. query engines addressing a warehouse
+    /// by bare name).
+    pub default_project_id: Option<ProjectId>,
     /// If true, the swagger UI is served at /swagger-ui
     pub serve_swagger_ui: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -408,6 +560,11 @@ pub struct DynAppConfig {
     pub openid_additional_issuers: Option<Vec<String>>,
     /// A scope that must be present in provided tokens
     pub openid_scope: Option<String>,
+    /// Rules a verified token must satisfy; see
+    /// [`OidcProviderConfig::required_claims`](crate::service::authn::OidcProviderConfig).
+    /// Applies to the single-provider `openid_provider_uri` setup.
+    #[serde(default)]
+    pub openid_required_claims: HashMap<String, ClaimRuleConfig>,
     pub enable_kubernetes_authentication: bool,
     /// Audience expected in provided JWT tokens.
     #[serde(
@@ -418,6 +575,15 @@ pub struct DynAppConfig {
     /// Accept legacy k8s token without audience and issuer
     /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
+    /// Which Kubernetes `TokenReview` field becomes the user's subject in the
+    /// Lakekeeper user ID (`kubernetes~<subject>`). Defaults to `uid`.
+    ///
+    /// Set to `username` to use `system:serviceaccount:<namespace>:<name>`,
+    /// which is stable across clusters. Changing this after users exist changes
+    /// their IDs and orphans existing role assignments, so choose it at initial
+    /// setup.
+    #[serde(default)]
+    pub kubernetes_authentication_subject_source: KubernetesSubjectSource,
     /// Claim(s) to use in provided JWT tokens as the subject.
     /// Accepts a comma-separated list of claim names; the first claim present
     /// in the token is used. A single claim name (without a comma) is also
@@ -431,6 +597,13 @@ pub struct DynAppConfig {
     /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
+    /// Template for a user's display name when the token carries no name claim
+    /// (e.g. a machine / service-account token). Placeholders `{claim.path}` are
+    /// substituted from the token's claims (dot notation); `{email}` and `{sub}`
+    /// are the common cases. Example: `Service Account {email}`. Applies to the
+    /// single-provider `openid_provider_uri` setup; the per-provider equivalent is
+    /// `openid_providers.<id>.display_name_template`.
+    pub openid_display_name_template: Option<String>,
     /// Multiple OIDC providers keyed by identity provider ID.
     /// When set, each provider gets its own JWKS authenticator and is added
     /// in addition to the single-provider configuration (`openid_provider_uri`).
@@ -479,8 +652,13 @@ pub struct DynAppConfig {
     // ------------- Tasks -------------
     /// Duration to wait after no new task was found before polling for new tasks again.
     pub task_poll_interval: std::time::Duration,
-    /// Number of workers to spawn for expiring tabulars. (default: 2)
-    pub task_tabular_expiration_workers: usize,
+    /// Number of workers to spawn for finalizing soft-deleted tabulars once
+    /// their expiration elapses. (default: 2)
+    ///
+    /// The `task_tabular_expiration_workers` alias keeps the pre-rename env var
+    /// `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` working.
+    #[serde(alias = "task_tabular_expiration_workers")]
+    pub task_soft_deletion_workers: usize,
     /// Number of workers to spawn for purging tabulars. (default: 2)
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
@@ -534,8 +712,16 @@ pub struct DynAppConfig {
     #[serde(default)]
     pub role: RoleConfig,
 
+    // ------------- Referenced-By Chains -------------
+    #[serde(default)]
+    pub referenced_by: ReferencedByConfig,
+
     // ------------- Request Limits -------------
-    /// Maximum request body size in bytes. Defaults to 2 MB.
+    /// Maximum request body size in bytes. Defaults to 32 MB.
+    ///
+    /// Table commits that remove many snapshots at once (e.g. the first
+    /// `expire_snapshots` run on a table with a large snapshot backlog) send a single
+    /// `updateTable` request listing every removed snapshot id, which can grow to several MB.
     pub max_request_body_size: usize,
     /// Maximum request time. Defaults to 30 seconds.
     #[serde(
@@ -646,6 +832,38 @@ where
     .transpose()
 }
 
+/// A list of strings from a figment bracket list (`[a, b]`).
+///
+/// figment types a bare `[0644]` as a number, and rendering it back to a string would not
+/// reproduce what was written (`644`), so a rule would silently compare against a value the
+/// operator never configured. Numbers and booleans must therefore be quoted.
+pub(crate) fn deserialize_string_list<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(values) = Option::<Vec<serde_json::Value>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    values
+        .into_iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => Ok(s),
+            other @ (serde_json::Value::Number(_) | serde_json::Value::Bool(_)) => {
+                Err(serde::de::Error::custom(format!(
+                    "expected a string, found {other}; quote values that look like numbers or \
+                     booleans so they reach the rule exactly as written, e.g. [\"0644\"]"
+                )))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "expected a string, found {other}"
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
 pub(crate) fn serialize_comma_separated<S>(
     value: &Option<Vec<String>>,
     serializer: S,
@@ -726,6 +944,31 @@ impl Serialize for AuthZBackend {
     }
 }
 
+/// Which Kubernetes `TokenReview` field is used as the subject in the
+/// Lakekeeper user ID (`kubernetes~<subject>`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KubernetesSubjectSource {
+    /// `user.uid` — the service account's Kubernetes UID (default). Assigned
+    /// per cluster, so the same service account has a different UID in each
+    /// cluster.
+    #[default]
+    Uid,
+    /// `user.username` — `system:serviceaccount:<namespace>:<name>`. Stable
+    /// across clusters, which makes it suitable for pre-provisioning identities.
+    Username,
+}
+
+impl KubernetesSubjectSource {
+    #[must_use]
+    pub fn to_limes(self) -> limes::kubernetes::KubernetesSubjectSource {
+        match self {
+            Self::Uid => limes::kubernetes::KubernetesSubjectSource::Uid,
+            Self::Username => limes::kubernetes::KubernetesSubjectSource::Username,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SecretBackend {
     #[serde(alias = "kv2", alias = "Kv2")]
@@ -770,7 +1013,10 @@ impl IdempotencyConfig {
     /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
     #[must_use]
     pub fn lifetime_iso8601(&self) -> String {
-        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+        // Never the weeks form: this value is advertised in `GET /v1/config`,
+        // and the Iceberg Java client feeds it to `java.time.Duration.parse`,
+        // which rejects `P<n>W` and fails the entire config response with it.
+        crate::utils::time_conversion::std_duration_to_iso_8601_string_no_weeks(&self.lifetime)
     }
 
     /// Total retention duration (lifetime + grace).
@@ -792,6 +1038,25 @@ pub struct RoleConfig {
 }
 
 impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            max_nesting_depth: 10,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct ReferencedByConfig {
+    /// Maximum number of views a client may declare in the `referenced-by`
+    /// chain of a single load request. Every entry widens the authorization
+    /// work for that request, so the raw client-supplied list is bounded
+    /// before it is used. A longer chain is rejected with
+    /// `ReferencedByDepthExceeded` (HTTP 400), regardless of whether a trusted
+    /// engine matched. Default: 10.
+    pub max_nesting_depth: usize,
+}
+
+impl Default for ReferencedByConfig {
     fn default() -> Self {
         Self {
             max_nesting_depth: 10,
@@ -864,6 +1129,34 @@ impl Default for RoleMembersCache {
     }
 }
 
+/// Cache for `RoleId → the roles it is transitively a member of`.
+///
+/// Read on authorization requests that name a role rather than a user — the roles a
+/// nesting-aware policy has to see. Keyed per role. Entries are bounded by
+/// [`RoleConfig::max_nesting_depth`], which the write path enforces per edge, and most roles
+/// are nested in nothing at all, so the common entry is empty.
+///
+/// `time_to_live_secs` must not exceed `role.time_to_live_secs`, for the same reason it must
+/// not for user assignments: entries name roles, and outliving the role cache would keep a
+/// deleted one visible through them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleAncestorsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for RoleAncestorsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -880,6 +1173,8 @@ pub(crate) struct Cache {
     pub(crate) user_assignments: UserAssignmentsCache,
     /// Role-members cache: `RoleId → members`.
     pub(crate) role_members: RoleMembersCache,
+    /// Role-ancestors cache: `RoleId → the roles it is a member of`.
+    pub(crate) role_ancestors: RoleAncestorsCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1023,6 +1318,7 @@ impl Default for DynAppConfig {
         Self {
             base_uri: None,
             enable_default_project: true,
+            default_project_id: None,
             use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
             allow_origin: None,
@@ -1044,18 +1340,21 @@ impl Default for DynAppConfig {
             openid_audience: None,
             openid_additional_issuers: None,
             openid_scope: None,
+            openid_required_claims: HashMap::new(),
             enable_kubernetes_authentication: false,
             kubernetes_authentication_audience: None,
             kubernetes_authentication_accept_legacy_serviceaccount: false,
+            kubernetes_authentication_subject_source: KubernetesSubjectSource::default(),
             openid_subject_claim: None,
             openid_roles_claim: None,
+            openid_display_name_template: None,
             openid_providers: HashMap::new(),
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
             secret_backend: SecretBackend::Postgres,
             task_poll_interval: Duration::from_secs(10),
-            task_tabular_expiration_workers: 2,
+            task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
@@ -1068,8 +1367,9 @@ impl Default for DynAppConfig {
             idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
             role: RoleConfig::default(),
+            referenced_by: ReferencedByConfig::default(),
             cache: Cache::default(),
-            max_request_body_size: 2 * 1024 * 1024, // 2 MB
+            max_request_body_size: 32 * 1024 * 1024, // 32 MB
             max_request_time: Duration::from_secs(30),
             audit: AuditConfig {
                 tracing: AuditTracingConfig { enabled: true },
@@ -1189,6 +1489,67 @@ mod test {
     }
 
     #[test]
+    fn test_default_project_id_unset_is_none() {
+        assert_eq!(get_config().default_project_id, None);
+    }
+
+    #[test]
+    fn test_default_project_id_parsed_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__DEFAULT_PROJECT_ID",
+                "019fc668-050d-7491-8743-55b537c7c4af",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.default_project_id,
+                Some(
+                    ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap()
+                )
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_falls_back_to_nil() {
+        // enable_default_project=true, no explicit id -> NIL uuid (unchanged behaviour).
+        let config = DynAppConfig {
+            enable_default_project: true,
+            default_project_id: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_default_project_id(&config).map(|p| p.to_string()),
+            Some(uuid::Uuid::nil().to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_uses_configured_value() {
+        let pid = ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap();
+        let config = DynAppConfig {
+            enable_default_project: true,
+            default_project_id: Some(pid.clone()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_default_project_id(&config), Some(Arc::new(pid)));
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_disabled_is_none() {
+        // A configured id is ignored when the default project is disabled.
+        let config = DynAppConfig {
+            enable_default_project: false,
+            default_project_id: Some(
+                ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(resolve_default_project_id(&config), None);
+    }
+
+    #[test]
     fn test_allow_all_authz_backend() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allowall");
@@ -1212,6 +1573,36 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allow-all");
             let config = get_config();
             assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kubernetes_subject_source() {
+        assert_eq!(
+            DynAppConfig::default().kubernetes_authentication_subject_source,
+            KubernetesSubjectSource::Uid
+        );
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE",
+                "username",
+            );
+            assert_eq!(
+                get_config().kubernetes_authentication_subject_source,
+                KubernetesSubjectSource::Username
+            );
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE",
+                "uid",
+            );
+            assert_eq!(
+                get_config().kubernetes_authentication_subject_source,
+                KubernetesSubjectSource::Uid
+            );
             Ok(())
         });
     }
@@ -1764,7 +2155,7 @@ mod test {
             );
             jail.set_env(
                 "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__REQUIRE_CONNECTED_ON_STARTUP",
-                "false",
+                "true",
             );
 
             let config = get_config();
@@ -1787,7 +2178,184 @@ mod test {
                 provider.roles_claim,
                 Some("resource_access.lakekeeper.roles".to_string())
             );
+            assert!(provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    /// Build the rule a provider's config describes, so the mapping from wire field to
+    /// operator is observed rather than assumed.
+    fn rule_from_env(kv: &[(&str, &str)]) -> limes::ClaimRule {
+        let mut built = None;
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", kv);
+            built = Some(
+                get_config().openid_providers["x"].required_claims["org"]
+                    .to_rule()
+                    .unwrap(),
+            );
+            Ok(())
+        });
+        built.unwrap()
+    }
+
+    /// The `exists` flag must reach the matcher with the polarity that was configured.
+    /// Inverted, `EXISTS=false` admits exactly the tokens it was written to reject — and
+    /// asserting only the parsed config field cannot see that.
+    #[test]
+    fn test_exists_reaches_the_matcher_with_both_polarities() {
+        let present = serde_json::json!({ "grp": ["x"] });
+        let absent = serde_json::json!({ "other": "y" });
+
+        let must_exist = rule_from_env(&[("CLAIM", "grp"), ("EXISTS", "true")]);
+        assert!(must_exist.matches(&present));
+        assert!(!must_exist.matches(&absent));
+
+        let must_be_absent = rule_from_env(&[("CLAIM", "grp"), ("EXISTS", "false")]);
+        assert!(!must_be_absent.matches(&present));
+        assert!(must_be_absent.matches(&absent));
+    }
+
+    /// A one-value list cannot tell `ANY_OF` from `ALL_OF`, so the two are pinned with a list
+    /// the token only partly satisfies. Wiring `ALL_OF` to `any_of` is a fail-open.
+    #[test]
+    fn test_any_of_and_all_of_are_not_interchangeable() {
+        let any = rule_from_env(&[("CLAIM", "grp"), ("ANY_OF", "[a, b]")]);
+        let all = rule_from_env(&[("CLAIM", "grp"), ("ALL_OF", "[a, b]")]);
+
+        let partial = serde_json::json!({ "grp": ["b"] });
+        assert!(any.matches(&partial), "any_of holds on one of two");
+        assert!(!all.matches(&partial), "all_of must not hold on one of two");
+
+        let complete = serde_json::json!({ "grp": ["a", "b"] });
+        assert!(any.matches(&complete));
+        assert!(all.matches(&complete));
+
+        let neither = serde_json::json!({ "grp": ["c"] });
+        assert!(!any.matches(&neither));
+        assert!(!all.matches(&neither));
+    }
+
+    /// `NONE_OF` denies on any listed value, not only the first.
+    #[test]
+    fn test_none_of_denies_every_listed_value() {
+        let deny = rule_from_env(&[("CLAIM", "grp"), ("NONE_OF", "[a, b]")]);
+        assert!(!deny.matches(&serde_json::json!({ "grp": ["a"] })));
+        assert!(!deny.matches(&serde_json::json!({ "grp": ["b"] })));
+        assert!(deny.matches(&serde_json::json!({ "grp": ["c"] })));
+    }
+
+    /// `whitespace` reaches the separator that splits on any whitespace; every other value is
+    /// matched byte-exactly, so a deny split on a space is blind to a tab.
+    #[test]
+    fn test_separator_whitespace_sentinel() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "ORG",
+                &[
+                    ("CLAIM", "scope"),
+                    ("NONE_OF", "[admin]"),
+                    ("SEPARATOR", "whitespace"),
+                ],
+            );
+            let config = get_config();
+            let rule = config.openid_providers["x"].required_claims["org"]
+                .to_rule()
+                .unwrap();
+            // A tab, a newline and a non-breaking space all delimit.
+            for delimiter in [" ", "\t", "\n", "\u{00a0}"] {
+                let claims = serde_json::json!({ "scope": format!("openid{delimiter}admin") });
+                assert!(!rule.matches(&claims), "{delimiter:?} must delimit");
+            }
+            assert!(rule.matches(&serde_json::json!({ "scope": "openid superadmin" })));
+            Ok(())
+        });
+    }
+
+    /// A literal separator stays literal, so the same rule written with a space is byte-exact.
+    #[test]
+    fn test_literal_separator_is_byte_exact() {
+        // A grant may still be byte-exact: narrowing it rejects, which is the safe direction.
+        let rule = rule_from_env(&[
+            ("CLAIM", "scope"),
+            ("ALL_OF", "[admin]"),
+            ("SEPARATOR", "\" \""),
+        ]);
+        assert!(rule.matches(&serde_json::json!({ "scope": "openid admin" })));
+        assert!(!rule.matches(&serde_json::json!({ "scope": "openid\tadmin" })));
+        // A non-whitespace literal is exact in both directions.
+        let deny = rule_from_env(&[("CLAIM", "g"), ("NONE_OF", "[admin]"), ("SEPARATOR", ",")]);
+        assert!(!deny.matches(&serde_json::json!({ "g": "finance,admin" })));
+        assert!(deny.matches(&serde_json::json!({ "g": "finance;admin" })));
+    }
+
+    /// A deny split on one whitespace character admits a value delimited by any other, so the
+    /// dominated spelling is refused in favour of `SEPARATOR=whitespace`.
+    #[test]
+    #[should_panic(expected = "Write `SEPARATOR=whitespace`")]
+    fn test_whitespace_literal_separator_is_rejected_on_a_deny() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "ORG",
+                &[
+                    ("CLAIM", "scope"),
+                    ("NONE_OF", "[admin]"),
+                    ("SEPARATOR", "\" \""),
+                ],
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    /// A provider that enforces nothing may be absent at boot without weakening anything.
+    #[test]
+    fn test_require_connected_on_startup_false_is_allowed_when_unguarded() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__REQUIRE_CONNECTED_ON_STARTUP"), "false");
+            let config = get_config();
+            let provider = config.openid_providers.get("x").unwrap();
             assert!(!provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    /// A guarded provider skipped at boot enforces nothing, and whether another provider
+    /// would then admit its tokens is only knowable by connecting — so the pair is refused.
+    #[test]
+    #[should_panic(expected = "`require_connected_on_startup=false`")]
+    fn test_guarded_provider_must_be_connected_on_startup() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__REQUIRE_CONNECTED_ON_STARTUP"), "false");
+            set_required_claims_env(
+                jail,
+                X,
+                "ORG",
+                &[("CLAIM", "organizations"), ("ANY_OF", "[tenant-a]")],
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    /// The same holds when the guard is a scope rather than a rule.
+    #[test]
+    #[should_panic(expected = "`require_connected_on_startup=false`")]
+    fn test_scoped_provider_must_be_connected_on_startup() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__SCOPE"), "catalog");
+            jail.set_env(format!("{X}__REQUIRE_CONNECTED_ON_STARTUP"), "false");
+            let _config = get_config();
             Ok(())
         });
     }
@@ -1802,6 +2370,275 @@ mod test {
             let config = get_config();
             let provider = config.openid_providers.get("okta").unwrap();
             assert!(provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    fn set_required_claims_env(
+        jail: &mut figment::Jail,
+        prefix: &str,
+        rule: &str,
+        kv: &[(&str, &str)],
+    ) {
+        for (k, v) in kv {
+            jail.set_env(format!("{prefix}__REQUIRED_CLAIMS__{rule}__{k}"), v);
+        }
+    }
+
+    const X: &str = "LAKEKEEPER_TEST__OPENID_PROVIDERS__X";
+
+    #[test]
+    fn test_required_claims_structured_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "ORG",
+                &[("CLAIM", "organizations"), ("ANY_OF", "[f648, \"a,b\"]")],
+            );
+            set_required_claims_env(
+                jail,
+                X,
+                "SCOPES",
+                &[
+                    ("CLAIM", "scope"),
+                    ("SEPARATOR", "\" \""),
+                    ("ALL_OF", "[openid]"),
+                ],
+            );
+            set_required_claims_env(
+                jail,
+                X,
+                "NOGRP",
+                &[("CLAIM", "groups"), ("EXISTS", "false")],
+            );
+            // Flat provider.
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDER_URI",
+                "https://other.example.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_REQUIRED_CLAIMS__BLOCK__CLAIM",
+                "amr",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_REQUIRED_CLAIMS__BLOCK__NONE_OF",
+                "[pwd]",
+            );
+
+            let config = get_config();
+            let rules = &config.openid_providers.get("x").unwrap().required_claims;
+            assert_eq!(rules.len(), 3);
+            assert_eq!(
+                rules["org"],
+                ClaimRuleConfig {
+                    claim: "organizations".to_string(),
+                    separator: None,
+                    any_of: Some(vec!["f648".to_string(), "a,b".to_string()]),
+                    all_of: None,
+                    none_of: None,
+                    exists: None,
+                }
+            );
+            assert_eq!(rules["scopes"].separator, Some(" ".to_string()));
+            assert_eq!(rules["scopes"].all_of, Some(vec!["openid".to_string()]));
+            assert_eq!(rules["nogrp"].exists, Some(false));
+            assert_eq!(
+                config.openid_required_claims["block"].none_of,
+                Some(vec!["pwd".to_string()])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "`separator` has no effect on `exists`")]
+    fn test_required_claims_rejects_separator_on_exists() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "G",
+                &[("CLAIM", "groups"), ("EXISTS", "true"), ("SEPARATOR", ",")],
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    /// A typo in the container key silently produced zero rules before
+    /// `deny_unknown_fields` was set on the provider.
+    #[test]
+    #[should_panic(expected = "unknown field: found `requiredclaims`")]
+    fn test_provider_rejects_unknown_container_key() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__REQUIREDCLAIMS__ORG__CLAIM"), "organizations");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "no token could ever satisfy 'read write'")]
+    fn test_multi_word_scope_is_rejected_at_startup() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__SCOPE"), "read write");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "the rules would never apply")]
+    fn test_required_claims_without_primary_provider_are_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_REQUIRED_CLAIMS__ORG__CLAIM",
+                "organizations",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_REQUIRED_CLAIMS__ORG__ANY_OF",
+                "[a]",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    /// figment types a bare `[0644]` as a number, so rendering it back would not reproduce
+    /// what was written. Such values must be quoted rather than silently renormalized.
+    #[test]
+    #[should_panic(expected = "expected a string, found 644")]
+    fn test_required_claims_rejects_unquoted_numeric_value() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "T", &[("CLAIM", "tenant"), ("ANY_OF", "[0644]")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_required_claims_accepts_quoted_numeric_value() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "T",
+                &[("CLAIM", "tenant"), ("ANY_OF", "[\"0644\", \"true\"]")],
+            );
+            let config = get_config();
+            assert_eq!(
+                config.openid_providers["x"].required_claims["t"].any_of,
+                Some(vec!["0644".to_string(), "true".to_string()])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid type: found string \"a\", expected a sequence")]
+    fn test_required_claims_rejects_unbracketed_list() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", &[("CLAIM", "org"), ("ANY_OF", "a")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field: found `anyof`")]
+    fn test_required_claims_rejects_unknown_field() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", &[("CLAIM", "org"), ("ANYOF", "[a]")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly one of `any_of`, `all_of`, `none_of`, `exists`")]
+    fn test_required_claims_rejects_two_operators() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "ORG",
+                &[("CLAIM", "org"), ("ANY_OF", "[a]"), ("NONE_OF", "[b]")],
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly one of `any_of`, `all_of`, `none_of`, `exists`")]
+    fn test_required_claims_rejects_no_operator() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", &[("CLAIM", "org")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "any_of must not be empty")]
+    fn test_required_claims_rejects_empty_list() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", &[("CLAIM", "org"), ("ANY_OF", "[]")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "SEPARATOR='\" \"'")]
+    fn test_required_claims_rejects_trimmed_separator_with_hint() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(
+                jail,
+                X,
+                "S",
+                &[
+                    ("CLAIM", "scope"),
+                    ("SEPARATOR", " "),
+                    ("ALL_OF", "[openid]"),
+                ],
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "claim path")]
+    fn test_required_claims_rejects_empty_path_segment() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "ORG", &[("CLAIM", "a..b"), ("ANY_OF", "[a]")]);
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "rule name must match `[a-z0-9-]+`")]
+    fn test_required_claims_rejects_rule_name_with_underscore() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            set_required_claims_env(jail, X, "MY_RULE", &[("CLAIM", "org"), ("ANY_OF", "[a]")]);
+            let _config = get_config();
             Ok(())
         });
     }
@@ -1924,6 +2761,26 @@ mod test {
             assert!(config.cache.role_members.enabled);
             assert_eq!(config.cache.role_members.capacity, 5000);
             assert_eq!(config.cache.role_members.time_to_live_secs, 30);
+            Ok(())
+        });
+    }
+
+    /// A deployment predating the role-ancestors cache still starts.
+    ///
+    /// Lowering the role TTL has always required lowering `user_assignments` with it, so
+    /// that pair is the configuration this cache arrived into. It carries no ancestors
+    /// setting, and the one it inherits must not outlive the roles its entries name.
+    #[test]
+    fn role_ancestors_ttl_follows_a_lower_role_ttl() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__TIME_TO_LIVE_SECS", "60");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let config = get_config();
+            assert_eq!(config.cache.role.time_to_live_secs, 60);
+            assert_eq!(config.cache.role_ancestors.time_to_live_secs, 60);
             Ok(())
         });
     }
@@ -2084,6 +2941,25 @@ mod test {
     }
 
     #[test]
+    fn test_referenced_by_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.referenced_by.max_nesting_depth, 10);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_referenced_by_max_nesting_depth_env_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__REFERENCED_BY__MAX_NESTING_DEPTH", "3");
+            let config = get_config();
+            assert_eq!(config.referenced_by.max_nesting_depth, 3);
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_idempotency_defaults() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -2097,6 +2973,28 @@ mod test {
             );
             Ok(())
         });
+    }
+
+    /// A week-multiple lifetime must not go out as `P<n>W`. That form is legal
+    /// ISO 8601, but the Iceberg Java client runs this field through
+    /// `java.time.Duration.parse`, which rejects the weeks designator and fails
+    /// the *entire* `GET /v1/config` response — so every Java/Spark/Trino client
+    /// would die at `RESTCatalog.initialize()` rather than merely lose the field.
+    #[test]
+    fn test_idempotency_lifetime_never_advertises_weeks() {
+        for (configured, expected) in [
+            ("P7D", "P7D"),
+            ("P1W", "P7D"),
+            ("P14D", "P14D"),
+            ("PT168H", "P7D"),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", configured);
+                let advertised = get_config().idempotency.lifetime_iso8601();
+                assert_eq!(advertised, expected, "configured as {configured}");
+                Ok(())
+            });
+        }
     }
 
     #[test]
@@ -2458,6 +3356,10 @@ mod test {
                 "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ROLES_CLAIM",
                 "groups",
             );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__DISPLAY_NAME_TEMPLATE",
+                "Service Account {email}",
+            );
 
             let config = get_config();
             assert_eq!(config.openid_providers.len(), 1);
@@ -2480,6 +3382,10 @@ mod test {
                 Some(vec!["oid".to_string(), "sub".to_string()])
             );
             assert_eq!(provider.roles_claim, Some("groups".to_string()));
+            assert_eq!(
+                provider.display_name_template,
+                Some("Service Account {email}".to_string())
+            );
 
             Ok(())
         });

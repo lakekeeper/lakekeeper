@@ -10,24 +10,37 @@ use iceberg::{
         SnapshotRetention, Summary, Type, UnboundPartitionSpec,
     },
 };
-use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult, create_etag};
+use iceberg_ext::catalog::rest::{CreateTableRequest, ETag, LoadTableResult};
+
+/// The shape a client echoes back in `If-None-Match`: what the HTTP layer's
+/// `parse_etags` yields from the wire value — weak marker and quotes stripped.
+/// These tests drive the handler directly, so they have to do it themselves.
+fn as_client_etag(etag: &ETag) -> ETag {
+    ETag::from(etag.validator())
+}
 use lakekeeper::{
     api::{
         ApiContext,
         iceberg::v1::{
-            NamespaceParameters, TableParameters,
+            NamespaceParameters, Prefix, TableParameters,
             namespace::NamespaceService as _,
             tables::{
-                DataAccess, LoadTableFilters, LoadTableRequest, LoadTableResultOrNotModified,
-                SnapshotsQuery, TablesService as _,
+                DataAccess, DataAccessMode, LoadTableFilters, LoadTableRequest,
+                LoadTableResultOrNotModified, SnapshotsQuery, TablesService as _,
             },
         },
         management::v1::warehouse::TabularDeleteProfile,
     },
     server::{CatalogServer, tables::load_table::load_table},
-    service::{State, authz::AllowAllAuthorizer},
+    service::{
+        State,
+        authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
+    },
 };
-use lakekeeper_integration_tests::{random_request_metadata, setup_simple};
+use lakekeeper_integration_tests::{
+    SetupTestCatalog, create_ns, create_table, memory_io_profile, random_request_metadata,
+    setup_simple,
+};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 
@@ -303,6 +316,93 @@ async fn setup_table_with_snapshots(
     .unwrap();
 
     (ctx, ns_params, table_ident, table)
+}
+
+/// A caller with `GetMetadata` but neither `ReadData` nor `WriteData` gets no
+/// storage config — the one body shape the `CatalogDefaultsOnly` ETag axis exists
+/// for. It must still carry the advertisement, and must still carry a `config`
+/// map at all, which is what distinguishes it from a commit response.
+#[sqlx::test]
+async fn test_load_table_without_storage_access_still_advertises_planning(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .storage_profile(memory_io_profile())
+        .build()
+        .setup()
+        .await;
+
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "planning_ns".to_string()).await;
+    create_table(ctx.clone(), &prefix, "planning_ns", "t1", false)
+        .await
+        .unwrap();
+
+    // Metadata stays visible; storage access does not.
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::ReadData));
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::WriteData));
+
+    let result = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent::new(ns.namespace.clone(), "t1".to_string()),
+        },
+        LoadTableRequest::builder().build(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect("metadata access alone must still load the table");
+
+    let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+        panic!("an unconditional load must not return 304");
+    };
+
+    assert!(
+        result.storage_credentials.is_none(),
+        "no storage access must vend nothing: {:?}",
+        result.storage_credentials
+    );
+    let config = result
+        .config
+        .expect("a load without storage access still carries a config");
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "the advertisement must not depend on storage access: {config:?}"
+    );
+}
+
+/// The spec puts `scan-planning-mode` in the `loadTable` config map, and we serve
+/// no `planTableScan` endpoint, so every load must say `client`. Asserted on the
+/// response rather than on the helper, since the helper is easy to leave unwired.
+#[sqlx::test]
+async fn test_load_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
+
+    let result = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(result) = result else {
+        panic!("an unconditional load must not return 304");
+    };
+
+    let config = result.config.expect("a load always carries a config");
+    assert_eq!(
+        config.get("scan-planning-mode").map(String::as_str),
+        Some("client"),
+        "loadTable must advertise client-side planning: {config:?}"
+    );
 }
 
 #[sqlx::test]
@@ -680,8 +780,10 @@ async fn test_load_table_returns_not_modified_with_single_matching_etag(pool: Pg
 
     let request_metadata = random_request_metadata();
 
-    let etag = create_etag(&table.metadata_location.unwrap());
-    let etags = vec![etag.as_str().trim_matches('"').into()];
+    // Taken from the response `create_table` produced, so these also pin that
+    // handler's ETag shape against what a default load matches.
+    let etag = table.etag().expect("created table should carry an ETag");
+    let etags = vec![as_client_etag(&etag)];
     let load_table_result = Box::pin(load_table(
         parameters,
         LoadTableRequest::builder().etags(etags).build(),
@@ -711,10 +813,12 @@ async fn test_load_table_returns_not_modified_when_given_multiple_etags_and_one_
 
     let request_metadata = random_request_metadata();
 
-    let etag = create_etag(&table.metadata_location.unwrap());
+    // Taken from the response `create_table` produced, so these also pin that
+    // handler's ETag shape against what a default load matches.
+    let etag = table.etag().expect("created table should carry an ETag");
     let etags = vec![
         "a4b2f6c1dd87".into(),
-        etag.as_str().trim_matches('"').into(),
+        as_client_etag(&etag),
         "b6f8c2d4a45f".into(),
     ];
     let load_table_result = Box::pin(load_table(
@@ -744,7 +848,9 @@ async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) 
 
     let request_metadata = random_request_metadata();
 
-    let etag = create_etag(&table.metadata_location.unwrap());
+    // Taken from the response `create_table` produced, so these also pin that
+    // handler's ETag shape against what a default load matches.
+    let etag = table.etag().expect("created table should carry an ETag");
     let etags = vec!["*".into()];
     let load_table_result = Box::pin(load_table(
         parameters,
@@ -759,5 +865,171 @@ async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) 
     assert_eq!(
         result,
         LoadTableResultOrNotModified::NotModifiedResponse(etag)
+    );
+}
+
+/// A conditional load must not be answered across snapshot filters.
+///
+/// Drives the `load_table` handler (not the HTTP layer): load with
+/// `snapshots=refs`, which drops the unreferenced snapshot 1, keep the returned
+/// ETag, then revalidate asking for `snapshots=all`. That must return a full
+/// body, not a 304 — otherwise the client keeps using the truncated snapshot
+/// list as if it were complete.
+#[sqlx::test]
+async fn test_load_table_does_not_return_not_modified_across_snapshot_filters(pool: PgPool) {
+    let (api_context, namespace_parameters, table_identifier, _) =
+        setup_table_with_snapshots(pool).await;
+    let parameters = TableParameters {
+        prefix: namespace_parameters.prefix.clone(),
+        table: table_identifier.clone(),
+    };
+
+    // Load with `refs` and keep the ETag the server handed out.
+    let refs_result = Box::pin(load_table(
+        parameters.clone(),
+        LoadTableRequest::builder()
+            .filters(LoadTableFilters {
+                snapshots: SnapshotsQuery::Refs,
+            })
+            .build(),
+        api_context.clone(),
+        random_request_metadata(),
+    ))
+    .await
+    .expect("refs load failed");
+
+    let LoadTableResultOrNotModified::LoadTableResult(refs_body) = refs_result else {
+        panic!("expected a full response for the priming load");
+    };
+    // Precondition: `refs` really did truncate the snapshot list.
+    let refs_snapshots: Vec<i64> = refs_body
+        .metadata
+        .snapshots()
+        .map(|s| s.snapshot_id())
+        .collect();
+    assert!(
+        !refs_snapshots.contains(&1),
+        "precondition failed: `refs` should have dropped the unreferenced snapshot"
+    );
+    let refs_etag = refs_body
+        .etag()
+        .expect("refs response should carry an ETag");
+
+    // Revalidate for `all` with the `refs` ETag -> must NOT be a 304.
+    let all_result = Box::pin(load_table(
+        parameters.clone(),
+        LoadTableRequest::builder()
+            .filters(LoadTableFilters {
+                snapshots: SnapshotsQuery::All,
+            })
+            .etags(vec![as_client_etag(&refs_etag)])
+            .build(),
+        api_context.clone(),
+        random_request_metadata(),
+    ))
+    .await
+    .expect("all load failed");
+
+    let LoadTableResultOrNotModified::LoadTableResult(all_body) = all_result else {
+        panic!(
+            "served 304 for `snapshots=all` from a `snapshots=refs` ETag: \
+             the client would reuse a truncated snapshot list"
+        );
+    };
+    let all_snapshots: Vec<i64> = all_body
+        .metadata
+        .snapshots()
+        .map(|s| s.snapshot_id())
+        .collect();
+    assert!(
+        all_snapshots.contains(&1),
+        "the `all` response must carry the unreferenced snapshot"
+    );
+
+    // The same ETag must still 304 against its own representation, so the fix
+    // narrows conditional requests rather than disabling them.
+    let refs_again = Box::pin(load_table(
+        parameters,
+        LoadTableRequest::builder()
+            .filters(LoadTableFilters {
+                snapshots: SnapshotsQuery::Refs,
+            })
+            .etags(vec![as_client_etag(&refs_etag)])
+            .build(),
+        api_context,
+        random_request_metadata(),
+    ))
+    .await
+    .expect("refs revalidation failed");
+    assert_eq!(
+        refs_again,
+        LoadTableResultOrNotModified::NotModifiedResponse(refs_etag),
+        "a `refs` ETag must still 304 a `refs` request"
+    );
+}
+
+/// A conditional load must not be answered across access-delegation modes.
+///
+/// Drives the `load_table` handler on the in-memory profile, which vends no
+/// expiring credentials — so the `vends_credentials` gate never fires and the
+/// response shape is the only thing preventing the 304.
+#[sqlx::test]
+async fn test_load_table_does_not_return_not_modified_across_delegation_modes(pool: PgPool) {
+    let (api_context, namespace_parameters, table_identifier, _) = setup_simple_table(pool).await;
+    let parameters = TableParameters {
+        prefix: namespace_parameters.prefix.clone(),
+        table: table_identifier.clone(),
+    };
+    let vended: DataAccessMode = DataAccess {
+        vended_credentials: true,
+        remote_signing: false,
+    }
+    .into();
+    let signing: DataAccessMode = DataAccess {
+        vended_credentials: false,
+        remote_signing: true,
+    }
+    .into();
+
+    let load = |data_access: DataAccessMode, etags: Vec<ETag>| {
+        let parameters = parameters.clone();
+        let api_context = api_context.clone();
+        async move {
+            Box::pin(load_table(
+                parameters,
+                LoadTableRequest::builder()
+                    .data_access(data_access)
+                    .etags(etags)
+                    .build(),
+                api_context,
+                random_request_metadata(),
+            ))
+            .await
+            .expect("load failed")
+        }
+    };
+
+    // Prime a cache entry under vended-credentials.
+    let LoadTableResultOrNotModified::LoadTableResult(body) = load(vended, vec![]).await else {
+        panic!("expected a full response for the priming load");
+    };
+    let etag = body.etag().expect("response should carry an ETag");
+    let echoed = vec![as_client_etag(&etag)];
+
+    // Revalidating under a different delegation must not 304.
+    assert!(
+        matches!(
+            load(signing, echoed.clone()).await,
+            LoadTableResultOrNotModified::LoadTableResult(_)
+        ),
+        "304'd a remote-signing request from a vended-credentials ETag: the client \
+         would reuse storage config it did not request"
+    );
+
+    // The same tag still 304s its own delegation, so conditional requests keep working.
+    assert_eq!(
+        load(vended, echoed).await,
+        LoadTableResultOrNotModified::NotModifiedResponse(etag),
+        "a vended-credentials ETag must still 304 a vended-credentials request"
     );
 }

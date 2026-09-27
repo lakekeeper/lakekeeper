@@ -1,4 +1,8 @@
-# Admission Gates <span class="lkp"></span> {#admission-gates}
+---
+description: "Configure admission gates in Lakekeeper Plus to allow or deny authenticated requests before they reach a handler, using an external entitlement service."
+---
+
+# Admission Gates { #admission-gates .lkp }
 
 An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, suspend a tenant or principal, or reject revoked tokens.
 
@@ -27,21 +31,27 @@ Only an exact `403` is read as an authoritative deny. Every other non-`2xx` stat
 On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream.
 
 - **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the request-derived placeholders `{{subject}}` (the token `sub`) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
-- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`; tokens from any other identity provider are admitted untouched.
+- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`. Tokens from any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
 - **Cached.** Decisions are cached in memory per `(subject, check)` for `cache_ttl_secs`. Both allow *and* deny are cached, so a denied-but-authenticated caller triggers at most one upstream call per TTL and cannot amplify load; transient `5xx`/timeout results are never cached.
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
 - **Token relay is opt-in.** The caller's bearer token is forwarded only when `auth` is `forward_caller_token`; otherwise the endpoint is reached with the static `headers` only. A forwarded token goes over the configured URL (use TLS) and is never logged.
 
+## Monitoring
+
+Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > External Enforce Gate](./monitoring.md#external-enforce-gate) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
+
 ## Configuration
 
 The gate is **disabled unless an `[admission_enforce]` block is present**. Like [Cedar derivations](./authorization-cedar.md) and [role providers](./configuration.md#role-provider), this is nested config, so it is configured via a TOML file with full environment-variable parity — point `LAKEKEEPER__ADMISSION_ENFORCE_FILE` at a TOML file, and/or set `LAKEKEEPER__ADMISSION_ENFORCE__*` variables on top.
+
+Unknown keys are refused: a typo in the gate block, in `auth`, or in a check fails startup rather than leaving the setting it was meant to be at its default.
 
 ### `[admission_enforce]`
 
 | Key                            | Required | Default | Description                                                       |
 | ------------------------------ | -------- | ------- | ----------------------------------------------------------------- |
 | `endpoint`                     | yes      | —       | Enforce endpoint URL (`POST`). Validated at startup.              |
-| `idp_id`                       | yes      | —       | Only govern tokens from this IdP; others are admitted untouched.  |
+| `idp_id`                       | yes      | —       | Only govern tokens from this IdP; others are admitted untouched. Must name a provider this server authenticates, or startup fails. |
 | `role_provider_id`             | yes      | —       | Provider namespace for the synthesized admission roles.           |
 | `cache_ttl_secs`               | no       | `60`    | TTL for cached allow/deny decisions.                              |
 | `cache_max_entries`            | no       | `10000` | Max cached decisions.                                             |
@@ -49,7 +59,7 @@ The gate is **disabled unless an `[admission_enforce]` block is present**. Like 
 | `connect_timeout_secs`         | no       | `2`     | Connection timeout.                                               |
 | `unavailable_retry_after_secs` | no       | `5`     | `Retry-After` returned on the fail-closed `503`.                  |
 | `headers`                      | no       | `{}`    | Extra static headers sent on every call (e.g. a service API key). |
-| `auth`                         | no       | _none_  | How to authenticate (see below). Omit to send no `Authorization`. |
+| `auth`                         | no       | *none*  | How to authenticate (see below). Omit to send no `Authorization`. |
 | `checks`                       | yes      | —       | Named map of checks (at least one). See below.                   |
 
 ### `[admission_enforce.auth]`

@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum_prometheus::metrics;
 use moka::{
     Expiry,
     future::Cache,
@@ -13,11 +12,7 @@ use moka::{
 use crate::{
     CONFIG,
     service::{
-        cache_metrics::{
-            METRIC_CACHE_HITS_TOTAL as METRIC_STC_CACHE_HITS,
-            METRIC_CACHE_MISSES_TOTAL as METRIC_STC_CACHE_MISSES,
-            METRIC_CACHE_SIZE as METRIC_STC_CACHE_SIZE, METRICS_INITIALIZED,
-        },
+        cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         storage::{
             ShortTermCredentialsRequest, StorageCredentialBorrowed, StorageProfileBorrowed,
             gcs::CachedSTSResponse,
@@ -127,12 +122,10 @@ pub(super) static GCS_STC_CACHE: LazyLock<Cache<STCCacheKey, CachedStc<CachedSTS
 
 /// Update the cache size metric with the combined entry count of all STC caches.
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_cache_size_metric() {
-    let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     let total =
         S3_STC_CACHE.entry_count() + ADLS_STC_CACHE.entry_count() + GCS_STC_CACHE.entry_count();
-    metrics::gauge!(METRIC_STC_CACHE_SIZE, "cache_type" => "stc").set(total as f64);
+    set_cache_size("stc", total);
 }
 
 /// Single-flight read-through for a short-term-credentials cache.
@@ -176,13 +169,12 @@ where
     // Fast path records a hit/miss. Under contention a coalesced waiter records a
     // miss here but then hits `Op::Nop` below without fetching, so the miss counter
     // is *cache misses*, not *STS fetches* (the two diverge under a herd).
-    let () = &*METRICS_INITIALIZED;
     if let Some(cached) = cache.get(&key).await {
-        metrics::counter!(METRIC_STC_CACHE_HITS, "cache_type" => "stc").increment(1);
+        record_cache_hit("stc");
         update_cache_size_metric();
         return Ok(cached.value);
     }
-    metrics::counter!(METRIC_STC_CACHE_MISSES, "cache_type" => "stc").increment(1);
+    record_cache_miss("stc");
 
     let outcome = cache
         .entry(key)

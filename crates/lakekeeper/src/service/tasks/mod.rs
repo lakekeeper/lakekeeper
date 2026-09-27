@@ -61,7 +61,7 @@ mod built_in_schedulable_pin_test {
     /// Pin the set of OSS queues that opt in to `task-queue/{name}/schedule`.
     ///
     /// **OSS has zero schedulable queues.** Destructive (`tabular_purge`) and
-    /// lifecycle-managed (`tabular_expiration`) queues intentionally stay
+    /// lifecycle-managed (`soft_deletion`) queues intentionally stay
     /// opted out so they can't be enqueued out-of-band; `task_log_cleanup` is
     /// project-scoped and not meaningful to trigger manually.
     ///
@@ -99,7 +99,7 @@ mod built_in_schedulable_pin_test {
             !tabular_expiration_queue::API_CONFIG
                 .user_scheduling
                 .is_enabled(),
-            "tabular_expiration is lifecycle-managed and must never be user-schedulable"
+            "soft_deletion is lifecycle-managed and must never be user-schedulable"
         );
     }
 }
@@ -202,6 +202,15 @@ pub trait TaskConfig:
 
     fn queue_name() -> &'static TaskQueueName;
 
+    /// Names this queue was known by in earlier releases. The worker
+    /// dual-reads these alongside [`Self::queue_name`] so tasks enqueued
+    /// before a rename are still picked up, and cancellation on drop covers
+    /// them too. Default: none.
+    #[must_use]
+    fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+        Vec::new()
+    }
+
     /// Decide whether a manual schedule call is acceptable right now.
     ///
     /// Called by the `task-queue/{name}/schedule` endpoint after authz, with
@@ -243,6 +252,12 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     }
 
     fn queue_name() -> &'static TaskQueueName;
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+        Vec::new()
+    }
 
     /// See the `open-api`-enabled trait for full documentation.
     #[allow(unused_variables)]
@@ -861,6 +876,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ) -> Result<(), IcebergErrorResponse> {
         C::cancel_scheduled_tasks(
             Some(Self::queue_name()),
+            &Q::legacy_queue_names(),
             filter,
             cancel_running_and_should_stop,
             transaction,
@@ -884,6 +900,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ) -> crate::api::Result<Option<Self>> {
         let task = C::pick_new_task(
             Q::queue_name(),
+            &Q::legacy_queue_names(),
             Q::max_time_since_last_heartbeat(),
             catalog_state.clone(),
         )

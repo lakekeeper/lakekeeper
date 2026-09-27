@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum_prometheus::metrics;
 use http::StatusCode;
@@ -728,10 +732,15 @@ pub struct RoleMembershipEntry {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 impl RoleMembershipEntry {
-    /// True if this role is catalog-managed (lakekeeper/system) and thus
-    /// manually assignable via the management API.
+    /// True if this role's membership lives in the catalog (`lakekeeper` or
+    /// `system` provider) rather than being converged from an external provider.
+    ///
+    /// Says nothing about who may write that membership: the store layer permits
+    /// writes for both providers, while the API layer restricts `system`-provider
+    /// membership to instance admins (`reject_system_role_membership`). Do not key
+    /// an "add member" affordance on this alone.
     #[must_use]
-    pub fn manually_assignable(&self) -> bool {
+    pub fn is_catalog_managed(&self) -> bool {
         self.role_ident.is_lakekeeper() || self.role_ident.is_system()
     }
 }
@@ -1148,6 +1157,11 @@ where
     /// Cycles are rejected: if `member` is already a transitive ancestor of
     /// `parent` (or `member == parent`), the call returns
     /// [`RoleMembershipCycle`] and no edges are written.
+    /// Caches are not touched. Use [`add_role_members_and_invalidate`] unless the caller
+    /// owns a transaction and no request is being served: an authorizer that reads nesting
+    /// from this store keeps a cache no code outside this crate can clear.
+    ///
+    /// [`add_role_members_and_invalidate`]: Self::add_role_members_and_invalidate
     async fn add_role_members<'a>(
         project_id: &ArcProjectId,
         parent_role_id: RoleId,
@@ -1159,6 +1173,8 @@ where
 
     /// Remove role->role edges: drop every `(parent_role_id, member)` edge for
     /// `member` in `member_role_ids`. Idempotent — absent edges are a no-op.
+    ///
+    /// Caches are not touched; see [`add_role_members`](Self::add_role_members).
     async fn remove_role_members<'a>(
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
@@ -1202,6 +1218,9 @@ where
         // and acceptable for this cache.
         record_membership_edge_fanout("add", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+        // The edge also changes the ancestor set of the member and of every role nested
+        // beneath it, which is cached per role rather than per user.
+        role_assignments_cache::role_ancestors_cache_invalidate_all();
         Ok(result)
     }
 
@@ -1227,6 +1246,9 @@ where
         // Infallible post-commit eviction; see `add_role_members_and_invalidate`.
         record_membership_edge_fanout("remove", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+        // See `add_role_members_and_invalidate`. A removal is the permissive direction, so
+        // this clear is what keeps the window down to the commit→evict gap on this replica.
+        role_assignments_cache::role_ancestors_cache_invalidate_all();
         Ok(result)
     }
 
@@ -1358,6 +1380,11 @@ where
         if !user_result.added.is_empty() {
             role_assignments_cache::role_members_cache_invalidate(role_id).await;
         }
+        if !role_result.added.is_empty() {
+            // Role→role edges landed; see `add_role_members_and_invalidate`. Skipped when
+            // this batch added only user members, which leave the graph untouched.
+            role_assignments_cache::role_ancestors_cache_invalidate_all();
+        }
         Ok((user_result, role_result))
     }
 
@@ -1401,6 +1428,46 @@ where
             // Dedup role/project identity across cached users before storing.
             role_assignments_cache::share_identities(&mut result).await;
             Ok(Arc::new(result))
+        })
+        .await
+    }
+
+    /// Return every role each of `role_ids` is a member of, transitively, excluding itself.
+    ///
+    /// One entry per requested role, so a role nested in nothing maps to an empty set rather
+    /// than being absent. Asking about a single role is a one-element slice; asking about
+    /// several costs one round trip, not several.
+    ///
+    /// Primary consumer: an authorizer deciding a request that names a role rather than a
+    /// user — a caller acting as a role, or a role named as the recipient of a grant. A
+    /// policy written against a parent role has to apply to roles nested inside it, and an
+    /// authorizer that represents nesting as direct links needs the set flattened, since a
+    /// chain broken by an absent intermediate stops resolving. An authorizer that keeps its
+    /// own membership graph resolves nesting there instead — the OpenFGA backend never calls
+    /// this, so its cache stays empty in such a deployment.
+    ///
+    /// Read through a short-lived cache. Its staleness is not symmetric: a membership
+    /// *removal* stays visible for up to one TTL, so a policy written against the parent
+    /// keeps applying to the former member for that long, while an *addition* is not visible
+    /// until then. The permissive direction is why the TTL is short and why every write that
+    /// touches the membership graph clears the cache in-process
+    /// ([`role_ancestors_cache_invalidate_all`]); other replicas converge by TTL.
+    ///
+    /// Precondition: every id is a role the caller has already resolved. A role that does
+    /// not exist yields an empty set, indistinguishable from one nested in nothing — safe
+    /// where the caller holds a resolved role, and a silent widening where it does not.
+    ///
+    /// [`role_ancestors_cache_invalidate_all`]: role_assignments_cache::role_ancestors_cache_invalidate_all
+    async fn list_role_ancestors(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Arc<Vec<AssignedRole>>>, CatalogBackendError> {
+        role_assignments_cache::role_ancestors_cache_get_or_load(role_ids, |missing| async move {
+            Ok(Self::list_role_ancestors_impl(&missing, catalog_state)
+                .await?
+                .into_iter()
+                .map(|(role_id, ancestors)| (role_id, Arc::new(ancestors)))
+                .collect())
         })
         .await
     }

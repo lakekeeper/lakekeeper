@@ -5,7 +5,7 @@ use iceberg_ext::catalog::rest::LoadViewResult;
 use lakekeeper_io::Location;
 
 use crate::{
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::{
         ApiContext,
         iceberg::v1::{ViewParameters, views::LoadViewRequest},
@@ -20,7 +20,8 @@ use crate::{
             get_relevant_namespaces_to_authorize_load_tabular,
             get_relevant_tabulars_to_authorize_load_tabular,
             load_objects_to_authorize_load_tabular, resolve_users_for_authorize_load_tabular,
-            sort_tabulars_for_authorize_load_tabular, validate_table_or_view_ident,
+            sort_tabulars_for_authorize_load_tabular, validate_referenced_by,
+            validate_table_or_view_ident,
         },
     },
     service::{
@@ -56,6 +57,10 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             }
         }
     }
+    validate_referenced_by(
+        request.referenced_by.as_deref(),
+        CONFIG.referenced_by.max_nesting_depth,
+    )?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
@@ -219,6 +224,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     // 9. Build actions and check all authorizations in batch
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
+        view,
     );
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
@@ -253,11 +259,10 @@ fn interpret_authz_results_for_load_view(
     let mut target_is_delegated = false;
     let mut can_get_metadata = false;
 
-    // Each view in the chain emits both `GetMetadata` and `Select` — see
-    // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`. On the
-    // target view we only consult `GetMetadata` (loadView reads the
-    // definition; it doesn't execute). On intermediate views we enforce any
-    // denial, which includes `Select`.
+    // The target view emits only `GetMetadata` — loadView reads the
+    // definition; it doesn't execute. Intermediate views additionally emit
+    // `Select`, and we enforce any denial on them. See
+    // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`.
     for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
         match action {
             ActionOnTableOrView::View(view_action) => {

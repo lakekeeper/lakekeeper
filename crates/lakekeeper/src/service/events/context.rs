@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::s3::S3Location;
+use strum::VariantArray;
 use tracing::Instrument;
 
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
-        TabularId, UserId, ViewIdentOrId, ViewInfo,
+        TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
             ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
@@ -30,41 +31,273 @@ use crate::{
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
-            EventDispatcher,
+            EventDispatcher, IdempotentReplayEvent,
         },
+        idempotency::IdempotencyKey,
         storage::StoragePermissions,
         tasks::TaskId,
     },
 };
 
-pub const FIELD_NAME_SERVER_ID: &str = "server-id";
-pub const FIELD_NAME_PROJECT_ID: &str = "project-id";
-pub const FIELD_NAME_WAREHOUSE_ID: &str = "warehouse-id";
-pub const FIELD_NAME_NAMESPACE: &str = "namespace";
-pub const FIELD_NAME_NAMESPACE_ID: &str = "namespace-id";
-pub const FIELD_NAME_TABLE: &str = "table";
-pub const FIELD_NAME_TABLE_ID: &str = "table-id";
-pub const FIELD_NAME_TABLE_LOCATION: &str = "table-location";
-pub const FIELD_NAME_VIEW: &str = "view";
-pub const FIELD_NAME_VIEW_ID: &str = "view-id";
-pub const FIELD_NAME_TASK_ID: &str = "task-id";
-pub const FIELD_NAME_ROLE_ID: &str = "role-id";
-pub const FIELD_NAME_ROLE_SOURCE_ID: &str = "role-source-id";
-pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
-pub const FIELD_NAME_USER_ID: &str = "user-id";
-pub const FIELD_NAME_GENERIC_TABLE: &str = "generic-table";
-pub const FIELD_NAME_GENERIC_TABLE_ID: &str = "generic-table-id";
+/// A field that can appear on an `entity` object in an audit record.
+///
+/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
+/// that require every field to be documented, and the
+/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
+/// its wire name in the one place that decides wire names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+pub enum EntityField {
+    ServerId,
+    ProjectId,
+    WarehouseId,
+    Namespace,
+    NamespaceId,
+    Table,
+    TableId,
+    TableLocation,
+    View,
+    ViewId,
+    TaskId,
+    RoleId,
+    RoleSourceId,
+    RoleProviderId,
+    UserId,
+    GenericTable,
+    GenericTableId,
+    TagDefinitionId,
+}
 
-pub const ENTITY_TYPE_SERVER: &str = "server";
-pub const ENTITY_TYPE_PROJECT: &str = "project";
-pub const ENTITY_TYPE_WAREHOUSE: &str = "warehouse";
-pub const ENTITY_TYPE_NAMESPACE: &str = "namespace";
-pub const ENTITY_TYPE_TABLE: &str = "table";
-pub const ENTITY_TYPE_VIEW: &str = "view";
-pub const ENTITY_TYPE_TASK: &str = "task";
-pub const ENTITY_TYPE_ROLE: &str = "role";
-pub const ENTITY_TYPE_USER: &str = "user";
-pub const ENTITY_TYPE_GENERIC_TABLE: &str = "generic-table";
+impl EntityField {
+    /// The wire name. `const fn` so it is usable in const context.
+    ///
+    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
+    /// silently take some other variant's wire name instead of failing the build.
+    #[must_use]
+    #[deny(clippy::wildcard_enum_match_arm)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerId => "server-id",
+            Self::ProjectId => "project-id",
+            Self::WarehouseId => "warehouse-id",
+            Self::Namespace => "namespace",
+            Self::NamespaceId => "namespace-id",
+            Self::Table => "table",
+            Self::TableId => "table-id",
+            Self::TableLocation => "table-location",
+            Self::View => "view",
+            Self::ViewId => "view-id",
+            Self::TaskId => "task-id",
+            Self::RoleId => "role-id",
+            Self::RoleSourceId => "role-source-id",
+            Self::RoleProviderId => "role-provider-id",
+            Self::UserId => "user-id",
+            Self::GenericTable => "generic-table",
+            Self::GenericTableId => "generic-table-id",
+            Self::TagDefinitionId => "tag-definition-id",
+        }
+    }
+}
+
+// The former `&'static str` constants, retyped. Call sites spell these by name, so they
+// keep compiling unchanged while the type system gains a closed field set.
+pub const FIELD_NAME_SERVER_ID: EntityField = EntityField::ServerId;
+pub const FIELD_NAME_PROJECT_ID: EntityField = EntityField::ProjectId;
+pub const FIELD_NAME_WAREHOUSE_ID: EntityField = EntityField::WarehouseId;
+pub const FIELD_NAME_NAMESPACE: EntityField = EntityField::Namespace;
+pub const FIELD_NAME_NAMESPACE_ID: EntityField = EntityField::NamespaceId;
+pub const FIELD_NAME_TABLE: EntityField = EntityField::Table;
+pub const FIELD_NAME_TABLE_ID: EntityField = EntityField::TableId;
+pub const FIELD_NAME_TABLE_LOCATION: EntityField = EntityField::TableLocation;
+pub const FIELD_NAME_VIEW: EntityField = EntityField::View;
+pub const FIELD_NAME_VIEW_ID: EntityField = EntityField::ViewId;
+pub const FIELD_NAME_TASK_ID: EntityField = EntityField::TaskId;
+pub const FIELD_NAME_ROLE_ID: EntityField = EntityField::RoleId;
+pub const FIELD_NAME_ROLE_SOURCE_ID: EntityField = EntityField::RoleSourceId;
+pub const FIELD_NAME_ROLE_PROVIDER_ID: EntityField = EntityField::RoleProviderId;
+pub const FIELD_NAME_USER_ID: EntityField = EntityField::UserId;
+pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
+pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
+pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
+
+/// The `action_name` of the defensive row emitted when an event reaches the audit log
+/// with no action at all.
+///
+/// A one-variant enum rather than a string literal so the value reaches the wire-value
+/// manifest: `action_name` is the field carrying most of the format's vocabulary, and a
+/// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
+/// names the same condition on the entity side of the same row.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum FallbackAction {
+    Unknown,
+}
+
+impl FallbackAction {
+    /// The value as it reaches the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// The `entity_type` of an audit record's `entity` object.
+///
+/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
+/// that require every field to be documented, and the
+/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
+/// its wire name in the one place that decides wire names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+pub enum EntityType {
+    Server,
+    Project,
+    Warehouse,
+    Namespace,
+    Table,
+    View,
+    Task,
+    Role,
+    User,
+    GenericTable,
+    Tag,
+    Unknown,
+}
+
+impl EntityType {
+    /// The wire name. `const fn` so it is usable in const context.
+    ///
+    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
+    /// silently take some other variant's wire name instead of failing the build.
+    #[must_use]
+    #[deny(clippy::wildcard_enum_match_arm)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::Project => "project",
+            Self::Warehouse => "warehouse",
+            Self::Namespace => "namespace",
+            Self::Table => "table",
+            Self::View => "view",
+            Self::Task => "task",
+            Self::Role => "role",
+            Self::User => "user",
+            Self::GenericTable => "generic-table",
+            Self::Tag => "tag",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+// The former `&'static str` constants, retyped. Call sites spell these by name, so they
+// keep compiling unchanged while the type system gains a closed field set.
+pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
+pub const ENTITY_TYPE_PROJECT: EntityType = EntityType::Project;
+pub const ENTITY_TYPE_WAREHOUSE: EntityType = EntityType::Warehouse;
+pub const ENTITY_TYPE_NAMESPACE: EntityType = EntityType::Namespace;
+pub const ENTITY_TYPE_TABLE: EntityType = EntityType::Table;
+pub const ENTITY_TYPE_VIEW: EntityType = EntityType::View;
+pub const ENTITY_TYPE_TASK: EntityType = EntityType::Task;
+pub const ENTITY_TYPE_ROLE: EntityType = EntityType::Role;
+pub const ENTITY_TYPE_USER: EntityType = EntityType::User;
+pub const ENTITY_TYPE_GENERIC_TABLE: EntityType = EntityType::GenericTable;
+pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
+
+/// A field that can appear in an `action` object's context in an audit record.
+///
+/// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
+/// space enumerable, so the tests can require every field to be documented and covered,
+/// and the wildcard-free match below makes a new field a build failure rather than an
+/// undocumented field in the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+pub enum ActionContextKey {
+    AllowPartial,
+    BaseLocation,
+    CreatedBefore,
+    Deletes,
+    Destination,
+    DryRun,
+    Force,
+    Format,
+    GenericTableId,
+    Name,
+    NarrowedPrivileges,
+    Principal,
+    Principals,
+    PrivilegeScope,
+    Privileges,
+    ProjectId,
+    Properties,
+    Purge,
+    Recursive,
+    RemovedProperties,
+    RequestedProviderId,
+    RequestedSourceId,
+    ResourceTypes,
+    RootLevel,
+    Source,
+    TableId,
+    TargetRefs,
+    UpdateKinds,
+    UpdatedProperties,
+    Writes,
+}
+
+impl ActionContextKey {
+    /// The wire name. `const fn` so it is usable in const context.
+    ///
+    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
+    /// silently take some other variant's wire name instead of failing the build.
+    #[must_use]
+    #[deny(clippy::wildcard_enum_match_arm)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllowPartial => "allow-partial",
+            Self::BaseLocation => "base_location",
+            Self::CreatedBefore => "created-before",
+            Self::Deletes => "deletes",
+            Self::Destination => "destination",
+            Self::DryRun => "dry-run",
+            Self::Force => "force",
+            Self::Format => "format",
+            Self::GenericTableId => "generic_table_id",
+            Self::Name => "name",
+            Self::NarrowedPrivileges => "narrowed_privileges",
+            Self::Principal => "principal",
+            Self::Principals => "principals",
+            Self::PrivilegeScope => "privilege_scope",
+            Self::Privileges => "privileges",
+            Self::ProjectId => "project_id",
+            Self::Properties => "properties",
+            Self::Purge => "purge",
+            Self::Recursive => "recursive",
+            Self::RemovedProperties => "removed-properties",
+            Self::RequestedProviderId => "requested_provider_id",
+            Self::RequestedSourceId => "requested_source_id",
+            Self::ResourceTypes => "resource_types",
+            Self::RootLevel => "root_level",
+            Self::Source => "source",
+            Self::TableId => "table_id",
+            Self::TargetRefs => "target-refs",
+            Self::UpdateKinds => "update-kinds",
+            Self::UpdatedProperties => "updated-properties",
+            Self::Writes => "writes",
+        }
+    }
+}
+
+impl std::fmt::Display for ActionContextKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 // ── Traits ──────────────────────────────────────────────────────────────────
 
@@ -74,12 +307,12 @@ pub trait ResolutionState: Clone + Send + Sync {}
 /// A single key-value descriptor for an entity (e.g. "warehouse-id" = "abc-123")
 #[derive(Clone, Debug)]
 pub struct EntityDescriptorField {
-    pub key: &'static str,
+    pub key: EntityField,
     pub value: String,
 }
 
 impl EntityDescriptorField {
-    pub fn new(key: &'static str, value: &impl ToString) -> Self {
+    pub fn new(key: EntityField, value: &impl ToString) -> Self {
         Self {
             key,
             value: value.to_string(),
@@ -91,12 +324,12 @@ impl EntityDescriptorField {
 #[derive(Clone, Debug)]
 pub struct EntityDescriptor {
     pub fields: Vec<EntityDescriptorField>,
-    pub entity_type: &'static str,
+    pub entity_type: EntityType,
 }
 
 impl EntityDescriptor {
     #[must_use]
-    pub fn new(entity_type: &'static str) -> Self {
+    pub fn new(entity_type: EntityType) -> Self {
         Self {
             fields: Vec::new(),
             entity_type,
@@ -104,7 +337,7 @@ impl EntityDescriptor {
     }
 
     #[must_use]
-    pub fn field(mut self, key: &'static str, value: &impl ToString) -> Self {
+    pub fn field(mut self, key: EntityField, value: &impl ToString) -> Self {
         self.fields.push(EntityDescriptorField::new(key, value));
         self
     }
@@ -509,15 +742,63 @@ impl_user_provided_entity!(WarehouseId, ENTITY_TYPE_WAREHOUSE, FIELD_NAME_WAREHO
 impl_user_provided_entity!(NamespaceId, ENTITY_TYPE_NAMESPACE, FIELD_NAME_NAMESPACE_ID);
 impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
 impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
+impl_user_provided_entity!(
+    TagDefinitionId,
+    ENTITY_TYPE_TAG,
+    FIELD_NAME_TAG_DEFINITION_ID
+);
 
 // ── Action types ────────────────────────────────────────────────────────────
+
+/// Actions named per endpoint rather than per resource permission, for the handlers that
+/// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ManagementAction {
+    SearchUsers,
+    ListProjects,
+    SearchTabulars,
+    IntrospectPermissions,
+    GetTaskDetails,
+    ListTasks,
+    ControlTasks,
+    ScheduleTask,
+    ApplyGrants,
+    RevokeSubtreeGrants,
+}
+
+/// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
+/// enum rather than a literal.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AuthnAction {
+    AssumeRole,
+}
 #[derive(Clone, Debug)]
 pub struct ServerActionSearchUsers {}
 impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("search_users")
+                .action_name(ManagementAction::SearchUsers.into())
                 .build(),
         ]
     }
@@ -529,7 +810,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("list_projects")
+                .action_name(ManagementAction::ListProjects.into())
                 .build(),
         ]
     }
@@ -541,7 +822,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("search_tabulars")
+                .action_name(ManagementAction::SearchTabulars.into())
                 .build(),
         ]
     }
@@ -553,7 +834,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("introspect_permissions")
+                .action_name(ManagementAction::IntrospectPermissions.into())
                 .build(),
         ]
     }
@@ -565,7 +846,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("get_task_details")
+                .action_name(ManagementAction::GetTaskDetails.into())
                 .build(),
         ]
     }
@@ -575,7 +856,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("list_tasks")
+                .action_name(ManagementAction::ListTasks.into())
                 .build(),
         ]
     }
@@ -585,7 +866,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("control_tasks")
+                .action_name(ManagementAction::ControlTasks.into())
                 .build(),
         ]
     }
@@ -595,7 +876,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name("schedule_task")
+                .action_name(ManagementAction::ScheduleTask.into())
                 .build(),
         ]
     }
@@ -810,6 +1091,18 @@ impl<A: APIEventActions> APIEventContext<RoleId, Unresolved, A> {
         action: A,
     ) -> Self {
         Self::new(request_metadata, dispatcher, role_id, action)
+    }
+}
+
+impl<A: APIEventActions> APIEventContext<TagDefinitionId, Unresolved, A> {
+    #[must_use]
+    pub fn for_tag(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        tag_definition_id: TagDefinitionId,
+        action: A,
+    ) -> Self {
+        Self::new(request_metadata, dispatcher, tag_definition_id, action)
     }
 }
 
@@ -1051,6 +1344,13 @@ where
         self.request_metadata.clone()
     }
 
+    /// For events this context has no `emit_*` of its own — a handler that creates a
+    /// resource also announces the grants it was born with.
+    #[must_use]
+    pub fn dispatcher(&self) -> &EventDispatcher {
+        &self.dispatcher
+    }
+
     pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.extra_context.insert(key.into(), value.into());
     }
@@ -1111,11 +1411,6 @@ where
     pub fn resolved_mut(&mut self) -> &mut T {
         &mut self.resolved_entity.data
     }
-
-    #[must_use]
-    pub fn dispatcher(&self) -> &EventDispatcher {
-        &self.dispatcher
-    }
 }
 
 // ── Event emission ──────────────────────────────────────────────────────────
@@ -1169,24 +1464,58 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
             Err(e) => Err(self.emit_authz_failure_event(e)),
         }
     }
+
+    /// Record that this request was answered from an idempotency record rather
+    /// than executed.
+    ///
+    /// Emits the entity and action the *caller named*, since a replay resolves
+    /// nothing. Consumes `self` like [`Self::emit_authz`], so one binding cannot
+    /// both answer from a record and authorize. That is a guard against reuse,
+    /// not a linearity guarantee — `APIEventContext` is `Clone`, so a caller who
+    /// clones can still emit both, and only a test catches it.
+    pub fn emit_idempotent_replay(self, idempotency_key: IdempotencyKey) {
+        let event = IdempotentReplayEvent {
+            request_metadata: self.request_metadata,
+            entities: Arc::new(self.user_provided_entity.event_entities()),
+            actions: Arc::new(self.action.event_actions()),
+            idempotency_key,
+        };
+        let dispatcher = self.dispatcher;
+        let span = tracing::Span::current();
+        tokio::spawn(
+            async move {
+                let () = dispatcher.idempotent_replay_served(event).await;
+            }
+            .instrument(span),
+        );
+    }
 }
 
 impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     APIEventContext<P, R, A, AuthzChecked>
 {
-    /// Convert an authorization failure to an [`ErrorModel`] without emitting any event.
+    /// Convert a failure to an [`ErrorModel`] without emitting any event.
     ///
-    /// Use this for sub-filtering in list-style operations where logging
-    /// every filtered-out entry would be too noisy.
+    /// See the free function of the same name for when this is the right choice.
     pub fn authz_to_error_no_audit(&self, error: impl AuthorizationFailureSource) -> ErrorModel {
         authz_to_error_no_audit(error)
     }
 }
 
-/// Convert an authorization failure to an [`ErrorModel`] without emitting any event.
+/// Convert a failure to an [`ErrorModel`] without emitting any event.
 ///
-/// Use this for sub-filtering in list-style operations where logging
-/// every filtered-out entry would be too noisy.
+/// Two uses:
+/// * sub-filtering in list-style operations, where logging every filtered-out
+///   entry would be too noisy;
+/// * mapping a failure that occurs *after* [`APIEventContext::emit_authz`] has
+///   already recorded the authorization outcome — the write half of a
+///   check/apply split — so the outcome is not logged a second time under the
+///   wrong label.
+///
+/// Not for a post-emit failure that is itself an authorization decision (an
+/// ownership guard, a lock). Those belong in the check half, so the request
+/// records one verdict; where the guard cannot be decided before the emit, use
+/// [`APIEventContext::emit_late_authz_failure`].
 pub fn authz_to_error_no_audit(error: impl AuthorizationFailureSource) -> ErrorModel {
     error.into_error_model()
 }
@@ -1308,14 +1637,14 @@ fn synthesise_authorizations(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| ActionDescriptor {
-                    action_name: "unknown",
+                    action_name: FallbackAction::Unknown.as_str(),
                     context: Vec::new(),
                 }),
             entity: entities
                 .entities
                 .first()
                 .cloned()
-                .unwrap_or_else(|| EntityDescriptor::new("unknown")),
+                .unwrap_or_else(|| EntityDescriptor::new(EntityType::Unknown)),
             allowed,
             determined_by: Vec::new(),
         });

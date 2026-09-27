@@ -77,6 +77,48 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
     Ok((storage, config))
 }
 
+#[cfg(feature = "storage-s3")]
+async fn create_oss_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let bucket = std::env::var("LAKEKEEPER_TEST__OSS_BUCKET")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__OSS_BUCKET not set"))?;
+    let region = std::env::var("LAKEKEEPER_TEST__OSS_REGION")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__OSS_REGION not set"))?;
+    let endpoint = std::env::var("LAKEKEEPER_TEST__OSS_ENDPOINT")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__OSS_ENDPOINT not set"))?;
+    let access_key = std::env::var("LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID not set"))?;
+    let secret_key = std::env::var("LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY not set"))?;
+
+    // Alibaba Cloud OSS is virtual-hosted only (so we must NOT set path_style_access) and needs the
+    // S3-compatibility checksum accommodations (`s3_compat_checksums`)
+    let s3_settings = lakekeeper_io::s3::S3Settings::builder()
+        .endpoint(Some(
+            endpoint
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid OSS endpoint URL: {e}"))?,
+        ))
+        .region(region)
+        .s3_compat_checksums(true)
+        .build();
+    let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
+        aws_access_key_id: access_key,
+        aws_secret_access_key: secret_key,
+        aws_session_token: None,
+        external_id: None,
+    });
+
+    let storage = StorageBackend::S3(s3_settings.get_storage_client(Some(&s3_auth)).await);
+    let base_path = format!(
+        "s3://{}/lakekeeper-io-integration-tests/{}",
+        bucket,
+        uuid::Uuid::new_v4()
+    );
+    let config = TestConfig { base_path };
+
+    Ok((storage, config))
+}
+
 #[cfg(feature = "storage-adls")]
 async fn create_adls_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
     let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
@@ -168,6 +210,15 @@ macro_rules! test_all_storages {
             fn [<$test_name _s3>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
                     let (storage, config) = create_s3_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-s3")]
+            #[test]
+            fn [<$test_name _oss>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_oss_storage().await?;
                     $test_fn(&storage, &config).await
                 })
             }

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE tabular t\n        SET tabular_namespace_name = n.namespace_name\n        FROM namespace n\n        WHERE n.warehouse_id = t.warehouse_id\n            AND n.namespace_id = t.namespace_id\n            AND (t.tabular_namespace_name::text) COLLATE \"C\"\n                <> (n.namespace_name::text) COLLATE \"C\"\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e7b0631eb7280cb76634658f775475adfe588f6334f253a6738811e3e29b82f8"
+}

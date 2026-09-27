@@ -31,7 +31,7 @@ use crate::{
         Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            NamespaceParent,
+            GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
@@ -39,7 +39,7 @@ use crate::{
                 ResolvedNamespace, Unresolved, UserProvidedNamespace, authz_to_error_no_audit,
             },
         },
-        idempotency::IdempotencyInfo,
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
@@ -234,8 +234,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1CreateNamespace,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let ns = Self::load_namespace_metadata(
                     NamespaceParameters {
@@ -243,12 +248,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         namespace: namespace.clone(),
                     },
                     GetNamespacePropertiesQuery { return_uuid: false },
-                    state,
+                    state.clone(),
                     request_metadata,
                 )
                 .await?;
+                // A replay must answer exactly what the first call answered, which is the stored
+                // path (see the response built at the end of this method). `ns.namespace` is not
+                // that: `load_namespace_metadata` deliberately echoes the path the caller
+                // addressed, and for a nested namespace the stored ancestor segments can be
+                // spelled differently. Read the canonical ident rather than reusing the echo —
+                // changing what `load_namespace_metadata` returns would break every by-name read.
+                let canonical = C::get_namespace(
+                    warehouse_id,
+                    namespace.clone(),
+                    state.v1_state.catalog.clone(),
+                )
+                .await?
+                .map_or_else(|| namespace.clone(), |h| h.canonical_ident().clone());
                 return Ok(CreateNamespaceResponse {
-                    namespace: ns.namespace,
+                    namespace: canonical,
                     properties: ns.properties.map(|arc| (*arc).clone()),
                 });
             }
@@ -352,14 +370,38 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            &GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            t.transaction(),
+        )
+        .await?;
+
         t.commit().await?;
 
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata().clone();
+
         event_ctx.emit_namespace_created_async(r.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let r_namespace = r.namespace.clone();
         let mut properties = r_namespace.properties.clone().unwrap_or_default();
         properties.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string());
         Ok(CreateNamespaceResponse {
+            // The stored path, which for a nested namespace may differ from the request: the
+            // ancestor segments are taken from the parent row, because a prefix references another
+            // entity rather than naming one the caller owns. Reporting where the namespace actually
+            // is keeps create consistent with `list_namespaces` and `move_namespace`, both of which
+            // return canonical paths, so a client can diff a listing against what create told it.
+            // Reads addressed by an explicit path — `load_namespace_metadata` — still echo that
+            // path, since there the caller supplied it.
             namespace: r_namespace.namespace_ident.clone(),
             properties: Some(properties),
         })
@@ -484,26 +526,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
-        // ------------------- IDEMPOTENCY CHECK -------------------
-        // Idempotency is not supported for recursive drops — they manage their own
-        // transaction internally, so we cannot insert the key atomically. A retry of
-        // a recursive drop will get 404 (namespace already gone), which is correct.
-        let idempotency_key = if flags.recursive {
-            None
-        } else {
-            request_metadata.idempotency_key().copied()
-        };
-        if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
-            if check.is_replay() {
-                return Ok(());
-            }
-        }
-
-        //  ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
-
+        // ------------------- AUDIT CONTEXT -------------------
+        // Built before the idempotency check so a served replay can be audited.
+        let idempotency_key = request_metadata.idempotency_key().copied();
         let event_ctx = APIEventContext::for_namespace(
             Arc::new(request_metadata.clone()),
             state.v1_state.events,
@@ -515,6 +540,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 recursive: flags.recursive,
             },
         );
+
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        if let Some(ref key) = idempotency_key {
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropNamespace,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
+            if check.is_replay() {
+                event_ctx.emit_idempotent_replay(*key);
+                return Ok(());
+            }
+        }
+
+        //  ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
 
         let authz_result = authorizer
             .load_and_authorize_namespace_action::<C>(
@@ -538,18 +581,18 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        if flags.recursive {
-            // recursive drop manages its own transaction
-            try_recursive_drop::<_, C, _>(
+        let namespace_locations = if flags.recursive {
+            // recursive drop commits its own transaction
+            try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
                 &warehouse,
                 t,
                 namespace_id,
                 &request_metadata,
-                &state.v1_state.secrets,
+                idempotency_key.as_ref(),
             )
-            .await?;
+            .await?
         } else {
             let drop_info =
                 C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
@@ -581,16 +624,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
                 })
                 .ok();
+            drop_info.namespace_locations
+        };
 
-            // Best-effort cleanup of namespace storage folders (only on purge)
-            if flags.purge {
-                try_cleanup_namespace_locations(
-                    &warehouse,
-                    &state.v1_state.secrets,
-                    &drop_info.namespace_locations,
-                )
-                .await;
-            }
+        // Best-effort cleanup of namespace storage folders (only on purge)
+        if flags.purge {
+            try_cleanup_namespace_locations(
+                &warehouse,
+                &state.v1_state.secrets,
+                &namespace_locations,
+            )
+            .await;
         }
 
         event_ctx.emit_namespace_dropped_async();
@@ -626,8 +670,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1UpdateNamespaceProperties,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let ns = Self::load_namespace_metadata(
                     parameters,
@@ -723,15 +772,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 }
 
 #[allow(clippy::too_many_lines)]
-async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
+async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
     authorizer: A,
     warehouse: &ResolvedWarehouse,
     mut t: <C as CatalogStore>::Transaction,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
-    secret_store: &S,
-) -> Result<()> {
+    idempotency_key: Option<&IdempotencyKey>,
+) -> Result<Vec<(NamespaceId, Location)>> {
     if matches!(
         warehouse.tabular_delete_profile,
         TabularDeleteProfile::Hard {}
@@ -746,6 +795,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
 
         C::cancel_scheduled_tasks(
             None,
+            &[],
             CancelTasksFilter::TaskIds(drop_info.open_tasks),
             false,
             t.transaction(),
@@ -777,6 +827,31 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 .await?;
             }
         }
+        // The recursive drop reaches this point with a single un-committed
+        // transaction, so the key goes in atomically here exactly as it does on the
+        // non-recursive path. Without it a retried recursive drop re-executes and
+        // 404s on the already-gone namespace instead of replaying the 204.
+        if let Some(key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse.warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                    .http_status(StatusCode::NO_CONTENT)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         // commit before starting the purge tasks so that we cannot end in the situation where
         // data is deleted but the transaction is not committed, meaning dangling pointers.
         t.commit().await?;
@@ -851,17 +926,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 .ok();
         }
 
-        // Best-effort cleanup of namespace storage folders (only on purge)
-        if flags.purge {
-            try_cleanup_namespace_locations(
-                warehouse,
-                secret_store,
-                &drop_info.namespace_locations,
-            )
-            .await;
-        }
-
-        Ok(())
+        Ok(drop_info.namespace_locations)
     } else {
         Err(ErrorModel::bad_request(
             "Cannot recursively delete namespace with soft-deletion without force flag",

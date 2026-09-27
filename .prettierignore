@@ -1,0 +1,20 @@
+# Prettier must never touch Markdown in this repository.
+#
+# Prettier's Markdown printer is not configurable in the ways that matter: it
+# pads every table cell to the widest cell in its column, rewrites list
+# markers, and renumbers ordered lists. Several docs tables have a wide
+# free-text column -- the widest row in docs/docs/logging.md is 815 characters
+# -- so prettier turns a readable table into rows of that width and produces an
+# unreadable diff on every save. There is no option to disable this.
+#
+# This matters even though prettier is not part of the documented workflow:
+# Zed bundles prettier and will format Markdown on an explicit Format command
+# with no setup at all.
+#
+# Honoured by the prettier CLI, the VS Code Prettier extension, Zed's built-in
+# prettier, and conform.nvim -- including when prettier is invoked via
+# --stdin-filepath, where it passes content through unchanged and exits 0.
+#
+# Markdown structure is enforced by markdownlint instead; see
+# .markdownlint-cli2.yaml.
+*.md

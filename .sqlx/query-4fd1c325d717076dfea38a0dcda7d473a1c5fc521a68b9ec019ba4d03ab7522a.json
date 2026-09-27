@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT schema_id FROM view_schema WHERE warehouse_id = $1 AND view_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schema_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "view_schema",
+            "name": "schema_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4fd1c325d717076dfea38a0dcda7d473a1c5fc521a68b9ec019ba4d03ab7522a"
+}

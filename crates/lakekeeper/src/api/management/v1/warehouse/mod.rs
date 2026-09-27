@@ -1,6 +1,6 @@
 mod undrop;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use futures::{FutureExt, StreamExt as _};
 use iceberg::spec::FormatVersion;
@@ -15,6 +15,7 @@ pub use crate::service::{
     storage::{
         AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile, OneLakeProfile,
         S3Credential, S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
+        validation::{ValidationCheck, ValidationCheckName, ValidationCheckStatus},
     },
 };
 use crate::{
@@ -33,17 +34,18 @@ use crate::{
         },
     },
     request_metadata::RequestMetadata,
-    server::UnfilteredPage,
+    server::{UnfilteredPage, maybe_get_secret},
     service::{
         AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
-        State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
-        WarehouseFormatVersionPolicy, WarehouseSpecLocked,
+        ResolvedWarehouse, State, TabularId, TabularListFlags, Transaction,
+        ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
-            InstanceAdminAuthorizer,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, GrantResource,
+            InstanceAdminAction, InstanceAdminAuthorizer, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         events::{
             APIEventContext,
@@ -54,10 +56,14 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
+        storage::validation::{
+            ReportBuilder, SKIPPED_PREREQUISITE, STORAGE_CHECKS, ValidationReport, elapsed_ms,
+        },
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
         },
+        warehouse_cache::warehouse_cache_invalidate,
     },
 };
 
@@ -98,6 +104,31 @@ pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
     /// within a project and may not contain "/"
     pub warehouse_name: String,
+    /// Request a specific warehouse ID - optional.
+    /// If not provided, a new warehouse ID will be generated (recommended).
+    /// Warehouse IDs are unique across the whole Lakekeeper instance, not just
+    /// within a project. If you do provide one, prefer a UUIDv7, so that IDs
+    /// sort by creation time.
+    // Why v7: the standard random-vs-time-ordered B-tree argument. A random id
+    // scatters inserts across the whole index, so pages split down the middle and
+    // the index ends up fragmented, larger, and read from disk at random;
+    // published Postgres benchmarks put v4 inserts several times slower than v7
+    // at scale, with a measurably bigger index. A time-ordered id keeps inserts
+    // at the growing edge, so pages fill densely.
+    //
+    // It reaches `warehouse_id` transitively: this column leads the primary key
+    // of most catalog tables, so it decides where a warehouse's whole subtree of
+    // rows lands. Loading tables into a freshly created warehouse is the case
+    // that benefits — with a time-ordered warehouse id those inserts extend the
+    // end of each index instead of splitting pages in its middle.
+    //
+    // Kept out of the doc comment above deliberately: that text ships into the
+    // committed OpenAPI spec, and the primary-key layout is not something the
+    // public API should promise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option::<uuid::Uuid>))]
+    pub warehouse_id: Option<WarehouseId>,
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<String>))]
@@ -340,6 +371,40 @@ pub struct UpdateWarehouseCredentialRequest {
     pub new_storage_credential: Option<StorageCredential>,
 }
 
+/// Outcome of validating a warehouse configuration.
+///
+/// Returned with HTTP 200 whether or not the configuration is usable — a failing
+/// check is a result, not a request error. Only authorization and malformed
+/// bodies produce a 4xx.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ValidateWarehouseResponse {
+    /// True when no check failed. Skipped and warning checks do not make a
+    /// configuration invalid.
+    pub valid: bool,
+    /// Every check that was considered, in execution order — passed, failed,
+    /// warning and skipped alike, so the caller can see what was and was not
+    /// covered.
+    pub checks: Vec<ValidationCheck>,
+}
+
+impl From<ValidationReport> for ValidateWarehouseResponse {
+    fn from(report: ValidationReport) -> Self {
+        let report = report.sanitized_for_response();
+        Self {
+            valid: report.valid,
+            checks: report.checks,
+        }
+    }
+}
+
+impl axum::response::IntoResponse for ValidateWarehouseResponse {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        (http::StatusCode::OK, axum::Json(self)).into_response()
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -400,6 +465,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+    #[allow(clippy::too_many_lines)]
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -407,6 +473,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<CreateWarehouseResponse> {
         let CreateWarehouseRequest {
             warehouse_name,
+            warehouse_id,
             project_id,
             mut storage_profile,
             storage_credential,
@@ -418,6 +485,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(project_id)?;
         let format_version_policy =
             validate_format_version_policy(allowed_format_versions, default_format_version)?;
+        // Generated here rather than left to the database default so that the ID
+        // is known before the insert, and so that an omitted `warehouse-id`
+        // yields the same UUIDv7 we recommend to callers who supply one.
+        let warehouse_id = warehouse_id.unwrap_or_else(WarehouseId::new_random);
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -492,34 +563,493 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let resolved_warehouse = C::create_warehouse(
-            project_id,
-            CatalogCreateWarehouseRequest::builder()
-                .warehouse_name(warehouse_name)
-                .storage_profile(storage_profile)
-                .storage_secret_id(secret_id)
-                .delete_profile(delete_profile)
-                .format_version_policy(format_version_policy)
-                .managed_by(managed_by)
-                .build(),
-            transaction.transaction(),
-        )
-        .await?;
-        authorizer
-            .create_warehouse(
-                request_metadata,
-                resolved_warehouse.warehouse_id,
+        // The secret is stored outside the transaction, so a rollback does not
+        // remove it. Everything up to the commit runs as one unit so that any
+        // failure — an id or name conflict, the authorizer, the commit itself —
+        // can delete the secret before returning, instead of leaving a credential
+        // behind that nothing references and no API can reach.
+        //
+        // The transaction stays owned out here rather than being moved into the
+        // block, so it can be settled explicitly below before the secret store is
+        // touched: cleanup talks to an external service (Vault, for one backend),
+        // and a write-pool connection must not be held across that call.
+        // Gates the authz compensation below. Strictly "the write succeeded": a
+        // failing `create_warehouse` may have failed *because* the id already
+        // carries relations, and deleting then would strip the rightful holder's
+        // grants. Its tuple write is atomic, so there is no partial case to undo.
+        let mut authz_relations_written = false;
+        let staged: Result<(_, _)> = async {
+            let resolved_warehouse = C::create_warehouse(
                 project_id,
+                CatalogCreateWarehouseRequest::builder()
+                    .warehouse_name(warehouse_name)
+                    .warehouse_id(Some(warehouse_id))
+                    .storage_profile(storage_profile)
+                    .storage_secret_id(secret_id)
+                    .delete_profile(delete_profile)
+                    .format_version_policy(format_version_policy)
+                    .managed_by(managed_by)
+                    .build(),
+                transaction.transaction(),
+            )
+            .await?;
+            authorizer
+                .create_warehouse(
+                    request_metadata,
+                    resolved_warehouse.warehouse_id,
+                    project_id,
+                )
+                .await?;
+            authz_relations_written = true;
+
+            let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                &authorizer,
+                request_metadata,
+                &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
+                transaction.transaction(),
             )
             .await?;
 
-        transaction.commit().await?;
+            Ok((resolved_warehouse, bootstrap_grants))
+        }
+        .await;
+
+        // Settle the transaction before any cleanup: on success commit, otherwise
+        // roll back and release the connection. A rollback that fails is logged
+        // and discarded — the create error is what the caller needs, and the
+        // transaction is abandoned either way. A commit that fails has already
+        // ended the transaction, so there is nothing left to roll back, but its
+        // secret still needs cleaning up, which is why both funnel into one arm.
+        let settled = match staged {
+            Ok(staged) => transaction.commit().await.map(|()| staged),
+            Err(create_error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            ?e,
+                            "Failed to roll back after a failed warehouse creation: {}",
+                            e.error
+                        );
+                    })
+                    .ok();
+                Err(create_error)
+            }
+        };
+
+        let (resolved_warehouse, bootstrap_grants) = match settled {
+            Ok(settled) => settled,
+            Err(create_error) => {
+                // Relations written for a warehouse that then failed to commit
+                // would outlive it, and `create_warehouse` refuses an id that
+                // still carries any — so leaving them behind makes this id
+                // permanently unusable, including for the caller's own retry.
+                if authz_relations_written {
+                    authorizer
+                        .delete_warehouse(request_metadata, warehouse_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %warehouse_id,
+                                "Failed to remove the authorization relations of a warehouse that \
+                                 was not created; the id cannot be used again until they are \
+                                 cleared: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
+                // Best-effort, and the creation error is what the caller gets: a
+                // failure to clean up leaves the credential orphaned exactly as
+                // before, which must not mask why the create failed.
+                if let Some(secret_id) = secret_id {
+                    context
+                        .v1_state
+                        .secrets
+                        .delete_secret(&secret_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                %secret_id,
+                                "Failed to delete the storage secret of a warehouse that was not \
+                                 created; it is now orphaned in the secret store: {}",
+                                e.error
+                            );
+                        })
+                        .ok();
+                }
+                return Err(create_error);
+            }
+        };
+
+        // Drop any entry this replica still holds for the id before the create
+        // event repopulates it. Every other warehouse write invalidates; create
+        // could skip it while ids were always fresh, because there was nothing to
+        // displace. A caller-supplied id can name a warehouse this replica cached
+        // before it was deleted, and `warehouse_cache_insert` refuses to overwrite
+        // a higher `version` — a recreated warehouse starts back at 0, so without
+        // this the replica would keep serving the previous warehouse's project and
+        // storage profile under an id that now belongs to a different one.
+        warehouse_cache_invalidate(resolved_warehouse.warehouse_id).await;
+
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let response =
             GetWarehouseResponse::from_resolved((*resolved_warehouse).clone(), credential_type);
         Ok(CreateWarehouseResponse(response))
+    }
+
+    /// Dry-run of [`Self::create_warehouse`]: run the checks the create would
+    /// run, then stop. Nothing is persisted and no secret is stored.
+    async fn validate_warehouse(
+        request: CreateWarehouseRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ValidateWarehouseResponse> {
+        // Takes the create request verbatim: the dry-run cannot drift from the
+        // thing it predicts if it is literally the same type.
+        let CreateWarehouseRequest {
+            warehouse_name,
+            warehouse_id,
+            project_id,
+            mut storage_profile,
+            storage_credential,
+            delete_profile: _,
+            allowed_format_versions,
+            default_format_version,
+            managed_by,
+        } = request;
+        let project_id = request_metadata.require_project_id(project_id)?;
+
+        // ------------------- AuthZ -------------------
+        // Gated by the same action as the create it stands in for: whoever may not
+        // create a warehouse may not use validation to probe storage either.
+        let authorizer = context.v1_state.authz;
+        let event_ctx = APIEventContext::for_project_arc(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            project_id,
+            Arc::new(CatalogProjectAction::CreateWarehouse {
+                name: Some(warehouse_name.clone()),
+            }),
+        );
+        let authz_result = authorizer
+            .require_project_action(
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity_arc_ref(),
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+        let request_metadata = event_ctx.request_metadata();
+        let project_id = event_ctx.user_provided_entity();
+
+        // ------------------- Business Logic -------------------
+        let mut report = ReportBuilder::new();
+        let normalized = report.record(
+            ValidationCheckName::ProfileWellFormed,
+            Instant::now(),
+            storage_profile.normalize(storage_credential.as_ref()),
+        );
+        report.skip(
+            ValidationCheckName::ProfileCompatible,
+            "Only applies when updating an existing warehouse.",
+        );
+        report.skip(
+            ValidationCheckName::SpecMutable,
+            "Only applies when updating an existing warehouse.",
+        );
+        let started = Instant::now();
+        report.record(
+            ValidationCheckName::FormatVersionPolicyConsistent,
+            started,
+            validate_format_version_policy(allowed_format_versions, default_format_version)
+                .map(|_| ()),
+        );
+        // Mirrors the create-time guard: only instance admins may bring a
+        // warehouse into existence already owned by a control plane.
+        report.push(managed_by_check(managed_by, request_metadata));
+
+        // The project listing serves the name-availability, id-availability and
+        // location-overlap checks; fetch it once, alongside the storage probes.
+        let listing = C::list_warehouses(
+            project_id,
+            Some(WarehouseStatus::active_and_inactive().to_vec()),
+            context.v1_state.catalog.clone(),
+        );
+        let probes = async {
+            if normalized {
+                storage_profile
+                    .validate_access_report(storage_credential.as_ref(), None, request_metadata)
+                    .await
+                    .checks
+            } else {
+                skipped_access_checks(SKIPPED_PREREQUISITE)
+            }
+        };
+        let (listing, probe_checks) = tokio::join!(listing, probes);
+
+        // Both remaining checks read the same listing. If it failed we cannot
+        // determine either, so report that once and move the error rather than
+        // duplicating it into two checks.
+        let warehouses = match listing {
+            Ok(warehouses) => warehouses,
+            Err(e) => {
+                report.push(ValidationCheck::failed(
+                    ValidationCheckName::WarehouseNameValid,
+                    0,
+                    ErrorModel::from(e),
+                ));
+                report.skip(
+                    ValidationCheckName::LocationExclusive,
+                    "Could not list the warehouses in this project.",
+                );
+                report.skip(
+                    ValidationCheckName::WarehouseIdAvailable,
+                    "Could not list the warehouses in this project.",
+                );
+                report.extend(probe_checks);
+                return Ok(report.build().into());
+            }
+        };
+
+        report.push(warehouse_name_check(&warehouse_name, &warehouses));
+        report.push(warehouse_id_check(warehouse_id, &warehouses));
+        report.push(if normalized {
+            location_overlap_check(&storage_profile, &warehouses)
+        } else {
+            ValidationCheck::skipped(ValidationCheckName::LocationExclusive, SKIPPED_PREREQUISITE)
+        });
+        report.extend(probe_checks);
+
+        Ok(report.build().into())
+    }
+
+    /// Dry-run of [`Self::update_storage`].
+    async fn validate_storage_profile(
+        warehouse_id: WarehouseId,
+        request: UpdateWarehouseStorageRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ValidateWarehouseResponse> {
+        let (request_metadata, warehouse, spec_check) =
+            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, true)
+                .await?;
+
+        let UpdateWarehouseStorageRequest {
+            mut storage_profile,
+            storage_credential,
+        } = request;
+
+        let mut report = ReportBuilder::new();
+        let normalized = report.record(
+            ValidationCheckName::ProfileWellFormed,
+            Instant::now(),
+            storage_profile.normalize(storage_credential.as_ref()),
+        );
+
+        // An update may not move the warehouse to a different location; report that
+        // as its own check so a rejected update is distinguishable from unreachable
+        // storage.
+        if normalized {
+            report.push(profile_compatibility_check(
+                &warehouse.storage_profile,
+                &storage_profile,
+            ));
+        } else {
+            report.skip(ValidationCheckName::ProfileCompatible, SKIPPED_PREREQUISITE);
+        }
+
+        report.push(ValidationCheck::skipped(
+            ValidationCheckName::WarehouseNameValid,
+            "Updating storage does not change the warehouse name.",
+        ));
+        report.push(ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "Updating storage does not change the warehouse id.",
+        ));
+        report.push(ValidationCheck::skipped(
+            ValidationCheckName::LocationExclusive,
+            "An update may not change the location, so it cannot introduce an overlap.",
+        ));
+        report.push(spec_check);
+        report.skip(
+            ValidationCheckName::FormatVersionPolicyConsistent,
+            "Only applies when creating a warehouse.",
+        );
+        report.skip(
+            ValidationCheckName::ManagedByAllowed,
+            "Only applies when creating a warehouse.",
+        );
+
+        // Probe the incoming profile, matching what `update_storage` validates
+        // before merging it into the stored one.
+        report.extend(if normalized {
+            storage_profile
+                .validate_access_report(storage_credential.as_ref(), None, &request_metadata)
+                .await
+                .checks
+        } else {
+            skipped_access_checks(SKIPPED_PREREQUISITE)
+        });
+
+        Ok(report.build().into())
+    }
+
+    /// Dry-run of [`Self::update_storage_credential`]: probe the warehouse's stored
+    /// profile with a replacement credential.
+    async fn validate_storage_credential(
+        warehouse_id: WarehouseId,
+        request: UpdateWarehouseCredentialRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ValidateWarehouseResponse> {
+        let (request_metadata, warehouse, spec_check) =
+            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, true)
+                .await?;
+
+        Ok(stored_profile_report(
+            &warehouse.storage_profile,
+            request.new_storage_credential.as_ref(),
+            &request_metadata,
+            "The stored storage profile is unchanged by a credential rotation.",
+            "The storage profile is unchanged, so there is nothing to be compatible with.",
+            spec_check,
+        )
+        .await
+        .into())
+    }
+
+    /// Validate the configuration a warehouse is *currently* running with, using its
+    /// stored profile and stored credential. Answers "does this warehouse still work",
+    /// as opposed to "would this change work".
+    async fn validate_storage_access(
+        warehouse_id: WarehouseId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ValidateWarehouseResponse> {
+        let (request_metadata, warehouse, spec_check) =
+            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, false)
+                .await?;
+
+        let credential =
+            maybe_get_secret(warehouse.storage_secret_id, &context.v1_state.secrets).await?;
+
+        Ok(stored_profile_report(
+            &warehouse.storage_profile,
+            credential.as_deref(),
+            &request_metadata,
+            "Validating the configuration the warehouse is currently running with.",
+            "No change is proposed, so there is nothing to be compatible with.",
+            spec_check,
+        )
+        .await
+        .into())
+    }
+
+    /// Shared authz + warehouse resolution for the storage validation endpoints.
+    ///
+    /// Uses the same action as the mutation each endpoint stands in for, so
+    /// validation never widens who can reach the storage backend.
+    /// `check_spec_mutable` should be false for read-only validation: an
+    /// externally managed warehouse is locked against *changes*, which says
+    /// nothing about whether its current configuration works.
+    ///
+    /// Read-only validation also accepts a deactivated warehouse — "does this
+    /// warehouse's storage still work" is most often asked precisely because
+    /// someone deactivated it when it stopped working. The dry-runs of the
+    /// mutations keep `active()`, matching the mutations they stand in for.
+    async fn authorize_storage_validation(
+        warehouse_id: WarehouseId,
+        context: &ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        check_spec_mutable: bool,
+    ) -> Result<(
+        Arc<RequestMetadata>,
+        Arc<ResolvedWarehouse>,
+        ValidationCheck,
+    )> {
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::UpdateStorage,
+        );
+        let status_filter = if check_spec_mutable {
+            WarehouseStatus::active()
+        } else {
+            WarehouseStatus::active_and_inactive()
+        };
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            status_filter,
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let authz_result = context
+            .v1_state
+            .authz
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+
+        // The mutations refuse an externally managed warehouse before applying
+        // anything; report that as a check rather than a rejection, so a locked
+        // warehouse produces `valid: false` instead of a misleading green.
+        // Reported, not emitted as an authz failure — a dry run is not a denial.
+        if !check_spec_mutable {
+            return Ok((
+                event_ctx.request_metadata_arc(),
+                warehouse,
+                ValidationCheck::skipped(
+                    ValidationCheckName::SpecMutable,
+                    "No change is proposed, so the warehouse's spec lock does not apply.",
+                ),
+            ));
+        }
+
+        // A write transaction: the underlying check takes `SELECT ... FOR UPDATE`.
+        // Committed before the storage probes start, so no pool connection is
+        // held across multi-second network I/O.
+        let started = Instant::now();
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog.clone()).await?;
+        let mutable = C::ensure_warehouse_spec_mutable(
+            warehouse_id,
+            event_ctx.action(),
+            event_ctx
+                .request_metadata()
+                .bypasses_control_plane_authz(None),
+            transaction.transaction(),
+        )
+        .await;
+        transaction.commit().await?;
+        let spec_check = match mutable {
+            Ok(()) => {
+                ValidationCheck::passed(ValidationCheckName::SpecMutable, elapsed_ms(started))
+            }
+            Err(e) => ValidationCheck::failed(
+                ValidationCheckName::SpecMutable,
+                elapsed_ms(started),
+                ErrorModel::from(e),
+            ),
+        };
+
+        Ok((event_ctx.request_metadata_arc(), warehouse, spec_check))
     }
 
     async fn list_warehouses(
@@ -718,11 +1248,53 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        // The secret comes from the row the delete removed, inside this
+        // transaction, so it cannot name a credential a concurrent rotation
+        // replaced between an earlier read and the delete.
+        let storage_secret_id =
+            C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        // Post-commit: best-effort authz cleanup (see `delete_project`).
         authorizer
             .delete_warehouse(event_ctx.request_metadata(), warehouse_id)
-            .await?;
-        transaction.commit().await?;
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to delete warehouse from authorizer: {}",
+                    e.error
+                );
+            })
+            .ok();
+
+        // The warehouse that owned this credential no longer exists, so nothing
+        // can reach it again through the API — left in place it is an
+        // indefinitely retained credential for storage Lakekeeper no longer
+        // serves. Post-commit and best-effort, like the authz cleanup above:
+        // deleting inside the transaction would destroy the credential of a
+        // warehouse that still exists if the commit then failed, and failing the
+        // request afterwards would report a delete that did happen as an error.
+        // A failure here leaves the credential exactly as orphaned as before,
+        // and says so in the log.
+        if let Some(secret_id) = storage_secret_id {
+            context
+                .v1_state
+                .secrets
+                .delete_secret(&secret_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        %secret_id,
+                        "Failed to delete the storage secret of deleted warehouse {warehouse_id}; \
+                         it is now orphaned in the secret store: {}",
+                        e.error
+                    );
+                })
+                .ok();
+        }
 
         event_ctx.emit_warehouse_deleted();
 
@@ -779,6 +1351,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let resolved_warehouse =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
@@ -825,6 +1398,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_managed_by_set(request.managed_by, updated_warehouse.clone());
 
@@ -888,6 +1462,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
@@ -947,6 +1522,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
@@ -1017,6 +1593,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_format_version_policy_updated(
             Arc::new(request),
@@ -1085,6 +1662,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1143,6 +1721,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1237,6 +1816,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 
@@ -1301,6 +1881,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        // Validated before the transaction opens: probing storage can take most
+        // of the request time limit, and a write connection and the warehouse's
+        // row lock must not be held across it.
+        Box::pin(warehouse.storage_profile.validate_access(
+            new_storage_credential.as_ref(),
+            None,
+            event_ctx.request_metadata(),
+        ))
+        .await?;
+
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1313,13 +1903,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let old_secret_id = warehouse.storage_secret_id;
-
-        Box::pin(warehouse.storage_profile.validate_access(
-            new_storage_credential.as_ref(),
-            None,
-            event_ctx.request_metadata(),
-        ))
-        .await?;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(
@@ -1342,6 +1925,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_credential_updated(
             request_for_event,
@@ -1810,20 +2394,212 @@ async fn ensure_no_storage_overlap<C: CatalogStore>(
         catalog_state,
     )
     .await?;
-    for w in &warehouses {
-        if storage_profile.is_overlapping_location(&w.storage_profile) {
-            return Err(ErrorModel::bad_request(
-                format!(
-                    "Storage profile overlaps with existing warehouse {}",
-                    w.name
-                ),
-                "CreateWarehouseStorageProfileOverlap",
-                None,
-            )
-            .into());
-        }
+    if let Some(w) = find_overlapping_warehouse(storage_profile, &warehouses) {
+        return Err(storage_overlap_error(&w.name).into());
     }
     Ok(())
+}
+
+/// The physical-access checks, all marked skipped for one reason.
+///
+/// Keeps the report shape stable when the probes never ran, so a client can always
+/// tell which probes exist and why they are missing an outcome.
+fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
+    STORAGE_CHECKS
+        .into_iter()
+        .map(|name| ValidationCheck::skipped(name, reason))
+        .collect()
+}
+
+/// Check that the name is well-formed and not already taken in the project.
+///
+/// Uniqueness is compared case-insensitively: `warehouse_name` is stored under a
+/// `case_insensitive` collation, so `unique_warehouse_name_in_project` treats
+/// `Analytics` and `analytics` as the same name. That collation is ICU
+/// `und-u-ks-level2`, which folds case beyond ASCII, so the comparison here has
+/// to as well — otherwise `Ä` reports a green tick against a stored `ä`.
+///
+/// Advisory only — the constraint is enforced by the database, and a concurrent
+/// create can still take the name between this check and the real request.
+fn warehouse_name_check(
+    warehouse_name: &str,
+    warehouses: &[Arc<ResolvedWarehouse>],
+) -> ValidationCheck {
+    let started = Instant::now();
+    if let Err(e) = validate_warehouse_name(warehouse_name) {
+        return ValidationCheck::failed(
+            ValidationCheckName::WarehouseNameValid,
+            elapsed_ms(started),
+            ErrorModel::from(e),
+        );
+    }
+    let folded = warehouse_name.to_lowercase();
+    if warehouses.iter().any(|w| w.name.to_lowercase() == folded) {
+        return ValidationCheck::failed(
+            ValidationCheckName::WarehouseNameValid,
+            elapsed_ms(started),
+            warehouse_name_taken_error(warehouse_name),
+        );
+    }
+    ValidationCheck::passed(ValidationCheckName::WarehouseNameValid, elapsed_ms(started))
+}
+
+/// Check that a requested warehouse id is not already used in this project.
+///
+/// Only the caller's own project is examined, so this cannot confirm the id is
+/// free instance-wide — deliberately: the dry run must not become a cheap oracle
+/// for which ids exist in projects the caller cannot see. A collision outside
+/// the project surfaces as a conflict on the real create.
+fn warehouse_id_check(
+    warehouse_id: Option<WarehouseId>,
+    warehouses: &[Arc<ResolvedWarehouse>],
+) -> ValidationCheck {
+    let started = Instant::now();
+    let Some(warehouse_id) = warehouse_id else {
+        return ValidationCheck::skipped(
+            ValidationCheckName::WarehouseIdAvailable,
+            "No warehouse id was requested; the server will assign one.",
+        );
+    };
+    if warehouses.iter().any(|w| w.warehouse_id == warehouse_id) {
+        return ValidationCheck::failed(
+            ValidationCheckName::WarehouseIdAvailable,
+            elapsed_ms(started),
+            warehouse_id_taken_error(warehouse_id),
+        );
+    }
+    ValidationCheck::passed(
+        ValidationCheckName::WarehouseIdAvailable,
+        elapsed_ms(started),
+    )
+}
+
+fn warehouse_id_taken_error(warehouse_id: WarehouseId) -> ErrorModel {
+    ErrorModel::bad_request(
+        format!("A warehouse with id `{warehouse_id}` already exists."),
+        "WarehouseIdAlreadyTaken",
+        None,
+    )
+}
+
+/// Check that no other warehouse in the project already occupies this location.
+fn location_overlap_check(
+    storage_profile: &StorageProfile,
+    warehouses: &[Arc<ResolvedWarehouse>],
+) -> ValidationCheck {
+    let started = Instant::now();
+    match find_overlapping_warehouse(storage_profile, warehouses) {
+        Some(w) => ValidationCheck::failed(
+            ValidationCheckName::LocationExclusive,
+            elapsed_ms(started),
+            storage_overlap_error(&w.name),
+        ),
+        None => {
+            ValidationCheck::passed(ValidationCheckName::LocationExclusive, elapsed_ms(started))
+        }
+    }
+}
+
+/// The single definition of "these two warehouses share a location".
+///
+/// Shared with the create path so the dry-run and the real thing cannot drift.
+fn find_overlapping_warehouse<'a>(
+    storage_profile: &StorageProfile,
+    warehouses: &'a [Arc<ResolvedWarehouse>],
+) -> Option<&'a Arc<ResolvedWarehouse>> {
+    warehouses
+        .iter()
+        .find(|w| storage_profile.is_overlapping_location(&w.storage_profile))
+}
+
+fn storage_overlap_error(existing_warehouse_name: &str) -> ErrorModel {
+    ErrorModel::bad_request(
+        format!("Storage profile overlaps with existing warehouse {existing_warehouse_name}"),
+        "CreateWarehouseStorageProfileOverlap",
+        None,
+    )
+}
+
+fn warehouse_name_taken_error(name: &str) -> ErrorModel {
+    ErrorModel::bad_request(
+        format!("A warehouse named `{name}` already exists in this project."),
+        "WarehouseNameAlreadyTaken",
+        None,
+    )
+}
+
+/// Mirror of the create-time managed-by guard: a warehouse may only be born
+/// managed if the caller can manage it.
+fn managed_by_check(managed_by: ManagedBy, request_metadata: &RequestMetadata) -> ValidationCheck {
+    if managed_by.is_externally_managed() && !request_metadata.bypasses_control_plane_authz(None) {
+        return ValidationCheck::failed(
+            ValidationCheckName::ManagedByAllowed,
+            0,
+            ErrorModel::from(WarehouseSpecLocked::new(managed_by)),
+        );
+    }
+    ValidationCheck::passed(ValidationCheckName::ManagedByAllowed, 0)
+}
+
+/// Check that the new profile is a permitted evolution of the stored one.
+fn profile_compatibility_check(
+    current: &StorageProfile,
+    new_profile: &StorageProfile,
+) -> ValidationCheck {
+    let started = Instant::now();
+    match current.clone().update_with(new_profile.clone()) {
+        Ok(_) => {
+            ValidationCheck::passed(ValidationCheckName::ProfileCompatible, elapsed_ms(started))
+        }
+        Err(e) => ValidationCheck::failed(
+            ValidationCheckName::ProfileCompatible,
+            elapsed_ms(started),
+            ErrorModel::from(e),
+        ),
+    }
+}
+
+/// Build a report for a profile that is already stored (and therefore already
+/// normalized): only the physical-access probes apply.
+async fn stored_profile_report(
+    storage_profile: &StorageProfile,
+    credential: Option<&StorageCredential>,
+    request_metadata: &RequestMetadata,
+    profile_reason: &str,
+    compatibility_reason: &str,
+    spec_check: ValidationCheck,
+) -> ValidationReport {
+    let mut report = ReportBuilder::new();
+    report.skip(ValidationCheckName::ProfileWellFormed, profile_reason);
+    report.skip(ValidationCheckName::ProfileCompatible, compatibility_reason);
+    report.skip(
+        ValidationCheckName::WarehouseNameValid,
+        "The warehouse already exists.",
+    );
+    report.skip(
+        ValidationCheckName::WarehouseIdAvailable,
+        "The warehouse already exists.",
+    );
+    report.skip(
+        ValidationCheckName::LocationExclusive,
+        "The warehouse already occupies this location.",
+    );
+    report.push(spec_check);
+    report.skip(
+        ValidationCheckName::FormatVersionPolicyConsistent,
+        "Only applies when creating a warehouse.",
+    );
+    report.skip(
+        ValidationCheckName::ManagedByAllowed,
+        "Only applies when creating a warehouse.",
+    );
+    report.extend(
+        storage_profile
+            .validate_access_report(credential, None, request_metadata)
+            .await
+            .checks,
+    );
+    report.build()
 }
 
 fn validate_warehouse_name(warehouse_name: &str) -> Result<()> {
@@ -1889,6 +2665,179 @@ mod test {
         secrets::{Secret, SecretId, SecretInStorage, SecretStore},
         storage::{S3CredentialType, StorageCredential, s3::S3AccessKeyCredential},
     };
+
+    mod validation_checks {
+        use iceberg_ext::catalog::rest::ErrorModel;
+        use strum::IntoEnumIterator as _;
+
+        use super::super::{
+            StorageProfile, ValidationCheckName, ValidationCheckStatus, location_overlap_check,
+            profile_compatibility_check, skipped_access_checks, warehouse_name_check,
+        };
+        use crate::service::{
+            ResolvedWarehouse,
+            storage::{S3Flavor, S3Profile},
+        };
+
+        fn s3_profile(bucket: &str, key_prefix: &str) -> StorageProfile {
+            S3Profile::builder()
+                .bucket(bucket.to_string())
+                .key_prefix(key_prefix.to_string())
+                .region("us-east-1".to_string())
+                .sts_enabled(false)
+                .flavor(S3Flavor::Aws)
+                .build()
+                .into()
+        }
+
+        fn warehouses(
+            name: &str,
+            storage_profile: StorageProfile,
+        ) -> Vec<std::sync::Arc<ResolvedWarehouse>> {
+            let mut warehouse = ResolvedWarehouse::new_random();
+            warehouse.name = name.to_string();
+            warehouse.storage_profile = storage_profile;
+            vec![std::sync::Arc::new(warehouse)]
+        }
+
+        #[test]
+        fn name_check_fails_on_a_name_already_in_the_project() {
+            let existing = warehouses("taken", s3_profile("bucket", "prefix"));
+            let check = warehouse_name_check("taken", &existing);
+            assert_eq!(check.status, ValidationCheckStatus::Failed);
+            assert_eq!(
+                check.error.as_ref().map(|e| e.r#type.as_str()),
+                Some("WarehouseNameAlreadyTaken")
+            );
+        }
+
+        #[test]
+        fn name_check_fails_on_a_name_differing_only_in_case() {
+            // `warehouse_name` uses a case-insensitive collation, so the database
+            // would reject this even though the strings differ.
+            let existing = warehouses("Analytics", s3_profile("bucket", "prefix"));
+            let check = warehouse_name_check("analytics", &existing);
+            assert_eq!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+            assert_eq!(
+                check.error.as_ref().map(|e| e.r#type.as_str()),
+                Some("WarehouseNameAlreadyTaken")
+            );
+        }
+
+        #[test]
+        fn name_check_fails_on_a_malformed_name() {
+            let check = warehouse_name_check("", &[]);
+            assert_eq!(check.status, ValidationCheckStatus::Failed);
+            assert_eq!(
+                check.error.as_ref().map(|e| e.r#type.as_str()),
+                Some("EmptyWarehouseName")
+            );
+        }
+
+        #[test]
+        fn name_check_passes_on_a_free_name() {
+            let existing = warehouses("other", s3_profile("bucket", "prefix"));
+            let check = warehouse_name_check("free", &existing);
+            assert_eq!(check.status, ValidationCheckStatus::Passed);
+        }
+
+        #[test]
+        fn overlap_check_fails_when_another_warehouse_holds_the_location() {
+            let existing = warehouses("neighbour", s3_profile("bucket", "prefix"));
+            let check = location_overlap_check(&s3_profile("bucket", "prefix"), &existing);
+            assert_eq!(check.status, ValidationCheckStatus::Failed);
+            assert!(
+                check
+                    .error
+                    .as_ref()
+                    .is_some_and(|e| e.message.contains("neighbour")),
+                "{check:?}"
+            );
+        }
+
+        #[test]
+        fn overlap_check_passes_on_a_disjoint_location() {
+            let existing = warehouses("neighbour", s3_profile("bucket", "other-prefix"));
+            let check = location_overlap_check(&s3_profile("bucket", "prefix"), &existing);
+            assert_eq!(check.status, ValidationCheckStatus::Passed);
+        }
+
+        #[test]
+        fn compatibility_check_rejects_a_moved_location() {
+            // An update may not relocate a warehouse: its existing data would be
+            // stranded. This is the guarantee the docs make.
+            let check = profile_compatibility_check(
+                &s3_profile("bucket", "prefix"),
+                &s3_profile("bucket", "somewhere-else"),
+            );
+            assert_eq!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+            assert_eq!(
+                check.error.as_ref().map(|e| e.r#type.as_str()),
+                Some("UpdateError")
+            );
+        }
+
+        #[test]
+        fn compatibility_check_rejects_a_different_storage_type() {
+            let other: StorageProfile = crate::service::storage::MemoryProfile::default().into();
+            let check = profile_compatibility_check(&s3_profile("bucket", "prefix"), &other);
+            assert_eq!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+        }
+
+        #[test]
+        fn compatibility_check_passes_on_a_same_location_update() {
+            let check = profile_compatibility_check(
+                &s3_profile("bucket", "prefix"),
+                &s3_profile("bucket", "prefix"),
+            );
+            assert_eq!(check.status, ValidationCheckStatus::Passed, "{check:?}");
+        }
+
+        #[test]
+        fn skipped_access_checks_cover_every_probe() {
+            let checks = skipped_access_checks("because");
+            let names: Vec<_> = checks.iter().map(|c| c.name).collect();
+            assert_eq!(
+                names,
+                vec![
+                    ValidationCheckName::StorageClientInitialized,
+                    ValidationCheckName::LakekeeperReadWrite,
+                    ValidationCheckName::VendedCredentialsIssued,
+                    ValidationCheckName::VendedCredentialsReadWrite,
+                    ValidationCheckName::VendedCredentialsScopeEnforced,
+                    ValidationCheckName::Cleanup,
+                    ValidationCheckName::CorsOriginAllowed,
+                ]
+            );
+            assert!(
+                checks
+                    .iter()
+                    .all(|c| c.status == ValidationCheckStatus::Skipped)
+            );
+        }
+
+        #[test]
+        fn every_check_name_serializes_to_kebab_case() {
+            // The wire values are a permanent contract; catch an accidentally
+            // added variant that does not follow the convention.
+            for name in ValidationCheckName::iter() {
+                let json = serde_json::to_string(&name).expect("serializable");
+                let value = json.trim_matches('"');
+                assert!(
+                    value.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                    "{name} serializes as `{value}`"
+                );
+                assert_eq!(value, name.to_string(), "Display and serde disagree");
+            }
+        }
+
+        #[test]
+        fn error_model_is_still_the_embedded_error_shape() {
+            // Guards the assumption sanitize_embedded_error relies on.
+            let e = ErrorModel::internal("boom", "TestError", None);
+            assert!(e.code >= 500);
+        }
+    }
 
     fn test_warehouse(storage_secret_id: Option<SecretId>) -> ResolvedWarehouse {
         ResolvedWarehouse {

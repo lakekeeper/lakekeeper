@@ -22,6 +22,9 @@ pub struct DynAppConfig {
     pub pg_user: Option<String>,
     pub pg_password: Option<String>,
     pub pg_database: Option<String>,
+    /// Schema holding Lakekeeper's tables. `None` leaves `search_path`
+    /// untouched, so objects land wherever the server resolves it.
+    pub pg_schema: Option<PgSchema>,
     pub pg_ssl_mode: Option<PgSslMode>,
     pub pg_ssl_root_cert: Option<PathBuf>,
     pub pg_enable_statement_logging: bool,
@@ -44,6 +47,7 @@ impl Default for DynAppConfig {
             pg_user: None,
             pg_password: None,
             pg_database: None,
+            pg_schema: None,
             pg_ssl_mode: None,
             pg_ssl_root_cert: None,
             pg_enable_statement_logging: false,
@@ -105,6 +109,104 @@ impl<'de> Deserialize<'de> for PgSslMode {
     }
 }
 
+/// `NAMEDATALEN - 1`. Postgres truncates longer identifiers, which would make
+/// the configured schema differ from the one actually used.
+const MAX_SCHEMA_NAME_LEN: usize = 63;
+
+/// Postgres schema holding Lakekeeper's own tables.
+///
+/// Applied per connection via [`crate::with_search_path`], so no server-side
+/// `ALTER ROLE ... SET search_path` is required.
+///
+/// The name is used as a quoted identifier and is therefore case-sensitive:
+/// `LAKEKEEPER__PG_SCHEMA=LakeKeeper` selects a different schema than
+/// `lakekeeper`. An unquoted name in `ALTER ROLE ... SET search_path` is
+/// interpreted as lower case instead, so the two mechanisms can disagree on a
+/// mixed-case name.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PgSchema(String);
+
+impl PgSchema {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// `search_path` value: this schema first, then `public`.
+    ///
+    /// `public` is appended so unqualified objects owned by extensions there
+    /// still resolve: `uuid_generate_v1mc()` in column defaults,
+    /// `pgp_sym_encrypt` / `pgp_sym_decrypt` in the postgres secret backend,
+    /// and the `pg_trgm`, `btree_gin` and `btree_gist` operator classes. This
+    /// schema comes first, so nothing in `public` can shadow a Lakekeeper
+    /// object.
+    #[must_use]
+    pub fn search_path_value(&self) -> String {
+        format!(r#""{}", public"#, self.0)
+    }
+}
+
+impl FromStr for PgSchema {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(anyhow!(
+                "LAKEKEEPER__PG_SCHEMA is empty. Set a schema name, or remove the variable to \
+                 keep using the schema the server resolves (usually public)."
+            ));
+        }
+        // Restricting to unquoted-identifier characters keeps `,`, `"`, `.` and
+        // whitespace out of `CREATE SCHEMA`, the one statement that has to
+        // interpolate the name because DDL cannot bind identifiers. Checked
+        // before the length, so the length is reported over ASCII only and
+        // characters and bytes agree.
+        let mut chars = s.chars();
+        let first_ok = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(anyhow!(
+                "LAKEKEEPER__PG_SCHEMA '{s}' is not a valid schema name. Allowed characters are \
+                 a-z, A-Z, 0-9 and _, and the first character cannot be a digit. Example: \
+                 lakekeeper"
+            ));
+        }
+        if s.len() > MAX_SCHEMA_NAME_LEN {
+            return Err(anyhow!(
+                "LAKEKEEPER__PG_SCHEMA '{s}' is {len} characters long. Postgres allows at most \
+                 {MAX_SCHEMA_NAME_LEN} and would truncate it.",
+                len = s.len(),
+            ));
+        }
+        if s.len() >= 3 && s[..3].eq_ignore_ascii_case("pg_") {
+            return Err(anyhow!(
+                "LAKEKEEPER__PG_SCHEMA '{s}' starts with 'pg_', which Postgres reserves for its \
+                 own schemas. Pick a different name."
+            ));
+        }
+        if s.eq_ignore_ascii_case("information_schema") {
+            return Err(anyhow!(
+                "LAKEKEEPER__PG_SCHEMA cannot be 'information_schema': Postgres owns that schema. \
+                 Pick a different name."
+            ));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for PgSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PgSchema::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 fn get_config() -> DynAppConfig {
     let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
 
@@ -139,5 +241,71 @@ mod tests {
                 Ok(())
             });
         }
+    }
+
+    #[test]
+    fn test_pg_schema_accepts_valid_names() {
+        let max_len = "a".repeat(63);
+        for s in ["lakekeeper", "LakeKeeper", "_lk", "lk_2", max_len.as_str()] {
+            let schema = PgSchema::from_str(s).unwrap_or_else(|e| panic!("{s:?} rejected: {e}"));
+            assert_eq!(schema.as_str(), s);
+        }
+        // Surrounding whitespace is trimmed, not rejected: env vars pick it up easily.
+        assert_eq!(
+            PgSchema::from_str("  lakekeeper  ").unwrap().as_str(),
+            "lakekeeper"
+        );
+    }
+
+    #[test]
+    fn test_pg_schema_rejects_invalid_names() {
+        let too_long = "a".repeat(64);
+        for s in [
+            "",
+            "   ",
+            "1abc",
+            "my-schema",
+            "my schema",
+            "my.schema",
+            "$user",
+            "a,b",
+            "pg_catalog",
+            "PG_temp",
+            "information_schema",
+            r#"x"; DROP TABLE warehouse; --"#,
+            too_long.as_str(),
+        ] {
+            assert!(
+                PgSchema::from_str(s).is_err(),
+                "{s:?} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pg_schema_search_path_value() {
+        assert_eq!(
+            PgSchema::from_str("lakekeeper")
+                .unwrap()
+                .search_path_value(),
+            r#""lakekeeper", public"#
+        );
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // figment::Error is wide; not worth boxing in test setup.
+    fn test_pg_schema_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SCHEMA", "lakekeeper");
+            assert_eq!(
+                get_config().pg_schema.as_ref().map(PgSchema::as_str),
+                Some("lakekeeper")
+            );
+            Ok(())
+        });
+        figment::Jail::expect_with(|_jail| {
+            assert_eq!(get_config().pg_schema, None);
+            Ok(())
+        });
     }
 }

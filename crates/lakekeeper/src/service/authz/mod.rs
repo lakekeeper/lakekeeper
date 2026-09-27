@@ -1,16 +1,18 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, LazyLock},
 };
 
 use axum::Router;
+use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
     CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
-    SecretStore, State, TableId, ViewId, WarehouseId, health::HealthExt,
+    SecretStore, State, TableId, TabularId, TagDefinition, TagDefinitionId, ViewId, WarehouseId,
+    health::HealthExt,
 };
 use crate::{
     api::{
@@ -21,6 +23,7 @@ use crate::{
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
+        events::context::ActionContextKey,
     },
 };
 
@@ -29,6 +32,8 @@ pub use decision::*;
 mod error;
 pub mod implementations;
 pub use error::*;
+mod grant;
+pub use grant::*;
 mod instance_admin;
 pub use instance_admin::*;
 mod warehouse;
@@ -38,6 +43,8 @@ mod namespace;
 pub use namespace::*;
 mod role;
 pub use role::*;
+mod tag;
+pub use tag::*;
 mod table;
 pub use table::*;
 mod view;
@@ -290,22 +297,30 @@ impl std::fmt::Display for ContextValue {
 #[derive(Clone, Debug, typed_builder::TypedBuilder)]
 #[builder(mutators(
     #[allow(unreachable_pub)]
-    pub fn context_map(&mut self, key: &'static str, map: impl Into<BTreeMap<String, String>>) {
+    pub fn context_map(&mut self, key: ActionContextKey, map: impl Into<BTreeMap<String, String>>) {
         self.context.push((key, ContextValue::Map(map.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
+    pub fn context_list(&mut self, key: ActionContextKey, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
     }
     #[allow(unreachable_pub)]
-    pub fn context_string(&mut self, key: &'static str, value: impl Into<String>) {
+    pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
+    }
+    /// Append the context a value describes about itself.
+    #[allow(unreachable_pub)]
+    pub fn context_pairs(
+        &mut self,
+        pairs: impl IntoIterator<Item = (ActionContextKey, ContextValue)>,
+    ) {
+        self.context.extend(pairs);
     }
 ))]
 pub struct ActionDescriptor {
     pub action_name: &'static str,
     #[builder(via_mutators)]
-    pub context: Vec<(&'static str, ContextValue)>,
+    pub context: Vec<(ActionContextKey, ContextValue)>,
 }
 
 impl ActionDescriptor {
@@ -344,6 +359,8 @@ impl ActionDescriptor {
     Serialize,
     Deserialize,
     VariantArray,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperUserAction))]
@@ -376,6 +393,7 @@ impl CatalogAction for CatalogUserAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -400,8 +418,10 @@ pub enum CatalogServerAction {
     ListUsers,
     /// Can provision user
     ProvisionUsers,
+    /// Can list the grants held on this server.
+    ReadGrants,
 }
-static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 5]> = LazyLock::new(|| {
+static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 6]> = LazyLock::new(|| {
     [
         CatalogServerAction::CreateProject {
             name: None,
@@ -411,11 +431,12 @@ static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 5]> = LazyLock::ne
         CatalogServerAction::DeleteUsers,
         CatalogServerAction::ListUsers,
         CatalogServerAction::ProvisionUsers,
+        CatalogServerAction::ReadGrants,
     ]
 });
 impl CatalogServerAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogServerAction; 5] {
+    pub fn variants() -> &'static [CatalogServerAction; 6] {
         &SERVER_ACTION_VARIANTS
     }
 }
@@ -424,10 +445,10 @@ impl CatalogAction for CatalogServerAction {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
             if let Some(pid) = project_id {
-                b = b.context_string("project_id", pid.to_string());
+                b = b.context_string(ActionContextKey::ProjectId, pid.to_string());
             }
         }
         b.build()
@@ -444,6 +465,7 @@ impl CatalogAction for CatalogServerAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
@@ -472,8 +494,18 @@ pub enum CatalogProjectAction {
     GetTaskQueueConfig,
     GetProjectTasks,
     ControlProjectTasks,
+    /// Create a new governance tag definition in this project.
+    CreateTag {
+        /// Name of the tag to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// List tag definitions in this project.
+    ListTags,
+    /// Can list the grants held on this project.
+    ReadGrants,
 }
-static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 14]> = LazyLock::new(|| {
+static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock::new(|| {
     [
         CatalogProjectAction::CreateWarehouse { name: None },
         CatalogProjectAction::Delete,
@@ -489,22 +521,50 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 14]> = LazyLock:
         CatalogProjectAction::GetTaskQueueConfig,
         CatalogProjectAction::GetProjectTasks,
         CatalogProjectAction::ControlProjectTasks,
+        CatalogProjectAction::CreateTag { name: None },
+        CatalogProjectAction::ListTags,
+        CatalogProjectAction::ReadGrants,
     ]
 });
 impl CatalogProjectAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogProjectAction; 14] {
+    pub fn variants() -> &'static [CatalogProjectAction; 17] {
         &PROJECT_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogProjectAction {
+    // A wildcard arm here would silently accept a future variant and emit nothing for
+    // it, which is the whole failure this listing exists to prevent. Denied rather than
+    // left to review: see the audit log section of docs/docs/developer-guide.md.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
-            Self::CreateWarehouse { name: Some(n) } | Self::CreateRole { name: Some(n) } => {
-                b = b.context_string("name", n.clone());
+            Self::CreateWarehouse { name: Some(n) }
+            | Self::CreateRole { name: Some(n) }
+            | Self::CreateTag { name: Some(n) } => {
+                b = b.context_string(ActionContextKey::Name, n.clone());
             }
-            _ => {}
+            // Actions that contribute no audit context. Listed explicitly rather than
+            // matched with `_`, so that adding an action forces a decision about what
+            // its audit record should carry instead of silently emitting nothing.
+            Self::CreateTag { .. }
+            | Self::CreateWarehouse { .. }
+            | Self::Delete { .. }
+            | Self::Rename { .. }
+            | Self::GetMetadata { .. }
+            | Self::ListWarehouses { .. }
+            | Self::IncludeInList { .. }
+            | Self::CreateRole { .. }
+            | Self::ListRoles { .. }
+            | Self::SearchRoles { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::GetProjectTasks { .. }
+            | Self::ControlProjectTasks { .. }
+            | Self::ListTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -545,7 +605,15 @@ pub enum SourceSystemTarget {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
@@ -610,10 +678,322 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string("requested_provider_id", target.provider_id.to_string());
-            b = b.context_string("requested_source_id", target.source_id.to_string());
+            b = b.context_string(
+                ActionContextKey::RequestedProviderId,
+                target.provider_id.to_string(),
+            );
+            b = b.context_string(
+                ActionContextKey::RequestedSourceId,
+                target.source_id.to_string(),
+            );
         }
         b.build()
+    }
+}
+
+/// Whether a subtree grant operation extends to the addressed resource itself, alongside
+/// everything below it. Set from the request's `include-root-level`.
+#[derive(
+    Debug,
+    Hash,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum RootLevelGrants {
+    /// The request's range extends to the addressed resource itself. The kinds it
+    /// actually reaches are in `resource_types`; a kind filter can still exclude the
+    /// root's own kind.
+    Included,
+    /// Only grants held below the addressed resource are in range.
+    Excluded,
+}
+
+impl From<bool> for RootLevelGrants {
+    fn from(included: bool) -> Self {
+        if included {
+            Self::Included
+        } else {
+            Self::Excluded
+        }
+    }
+}
+
+impl RootLevelGrants {
+    /// The label used on the wire and in action context.
+    ///
+    /// Derived through `strum`, not spelled out: the value is committed to a wire-value
+    /// manifest, and a hand-written arm would let a renamed variant keep the old literal
+    /// while the manifest recorded the new one.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// A subtree scope that named no resource kind.
+#[derive(Debug, thiserror::Error)]
+#[error("A subtree scope must name at least one resource type")]
+pub struct NoSubtreeResourceTypes;
+
+/// The resource kinds a subtree grant operation reaches. Always at least one, and always
+/// a subset of the kinds the addressed resource covers.
+// A newtype with a private set so the empty case is unconstructable, and `try_from` so a
+// `/check` body cannot introduce it either: an empty list reads as "no kinds" to a policy
+// while meaning "every kind" to the store — an inverted fence on the widest request there
+// is.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeSet<ResourceType>", into = "BTreeSet<ResourceType>")]
+pub struct SubtreeResourceTypes(BTreeSet<ResourceType>);
+
+impl SubtreeResourceTypes {
+    /// The kinds in scope.
+    ///
+    /// # Errors
+    /// When `kinds` is empty.
+    pub fn new(kinds: BTreeSet<ResourceType>) -> std::result::Result<Self, NoSubtreeResourceTypes> {
+        if kinds.is_empty() {
+            return Err(NoSubtreeResourceTypes);
+        }
+        Ok(Self(kinds))
+    }
+
+    /// The kinds, in a stable order.
+    #[must_use]
+    pub fn as_set(&self) -> &BTreeSet<ResourceType> {
+        &self.0
+    }
+}
+
+impl TryFrom<BTreeSet<ResourceType>> for SubtreeResourceTypes {
+    type Error = NoSubtreeResourceTypes;
+
+    fn try_from(kinds: BTreeSet<ResourceType>) -> std::result::Result<Self, Self::Error> {
+        Self::new(kinds)
+    }
+}
+
+impl From<SubtreeResourceTypes> for BTreeSet<ResourceType> {
+    fn from(kinds: SubtreeResourceTypes) -> Self {
+        kinds.0
+    }
+}
+
+/// A narrowed privilege set that named no privilege.
+#[derive(Debug, thiserror::Error)]
+#[error("A narrowed subtree scope must name at least one privilege")]
+pub struct NoSubtreePrivileges;
+
+/// The privileges a narrowed subtree grant operation reaches. Always at least one.
+// The same newtype guard as the resource kinds: an empty list means "every privilege" to
+// the store, and a policy reading it as "no privilege" would let the widest request past.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeSet<String>", into = "BTreeSet<String>")]
+pub struct SubtreePrivilegeNames(BTreeSet<String>);
+
+impl SubtreePrivilegeNames {
+    /// The privileges in scope.
+    ///
+    /// # Errors
+    /// When `privileges` is empty.
+    pub fn new(privileges: BTreeSet<String>) -> std::result::Result<Self, NoSubtreePrivileges> {
+        if privileges.is_empty() {
+            return Err(NoSubtreePrivileges);
+        }
+        Ok(Self(privileges))
+    }
+
+    /// The privileges, in a stable order.
+    #[must_use]
+    pub fn as_set(&self) -> &BTreeSet<String> {
+        &self.0
+    }
+}
+
+impl TryFrom<BTreeSet<String>> for SubtreePrivilegeNames {
+    type Error = NoSubtreePrivileges;
+
+    fn try_from(privileges: BTreeSet<String>) -> std::result::Result<Self, Self::Error> {
+        Self::new(privileges)
+    }
+}
+
+impl From<SubtreePrivilegeNames> for BTreeSet<String> {
+    fn from(privileges: SubtreePrivilegeNames) -> Self {
+        privileges.0
+    }
+}
+
+/// Which privileges a subtree grant operation covers.
+// Both cases are named for the reason the principal's are: the widest case has to be a
+// value a policy reads, never an absence it infers.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SubtreeGrantPrivileges {
+    /// Every privilege a matching grant can carry, including privileges this server's
+    /// authorizer no longer publishes. A request naming none takes this form.
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrivilegesEvery"))]
+    Every {},
+    /// Only the privileges named here.
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrivilegesOnly"))]
+    Only {
+        /// Every privilege the request reaches, and never empty. Spelled `names` so the
+        /// wire form does not read `privileges.only.privileges`.
+        #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>, min_items = 1))]
+        names: SubtreePrivilegeNames,
+    },
+}
+
+/// The `privilege_scope` label: whether a subtree request reaches every privilege or only
+/// the ones it narrows to.
+///
+/// Its own enum rather than a literal at the emission site so the two values reach the
+/// wire-value manifest and a rename fails `check-audit-format`, as `RootLevelGrants` does
+/// for `root_level`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum PrivilegeScope {
+    Every,
+    Only,
+}
+
+impl PrivilegeScope {
+    /// The label as it reaches the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+impl SubtreeGrantPrivileges {
+    /// Which of the two cases this is, as the label the action context carries.
+    #[must_use]
+    pub fn scope(&self) -> PrivilegeScope {
+        match self {
+            Self::Every {} => PrivilegeScope::Every,
+            Self::Only { .. } => PrivilegeScope::Only,
+        }
+    }
+}
+
+/// Which principals' grants a subtree operation covers.
+// Both cases are named and one of them is always on the wire: an omitted field would
+// encode the widest case as an absence, and a policy engine that errors on a missing
+// attribute skips the rule that reads it — which turns a `forbid` into an allow.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SubtreeGrantPrincipal {
+    /// Every principal holding a grant in range.
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrincipalEvery"))]
+    Every {},
+    /// The single principal the request is narrowed to.
+    #[cfg_attr(feature = "open-api", schema(title = "SubtreeGrantPrincipalOne"))]
+    One(AuthzUserOrRole),
+}
+
+/// The scope of a concrete subtree grant request: what it reaches, how far, and whether
+/// the call only rehearses.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub struct SubtreeGrantScope {
+    /// Every resource kind whose grants the request reaches. Never empty, and always a
+    /// subset of the kinds the addressed resource covers: a request naming no kinds
+    /// carries that full set, so this always states what the operation actually touches.
+    #[cfg_attr(feature = "open-api", schema(value_type = Vec<ResourceType>, min_items = 1))]
+    pub resource_types: SubtreeResourceTypes,
+    /// Whether the request's range extends to the addressed resource itself.
+    pub root_level: RootLevelGrants,
+    /// Which privileges the request reaches: every privilege a matching grant can carry,
+    /// or the named set it is narrowed to. A revoke removes only what this covers, so a
+    /// policy can leave an administrative privilege standing while clearing the rest.
+    pub privileges: SubtreeGrantPrivileges,
+    /// Whether the request covers every principal, or one named principal.
+    pub principal: SubtreeGrantPrincipal,
+    /// Whether the call this check belongs to only reports what it would do. A dry run
+    /// reads the same grants as the live call and changes nothing, so a policy can allow
+    /// a rehearsal and still refuse the revoke, which then removes nothing. Both checks a
+    /// revoke makes carry the same value, so the grant-read check sees the rehearsal too.
+    /// A listing carries `false`, the value of a call that runs for real.
+    pub dry_run: bool,
+}
+
+impl SubtreeGrantScope {
+    /// The scope as action context. Every member is stated, so an authorizer reading one
+    /// never has to infer the widest case from a value it did not find.
+    ///
+    /// Public because an authorizer that builds its own request context reads the scope
+    /// directly.
+    #[must_use]
+    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
+        // Principals are prefixed by kind, matching the wire discriminator, so a user id
+        // and a role id that coincide stay distinguishable.
+        let principal = match &self.principal {
+            SubtreeGrantPrincipal::Every {} => "every".to_string(),
+            SubtreeGrantPrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
+            SubtreeGrantPrincipal::One(AuthzUserOrRole::Role(assignee)) => {
+                format!("role:{}", assignee.role_id())
+            }
+        };
+        vec![
+            (
+                ActionContextKey::DryRun,
+                ContextValue::String(self.dry_run.to_string()),
+            ),
+            (
+                ActionContextKey::ResourceTypes,
+                ContextValue::List(
+                    self.resource_types
+                        .as_set()
+                        .iter()
+                        .map(|kind| kind.as_str().to_string())
+                        .collect(),
+                ),
+            ),
+            (
+                ActionContextKey::RootLevel,
+                ContextValue::String(self.root_level.as_str().to_string()),
+            ),
+            (ActionContextKey::Principal, ContextValue::String(principal)),
+            // Unlike the members above, the widest privilege case cannot be written out:
+            // an empty filter matches privileges this authorizer no longer publishes, so
+            // there is no list to expand it into. `privilege_scope` carries it instead,
+            // and the set below is named for what it holds — the narrowing, empty when
+            // there is none — so that reading it alone cannot pass for the whole answer.
+            (
+                ActionContextKey::PrivilegeScope,
+                ContextValue::String(self.privileges.scope().as_str().to_string()),
+            ),
+            (
+                ActionContextKey::NarrowedPrivileges,
+                ContextValue::List(match &self.privileges {
+                    SubtreeGrantPrivileges::Every {} => Vec::new(),
+                    SubtreeGrantPrivileges::Only { names } => {
+                        names.as_set().iter().cloned().collect()
+                    }
+                }),
+            ),
+        ]
     }
 }
 
@@ -627,6 +1007,7 @@ impl CatalogAction for CatalogRoleAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseAction))]
@@ -643,7 +1024,6 @@ pub enum CatalogWarehouseAction {
     },
     Delete,
     UpdateStorage,
-    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -662,8 +1042,52 @@ pub enum CatalogWarehouseAction {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    /// Attach/detach governance tags on this warehouse.
+    ManageTags,
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
+    /// Can list the grants held on this warehouse.
+    ReadGrants,
+    /// Can list and read every grant in the warehouse: the warehouse's own and those on
+    /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+    /// covers this one resource; granted separately because it enumerates the subtree.
+    ///
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration.
+    ///
+    /// Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+    /// revoke only with a scope. An absent scope is the base-capability question that
+    /// permission introspection asks, so an authorizer may answer the two separately —
+    /// refusing the base question drops the action from
+    /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
+    ReadSubtreeGrants {
+        scope: Option<SubtreeGrantScope>,
+    },
+    /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
+    /// batch. An authorizer must answer it as authority over everything beneath — or
+    /// refuse the subtree routes.
+    ///
+    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    RevokeSubtreeGrants {
+        scope: Option<SubtreeGrantScope>,
+    },
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyLock::new(|| {
+/// The warehouse actions enumerated for permission introspection (`GET
+/// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
+/// absent scope (the base-capability form).
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -671,7 +1095,6 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyL
         },
         CatalogWarehouseAction::Delete,
         CatalogWarehouseAction::UpdateStorage,
-        CatalogWarehouseAction::UpdateStorageCredential,
         CatalogWarehouseAction::GetMetadata,
         CatalogWarehouseAction::GetConfig,
         CatalogWarehouseAction::ListNamespaces,
@@ -690,11 +1113,19 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyL
         CatalogWarehouseAction::SetProtection,
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
+        CatalogWarehouseAction::ManageTags,
+        CatalogWarehouseAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
+        CatalogWarehouseAction::ReadGrants,
+        CatalogWarehouseAction::ReadSubtreeGrants { scope: None },
+        CatalogWarehouseAction::RevokeSubtreeGrants { scope: None },
     ]
 });
 impl CatalogWarehouseAction {
+    /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 22] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 26] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -711,7 +1142,6 @@ impl CatalogWarehouseAction {
         match self {
             CatalogWarehouseAction::Delete
             | CatalogWarehouseAction::UpdateStorage
-            | CatalogWarehouseAction::UpdateStorageCredential
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
             | CatalogWarehouseAction::Rename
@@ -725,6 +1155,7 @@ impl CatalogWarehouseAction {
             // begin reconciling task-queue config.
             CatalogWarehouseAction::ModifyTaskQueueConfig
             | CatalogWarehouseAction::CreateNamespace { .. }
+            | CatalogWarehouseAction::AcceptMovedNamespace { .. }
             | CatalogWarehouseAction::GetMetadata
             | CatalogWarehouseAction::GetConfig
             | CatalogWarehouseAction::ListNamespaces
@@ -735,20 +1166,64 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetTaskQueueConfig
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
-            | CatalogWarehouseAction::GetEndpointStatistics => false,
+            | CatalogWarehouseAction::GetEndpointStatistics
+            // Governance tag attachment is metadata, not part of the reconciled spec.
+            | CatalogWarehouseAction::ManageTags
+            // Grant administration is not part of the reconciled spec.
+            | CatalogWarehouseAction::ReadGrants
+            | CatalogWarehouseAction::ReadSubtreeGrants { .. }
+            | CatalogWarehouseAction::RevokeSubtreeGrants { .. } => false,
         }
     }
 }
 impl CatalogAction for CatalogWarehouseAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::CreateNamespace { name, properties } = self {
-            if let Some(n) = name {
-                b = b.context_string("name", n.clone());
+        match self {
+            Self::CreateNamespace { name, properties } => {
+                if let Some(n) = name {
+                    b = b.context_string(ActionContextKey::Name, n.clone());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                }
             }
-            if !properties.is_empty() {
-                b = b.context_map("properties", properties.as_ref().clone());
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
+            Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
+                b = b.context_pairs(
+                    scope
+                        .as_ref()
+                        .map(SubtreeGrantScope::context)
+                        .unwrap_or_default(),
+                );
+            }
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::Delete { .. }
+            | Self::UpdateStorage { .. }
+            | Self::GetMetadata { .. }
+            | Self::GetConfig { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::Use { .. }
+            | Self::IncludeInList { .. }
+            | Self::Deactivate { .. }
+            | Self::Activate { .. }
+            | Self::Rename { .. }
+            | Self::ListDeletedTabulars { .. }
+            | Self::ModifySoftDeletion { .. }
+            | Self::GetTaskQueueConfig { .. }
+            | Self::ModifyTaskQueueConfig { .. }
+            | Self::GetAllTasks { .. }
+            | Self::ControlAllTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::SetFormatVersionPolicy { .. }
+            | Self::GetEndpointStatistics { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -764,6 +1239,7 @@ impl CatalogAction for CatalogWarehouseAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceAction))]
@@ -847,8 +1323,71 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     ListGenericTables,
+    /// Attach/detach governance tags on this namespace.
+    ManageTags,
+    /// Move this namespace to a new path, re-parenting and/or renaming it.
+    ///
+    /// Gated on grant-level authority *in addition to* plain write access. Re-parenting a
+    /// namespace re-issues every privilege the destination subtree confers onto the
+    /// namespace's contents, with no assignment record anywhere — so the actor must
+    /// already be able to grant on the namespace being moved. Inside a `managed_access`
+    /// subtree ownership does not confer that, which is precisely the case where moving
+    /// out would otherwise defeat the control.
+    ///
+    /// Only the source half of a move's authorization; the destination is gated by
+    /// `CreateNamespace` plus `AcceptMovedNamespace`.
+    Move {
+        /// Full destination path, including the new leaf name.
+        destination: Arc<Vec<String>>,
+        /// Whether protection is overridden, as for `Delete`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
+    /// Accept a namespace being moved in from elsewhere as a child of this entity.
+    ///
+    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
+    /// and their direct grants, which is why this is gated on grant authority in addition to
+    /// `create` — without it, a namespace could be populated and granted somewhere
+    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
+    /// control that subtree exists to enforce.
+    AcceptMovedNamespace {
+        /// Path the namespace is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
+    /// Can list the grants held on this namespace.
+    ReadGrants,
+    /// Can list and read every grant in the subtree rooted here: the namespace's own and
+    /// those on every descendant namespace and tabular. Strictly stronger than
+    /// `ReadGrants`, which covers this one resource; granted separately because it
+    /// enumerates the subtree.
+    ///
+    /// `scope` states what the listing covers — the resource kinds it reaches, how far its
+    /// range extends, the privileges it covers, and the principal it is narrowed to — so a
+    /// policy can allow a narrow access review and still refuse a full enumeration.
+    ///
+    /// Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+    /// revoke only with a scope. An absent scope is the base-capability question that
+    /// permission introspection asks, so an authorizer may answer the two separately —
+    /// refusing the base question drops the action from
+    /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
+    ReadSubtreeGrants {
+        scope: Option<SubtreeGrantScope>,
+    },
+    /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
+    /// the whole batch. An authorizer must answer it as authority over everything
+    /// beneath — or refuse the subtree routes.
+    ///
+    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    RevokeSubtreeGrants {
+        scope: Option<SubtreeGrantScope>,
+    },
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyLock::new(|| {
+/// The namespace actions enumerated for permission introspection (`GET
+/// /namespace/{id}/actions`). The subtree grant actions are enumerated with the
+/// absent scope (the base-capability form).
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -887,15 +1426,32 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyL
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::ListGenericTables,
+        CatalogNamespaceAction::ManageTags,
+        CatalogNamespaceAction::Move {
+            destination: Arc::new(Vec::new()),
+            force: false,
+        },
+        CatalogNamespaceAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        },
+        CatalogNamespaceAction::ReadGrants,
+        CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
+        CatalogNamespaceAction::RevokeSubtreeGrants { scope: None },
     ]
 });
 impl CatalogNamespaceAction {
+    /// Introspectable namespace actions — see [`NAMESPACE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 14] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 20] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogNamespaceAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
+    // Long because the no-context variants are listed exhaustively rather than
+    // collapsed into a wildcard. That listing is the point, so the length is not a
+    // signal to split the function.
+    #[allow(clippy::too_many_lines)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -905,13 +1461,13 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(tid) = table_id {
-                    b = b.context_string("table_id", tid.to_string());
+                    b = b.context_string(ActionContextKey::TableId, tid.to_string());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateGenericTable {
@@ -922,27 +1478,27 @@ impl CatalogAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if let Some(gtid) = generic_table_id {
-                    b = b.context_string("generic_table_id", gtid.to_string());
+                    b = b.context_string(ActionContextKey::GenericTableId, gtid.to_string());
                 }
                 if let Some(f) = format {
-                    b = b.context_string("format", f.clone());
+                    b = b.context_string(ActionContextKey::Format, f.clone());
                 }
                 if let Some(bl) = base_location {
-                    b = b.context_string("base_location", bl.clone());
+                    b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string("name", n.clone());
+                    b = b.context_string(ActionContextKey::Name, n.clone());
                 }
                 if !properties.is_empty() {
-                    b = b.context_map("properties", properties.as_ref().clone());
+                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
                 }
             }
             Self::UpdateProperties {
@@ -950,10 +1506,16 @@ impl CatalogAction for CatalogNamespaceAction {
                 updated_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Delete {
@@ -962,16 +1524,50 @@ impl CatalogAction for CatalogNamespaceAction {
                 recursive,
             } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
                 if *recursive {
-                    b = b.context_string("recursive", "true");
+                    b = b.context_string(ActionContextKey::Recursive, "true");
                 }
             }
-            _ => {}
+            // The source subtree is the decision-relevant context for a policy engine:
+            // it says what is being let in, and from where.
+            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
+            }
+            Self::Move { destination, force } => {
+                // The destination is the whole point of the decision for a policy engine:
+                // it determines which subtree's grants the moved namespace inherits.
+                if !destination.is_empty() {
+                    b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
+                }
+                if *force {
+                    b = b.context_string(ActionContextKey::Force, "true");
+                }
+            }
+            Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
+                b = b.context_pairs(
+                    scope
+                        .as_ref()
+                        .map(SubtreeGrantScope::context)
+                        .unwrap_or_default(),
+                );
+            }
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::ListTables { .. }
+            | Self::ListViews { .. }
+            | Self::ListNamespaces { .. }
+            | Self::ListEverything { .. }
+            | Self::SetProtection { .. }
+            | Self::IncludeInList { .. }
+            | Self::ListGenericTables { .. }
+            | Self::ManageTags { .. }
+            | Self::AcceptMovedNamespace { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -987,6 +1583,7 @@ impl CatalogAction for CatalogNamespaceAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperTableAction))]
@@ -1012,6 +1609,17 @@ pub enum CatalogTableAction {
         updated_properties: Arc<BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_properties: Arc<Vec<String>>,
+        /// The branch and tag names this commit creates, moves, or removes.
+        /// Empty when the commit targets no ref by name.
+        // Populated from the commit's `SetSnapshotRef`/`RemoveSnapshotRef` updates;
+        // lets an authorizer decide per branch (e.g. protect `main`).
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+        /// The kinds of metadata updates this commit contains.
+        // Lets an authorizer require table-wide authority for anything beyond a
+        // branch-ref move (schema, spec, properties, snapshot expiry, …).
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        update_kinds: Arc<BTreeSet<TableUpdateKind>>,
     },
     Rename,
     IncludeInList,
@@ -1019,8 +1627,12 @@ pub enum CatalogTableAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this table.
+    ManageTags,
+    /// Can list the grants held on this table.
+    ReadGrants,
 }
-static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new(|| {
+static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 13]> = LazyLock::new(|| {
     [
         CatalogTableAction::Drop {
             force: false,
@@ -1032,6 +1644,8 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new
         CatalogTableAction::Commit {
             updated_properties: Arc::new(BTreeMap::new()),
             removed_properties: Arc::new(Vec::new()),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
         },
         CatalogTableAction::Rename,
         CatalogTableAction::IncludeInList,
@@ -1039,38 +1653,75 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new
         CatalogTableAction::GetTasks,
         CatalogTableAction::ControlTasks,
         CatalogTableAction::SetProtection,
+        CatalogTableAction::ManageTags,
+        CatalogTableAction::ReadGrants,
     ]
 });
 impl CatalogTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTableAction; 11] {
+    pub fn variants() -> &'static [CatalogTableAction; 13] {
         &TABLE_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogTableAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
             Self::Commit {
                 updated_properties,
                 removed_properties,
+                target_refs,
+                update_kinds,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
+                }
+                if !target_refs.is_empty() {
+                    b = b.context_list(
+                        ActionContextKey::TargetRefs,
+                        target_refs.iter().cloned().collect::<Vec<_>>(),
+                    );
+                }
+                if !update_kinds.is_empty() {
+                    b = b.context_list(
+                        ActionContextKey::UpdateKinds,
+                        update_kinds
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                    );
                 }
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::WriteData { .. }
+            | Self::ReadData { .. }
+            | Self::GetMetadata { .. }
+            | Self::Rename { .. }
+            | Self::IncludeInList { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1086,6 +1737,7 @@ impl CatalogAction for CatalogTableAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperViewAction))]
@@ -1117,8 +1769,12 @@ pub enum CatalogViewAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this view.
+    ManageTags,
+    /// Can list the grants held on this view.
+    ReadGrants,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 12]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -1136,15 +1792,18 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|
         CatalogViewAction::GetTasks,
         CatalogViewAction::ControlTasks,
         CatalogViewAction::SetProtection,
+        CatalogViewAction::ManageTags,
+        CatalogViewAction::ReadGrants,
     ]
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 10] {
+    pub fn variants() -> &'static [CatalogViewAction; 12] {
         &VIEW_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogViewAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
@@ -1153,21 +1812,37 @@ impl CatalogAction for CatalogViewAction {
                 removed_properties,
             } => {
                 if !updated_properties.is_empty() {
-                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                    b = b.context_map(
+                        ActionContextKey::UpdatedProperties,
+                        updated_properties.as_ref().clone(),
+                    );
                 }
                 if !removed_properties.is_empty() {
-                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                    b = b.context_list(
+                        ActionContextKey::RemovedProperties,
+                        removed_properties.as_ref().clone(),
+                    );
                 }
             }
             Self::Drop { force, purge } => {
                 if *force {
-                    b = b.context_string("force", "true");
+                    b = b.context_string(ActionContextKey::Force, "true");
                 }
                 if *purge {
-                    b = b.context_string("purge", "true");
+                    b = b.context_string(ActionContextKey::Purge, "true");
                 }
             }
-            _ => {}
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::GetMetadata { .. }
+            | Self::Select { .. }
+            | Self::IncludeInList { .. }
+            | Self::Rename { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
@@ -1183,6 +1858,7 @@ impl CatalogAction for CatalogViewAction {
     Deserialize,
     strum_macros::EnumCount,
     strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperGenericTableAction))]
@@ -1199,8 +1875,12 @@ pub enum CatalogGenericTableAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this generic table.
+    ManageTags,
+    /// Can list the grants held on this generic table.
+    ReadGrants,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 10]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop,
@@ -1213,15 +1893,73 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 10]> 
             CatalogGenericTableAction::GetTasks,
             CatalogGenericTableAction::ControlTasks,
             CatalogGenericTableAction::SetProtection,
+            CatalogGenericTableAction::ManageTags,
+            CatalogGenericTableAction::ReadGrants,
         ]
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 10] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 12] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogGenericTableAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperTagAction))]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogTagAction {
+    /// Read the tag definition (name, description, value kind, allowed values).
+    Read,
+    /// Update the tag definition (name/description, widen scope, add allowed values).
+    Update,
+    /// Delete the tag definition.
+    Delete,
+    /// Attach this tag to a target. Also requires `manage_tags` on the target.
+    Apply,
+    /// Detach this tag from a target. Also requires `manage_tags` on the target.
+    Remove,
+    /// List the targets this tag is attached to (reverse lookup). Broader disclosure
+    /// than `Read`, so restricted to tag owners / project security admins. Distinct
+    /// from `can_read_assignments`, which reads who holds apply/ownership (grants).
+    ReadAttachments,
+    /// Can list the grants held on this tag definition.
+    ReadGrants,
+}
+static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 7]> = LazyLock::new(|| {
+    [
+        CatalogTagAction::Read,
+        CatalogTagAction::Update,
+        CatalogTagAction::Delete,
+        CatalogTagAction::Apply,
+        CatalogTagAction::Remove,
+        CatalogTagAction::ReadAttachments,
+        CatalogTagAction::ReadGrants,
+    ]
+});
+impl CatalogTagAction {
+    #[must_use]
+    pub fn variants() -> &'static [CatalogTagAction; 7] {
+        &TAG_ACTION_VARIANTS
+    }
+}
+impl CatalogAction for CatalogTagAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
     }
@@ -1251,6 +1989,7 @@ pub enum CatalogServerActionKind {
     DeleteUsers,
     ListUsers,
     ProvisionUsers,
+    ReadGrants,
 }
 impl From<&CatalogServerAction> for CatalogServerActionKind {
     fn from(action: &CatalogServerAction) -> Self {
@@ -1260,6 +1999,7 @@ impl From<&CatalogServerAction> for CatalogServerActionKind {
             CatalogServerAction::DeleteUsers => Self::DeleteUsers,
             CatalogServerAction::ListUsers => Self::ListUsers,
             CatalogServerAction::ProvisionUsers => Self::ProvisionUsers,
+            CatalogServerAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1283,6 +2023,9 @@ pub enum CatalogProjectActionKind {
     GetTaskQueueConfig,
     GetProjectTasks,
     ControlProjectTasks,
+    CreateTag,
+    ListTags,
+    ReadGrants,
 }
 impl From<&CatalogProjectAction> for CatalogProjectActionKind {
     fn from(action: &CatalogProjectAction) -> Self {
@@ -1301,6 +2044,9 @@ impl From<&CatalogProjectAction> for CatalogProjectActionKind {
             CatalogProjectAction::GetTaskQueueConfig => Self::GetTaskQueueConfig,
             CatalogProjectAction::GetProjectTasks => Self::GetProjectTasks,
             CatalogProjectAction::ControlProjectTasks => Self::ControlProjectTasks,
+            CatalogProjectAction::CreateTag { .. } => Self::CreateTag,
+            CatalogProjectAction::ListTags => Self::ListTags,
+            CatalogProjectAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1340,7 +2086,6 @@ pub enum CatalogWarehouseActionKind {
     CreateNamespace,
     Delete,
     UpdateStorage,
-    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -1359,14 +2104,19 @@ pub enum CatalogWarehouseActionKind {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    ManageTags,
+    AcceptMovedNamespace,
+    ReadGrants,
+    ReadSubtreeGrants,
+    RevokeSubtreeGrants,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
         match action {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
+            CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogWarehouseAction::Delete => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
-            CatalogWarehouseAction::UpdateStorageCredential => Self::UpdateStorageCredential,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
             CatalogWarehouseAction::GetConfig => Self::GetConfig,
             CatalogWarehouseAction::ListNamespaces => Self::ListNamespaces,
@@ -1385,6 +2135,10 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetProtection => Self::SetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+            CatalogWarehouseAction::ManageTags => Self::ManageTags,
+            CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
+            CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
+            CatalogWarehouseAction::RevokeSubtreeGrants { .. } => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -1408,6 +2162,12 @@ pub enum CatalogNamespaceActionKind {
     IncludeInList,
     CreateGenericTable,
     ListGenericTables,
+    ManageTags,
+    Move,
+    AcceptMovedNamespace,
+    ReadGrants,
+    ReadSubtreeGrants,
+    RevokeSubtreeGrants,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
     fn from(action: &CatalogNamespaceAction) -> Self {
@@ -1422,10 +2182,16 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListViews => Self::ListViews,
             CatalogNamespaceAction::ListNamespaces => Self::ListNamespaces,
             CatalogNamespaceAction::ListEverything => Self::ListEverything,
+            CatalogNamespaceAction::Move { .. } => Self::Move,
+            CatalogNamespaceAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogNamespaceAction::SetProtection => Self::SetProtection,
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
+            CatalogNamespaceAction::ManageTags => Self::ManageTags,
+            CatalogNamespaceAction::ReadGrants => Self::ReadGrants,
+            CatalogNamespaceAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
+            CatalogNamespaceAction::RevokeSubtreeGrants { .. } => Self::RevokeSubtreeGrants,
         }
     }
 }
@@ -1446,6 +2212,8 @@ pub enum CatalogTableActionKind {
     GetTasks,
     ControlTasks,
     SetProtection,
+    ManageTags,
+    ReadGrants,
 }
 impl From<&CatalogTableAction> for CatalogTableActionKind {
     fn from(action: &CatalogTableAction) -> Self {
@@ -1461,6 +2229,8 @@ impl From<&CatalogTableAction> for CatalogTableActionKind {
             CatalogTableAction::GetTasks => Self::GetTasks,
             CatalogTableAction::ControlTasks => Self::ControlTasks,
             CatalogTableAction::SetProtection => Self::SetProtection,
+            CatalogTableAction::ManageTags => Self::ManageTags,
+            CatalogTableAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1480,6 +2250,8 @@ pub enum CatalogViewActionKind {
     GetTasks,
     ControlTasks,
     SetProtection,
+    ManageTags,
+    ReadGrants,
 }
 impl From<&CatalogViewAction> for CatalogViewActionKind {
     fn from(action: &CatalogViewAction) -> Self {
@@ -1494,6 +2266,8 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::GetTasks => Self::GetTasks,
             CatalogViewAction::ControlTasks => Self::ControlTasks,
             CatalogViewAction::SetProtection => Self::SetProtection,
+            CatalogViewAction::ManageTags => Self::ManageTags,
+            CatalogViewAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1579,6 +2353,7 @@ where
     type GenericTableAction: GenericTableAction;
     type UserAction: UserAction;
     type RoleAction: RoleAction;
+    type TagAction: TagAction;
 
     fn implementation_name() -> &'static str;
 
@@ -1591,6 +2366,27 @@ where
     /// Authorizer implementations that need this information should override this method and store
     /// the IDs internally. The default implementation is a no-op.
     fn set_registered_idp_ids(&mut self, _idp_ids: Arc<[RoleProviderId]>) {}
+
+    /// Provider IDs whose roles are maintained by a configured role provider
+    /// (LDAP/Entra/Okta/token). Roles in these namespaces are the provider's to
+    /// create, modify, delete, and (un)assign — the management API rejects those
+    /// mutations to avoid drift that provider sync would clobber. Used as the
+    /// deny-set by the role-management guard; the reserved `system` namespace is
+    /// handled separately and never appears here.
+    ///
+    /// The default returns an empty set: without a role provider (OSS, `AllowAll`,
+    /// OpenFGA) only the reserved `system` namespace is protected, so
+    /// `lakekeeper`-native and unmanaged roles stay writable exactly as before.
+    ///
+    /// Implementors MUST NOT include the native `lakekeeper` namespace or the
+    /// reserved `system` namespace in the returned set — doing so would wrongly
+    /// block writes to API-native or catalog-managed roles. (`system` is also
+    /// rejected independently by the guard, but native roles are not.)
+    fn managed_role_provider_ids(&self) -> &std::collections::HashSet<RoleProviderId> {
+        static EMPTY: std::sync::LazyLock<std::collections::HashSet<RoleProviderId>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
+        &EMPTY
+    }
 
     /// API Doc
     #[cfg(feature = "open-api")]
@@ -1642,6 +2438,13 @@ where
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, Self::RoleAction)],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
+
+    async fn are_allowed_tag_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        tags_with_actions: &[(&TagDefinition, Self::TagAction)],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_server_actions_impl(
@@ -1742,10 +2545,149 @@ where
     /// This is used to clean up permissions for the role.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
 
+    /// Hook that is called when a new tag definition is created.
+    /// Sets up its parent (project) and ownership permissions.
+    async fn create_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+        parent_project_id: ArcProjectId,
+    ) -> Result<()>;
+
+    /// Hook that is called when a tag definition is deleted.
+    /// This is used to clean up permissions for the tag definition.
+    async fn delete_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+    ) -> Result<()>;
+
     /// Returns the role-assignment management facet if this authorizer is the
     /// source of truth for assignments; `None` means assignments live in the catalog.
     fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {
         None
+    }
+
+    /// Returns the grant management facet if this authorizer is the source of truth
+    /// for grants; `None` means grants live in the catalog's `grant_assignment`
+    /// table. Mirrors [`Self::role_assignments`].
+    fn grants(&self) -> Option<&dyn ManagesGrants> {
+        None
+    }
+
+    /// The closed set of privileges this authorizer can grant on `resource_type`.
+    ///
+    /// The vocabulary is authorizer-owned and always enumerable: clients discover it
+    /// rather than hardcoding it, which is what allows privilege sets to differ
+    /// between authorizers while the grant API stays uniform. A deployment may
+    /// publish a subset of what the authorizer supports.
+    ///
+    /// The default is empty, so an authorizer that has not opted in grants nothing.
+    ///
+    /// `'static` rather than tied to `&self`: the vocabulary is validated once at startup
+    /// and held in a `LazyLock`, so responses can borrow it instead of rebuilding it. A
+    /// borrow of `&self` could not outlive the handler, which is where the response is
+    /// built but not where it is serialized.
+    fn grantable_privileges(&self, _resource_type: ResourceType) -> &'static [PrivilegeDescriptor] {
+        &[]
+    }
+
+    /// Privileges the creating identity receives on a resource it just created, written
+    /// as ordinary grant rows in the same transaction as the resource itself.
+    ///
+    /// Only consulted when grants live in the catalog ([`Self::grants`] returns `None`).
+    /// An authorizer that owns its grant store records what creation confers in its
+    /// `create_*` hooks instead, where it can also write whatever else its model needs.
+    ///
+    /// The owner is the **acting** identity, so a request made under an assumed role
+    /// makes the role the owner — the same identity [`AuthZGrantOps::are_allowed_grants`]
+    /// folds to `None`. An anonymous create leaves no rows.
+    ///
+    /// Names should come from [`Self::grantable_privileges`]. One outside it is stored
+    /// and returned verbatim like any other name, but listings mark it unrecognized, and
+    /// revoking it needs [`AuthZGrantOps::are_allowed_grants`] to answer for a name the
+    /// authorizer does not know — which an enforcing one refuses, leaving the row
+    /// unrevocable through the API.
+    ///
+    /// A name here is also a commitment that the creator can be *given* it: the write,
+    /// and with it the create, fails if the acting user has no user record yet. That is
+    /// deliberate — a resource nobody owns is worse than a rejected create.
+    ///
+    /// [`ResourceType::Server`] is consulted when the server is bootstrapped; every
+    /// other type when a resource of it is created.
+    ///
+    /// The default is empty: creation confers nothing unless an authorizer opts in.
+    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &[&str] {
+        &[]
+    }
+
+    /// Whether `privilege` is grantable on `resource_type`.
+    ///
+    /// Derived from [`Self::grantable_privileges`] so the two cannot disagree — an
+    /// authorizer that publishes a privilege it then refuses to accept would advertise a
+    /// name every write rejects. Override only to answer without materializing the list.
+    fn is_grantable_privilege(&self, resource_type: ResourceType, privilege: &str) -> bool {
+        self.grantable_privileges(resource_type)
+            .iter()
+            .any(|descriptor| descriptor.name == privilege)
+    }
+
+    /// Whether `privilege` is grantable on `resource_type`, checked before a write.
+    ///
+    /// Deliberately not applied to revocations: a privilege that has left the
+    /// vocabulary (or arrived from another authorizer) must stay revocable, or the
+    /// grant would be permanently stuck.
+    ///
+    /// The error carries an owned name, so callers that only need a yes/no answer —
+    /// every listed row, for instance — should ask [`Self::is_grantable_privilege`]
+    /// instead of discarding an allocated error.
+    fn validate_grant_privilege(
+        &self,
+        resource_type: ResourceType,
+        privilege: &str,
+    ) -> std::result::Result<(), InvalidGrantPrivilege> {
+        if self.is_grantable_privilege(resource_type, privilege) {
+            return Ok(());
+        }
+        Err(InvalidGrantPrivilege {
+            resource_type,
+            privilege: privilege.to_string(),
+        })
+    }
+
+    /// Answering for another principal discloses that principal's access, so the actor
+    /// must hold the resource's `ReadGrants` action. **The caller enforces that**, since
+    /// only it holds the resolved entity each family's action check needs. An
+    /// implementation may add its own equivalent when it is free — `OpenFGA` folds the
+    /// tuple into the same batch — but it is not required to, and must not rely on being
+    /// the only thing standing between a caller and someone else's access.
+    ///
+    /// Deliberately *not* required to mask an invisible resource. Authority to grant is
+    /// independent of authority to see — a security administrator may manage a
+    /// warehouse's grants without being able to read it — so there is no visibility
+    /// check to fold in here. Callers document what that discloses.
+    ///
+    /// Each check names a privilege and, where the caller knows them, the grantee it is
+    /// destined for and which way it would move. Whether either changes the answer is the
+    /// authorizer's business; either way, return one decision per check, in order.
+    ///
+    /// `target` carries the resource's resolved ancestry, not just its id, so an authorizer
+    /// that resolves inheritance itself can place the resource in its hierarchy — see
+    /// [`GrantTarget`].
+    ///
+    /// The subtree endpoints do not ask here: they ask the root's `ReadSubtreeGrants`
+    /// and `RevokeSubtreeGrants` actions, whose answers must hold for everything
+    /// beneath — see those actions.
+    ///
+    /// The default denies everything.
+    async fn are_allowed_grants_impl(
+        &self,
+        _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
+        _target: &GrantTarget<'_>,
+        checks: &[GrantAuthorityCheck<'_>],
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::deny(); checks.len()])
     }
 
     /// Hook that is called when a new project is created.
@@ -1798,6 +2740,62 @@ where
         namespace_id: NamespaceId,
     ) -> Result<()>;
 
+    /// Hook that removes a namespace's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
+    ///
+    /// Paired with [`Self::attach_namespace_parent`] to re-point a namespace during a move.
+    /// Not called for a rename in place — the hierarchy is unchanged there — nor for a
+    /// no-op.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the namespace is never reachable from two
+    /// parents at once — see [`Self::attach_namespace_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn detach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a namespace's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a parent the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* parent that
+    /// [`Self::detach_namespace_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the move already happened — so it is
+    /// logged and left to reconciliation. That is the trade this ordering buys: a failed
+    /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
+    /// namespace loses inherited access rather than silently keeping or gaining it. The one
+    /// exception is a commit whose outcome is unknown, where the caller's compensation
+    /// re-attaches a parent the namespace has actually left. Missing
+    /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
+    /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Hook that is called when a new table is created.
     /// This is used to set up the initial permissions for the table.
     async fn create_table(
@@ -1845,6 +2843,70 @@ where
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Hook that removes a tabular's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
+    ///
+    /// Paired with [`Self::attach_tabular_parent`] to re-point a table, view or generic
+    /// table during a rename that crosses namespaces. Not called for a rename within one
+    /// namespace — the hierarchy is unchanged there — nor for a no-op.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the tabular is never reachable from two
+    /// namespaces at once — see [`Self::attach_tabular_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
+    ///
+    /// Called with the catalog's write transaction open, so an implementation must not read
+    /// or write the catalog: checking out a second connection under an open transaction
+    /// exhausts the pool and deadlocks.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn detach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _tabular_id: TabularId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a tabular's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a namespace the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* namespace that
+    /// [`Self::detach_tabular_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the rename already happened — so it
+    /// is logged and left to reconciliation. That is the trade this ordering buys: a failed
+    /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
+    /// table loses inherited access rather than silently keeping access granted on the
+    /// namespace it was moved out of. The one exception is a commit whose outcome is
+    /// unknown — the connection dies after Postgres committed but before the ack — where
+    /// the caller's compensation re-attaches a namespace the tabular has actually left.
+    /// Missing edges are also what
+    /// `lakekeeper openfga reconcile` repairs in its **default** additive mode; removing a
+    /// surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _tabular_id: TabularId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1874,13 +2936,100 @@ pub mod tests {
     }
 
     #[test]
+    fn read_grants_action_exists_at_every_grantable_level() {
+        // `read_grants` gates listing grants on a resource. Grant *authority* is not an
+        // action - `Authorizer::are_allowed_grants` resolves it from the privilege name.
+        assert_eq!(
+            CatalogWarehouseAction::ReadGrants
+                .action_descriptor()
+                .action_name,
+            "read_grants"
+        );
+        assert!(CatalogServerAction::variants().contains(&CatalogServerAction::ReadGrants));
+        assert!(CatalogProjectAction::variants().contains(&CatalogProjectAction::ReadGrants));
+        assert!(CatalogWarehouseAction::variants().contains(&CatalogWarehouseAction::ReadGrants));
+        assert!(CatalogNamespaceAction::variants().contains(&CatalogNamespaceAction::ReadGrants));
+        assert!(CatalogTableAction::variants().contains(&CatalogTableAction::ReadGrants));
+        assert!(CatalogViewAction::variants().contains(&CatalogViewAction::ReadGrants));
+        assert!(
+            CatalogGenericTableAction::variants().contains(&CatalogGenericTableAction::ReadGrants)
+        );
+        assert!(CatalogTagAction::variants().contains(&CatalogTagAction::ReadGrants));
+    }
+
+    #[tokio::test]
+    async fn grant_surface_defaults_are_fail_closed() {
+        // An authorizer that has not opted into grants must grant nothing: no
+        // storage facet, an empty vocabulary, every privilege rejected on write,
+        // and no grant authority. HidingAuthorizer overrides none of these.
+        let authz = HidingAuthorizer::new();
+        let md = crate::request_metadata::RequestMetadataTestBuilder::builder().build();
+
+        assert!(authz.grants().is_none());
+        assert_eq!(
+            authz.grantable_privileges(ResourceType::Warehouse),
+            Vec::new()
+        );
+        assert_eq!(
+            authz.validate_grant_privilege(ResourceType::Warehouse, "select"),
+            Err(InvalidGrantPrivilege {
+                resource_type: ResourceType::Warehouse,
+                privilege: "select".to_string(),
+            })
+        );
+        let alice = UserOrRole::User(UserId::new_unchecked("oidc", "alice"));
+        let decisions = authz
+            .are_allowed_grants(
+                &md,
+                None,
+                &GrantTarget::Server,
+                &[
+                    GrantAuthorityCheck::grantable("admin"),
+                    GrantAuthorityCheck::entry("select", Some(&alice), GrantOp::Revoke),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(decisions, vec![false, false]);
+    }
+
+    #[test]
+    fn read_grants_maps_into_the_fieldless_action_kinds() {
+        // Only levels whose actions carry context have a `*Kind` mirror; generic-table
+        // and tag actions are fieldless and are introspected directly.
+        assert_eq!(
+            CatalogServerActionKind::from(&CatalogServerAction::ReadGrants),
+            CatalogServerActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogProjectActionKind::from(&CatalogProjectAction::ReadGrants),
+            CatalogProjectActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogWarehouseActionKind::from(&CatalogWarehouseAction::ReadGrants),
+            CatalogWarehouseActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogNamespaceActionKind::from(&CatalogNamespaceAction::ReadGrants),
+            CatalogNamespaceActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogTableActionKind::from(&CatalogTableAction::ReadGrants),
+            CatalogTableActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogViewActionKind::from(&CatalogViewAction::ReadGrants),
+            CatalogViewActionKind::ReadGrants
+        );
+    }
+
+    #[test]
     fn test_warehouse_spec_mutation_classification() {
         use CatalogWarehouseAction as A;
         // Spec mutations: locked by the managed-by marker.
         for a in [
             A::Delete,
             A::UpdateStorage,
-            A::UpdateStorageCredential,
             A::Deactivate,
             A::Activate,
             A::Rename,
@@ -1908,6 +3057,7 @@ pub mod tests {
             A::GetAllTasks,
             A::ControlAllTasks,
             A::GetEndpointStatistics,
+            A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");
         }
@@ -1955,6 +3105,12 @@ pub mod tests {
         // base-capability marker, so the full set is introspectable.
         let variants = CatalogRoleAction::variants();
         assert_eq!(variants.len(), CatalogRoleAction::COUNT);
+    }
+
+    #[test]
+    fn test_tag_action_variant_completeness() {
+        let variants = CatalogTagAction::variants();
+        assert_eq!(variants.len(), CatalogTagAction::COUNT);
     }
 
     #[test]
@@ -2305,6 +3461,8 @@ pub mod tests {
                 CatalogTableAction::Commit {
                     updated_properties: Arc::new(BTreeMap::new()),
                     removed_properties: Arc::new(Vec::new()),
+                    target_refs: Arc::new(BTreeSet::new()),
+                    update_kinds: Arc::new(BTreeSet::new()),
                 },
                 serde_json::json!({"action": "commit"}),
             ),
@@ -2329,6 +3487,8 @@ pub mod tests {
                     .collect(),
             ),
             removed_properties: Arc::new(vec!["key2".to_string(), "key3".to_string()]),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         let expected_serialized = serde_json::json!({
@@ -2340,6 +3500,58 @@ pub mod tests {
         });
         assert_eq!(serialized, expected_serialized);
 
+        let deserialized: CatalogTableAction =
+            serde_json::from_value(serialized).expect("Failed to deserialize");
+        assert_eq!(deserialized, action);
+    }
+
+    /// A commit's target refs and update kinds must reach the authorizer via the
+    /// action descriptor context, so a policy can authorize per branch.
+    #[test]
+    fn test_commit_action_descriptor_surfaces_refs_and_kinds() {
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::default(),
+            removed_properties: Arc::default(),
+            target_refs: Arc::new(BTreeSet::from(["main".to_string(), "dev".to_string()])),
+            update_kinds: Arc::new(BTreeSet::from([
+                TableUpdateKind::SetSnapshotRef,
+                TableUpdateKind::AddSchema,
+            ])),
+        };
+        let context: BTreeMap<&str, String> = action
+            .action_descriptor()
+            .context
+            .into_iter()
+            .map(|(k, v)| (k.as_str(), v.to_string()))
+            .collect();
+        // Ordering is deterministic: refs sort lexically, kinds sort by variant.
+        assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
+        assert_eq!(
+            context.get("update-kinds"),
+            Some(&"[add-schema, set-snapshot-ref]".to_string())
+        );
+    }
+
+    /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
+    /// Iceberg action names. This is a serialized contract that authorizers parse, so a
+    /// change here is a change to their input, not an internal rename.
+    #[test]
+    fn test_catalog_table_action_commit_with_refs_and_kinds_serde() {
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::default(),
+            removed_properties: Arc::default(),
+            target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+            update_kinds: Arc::new(BTreeSet::from([TableUpdateKind::SetSnapshotRef])),
+        };
+        let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "action": "commit",
+                "target_refs": ["main"],
+                "update_kinds": ["set-snapshot-ref"]
+            })
+        );
         let deserialized: CatalogTableAction =
             serde_json::from_value(serialized).expect("Failed to deserialize");
         assert_eq!(deserialized, action);
@@ -2409,6 +3621,129 @@ pub mod tests {
             .unwrap(),
             serde_json::json!({ "action": "delete" }),
         );
+    }
+
+    /// `POST /check` deserializes these actions from user input and `GET /.../actions`
+    /// serializes them, so the payload's wire shape is a public contract. The `OpenAPI`
+    /// regeneration reflects utoipa's model of the type; this pins serde's output, which
+    /// is what a client actually sends and receives.
+    #[test]
+    fn test_subtree_grant_action_scope_serde() {
+        let shape = SubtreeGrantScope {
+            resource_types: SubtreeResourceTypes::new(
+                [ResourceType::Namespace, ResourceType::Table]
+                    .into_iter()
+                    .collect(),
+            )
+            .expect("non-empty kinds"),
+            root_level: RootLevelGrants::Excluded,
+            privileges: SubtreeGrantPrivileges::Only {
+                names: SubtreePrivilegeNames::new(["select".to_string()].into_iter().collect())
+                    .expect("non-empty privileges"),
+            },
+            principal: SubtreeGrantPrincipal::One(AuthzUserOrRole::User(
+                UserId::try_from("oidc~alice").expect("valid user id"),
+            )),
+            dry_run: false,
+        };
+        let of = serde_json::json!({
+            "resource_types": ["namespace", "table"],
+            "root_level": "excluded",
+            "privileges": {"only": {"names": ["select"]}},
+            "principal": {"one": {"user": "oidc~alice"}},
+            "dry_run": false,
+        });
+        // The base-capability form carries no scope at all, which is the same absence a
+        // policy guards on.
+        let any = serde_json::Value::Null;
+
+        for (action, expected) in [
+            (
+                CatalogWarehouseAction::ReadSubtreeGrants {
+                    scope: Some(shape.clone()),
+                },
+                serde_json::json!({"action": "read_subtree_grants", "scope": of}),
+            ),
+            (
+                CatalogWarehouseAction::RevokeSubtreeGrants { scope: None },
+                serde_json::json!({"action": "revoke_subtree_grants", "scope": any}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+            let deserialized: CatalogWarehouseAction =
+                serde_json::from_value(expected).expect("deserialize");
+            assert_eq!(deserialized, action);
+        }
+
+        for (action, expected) in [
+            (
+                CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
+                serde_json::json!({"action": "read_subtree_grants", "scope": any}),
+            ),
+            (
+                CatalogNamespaceAction::RevokeSubtreeGrants {
+                    scope: Some(shape.clone()),
+                },
+                serde_json::json!({"action": "revoke_subtree_grants", "scope": of}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+            let deserialized: CatalogNamespaceAction =
+                serde_json::from_value(expected).expect("deserialize");
+            assert_eq!(deserialized, action);
+        }
+
+        // Every principal is a named value on the wire, so a policy never reads the
+        // widest case out of a missing attribute.
+        assert_eq!(
+            serde_json::to_value(SubtreeGrantPrincipal::Every {}).expect("serialize"),
+            serde_json::json!({"every": {}}),
+        );
+
+        // An empty kind list means "every kind" to the store and "no kinds" to a policy,
+        // so the boundary refuses it.
+        let empty = serde_json::json!({
+            "action": "read_subtree_grants",
+            "scope": {
+                "resource_types": [],
+                "root_level": "included",
+                "principal": {"every": {}},
+                "dry_run": false,
+            },
+        });
+        serde_json::from_value::<CatalogWarehouseAction>(empty)
+            .expect_err("an empty resource_types list is refused");
+    }
+
+    /// Permission introspection asks whether a principal may run subtree operations here
+    /// at all, which no concrete request answers. Both levels therefore enumerate the
+    /// action with no scope: a scope built from a made-up request would draw a
+    /// scope-specific policy answer about a request nobody made.
+    #[test]
+    fn subtree_grant_actions_are_introspected_without_a_scope() {
+        let warehouse = CatalogWarehouseAction::variants()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    CatalogWarehouseAction::ReadSubtreeGrants { scope: None }
+                        | CatalogWarehouseAction::RevokeSubtreeGrants { scope: None }
+                )
+            })
+            .count();
+        assert_eq!(warehouse, 2, "warehouse subtree actions, enumerated as Any");
+
+        let namespace = CatalogNamespaceAction::variants()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    CatalogNamespaceAction::ReadSubtreeGrants { scope: None }
+                        | CatalogNamespaceAction::RevokeSubtreeGrants { scope: None }
+                )
+            })
+            .count();
+        assert_eq!(namespace, 2, "namespace subtree actions, enumerated as Any");
     }
 
     #[test]
@@ -2509,6 +3844,17 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
+        /// What creation confers per resource type, for tests that exercise the catalog
+        /// grant arm. Empty by default, so no test gains grant rows it did not ask for.
+        bootstrap: &'static [(ResourceType, &'static [&'static str])],
+        /// Which grant directions this authorizer has authority over. Empty by default,
+        /// which answers every grant-authority question with the trait's deny.
+        grant_ops: &'static [GrantOp],
+        /// Namespaces to report from [`Authorizer::managed_role_provider_ids`]. Empty
+        /// by default, matching every real OSS authorizer; a test sets it to exercise
+        /// the non-empty path, which OSS otherwise cannot reach (no role providers
+        /// ship here, so the production set is always empty).
+        managed_role_providers: HashSet<RoleProviderId>,
     }
 
     impl Default for HidingAuthorizer {
@@ -2525,7 +3871,40 @@ pub mod tests {
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
+                bootstrap: &[],
+                grant_ops: &[],
+                managed_role_providers: HashSet::new(),
             }
+        }
+
+        /// Report `providers` as provider-managed, so a test can exercise the
+        /// non-empty deny-set that no OSS authorizer produces on its own.
+        #[must_use]
+        pub fn with_managed_role_providers(
+            mut self,
+            providers: impl IntoIterator<Item = RoleProviderId>,
+        ) -> Self {
+            self.managed_role_providers = providers.into_iter().collect();
+            self
+        }
+
+        /// Give this authorizer authority over `ops` and nothing else, so a test can tell
+        /// a grant-authority question apart from a revoke one.
+        #[must_use]
+        pub fn with_grant_authority(mut self, ops: &'static [GrantOp]) -> Self {
+            self.grant_ops = ops;
+            self
+        }
+
+        /// Make creation confer privileges as catalog grant rows, per resource type.
+        /// A type absent from `privileges` confers nothing.
+        #[must_use]
+        pub fn with_bootstrap_grants(
+            mut self,
+            privileges: &'static [(ResourceType, &'static [&'static str])],
+        ) -> Self {
+            self.bootstrap = privileges;
+            self
         }
 
         fn check_available(&self, object: &str) -> bool {
@@ -2623,6 +4002,7 @@ pub mod tests {
         type GenericTableAction = CatalogGenericTableAction;
         type UserAction = CatalogUserAction;
         type RoleAction = CatalogRoleAction;
+        type TagAction = CatalogTagAction;
 
         fn implementation_name() -> &'static str {
             "test-hiding-authorizer"
@@ -2630,6 +4010,38 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn managed_role_provider_ids(&self) -> &HashSet<RoleProviderId> {
+            &self.managed_role_providers
+        }
+
+        fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
+            self.bootstrap
+                .iter()
+                .find(|(declared_for, _)| *declared_for == resource_type)
+                .map_or(&[], |(_, privileges)| *privileges)
+        }
+
+        async fn are_allowed_grants_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            _target: &GrantTarget<'_>,
+            checks: &[GrantAuthorityCheck<'_>],
+        ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            // Authority per direction, so a test can hold revoke authority alone and
+            // watch the grant side of a diff be refused.
+            Ok(checks
+                .iter()
+                .map(|check| {
+                    if self.grant_ops.contains(&check.op) {
+                        AuthorizationDecision::allow()
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
+                })
+                .collect())
         }
 
         #[cfg(feature = "open-api")]
@@ -2707,13 +4119,42 @@ pub mod tests {
                 .collect())
         }
 
+        async fn are_allowed_tag_actions_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            tags_with_actions: &[(&TagDefinition, Self::TagAction)],
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            let results: Vec<bool> = tags_with_actions
+                .iter()
+                .map(|(tag, action)| {
+                    if self.action_is_blocked(format!("tag:{action:?}").as_str()) {
+                        return false;
+                    }
+                    self.check_available(format!("tag:{}", tag.tag_definition_id).as_str())
+                })
+                .collect();
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
+        }
+
         async fn are_allowed_server_actions_impl(
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             actions: &[Self::ServerAction],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-            Ok(vec![AuthorizationDecision::allow(); actions.len()])
+            // The server itself is never hidden, so only `block_action` applies here.
+            Ok(actions
+                .iter()
+                .map(|action| {
+                    AuthorizationDecision::from(
+                        !self.action_is_blocked(format!("server:{action:?}").as_str()),
+                    )
+                })
+                .collect())
         }
 
         async fn are_allowed_project_actions_impl(
@@ -2900,6 +4341,23 @@ pub mod tests {
         }
 
         async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_tag(
+            &self,
+            _metadata: &RequestMetadata,
+            _tag_definition_id: TagDefinitionId,
+            _parent_project_id: ArcProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_tag(
+            &self,
+            _metadata: &RequestMetadata,
+            _tag_definition_id: TagDefinitionId,
+        ) -> Result<()> {
             Ok(())
         }
 

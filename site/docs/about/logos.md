@@ -1,10 +1,12 @@
+---
+description: "Download the official Lakekeeper logos and brand marks as SVG, for light and dark backgrounds."
+---
+
 # Logos
 
 Below you can find the logos available for download. Click on the links to download the files.
 
 ## Available Logos
-
-
 
 <a href="/assets/logos/LAKEKEEPER_IMAGE.svg" download>
   <img src="/assets/logos/LAKEKEEPER_IMAGE.svg" alt="Lakekeeper Bear" width="200" height="200">
@@ -25,7 +27,5 @@ Below you can find the logos available for download. Click on the links to downl
 <a href="/assets/logos/LAKEKEEPER_IMAGE_TEXT_WHITE_SIDE.svg" download>
   <img src="/assets/logos/LAKEKEEPER_IMAGE_TEXT_WHITE_SIDE.svg" alt="Lakekeeper Bear" width="600" height="200">
 </a>
-
-
 
 <a href="/assets/logos/logos.zip" download>Download All</a>

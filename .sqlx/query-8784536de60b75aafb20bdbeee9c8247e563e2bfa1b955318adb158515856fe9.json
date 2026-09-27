@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE namespace c\n            SET namespace_name = p.namespace_name || c.namespace_name[$1:]\n            FROM namespace p\n            WHERE p.warehouse_id = c.warehouse_id\n                AND c.depth = $1\n                AND p.depth = $1 - 1\n                -- Collated: finds the parent case-insensitively.\n                AND p.namespace_name = c.namespace_name[1:$1 - 1]\n                -- Byte-wise: rewrites only rows that actually differ, which makes this idempotent.\n                AND (c.namespace_name[1:$1 - 1]::text) COLLATE \"C\"\n                    <> (p.namespace_name::text) COLLATE \"C\"\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8784536de60b75aafb20bdbeee9c8247e563e2bfa1b955318adb158515856fe9"
+}

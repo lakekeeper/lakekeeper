@@ -12,13 +12,14 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
 [package.metadata.cargo-machete]
-# Imported as `cloudevents`
-ignored = ["cloudevents-sdk"]
+# `cloudevents-sdk` imported as `cloudevents`; `k8s-openapi` is a features-only
+# dep that selects the Kubernetes API version for the transitive limes copy.
+ignored = ["cloudevents-sdk", "k8s-openapi"]
 
 [features]
 all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
-router = ["dep:tower-http", "dep:tower"]
+router = ["dep:tower-http", "dep:tower", "dep:hyper-util", "dep:socket2"]
 default = ["s3-signer", "router"]
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
@@ -38,11 +39,12 @@ aws-sdk-sts = { workspace = true }
 aws-sigv4 = { workspace = true, optional = true }
 aws-smithy-runtime-api = { workspace = true }
 axum = { workspace = true }
-axum-extra = { workspace = true, features = ["typed-header"] }
+axum-extra = { workspace = true, features = ["typed-header", "query"] }
 axum-prometheus = { workspace = true }
 azure_core = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
@@ -52,13 +54,18 @@ flate2 = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
+hmac = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
+hyper-util = { workspace = true, optional = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
+# Selects the Kubernetes API version for the k8s-openapi that `limes` pulls in
+# transitively (limes leaves the choice to the consumer). Not used directly.
+k8s-openapi = { workspace = true, features = ["v1_32"] }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",
@@ -76,6 +83,8 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = { workspace = true, optional = true }
 serde_urlencoded = { workspace = true }
+sha1 = { workspace = true }
+socket2 = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -88,6 +97,7 @@ tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
     "default",
     "request-id",
+    "set-header",
     "util",
     "cors",
 ] }
@@ -105,10 +115,12 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 assert-json-diff = { workspace = true }
+aws-lc-rs = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
+jsonwebtoken = { workspace = true }
 lakekeeper = { path = ".", features = ["test-utils"] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
@@ -121,3 +133,10 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+[lints.rust]
+# `tracing_unstable` is set repo-wide in `.cargo/config.toml` and in CI. Declare it
+# so `#[cfg(not(tracing_unstable))]` in the audit backend — which turns a missing
+# cfg into a clear message instead of a confusing "cannot find function" error —
+# does not itself trip `unexpected_cfgs`. CI builds with `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tracing_unstable)'] }

@@ -192,6 +192,7 @@ pub async fn setup_with_registry<T: Authorizer>(
     let warehouse = ApiServer::create_warehouse(
         CreateWarehouseRequest {
             warehouse_name: warehouse_name.clone(),
+            warehouse_id: None,
             project_id,
             storage_profile,
             storage_credential,
@@ -211,6 +212,7 @@ pub async fn setup_with_registry<T: Authorizer>(
         let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
+                warehouse_id: None,
                 project_id: Some(Arc::unwrap_or_clone(warehouse.project_id())),
                 storage_profile: memory_io_profile(),
                 storage_credential: None,

@@ -30,8 +30,9 @@ use crate::{
         ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
-            CatalogServerAction, CatalogWarehouseAction,
-            ListProjectsResponse as AuthZListProjectsResponse,
+            CatalogServerAction, CatalogWarehouseAction, GrantResource,
+            ListProjectsResponse as AuthZListProjectsResponse, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         events::{
             APIEventContext,
@@ -147,6 +148,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .create_project(event_ctx.request_metadata(), &project_id)
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            &GrantResource::Project((*project_id).clone()),
+            t.transaction(),
+        )
+        .await?;
+
         TaskLogCleanupTask::schedule_task::<C>(
             ScheduleTaskMetadata {
                 project_id: project_id.clone(),
@@ -167,8 +176,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         t.commit().await?;
 
+        // Held across the create event below, which consumes the context.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
+
         // Emit success event
         let () = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         Ok(CreateProjectResponse { project_id })
     }
@@ -277,10 +292,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
         C::delete_project(&project_id, transaction.transaction()).await?;
+        transaction.commit().await?;
+
+        // Post-commit: best-effort authz cleanup. A leftover edge points at the
+        // now-deleted project (unreachable), and `create_project`'s
+        // `require_no_relations` guard blocks reuse of the id.
         authorizer
             .delete_project(&request_metadata, &project_id)
-            .await?;
-        transaction.commit().await?;
+            .await
+            .inspect_err(|e| {
+                tracing::error!(?e, "Failed to delete project from authorizer: {}", e.error);
+            })
+            .ok();
 
         Ok(())
     }

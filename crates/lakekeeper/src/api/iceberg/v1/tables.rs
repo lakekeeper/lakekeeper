@@ -68,7 +68,7 @@ pub struct ListTablesQuery {
     pub return_protection_status: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotsQuery {
     /// Load all snapshots
@@ -266,6 +266,7 @@ where
     async fn register_table(
         parameters: NamespaceParameters,
         request: RegisterTableRequest,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -377,6 +378,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
             post(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
                  State(api_context): State<ApiContext<S>>,
+                 headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<RegisterTableRequest>| {
                     I::register_table(
@@ -385,6 +387,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                             namespace: namespace.into(),
                         },
                         request,
+                        parse_data_access(&headers),
                         api_context,
                         metadata,
                     )
@@ -654,21 +657,26 @@ impl DataAccess {
     }
 }
 
+/// Split one `If-None-Match` field value into its entries, each held as the
+/// client spelled it.
+///
+/// Normalisation is deliberately left to [`ETag::validator`] at comparison
+/// time. Quotes are the only thing separating the `*` wildcard from a tag whose
+/// opaque value is `*`, so stripping them here would promote the latter into a
+/// wildcard the client never sent — see [`ETag::is_wildcard`].
 fn parse_etags(etags: &str) -> Vec<ETag> {
-    let etags = etags.trim().trim_matches('"');
     etags
         .split(',')
-        .map(|s| {
-            s.trim()
-                .trim_matches('"')
-                .trim_start_matches("W/")
-                .trim_matches('"')
-        })
-        .filter(|s| !s.is_empty())
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
         .map(ETag::from)
         .collect()
 }
 
+/// Every `If-None-Match` entry across all field lines, in order.
+///
+/// Entries are unnormalised: compare them with [`ETag::validator`], and test
+/// [`ETag::is_wildcard`] before doing so.
 pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
     headers
         .get_all(header::IF_NONE_MATCH)
@@ -679,14 +687,21 @@ pub fn parse_if_none_match(headers: &HeaderMap) -> Vec<ETag> {
 }
 
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccessMode {
-    let header = headers
+    // The parameter is an array serialized `style: simple, explode: false`, so
+    // a single header line may carry a comma-separated list. Values that are
+    // not valid ASCII name no known mechanism, so drop them rather than fail
+    // the request — an unrecognised delegation request is already treated as
+    // "server chooses".
+    let requested = headers
         .get_all(DATA_ACCESS_HEADER)
         .iter()
-        .map(|v| v.to_str().unwrap())
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
         .collect::<Vec<_>>();
-    let vended_credentials = header.contains(&"vended-credentials");
-    let remote_signing = header.contains(&"remote-signing");
-    let client_managed = header.contains(&"client-managed");
+    let vended_credentials = requested.contains(&"vended-credentials");
+    let remote_signing = requested.contains(&"remote-signing");
+    let client_managed = requested.contains(&"client-managed");
     if !vended_credentials && !remote_signing && client_managed {
         return DataAccessMode::ClientManaged;
     }
@@ -742,6 +757,102 @@ mod test {
             http::header::HeaderValue::from_static("vended-credentials"),
         );
         let data_access = super::parse_data_access(&headers);
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
+    }
+
+    fn data_access_headers(values: &[&'static str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append(
+                super::DATA_ACCESS_HEADER,
+                http::header::HeaderValue::from_static(value),
+            );
+        }
+        headers
+    }
+
+    /// The parameter is `style: simple, explode: false`, so one header line
+    /// may carry the whole list.
+    #[test]
+    fn parse_data_access_splits_a_comma_separated_list() {
+        let data_access =
+            super::parse_data_access(&data_access_headers(&["vended-credentials,remote-signing"]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    #[test]
+    fn parse_data_access_trims_whitespace_around_list_items() {
+        let data_access = super::parse_data_access(&data_access_headers(&[
+            " vended-credentials , remote-signing ",
+        ]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    /// Repeated header lines stay supported alongside the list form.
+    #[test]
+    fn parse_data_access_accepts_repeated_header_lines() {
+        let data_access = super::parse_data_access(&data_access_headers(&[
+            "vended-credentials",
+            "remote-signing",
+        ]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: true
+            })
+        );
+    }
+
+    /// `client-managed` only wins when nothing else was asked for, and a list
+    /// is how a client can now combine it with a fallback.
+    #[test]
+    fn parse_data_access_client_managed_alongside_a_delegated_mode() {
+        let data_access =
+            super::parse_data_access(&data_access_headers(&["client-managed,vended-credentials"]));
+
+        assert_eq!(
+            data_access,
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false
+            })
+        );
+    }
+
+    /// A non-ASCII value used to reach `to_str().unwrap()`, which
+    /// `CatchPanicLayer` turned into a 500.
+    #[test]
+    fn parse_data_access_ignores_a_non_ascii_value() {
+        let mut headers = data_access_headers(&["vended-credentials"]);
+        headers.append(
+            super::DATA_ACCESS_HEADER,
+            http::header::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+
+        let data_access = super::parse_data_access(&headers);
+
         assert_eq!(
             data_access,
             DataAccessMode::ServerDelegated(DataAccess {
@@ -833,6 +944,7 @@ mod test {
             async fn register_table(
                 _parameters: super::super::namespace::NamespaceParameters,
                 _request: crate::api::RegisterTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> crate::api::Result<LoadTableResult> {
@@ -1021,6 +1133,7 @@ mod test {
             async fn register_table(
                 _parameters: super::super::namespace::NamespaceParameters,
                 _request: crate::api::RegisterTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> crate::api::Result<LoadTableResult> {
@@ -1175,7 +1288,8 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            remote_signing_config: None,
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
@@ -1279,7 +1393,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "entries are held as received");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1291,7 +1406,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "list padding is trimmed");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1303,7 +1419,8 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags, vec![etag.into()], "the weak marker is kept as sent");
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1316,6 +1433,26 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(etags, vec!["*".into()]);
+        assert!(etags[0].is_wildcard());
+    }
+
+    /// Quotes are the only thing separating the wildcard from a tag whose opaque
+    /// value is `*`, so parsing must not strip them. Normalising here promoted
+    /// `"*"` into a wildcard the client never sent, and a wildcard skips
+    /// validator comparison — so the request got a `304` on the strength of a tag
+    /// nothing had ever minted.
+    #[test]
+    fn test_parse_if_none_match_keeps_a_quoted_asterisk_a_tag() {
+        for sent in ["\"*\"", "W/\"*\""] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::IF_NONE_MATCH, sent.parse().unwrap());
+
+            let etags = parse_if_none_match(&headers);
+
+            assert_eq!(etags, vec![sent.into()]);
+            assert!(!etags[0].is_wildcard(), "{sent} was read as a wildcard");
+            assert_eq!(etags[0].validator(), "*", "still a tag once normalised");
+        }
     }
 
     #[test]
@@ -1333,8 +1470,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 
@@ -1353,8 +1490,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 
@@ -1386,20 +1523,20 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec![
-                "etag-without-quote".into(),
-                "etag-with-normal-quote".into(),
-                "etag-with-quotes-twice".into(),
-                "weak-etag-without-quote".into(),
-                "weak-etag-with-normal-quote".into(),
-                "weak-etag-with-quotes-twice".into(),
-                "weak-etag-without-inner-quote-and-outer-quote".into(),
-                "weak-etag-without-inner-quote-and-outer-quote-twice".into(),
-                "weak-etag-with-normal-inner-quote-and-outer-quote".into(),
-                "weak-etag-with-normal-inner-quote-and-outer-quote-twice".into(),
-                "weak-etag-with-inner-quote-twice-and-outer-quote".into(),
-                "weak-etag-with-inner-quote-twice-and-outer-quote-twice".into(),
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            [
+                "etag-without-quote",
+                "etag-with-normal-quote",
+                "etag-with-quotes-twice",
+                "weak-etag-without-quote",
+                "weak-etag-with-normal-quote",
+                "weak-etag-with-quotes-twice",
+                "weak-etag-without-inner-quote-and-outer-quote",
+                "weak-etag-without-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-normal-inner-quote-and-outer-quote",
+                "weak-etag-with-normal-inner-quote-and-outer-quote-twice",
+                "weak-etag-with-inner-quote-twice-and-outer-quote",
+                "weak-etag-with-inner-quote-twice-and-outer-quote-twice",
             ]
         );
     }
@@ -1437,7 +1574,7 @@ mod test {
 
         let etags = parse_if_none_match(&headers);
 
-        assert_eq!(etags, vec!["abcdefghi123456789".into()]);
+        assert_eq!(etags[0].validator(), "abcdefghi123456789");
     }
 
     #[test]
@@ -1453,8 +1590,8 @@ mod test {
         let etags = parse_if_none_match(&headers);
 
         assert_eq!(
-            etags,
-            vec!["abcdefghi123456789".into(), "123456789abcdefghi".into()]
+            etags.iter().map(ETag::validator).collect::<Vec<_>>(),
+            ["abcdefghi123456789", "123456789abcdefghi"]
         );
     }
 
@@ -1467,5 +1604,179 @@ mod test {
         let headers = response.headers();
 
         assert!(headers.is_empty());
+    }
+
+    /// The register route extracted no `HeaderMap`, so the delegation the client
+    /// asked for could not reach the handler at all. Driven through axum because
+    /// the extractor is the thing under test.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn register_table_forwards_the_requested_data_access() {
+        use async_trait::async_trait;
+        use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+        use tower::ServiceExt;
+
+        use crate::{
+            api::{ApiContext, LoadTableResult},
+            request_metadata::RequestMetadata,
+        };
+
+        #[derive(Debug, Clone)]
+        struct TestService;
+
+        #[derive(Debug, Clone)]
+        struct ThisState;
+
+        impl crate::api::ThreadSafe for ThisState {}
+
+        #[async_trait]
+        impl super::TablesService<ThisState> for TestService {
+            async fn list_tables(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _query: super::ListTablesQuery,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::ListTablesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn create_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::CreateTableRequest,
+                _data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                panic!("Should not be called");
+            }
+
+            async fn register_table(
+                _parameters: super::super::namespace::NamespaceParameters,
+                _request: crate::api::RegisterTableRequest,
+                data_access: impl Into<super::DataAccessMode> + Send,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResult> {
+                // The delegation is what is under test, so report it back as an error.
+                Err(ErrorModel::builder()
+                    .message(format!("{:?}", data_access.into()))
+                    .r#type("UnsupportedOperationException".to_string())
+                    .code(406)
+                    .build()
+                    .into())
+            }
+
+            async fn load_table(
+                _parameters: super::TableParameters,
+                _request: super::LoadTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<LoadTableResultOrNotModified> {
+                panic!("Should not be called");
+            }
+
+            async fn load_table_credentials(
+                _parameters: super::TableParameters,
+                _request: super::LoadTableCredentialsRequest,
+                _data_access: super::DataAccess,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<iceberg_ext::catalog::rest::LoadCredentialsResponse>
+            {
+                panic!("Should not be called");
+            }
+
+            async fn commit_table(
+                _parameters: super::TableParameters,
+                _request: crate::api::CommitTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<crate::api::CommitTableResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn drop_table(
+                _parameters: super::TableParameters,
+                _drop_params: crate::api::iceberg::types::DropParams,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn table_exists(
+                _parameters: super::TableParameters,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn rename_table(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::RenameTableRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+
+            async fn commit_transaction(
+                _prefix: Option<crate::api::iceberg::types::Prefix>,
+                _request: crate::api::CommitTransactionRequest,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> crate::api::Result<()> {
+                panic!("Should not be called");
+            }
+        }
+
+        let router = axum::Router::new()
+            .merge(super::router::<TestService, ThisState>())
+            .with_state(ApiContext {
+                v1_state: ThisState,
+            });
+
+        let body = serde_json::json!({
+            "name": "test-table",
+            "metadata-location": "s3://bucket/table/metadata/v1.metadata.json",
+        })
+        .to_string();
+
+        for (header, expected) in [
+            (
+                Some("vended-credentials"),
+                DataAccessMode::ServerDelegated(DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                }),
+            ),
+            (Some("client-managed"), DataAccessMode::ClientManaged),
+            // No header at all leaves the choice to the server, as before.
+            (
+                None,
+                DataAccessMode::ServerDelegated(DataAccess::not_specified()),
+            ),
+        ] {
+            let mut req = http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/test/namespaces/test-namespace/register")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(header) = header {
+                req = req.header(super::DATA_ACCESS_HEADER, header);
+            }
+            let mut req = req.body(axum::body::Body::from(body.clone())).unwrap();
+            req.extensions_mut()
+                .insert(RequestMetadata::new_unauthenticated());
+
+            let response = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(response.status().as_u16(), 406, "{header:?}");
+            let bytes = http_body_util::BodyExt::collect(response)
+                .await
+                .unwrap()
+                .to_bytes();
+            let error: IcebergErrorResponse = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(error.error.message, format!("{expected:?}"), "{header:?}");
+        }
     }
 }

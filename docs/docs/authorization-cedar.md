@@ -1,4 +1,8 @@
-# Authorization with Cedar <span class="lkp"></span> {#authorization-with-cedar}
+---
+description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: declarative policies with attribute conditions, evaluated without an external service."
+---
+
+# Authorization with Cedar { #authorization-with-cedar .lkp }
 
 !!! important "Using the Correct Cedar Schema Version"
     Always use the Cedar schema version that exactly matches your Lakekeeper deployment when developing policies. Schema mismatches can cause policy validation failures or unexpected authorization behavior. Download the schema from the Lakekeeper UI (Lakekeeper Plus 0.11.2+) or retrieve it via the `/management/v1/permissions/cedar/schema` endpoint.
@@ -10,6 +14,9 @@
 [Cedar](https://docs.cedarpolicy.com/) is an enterprise-grade, policy-based authorization system built into Lakekeeper that requires no external services. Cedar uses a declarative policy language to define access controls, making it ideal for organizations that prefer infrastructure-as-code approaches to authorization management.
 
 Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
+
+!!! note "Permissions are policies, not grants"
+    Cedar decides from policies you author and deploy, so there is nothing to hand out at runtime: the [Grants API](./grants.md) publishes no grantable privileges here and its writes are rejected. Grant support for Cedar is planned for 0.14. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md). If you want permissions managed at runtime by admins and object owners instead, see [OpenFGA](./authorization-openfga.md).
 
 ## How it Works
 
@@ -31,11 +38,12 @@ Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` a
 Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have their own `Lakekeeper::GenericTable` entity and a parallel set of action groups — `GenericTableActions`, `GenericTableDescribeActions`, `GenericTableSelectActions` and `GenericTableModifyActions` — that mirror the regular `Table` actions. Use them in policies exactly as you would the `Table` equivalents.
 
 ## RBAC and ABAC Support
+
 Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
 
 ## Token-Based Role Matching with `project_roles`
 
-Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records that represents the role memberships relevant to the project being accessed:
+Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records holding the user's role memberships in the request's project:
 
 ```
 principal.project_roles  →  Set<{provider_id: String, source_id: String}>
@@ -49,8 +57,8 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 |--------------------------------|------------------------------------------------|-----|
 | `provider_id`                  | `"oidc"`                                       | Authentication provider of the user |
 | `source_id`                    | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| <nobr>`project_roles`</nobr>   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
-| <nobr>`global_role_ids`</nobr> | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
+| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP), resolved in the request's project. |
+| `global_role_ids` | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
 The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
 
@@ -66,6 +74,18 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 `project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
 
 `global_role_ids` further simplifies policies when all configured role providers use globally unique `source_id` values (e.g. a single LDAP server or OIDC provider where group names are unique). Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+
+### Role scope: one project per request
+
+!!! warning "One project's roles, on every request"
+    `roles`, `project_roles` and `global_role_ids` hold the roles of **one** project — the one `x-project-id` names, or the default project — on every request, server-level actions included.
+
+A default project is configured out of the box, so these attributes are rarely empty; that happens only when the request names no project and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT=false`. Two consequences for a policy that can decide a server-level or user-management action:
+
+- Which roles it sees depends on `x-project-id`. A `forbid` naming a role stops firing when the header names another project — `principal in Lakekeeper::Role::"..."` included, since the Role ID embeds a project.
+- Naming a role is only meaningful if that role means the same people in every project. Identity-provider groups shared across projects do; catalog roles created per project do not, so anyone able to create a role in their own project can match such a policy from there.
+
+For authority that must not depend on the request, use a grant on the server — grants belong to no project — or name the user. To keep a role-based policy at the project level, add `principal has request_project && resource in principal.request_project`; a server or user resource is never inside a project.
 
 ### Policy example
 
@@ -87,9 +107,6 @@ when {
     )
 };
 ```
-
-!!! note
-    `project_roles` and `global_role_ids` are only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). Both are empty sets for server-level actions that span multiple projects, so policies using either attribute will always deny server-level actions. Use the full Role ID or grant direct access to users for server-level policies.
 
 !!! tip "Monitoring role providers"
     Role provider availability is tracked via Prometheus metrics (`lakekeeper_role_provider_up`, `lakekeeper_role_provider_get_roles_duration_seconds`), emitted per `provider_id` for providers with an external backend such as LDAP. The built-in OIDC token provider does no external lookup, so it reports neither — with `persist_token_roles` it surfaces only through `lakekeeper_role_provider_sync_errors_total` on a failed catalog write. Lakekeeper deliberately excludes role provider health from the pod liveness probe — an unreachable provider causes graceful fallback to cached roles from Postgres rather than a pod restart. See [Monitoring — Role Provider Metrics](./monitoring.md#role-provider-metrics) for details and alerting guidance.
@@ -231,7 +248,7 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 | Environment variable                                      | Default                  | Description |
 |-----------------------------------------------------------|--------------------------|-----|
-| <nobr>`LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`</nobr> | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing. Set to `[]` to disable parsing entirely. |
+| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES` | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing. Set to `[]` to disable parsing entirely. |
 
 ### Error Handling
 
@@ -348,12 +365,12 @@ The following table documents the ID format used for each Cedar entity type. The
 | `Lakekeeper::Server`                             | UUIDv7 (auto-assigned, one per deployment)  | `019c192e-cc20-7a13-a1ac-2e3390f81908` |
 | `Lakekeeper::Project`                            | String (alphanumeric, hyphens, underscores) | `my-project` or `019c192f-0613-7422-90f1-7dd6b09f033c` |
 | `Lakekeeper::Warehouse`                          | UUIDv7 (assigned at warehouse creation)     | `d08dca76-ff69-11f0-9aa6-ab201d553ec5` |
-| <nobr>`Lakekeeper::Namespace`</nobr>             | UUIDv7 (assigned at namespace creation)     | `019c192f-18c2-7f93-848f-542d8f32bc3c` |
+| `Lakekeeper::Namespace`             | UUIDv7 (assigned at namespace creation)     | `019c192f-18c2-7f93-848f-542d8f32bc3c` |
 | `Lakekeeper::Table`                              | `<warehouse-uuid>/<table-uuid>`             | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::View`                               | `<warehouse-uuid>/<view-uuid>`              | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::User`                               | `<provider_id>~<subject_in_idp>`            | `oidc~alice@example.com` |
 | `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins` |
-| <nobr>`Lakekeeper::UserDerivedAttributes`</nobr> | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
+| `Lakekeeper::UserDerivedAttributes` | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
 
 **Notes:**
 
@@ -374,7 +391,6 @@ The following table documents the ID format used for each Cedar entity type. The
 See [Entity Definition Example](#entity-definition-example) below for the JSON format.
 
 **Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
-
 
 ## Policy Examples
 
@@ -413,7 +429,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     **Option 2 — using `project_roles`**
-    `project_roles` is always an empty set for server-level actions (which carry no project context), so this policy will never permit them. Use Option 1 with the full Role ID when server-level permissions are required, or grant direct access to users.
+    `project_roles` matches by provider and role name, with no project ID to look up. It is resolved for the request's project, exactly as the Role ID in Option 1 is — both options therefore match according to `x-project-id`. See [Role scope](#role-scope-one-project-per-request) before using either with `action` left unconstrained, as it is here: these policies reach server-level and user-management actions too.
 
     ```cedar
     permit (
@@ -430,7 +446,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "Grant access based on a token-sourced group (project_roles)"
 
-    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. Note that `project_roles` is always an empty set for server-level actions — use the full Role ID for those.
+    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. `project_roles` holds the roles of the request's project, and the full Role ID is scoped the same way — see [Role scope](#role-scope-one-project-per-request) for what that means above the project level.
 
     ```cedar
     permit (
@@ -722,6 +738,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
 ## Entity Definition Example
+
 Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View. Additionally, if `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, also User and Roles are provided to Cedar. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
 
 ??? example "Entities provided to Cedar internally"
@@ -978,6 +995,46 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
 
+## Break-Glass
+
+Cedar policies come from two places. The **server set** comes from files and ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__*`), and only the operator can change it. The **scope sets** are stored in the catalog, one per project and one per warehouse, and a project manages its own through the management API.
+
+A project controls its own scope set, so it can write a `forbid` that denies everyone, including the people who would remove it again. Break-glass is the way out.
+
+A break-glass request is decided by the server set only. Scope policies are not read, so a bad one cannot block the repair. Grants are still read: they sit in an ordinary catalog table that a policy lockout cannot reach, so the grants a project already has start granting access again.
+
+Break-glass allows only what the server set allows. The operator writes the policy that says who may repair a project.
+
+### Sending a Break-Glass Request
+
+Add the `x-break-glass` header, with your reason as its value:
+
+```bash
+curl -X POST "https://lakekeeper.example.com/management/v1/permissions/cedar/project/policies" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-project-id: 01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "x-break-glass: INC-1234 removing the forbid that locked out the admins" \
+  -H "Content-Type: application/json" \
+  -d '{"writes": [], "replace": true}'
+```
+
+Any non-empty value works. The reason goes into the audit event as `break_glass`, cut off at 256 bytes, so send a ticket reference. See the [Logging guide](./logging.md#audit-logs-and-rust_log).
+
+Break-glass applies only to a user acting as themselves. Requests that assume a role with `x-assume-role`, and permission checks about someone else, are decided the normal way. OpenFGA and allow-all ignore the header: it changes no decision and only shows up in the audit record.
+
+An [instance admin](./instance-admins.md) must give a reason, because their requests skip stored policy and nothing else would record why a policy changed. Without one, applying project or warehouse policies answers `403 CedarInstanceAdminNeedsBreakGlass`. The value `true` does not count as a reason.
+
+### Checking Whether Break-Glass Is Available
+
+Ask `break-glass-status` first. It only reports, and decides nothing:
+
+```bash
+curl "https://lakekeeper.example.com/management/v1/permissions/cedar/break-glass-status?project-id=01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "Authorization: Bearer $TOKEN"
+# {"break-glass-available": true}
+```
+
+Anyone signed in can ask, and no permission is needed, because the people who need this answer are the ones being denied. It covers one project and the break-glass path only. To see whether someone is an instance admin, read `is-instance-admin` from `/management/v1/whoami`.
 
 ## Cedar Actions
 
@@ -1004,7 +1061,7 @@ Because the audit `action_name` deliberately omits the resource type (`delete`, 
 | Action                                            | Audit log `action_name`                    | Description              |
 |---------------------------------------------------|--------------------------------------------|--------------------------|
 | `ListServerCedarEntitySources`                    | `list_cedar_entity_sources`                | List Cedar entity sources configured at server level |
-| <nobr>`ListCedarPoliciesFromServerSources`</nobr> | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
+| `ListCedarPoliciesFromServerSources` | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
 | `ListServerCedarPolicySources`                    | `list_cedar_policy_sources`                | List Cedar policy sources configured at server level |
 | `CreateProject`                                   | `create_project`                           | Create new projects      |
 | `UpdateUsers`                                     | `update_users`                             | Modify user information  |
@@ -1026,7 +1083,7 @@ Because the audit `action_name` deliberately omits the resource type (`delete`, 
 | `GetProjectEndpointStatistics`                | `get_endpoint_statistics`  | View API usage statistics for the project |
 | `GetProjectTaskQueueConfig`                   | `get_task_queue_config`    | View task queue configuration for the project |
 | `GetProjectTasks`                             | `get_project_tasks`        | List background tasks in the project |
-| <nobr>`IntrospectProjectAuthorization`</nobr> | `introspect_authorization` | Check access permissions on the project for other users |
+| `IntrospectProjectAuthorization` | `introspect_authorization` | Check access permissions on the project for other users |
 | `CreateWarehouse`                             | `create_warehouse`         | Create new warehouses in the project |
 | `DeleteProject`                               | `delete`                   | Delete the project           |
 | `RenameProject`                               | `rename`                   | Change project name          |
@@ -1045,7 +1102,7 @@ The following Action Groups are available: `ProjectDescribeActions` (read-only),
 | `UpdateRole`                               | `update`                | Modify role properties          |
 | `ReadRole`                                 | `read`                  | View role details               |
 | `ReadRoleMetadata`                         | `read_metadata`         | View role metadata              |
-| <nobr>`IntrospectRoleAuthorization`</nobr> | —                       | Check access permissions on the role for other users |
+| `IntrospectRoleAuthorization` | —                       | Check access permissions on the role for other users |
 
 The following Action Groups are available: `RoleActions` (all role operations)
 
@@ -1063,7 +1120,7 @@ The following Action Groups are available: `RoleActions` (all role operations)
 | `GetAllTasks`                                   | `get_all_tasks`             | List all background tasks in the warehouse |
 | `ListEverythingInWarehouse`                     | `list_everything`           | List all objects (namespaces, tables, views) in warehouse |
 | `GetWarehouseEndpointStatistics`                | `get_endpoint_statistics`   | View API usage statistics for the warehouse |
-| <nobr>`IntrospectWarehouseAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
+| `IntrospectWarehouseAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
 | `DeleteWarehouse`                               | `delete`                    | Delete the warehouse       |
 | `UpdateStorage`                                 | `update_storage`            | Modify storage configuration |
 | `UpdateStorageCredential`                       | `update_storage_credential` | Update storage credentials |
@@ -1088,7 +1145,7 @@ The following Action Groups are available: `WarehouseDescribeActions` (read-only
 | `ListTables`                                    | `list_tables`           | List tables in the namespace |
 | `ListViews`                                     | `list_views`            | List views in the namespace |
 | `ListNamespacesInNamespace`                     | `list_namespaces`       | List child namespaces      |
-| <nobr>`IntrospectNamespaceAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
+| `IntrospectNamespaceAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
 | `DeleteNamespace`                               | `delete`                | Delete the namespace       |
 | `SetNamespaceProtection`                        | `set_protection`        | Enable/disable deletion protection |
 | `CreateTable`                                   | `create_table`          | Create tables in the namespace |
@@ -1106,7 +1163,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `IncludeTableInList`                        | `include_in_list`       | Include table in list operations (visibility) |
 | `GetTableTasks`                             | `get_tasks`             | List background tasks for the table |
 | `ReadTableData`                             | `read_data`             | Read data from the table (SELECT queries) |
-| <nobr>`IntrospectTableAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
+| `IntrospectTableAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
 | `DropTable`                                 | `drop`                  | Delete the table               |
 | `WriteTableData`                            | `write_data`            | Write data to the table (INSERT, UPDATE, DELETE) |
 | `RenameTable`                               | `rename`                | Change table name or move to different namespace |
@@ -1125,7 +1182,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `IncludeViewInList`                        | `include_in_list`       | Include view in list operations (visibility) |
 | `GetViewTasks`                             | `get_tasks`             | List background tasks for the view |
 | `SelectView`                               | `select`                | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
-| <nobr>`IntrospectViewAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
+| `IntrospectViewAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
 | `DropView`                                 | `drop`                  | Delete the view                 |
 | `RenameView`                               | `rename`                | Change view name or move to different namespace |
 | `UndropView`                               | `undrop`                | Restore a soft-deleted view     |
@@ -1147,7 +1204,7 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `CreateWarehouse`                         | `warehouse_name?: String`        |
 | `CreateRole`                              | `role_name?: String`             |
 | `CreateNamespaceInWarehouse`              | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
-| <nobr>`CreateNamespaceInNamespace`</nobr> | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
+| `CreateNamespaceInNamespace` | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateTable`                             | `table_name?: String`, `table_id?: String`, `initial_table_properties: ResourceProperties` |
 | `CreateView`                              | `view_name?: String`, `initial_view_properties: ResourceProperties` |
 | `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |

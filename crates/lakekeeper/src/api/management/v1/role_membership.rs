@@ -65,7 +65,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
-use super::user::UserType;
+use super::{role::reject_provider_owned_membership, user::UserType};
 use crate::{
     api::{
         ApiContext,
@@ -75,14 +75,18 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogListRolesByIdFilter,
-        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore, Result, RoleId,
-        RoleMemberKind, RoleMembershipEntry, SecretStore, State, UserId, UserMembershipEntry,
+        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore,
+        ManagedRoleImmutable, Result, RoleId, RoleMemberKind, RoleMembershipEntry, SecretStore,
+        State, SystemRoleMemberRolesNotSupported, SystemRoleMembershipRequiresInstanceAdmin,
+        UserId, UserMembershipEntry,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
             RoleAssignmentFilter, RoleAssignmentRow, UserOrRoleId,
         },
-        events::{APIEventContext, AuthorizationFailureSource},
+        events::{
+            APIEventContext, AuthorizationFailureSource, delegate_authorization_failure_source,
+        },
     },
 };
 
@@ -108,7 +112,7 @@ impl From<RoleMemberType> for RoleMemberKind {
 
 /// A member of a role, returned by `GET /role/{id}/members`. Discriminated by
 /// `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
-/// Identity is hydrated; for requests and add/remove confirmations use the
+/// Identity is hydrated; for requests and add confirmations use the
 /// un-hydrated [`RoleMemberRef`] instead.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -162,9 +166,9 @@ impl From<CatalogRoleMember> for RoleMember {
 }
 
 /// An identity reference to a role member — a `user` or a `role`, by typed id.
-/// Sent in `POST /role/{id}/members` requests and echoed by the add/remove
-/// confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
-/// it names *which* principal, not its display identity.
+/// Sent in `POST /role/{id}/members` requests and echoed by the add confirmation
+/// (remove returns `204` with no body). Unlike [`RoleMember`] it is never hydrated
+/// (no display name): it names *which* principal, not its display identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -228,14 +232,15 @@ pub struct AddRoleMembersResponse {
     pub members: Vec<RoleMemberRef>,
 }
 
-/// One page of a role's direct members (users ∪ member roles).
+/// One page of a role's members (users ∪ member roles) — direct for `/members`,
+/// transitive for `/members/transitive`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembersResponse {
     pub members: Vec<RoleMember>,
     /// Token for the next page; `null`/absent once the listing is exhausted.
-    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// Note for SDK authors: **stop when `next-page-token` is null/absent.** The
     /// final page of results may itself return a null token, so don't rely on
     /// receiving a separate trailing empty page — keep requesting until the token
     /// is null.
@@ -270,14 +275,15 @@ impl From<RoleMembershipEntry> for RoleMembership {
     }
 }
 
-/// One page of roles (the `member-of` set, or a user's directly-assigned roles).
+/// One page of roles — the `member-of` set or a user's roles, direct or transitive
+/// depending on the endpoint.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembershipsResponse {
     pub roles: Vec<RoleMembership>,
     /// Token for the next page; `null`/absent once the listing is exhausted.
-    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// Note for SDK authors: **stop when `next-page-token` is null/absent.** The
     /// final page of results may itself return a null token, so don't rely on
     /// receiving a separate trailing empty page — keep requesting until the token
     /// is null.
@@ -362,6 +368,77 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
         RoleMemberType::User => UserOrRoleId::User(UserId::try_from(id.to_string())?),
         RoleMemberType::Role => UserOrRoleId::Role(RoleId::from_str_or_bad_request(id)?),
     })
+}
+
+/// The rule `reject_system_role_membership` refused a write for. Carries the
+/// typed error so the call site can fold it into the authorization `Result` and
+/// have the denial recorded as an authz-failure audit event, rather than a bare
+/// error response.
+#[derive(Debug)]
+pub enum SystemRoleMembershipViolation {
+    RequiresInstanceAdmin(SystemRoleMembershipRequiresInstanceAdmin),
+    MemberRolesNotSupported(SystemRoleMemberRolesNotSupported),
+}
+
+delegate_authorization_failure_source!(SystemRoleMembershipViolation => {
+    RequiresInstanceAdmin,
+    MemberRolesNotSupported,
+});
+
+/// Lets the guard be decided inside the authorization `Result` rather than after
+/// the emit, so a refusal records one verdict instead of an "allowed" event
+/// followed by a denial. Maps to the leaf variants, which carry the per-variant
+/// status code (403 for the instance-admin rule, 400 for the role-nesting rule).
+impl From<SystemRoleMembershipViolation> for AuthZError {
+    fn from(violation: SystemRoleMembershipViolation) -> Self {
+        match violation {
+            SystemRoleMembershipViolation::RequiresInstanceAdmin(e) => e.into(),
+            SystemRoleMembershipViolation::MemberRolesNotSupported(e) => e.into(),
+        }
+    }
+}
+
+/// Hard guard on membership writes targeting `system` roles: membership there is
+/// provisioning, not self-service. Writes require an instance admin, and role-type
+/// members are never added (`system` roles hold users directly). Ordering: the
+/// instance-admin check fires first, so non-admin callers always see 403.
+///
+/// Public because a membership edge has more than one writer: an
+/// assignment-managing authorizer exposes its own endpoint over the same edge and
+/// applies this rule there. Both writers must share one definition, or the guard
+/// holds on whichever path happens to be gated.
+///
+/// This does not close off every path to a system role's effective membership: a
+/// role-type member already nested inside a system role (however it got there)
+/// remains reachable by adding new members to *that* member role — such a write
+/// targets an ordinary role, so this guard never fires for it. That residual path
+/// is why new nesting into the system role itself is refused while removing an
+/// existing role-type member stays permitted, as a cleanup route.
+///
+/// `role` is read outside the write transaction, which is safe because a role's
+/// `system`-ness is immutable: rebinding a role *into* the `system` provider is
+/// refused on the request body, rebinding one that already is `system` is refused
+/// after resolution, and seeding upserts on `(project, provider, source_id)` with
+/// the provider fixed — so the value cannot change under the check.
+pub fn reject_system_role_membership(
+    role: &ArcRole,
+    metadata: &RequestMetadata,
+    adds_role_member: bool,
+) -> Result<(), SystemRoleMembershipViolation> {
+    if !role.ident.is_system() {
+        return Ok(());
+    }
+    if !metadata.is_instance_admin() {
+        return Err(SystemRoleMembershipViolation::RequiresInstanceAdmin(
+            SystemRoleMembershipRequiresInstanceAdmin::new(),
+        ));
+    }
+    if adds_role_member {
+        return Err(SystemRoleMembershipViolation::MemberRolesNotSupported(
+            SystemRoleMemberRolesNotSupported::new(),
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve `role_ids` to their catalog rows, keyed by id, **across all projects**.
@@ -754,18 +831,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ManageRoleAssignments,
-            )
-            .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
-
         // Dedup on the typed identifier so a member named twice (the request is
         // already typed, so no string-spelling ambiguity remains) collapses to one
-        // echoed row. Order preserved.
+        // echoed row. Order preserved. Computed before the authorization decision
+        // because the system-role guard below needs it and is part of that decision
+        // — it reads only the request, so it performs no work the guards would not.
         let mut seen = std::collections::HashSet::new();
         let mut subjects: Vec<UserOrRoleId> = Vec::new();
         for member in &request.members {
@@ -774,6 +844,33 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 subjects.push(subject);
             }
         }
+        let adds_role_member = subjects
+            .iter()
+            .any(|subject| matches!(subject, UserOrRoleId::Role(_)));
+
+        // Both membership guards are decided here rather than after the emit: they
+        // are pure reads, and the authorizer having allowed the action makes them
+        // the decision that refused it. Feeding them through the one `Result`
+        // records a single verdict per request.
+        let authz_result: Result<_, AuthZError> = async {
+            let role = authorizer
+                .require_role_action(
+                    event_ctx.request_metadata(),
+                    role,
+                    CatalogRoleAction::ManageRoleAssignments,
+                )
+                .await?;
+            // A provider-managed role's member list is authoritative from its role
+            // provider and converged by sync; reject manual (un)assignment via the
+            // API so it cannot drift from what the next sync would produce. Ahead of
+            // the authorizer-arm split below, so the rule holds on both backends.
+            reject_provider_owned_membership::<_, ManagedRoleImmutable>(&authorizer, &role)?;
+            reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
+                .map_err(AuthZError::from)?;
+            Ok(())
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         match authorizer.role_assignments() {
             None => {
@@ -841,14 +938,24 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ManageRoleAssignments,
-            )
-            .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
+        // Both guards are part of the authorization decision — see `add_role_members`.
+        let authz_result: Result<_, AuthZError> = async {
+            let role = authorizer
+                .require_role_action(
+                    event_ctx.request_metadata(),
+                    role,
+                    CatalogRoleAction::ManageRoleAssignments,
+                )
+                .await?;
+            // A provider-managed role's member list is maintained by provider sync;
+            // reject manual removal via the API so it cannot drift from sync.
+            reject_provider_owned_membership::<_, ManagedRoleImmutable>(&authorizer, &role)?;
+            reject_system_role_membership(&role, event_ctx.request_metadata(), false)
+                .map_err(AuthZError::from)?;
+            Ok(())
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         let subject = parse_member(member_type, &member_id)?;
         match authorizer.role_assignments() {

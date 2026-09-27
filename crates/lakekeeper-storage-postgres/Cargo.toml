@@ -56,12 +56,14 @@ sqlx = { workspace = true, features = [
     "migrate",
 ] }
 strum = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 fastrand = { workspace = true }
@@ -70,4 +72,5 @@ lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router"] }
 lakekeeper-storage-postgres = { path = ".", features = ["test-utils"] }
 pretty_assertions = { workspace = true }
 similar = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

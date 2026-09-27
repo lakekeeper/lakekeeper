@@ -1,6 +1,6 @@
 //! Get `OpenFGA` clients
 
-use lakekeeper::service::ServerId;
+use lakekeeper::{api::management::v1::grant::MAX_GRANTS_PER_REQUEST, service::ServerId};
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference,
 };
@@ -122,6 +122,21 @@ pub(crate) async fn new_authorizer(
 
     let client = BasicOpenFgaClient::new(service_client, &store.id, &auth_model_id)
         .set_consistency(default_consistency);
+
+    // A grant diff is written as one batch, so the API's cap and this client's batch
+    // limit are a single invariant split across two crates with nothing linking them.
+    // This pins the two Rust constants to each other only: the client value is a
+    // local default, never negotiated with the server, so a server configured with
+    // `OPENFGA_MAX_TUPLES_PER_WRITE` below the cap still fails such writes at
+    // runtime. Documented as a production requirement next to the minimum-version
+    // note in `authorization-openfga.md`.
+    let max_tuples = client.max_tuples_per_write();
+    if usize::try_from(max_tuples).unwrap_or(0) < MAX_GRANTS_PER_REQUEST {
+        return Err(OpenFGAError::GrantBatchLimitTooSmall {
+            required: MAX_GRANTS_PER_REQUEST,
+            max: max_tuples,
+        });
+    }
 
     Ok(OpenFGAAuthorizer::new(client, server_id))
 }

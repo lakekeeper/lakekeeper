@@ -270,6 +270,10 @@ impl EventDispatcher {
         dispatch_event!(self, namespace_dropped, event);
     }
 
+    pub(crate) async fn namespace_moved(&self, event: types::MoveNamespaceEvent) {
+        dispatch_event!(self, namespace_moved, event);
+    }
+
     pub(crate) async fn namespace_properties_updated(
         &self,
         event: types::UpdateNamespacePropertiesEvent,
@@ -285,6 +289,10 @@ impl EventDispatcher {
         dispatch_event!(self, authorization_succeeded, event);
     }
 
+    pub(crate) async fn idempotent_replay_served(&self, event: types::IdempotentReplayEvent) {
+        dispatch_event!(self, idempotent_replay_served, event);
+    }
+
     // ===== Role Events =====
 
     pub(crate) async fn role_created(&self, event: types::CreateRoleEvent) {
@@ -297,6 +305,38 @@ impl EventDispatcher {
 
     pub(crate) async fn role_updated(&self, event: types::UpdateRoleEvent) {
         dispatch_event!(self, role_updated, event);
+    }
+
+    // ===== Tag Definition Events =====
+
+    pub(crate) async fn tag_definition_created(&self, event: types::CreateTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_created, event);
+    }
+
+    pub(crate) async fn tag_definition_updated(&self, event: types::UpdateTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_updated, event);
+    }
+
+    pub(crate) async fn tag_definition_deleted(&self, event: types::DeleteTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_deleted, event);
+    }
+
+    // ===== Tag Attachment Events =====
+
+    pub(crate) async fn tag_applied(&self, event: types::TagAppliedEvent) {
+        dispatch_event!(self, tag_applied, event);
+    }
+
+    pub(crate) async fn tag_removed(&self, event: types::TagRemovedEvent) {
+        dispatch_event!(self, tag_removed, event);
+    }
+
+    // ===== Grant Events =====
+
+    // Emitted once per request, carrying everything it created and removed. Emitters:
+    // the grant apply endpoints, and the cascade when a user is deleted.
+    pub(crate) async fn grants_changed(&self, event: types::GrantsChangedEvent) {
+        dispatch_event!(self, grants_changed, event);
     }
 
     // ===== Role Assignment Sync Events =====
@@ -553,6 +593,15 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    /// Invoked after a namespace has been successfully moved (re-parented and/or renamed)
+    ///
+    /// Not invoked when the request changed nothing. The event carries the namespace's
+    /// previous ident and parent, which listeners mirroring the hierarchy need in order to
+    /// retire the old path.
+    async fn namespace_moved(&self, _event: types::MoveNamespaceEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Invoked after namespace properties have been successfully updated
     async fn namespace_properties_updated(
         &self,
@@ -606,6 +655,20 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    /// Invoked when a request carrying an `Idempotency-Key` was answered from a
+    /// stored record instead of being executed.
+    ///
+    /// An audit hook, not a change feed: nothing changed, and the original
+    /// request already announced whatever it did. A listener that forwards state
+    /// downstream must leave this at its default or consumers will process the
+    /// same mutation twice.
+    async fn idempotent_replay_served(
+        &self,
+        _event: types::IdempotentReplayEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ===== Role Events =====
 
     /// Invoked after a role has been successfully created
@@ -620,6 +683,53 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a role has been successfully updated
     async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Tag Definition Events =====
+
+    /// Invoked after a tag definition has been successfully created
+    async fn tag_definition_created(
+        &self,
+        _event: types::CreateTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag definition has been successfully updated
+    async fn tag_definition_updated(
+        &self,
+        _event: types::UpdateTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag definition has been successfully deleted
+    async fn tag_definition_deleted(
+        &self,
+        _event: types::DeleteTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Tag Attachment Events =====
+
+    /// Invoked after a tag has been successfully applied to a target
+    async fn tag_applied(&self, _event: types::TagAppliedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag has been successfully removed from a target
+    async fn tag_removed(&self, _event: types::TagRemovedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Grant Events =====
+
+    /// Invoked once after a request has successfully changed grants, with everything it
+    /// created and everything it removed. Either list may be empty — revoking only, or
+    /// deleting a user, emits removals alone.
+    async fn grants_changed(&self, _event: types::GrantsChangedEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

@@ -22,6 +22,7 @@ use crate::{
             },
         },
         define_transparent_error,
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
         identifier::role::ArcRoleIdent,
         impl_error_stack_methods, impl_from_with_detail,
     },
@@ -355,7 +356,11 @@ define_transparent_error! {
 // Raised when a customer-facing role-management endpoint is invoked against a
 // catalog-managed system role (e.g. `workspace_admin`, `workspace_user`).
 // System roles are seeded per project and are not modifiable via the API —
-// they only change when the catalog itself reseeds them.
+// they only change when the catalog itself reseeds them. Two distinct
+// semantics live here: the role's own spec (name/description/deletion) is
+// fully immutable through the API, while the role's *membership* is instead
+// provisioned exclusively by instance admins — reachable through the API, but
+// gated rather than closed off entirely.
 
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
 #[error(
@@ -382,14 +387,149 @@ impl From<SystemRoleImmutable> for ErrorModel {
     }
 }
 
+// The resource authorizer already allowed the action; this invariant is the
+// decision that refused it, so it is recorded as an authorization failure rather
+// than a bare error response. Mirrors `WarehouseSpecLocked`.
+impl AuthorizationFailureSource for SystemRoleImmutable {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised on a membership write (`POST /role/{id}/members`, `DELETE
+// /role/{id}/members/{type}/{id}`) against a catalog-managed system role when the
+// caller is not an instance admin. System-role membership is provisioning, not
+// self-service: it must not be reachable by anyone merely holding
+// `ManageRoleAssignments` on the role, since the role itself confers that
+// permission to its own members.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Membership of `system` roles is provisioned by instance admins; this caller is not an instance admin."
+)]
+pub struct SystemRoleMembershipRequiresInstanceAdmin {
+    pub stack: Vec<String>,
+}
+impl SystemRoleMembershipRequiresInstanceAdmin {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleMembershipRequiresInstanceAdmin);
+impl From<SystemRoleMembershipRequiresInstanceAdmin> for ErrorModel {
+    fn from(err: SystemRoleMembershipRequiresInstanceAdmin) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleMembershipRequiresInstanceAdmin")
+            .code(StatusCode::FORBIDDEN.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for SystemRoleMembershipRequiresInstanceAdmin {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised when an instance admin's `POST /role/{id}/members` would add a role
+// (rather than a user) as a member of a system role. System roles hold users
+// directly; nesting another role into one is not supported. Removing a
+// role-type member stays permitted, as a cleanup path.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("`system` roles cannot contain other roles as members.")]
+pub struct SystemRoleMemberRolesNotSupported {
+    pub stack: Vec<String>,
+}
+impl SystemRoleMemberRolesNotSupported {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleMemberRolesNotSupported);
+impl From<SystemRoleMemberRolesNotSupported> for ErrorModel {
+    fn from(err: SystemRoleMemberRolesNotSupported) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleMemberRolesNotSupported")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+impl AuthorizationFailureSource for SystemRoleMemberRolesNotSupported {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+// Raised when a customer-facing role-management endpoint targets a role whose
+// provider namespace is owned by a configured role provider (LDAP/Entra/Okta/
+// token). Such roles are maintained by provider sync and are immutable through
+// the role-management API — they change only when the provider re-syncs. The
+// `system` namespace has its own error (`SystemRoleImmutable`); this covers the
+// external, configurable providers.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Cannot create, modify, delete, or assign a role in the `{provider_id}` namespace through the role-management API: it is managed by a configured role provider and is maintained by provider sync."
+)]
+pub struct ManagedRoleImmutable {
+    pub provider_id: String,
+    pub stack: Vec<String>,
+}
+impl ManagedRoleImmutable {
+    #[must_use]
+    pub fn new(provider_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(ManagedRoleImmutable);
+impl From<ManagedRoleImmutable> for ErrorModel {
+    fn from(err: ManagedRoleImmutable) -> Self {
+        ErrorModel::builder()
+            .r#type("ManagedRoleImmutable")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// As for `SystemRoleImmutable`: the provider owns this role, so the refusal is
+// the authorization outcome and belongs on the authorization stream.
+impl AuthorizationFailureSource for ManagedRoleImmutable {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
     pub enum DeleteRoleError,
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFoundInProject,
-        SystemRoleImmutable
+        RoleIdNotFoundInProject
     ]
 }
 
@@ -402,7 +542,6 @@ define_transparent_error! {
         RoleSourceIdConflict,
         RoleNameAlreadyExists,
         RoleIdNotFoundInProject,
-        SystemRoleImmutable,
     ]
 }
 
@@ -1045,6 +1184,22 @@ use crate::service::events::impl_authorization_failure_source;
 impl_authorization_failure_source!(CreateRoleError => InternalCatalogError);
 impl_authorization_failure_source!(ListRolesError => InternalCatalogError);
 impl_authorization_failure_source!(GetRoleAcrossProjectsError => InternalCatalogError);
+impl crate::service::events::AuthorizationFailureSource for GetRoleInProjectError {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::from(self)
+    }
+    fn to_failure_reason(&self) -> crate::service::events::AuthorizationFailureReason {
+        // Split by variant: a role id the project does not hold is the request's own
+        // data, and the gate that ran before it reached a verdict of its own.
+        match self {
+            Self::CatalogBackendError(e) => e.to_failure_reason(),
+            Self::InvalidPaginationToken(e) => e.to_failure_reason(),
+            Self::RoleIdNotFoundInProject(_) => {
+                crate::service::events::AuthorizationFailureReason::InvalidRequestData
+            }
+        }
+    }
+}
 impl_authorization_failure_source!(GetRoleByIdentError => InternalCatalogError);
 impl_authorization_failure_source!(DeleteRoleError => InternalCatalogError);
 impl_authorization_failure_source!(UpdateRoleError => InternalCatalogError);

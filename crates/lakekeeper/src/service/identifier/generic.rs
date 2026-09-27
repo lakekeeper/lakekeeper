@@ -157,6 +157,8 @@ define_id_type!(TableId, true);
 define_id_type!(NamespaceId, true);
 define_id_type!(RoleId, true);
 define_id_type!(GenericTableId, true);
+define_id_type!(TagDefinitionId, true);
+define_id_type!(TagId, true);
 
 impl GenericTableId {
     #[must_use]

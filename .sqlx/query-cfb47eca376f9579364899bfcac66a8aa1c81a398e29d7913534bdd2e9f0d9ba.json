@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tabular_namespace_name FROM tabular WHERE tabular_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_namespace_name",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_namespace_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cfb47eca376f9579364899bfcac66a8aa1c81a398e29d7913534bdd2e9f0d9ba"
+}

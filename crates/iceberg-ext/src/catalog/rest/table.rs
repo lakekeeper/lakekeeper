@@ -7,12 +7,11 @@ use axum::{
 };
 use iceberg::spec::TableMetadataRef;
 use typed_builder::TypedBuilder;
-use xxhash_rust::xxh3::xxh3_64;
 
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 use crate::{
-    catalog::{TableIdent, TableRequirement, TableUpdate},
+    catalog::{TableIdent, TableRequirement, TableUpdate, rest::RemoteSigningConfig},
     spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
@@ -38,13 +37,21 @@ pub struct LoadTableResult {
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
-    /// Absolute time (epoch ms) until which a conditional request may be answered
-    /// with `304`, or `None` if the response vends no expiring credentials.
-    /// Computed from the credentials' actual expiry; not serialized — it is the
-    /// revalidation point embedded in the [`ETag`] (via [`Self::etag`]), so a 304
-    /// is never served once the client's credentials leave the serve window.
+    /// Signer settings for clients that support them, superseding the deprecated
+    /// `signer.uri` / `signer.endpoint` config keys. Omitted rather than sent as
+    /// `null` when remote signing is off, since a client that finds it absent
+    /// falls back to those keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_signing_config: Option<RemoteSigningConfig>,
+    /// Validator for this exact body, emitted as the `ETag` header.
+    ///
+    /// Not serialized, and deliberately not derivable from this struct: the tag
+    /// must cover request inputs that never appear in the body, and the
+    /// conditional-request path has to compute it before a body exists. The
+    /// caller mints it; `None` means no validator, so a conditional request
+    /// reloads rather than risking a wrong `304`.
     #[serde(skip)]
-    pub credentials_revalidate_after_ms: Option<i64>,
+    pub etag: Option<ETag>,
 }
 
 impl LoadTableResult {
@@ -55,8 +62,7 @@ impl LoadTableResult {
 
     #[must_use]
     pub fn etag(&self) -> Option<ETag> {
-        let metadata_location = self.metadata_location.as_ref()?;
-        Some(TableETag::new(metadata_location, self.credentials_revalidate_after_ms).into_etag())
+        self.etag.clone()
     }
 }
 
@@ -119,12 +125,16 @@ pub struct CommitTableResponse {
     pub metadata_location: String,
     pub metadata: TableMetadataRef,
     pub config: Option<std::collections::HashMap<String, String>>,
+    /// Validator for this body, emitted as the `ETag` header. See
+    /// [`LoadTableResult::etag`] for why it is minted by the caller.
+    #[serde(skip)]
+    pub etag: Option<ETag>,
 }
 
 impl CommitTableResponse {
     #[must_use]
-    pub fn etag(&self) -> ETag {
-        create_etag(&self.metadata_location)
+    pub fn etag(&self) -> Option<ETag> {
+        self.etag.clone()
     }
 }
 
@@ -138,9 +148,69 @@ pub struct CommitTransactionRequest {
 pub struct ETag(String);
 
 impl ETag {
+    /// The value as held, which for a server-minted tag is the wire form —
+    /// weak marker and quotes included.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The bare validator: this tag with HTTP's weak marker and surrounding
+    /// quotes removed.
+    ///
+    /// Comparisons must go through this rather than [`Self::as_str`]. A tag
+    /// arrives already bare when the HTTP layer parsed an `If-None-Match`
+    /// header, but in wire form when a server-minted tag is fed back in process
+    /// — and the two must not compare unequal for being spelled differently.
+    #[must_use]
+    pub fn validator(&self) -> &str {
+        Self::strip_wire_syntax(&self.0)
+    }
+
+    /// Strip HTTP's weak marker and surrounding quotes from one `ETag` value.
+    ///
+    /// The single definition of that transform, so a tag cannot be normalised
+    /// one way on the way in and another on the way out. Idempotent, so
+    /// applying it to an already-bare value is safe.
+    ///
+    /// Not wildcard-aware: it is quotes that tell `If-None-Match`'s `*` apart
+    /// from a tag whose opaque value is `*`, and this removes them. Ask
+    /// [`Self::is_wildcard`] before normalising.
+    ///
+    /// Deliberately tolerant about where the `W/` sits, so a client that
+    /// re-serialises a weak tag as `"W/lk3.beef"` still matches. That spelling
+    /// is strictly a *strong* tag whose opaque value happens to begin with
+    /// `W/`, so folding the two together is not injective over the syntax RFC
+    /// 9110 8.8.3 defines — but nothing here mints an opaque value starting
+    /// with `W/`, so the only source of that spelling is a mangled tag of ours,
+    /// and honouring it is what the client meant. Revisit if strong tags ever
+    /// get minted, or if a comparison that must reject weak validators (`If-Match`,
+    /// ranges) is added.
+    #[must_use]
+    pub fn strip_wire_syntax(value: &str) -> &str {
+        value
+            .trim()
+            .trim_matches('"')
+            .trim_start_matches("W/")
+            .trim_matches('"')
+    }
+
+    /// Whether this is `If-None-Match`'s `*` — "any current representation" —
+    /// rather than a validator to compare.
+    ///
+    /// RFC 9110 13.1.2 admits `*` only as an alternative to the tag list, not as
+    /// a member of it, and the entity-tag grammar in 8.8.3 is quoted-only — so
+    /// `"*"` and `W/"*"` are ordinary tags that merely happen to have `*` as
+    /// their opaque value, and must be compared like any other. The difference
+    /// matters: the wildcard skips validator comparison altogether, so reading
+    /// it too widely answers `304` to a request that was asking whether one
+    /// specific tag is current.
+    ///
+    /// Tested on the value as received, so it only reports the truth for a tag
+    /// that has not already been through [`Self::strip_wire_syntax`].
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.trim() == "*"
     }
 }
 
@@ -156,93 +226,13 @@ impl From<String> for ETag {
     }
 }
 
-/// Version prefix for structured `loadTable` [`ETag`]s. Anything not parsing
-/// under this prefix (pre-upgrade or future-version values) isn't matched, so
-/// the client reloads. Bump the suffix on incompatible encoding changes.
-const ETAG_PREFIX: &str = "lk1";
-
-/// Structured contents of a `loadTable` [`ETag`].
-///
-/// Wire form (inside the quotes): `lk1.<metadata_hash>`, or
-/// `lk1.<metadata_hash>.<revalidate_after_hex>` when credentials are vended
-/// (revalidate-after as epoch-ms in hex). `metadata_hash` is the xxh3-64 hex of
-/// the metadata location. Embedding the revalidation point lets the server
-/// decide, from the client-echoed [`ETag`] alone, whether the held credentials
-/// are still within their serve window — i.e. fresh enough for a 304.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableETag {
-    metadata_hash: String,
-    revalidate_after_ms: Option<i64>,
-}
-
-impl TableETag {
-    #[must_use]
-    pub fn new(metadata_location: &str, revalidate_after_ms: Option<i64>) -> Self {
-        let hash = xxh3_64(metadata_location.as_bytes());
-        Self {
-            metadata_hash: format!("{hash:x}"),
-            // A non-positive value carries no information; drop it.
-            revalidate_after_ms: revalidate_after_ms.filter(|ms| *ms > 0),
-        }
-    }
-
-    #[must_use]
-    pub fn metadata_hash(&self) -> &str {
-        &self.metadata_hash
-    }
-
-    #[must_use]
-    pub fn revalidate_after_ms(&self) -> Option<i64> {
-        self.revalidate_after_ms
-    }
-
-    /// Parse a client-supplied [`ETag`] value (quotes already stripped). Returns
-    /// `None` for unrecognized values so callers can reload.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        let mut parts = value.split('.');
-        if parts.next()? != ETAG_PREFIX {
-            return None;
-        }
-        let metadata_hash = parts.next().filter(|s| !s.is_empty())?.to_string();
-        let revalidate_after_ms = parts
-            .next()
-            .map(|s| i64::from_str_radix(s, 16))
-            .transpose()
-            .ok()?;
-        // Reject trailing junk so an unexpected shape falls back to a reload.
-        if parts.next().is_some() {
-            return None;
-        }
-        Some(Self {
-            metadata_hash,
-            revalidate_after_ms,
-        })
-    }
-
-    /// Render the wire [`ETag`] value, quoted per HTTP `ETag` syntax.
-    #[must_use]
-    pub fn into_etag(self) -> ETag {
-        let inner = match self.revalidate_after_ms {
-            Some(ms) => format!("{ETAG_PREFIX}.{}.{ms:x}", self.metadata_hash),
-            None => format!("{ETAG_PREFIX}.{}", self.metadata_hash),
-        };
-        format!("\"{inner}\"").into()
-    }
-}
-
-#[must_use]
-pub fn create_etag(text: &str) -> ETag {
-    TableETag::new(text, None).into_etag()
-}
-
 #[cfg(feature = "axum")]
 impl IntoResponse for LoadTableResult {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         let mut headers = HeaderMap::new();
         let body = axum::Json(&self);
 
-        let Some(ref etag) = self.etag() else {
+        let Some(ref etag) = self.etag else {
             return (headers, body).into_response();
         };
 
@@ -271,7 +261,10 @@ impl IntoResponse for CommitTableResponse {
         let mut headers = HeaderMap::new();
         let body = axum::Json(&self);
 
-        let etag = self.etag();
+        let Some(ref etag) = self.etag else {
+            return (headers, body).into_response();
+        };
+
         match etag.as_str().parse::<HeaderValue>() {
             Ok(header_value) => {
                 headers.insert(header::ETAG, header_value);
@@ -303,49 +296,52 @@ mod tests {
 
     use super::*;
 
+    /// Both spellings of the same tag must reduce to one validator: the wire form
+    /// a server mints, and the bare form header parsing yields.
     #[test]
-    #[cfg(feature = "axum")]
-    fn test_create_etag() {
-        let ETag(etag) = create_etag("Hello World");
-        assert_eq!(etag, "\"lk1.e34615aade2e6333\"");
+    fn etag_validator_strips_wire_syntax_idempotently() {
+        let wire = ETag::from("W/\"lk3.deadbeef\"");
+        assert_eq!(wire.validator(), "lk3.deadbeef");
+        assert_eq!(wire.as_str(), "W/\"lk3.deadbeef\"", "as_str stays verbatim");
+
+        // Already-bare input is unchanged, so normalising twice is safe.
+        let bare = ETag::from("lk3.deadbeef");
+        assert_eq!(bare.validator(), "lk3.deadbeef");
+        assert_eq!(
+            wire.validator(),
+            bare.validator(),
+            "the two spellings must not compare unequal"
+        );
+
+        // Strong validators carry quotes but no weak marker.
+        assert_eq!(ETag::from("\"lk3.deadbeef\"").validator(), "lk3.deadbeef");
+        // Surrounding whitespace comes from splitting a header list.
+        assert_eq!(
+            ETag::from(" W/\"lk3.deadbeef\" ").validator(),
+            "lk3.deadbeef"
+        );
+        // The wildcard survives untouched.
+        assert_eq!(ETag::from("*").validator(), "*");
+        // A weak tag re-serialised with the marker inside the quotes still
+        // normalises to the same validator. See the note on `strip_wire_syntax`
+        // for why this tolerance is chosen over the strict reading.
+        assert_eq!(ETag::from("\"W/lk3.deadbeef\"").validator(), "lk3.deadbeef");
     }
 
+    /// Only the bare token is the wildcard. A quoted `*` is a tag like any
+    /// other, and treating it as "any representation" would 304 a request that
+    /// asked whether that one tag is current.
     #[test]
-    fn test_table_etag_round_trip_metadata_only() {
-        let etag = TableETag::new("s3://bucket/table/metadata.json", None);
-        let ETag(wire) = etag.clone().into_etag();
-        let parsed = TableETag::parse(wire.trim_matches('"')).unwrap();
-        assert_eq!(parsed, etag);
-        assert_eq!(parsed.revalidate_after_ms(), None);
-    }
+    fn only_the_unquoted_asterisk_is_the_wildcard() {
+        assert!(ETag::from("*").is_wildcard());
+        // Padding is list syntax, not part of the token.
+        assert!(ETag::from(" * ").is_wildcard());
 
-    #[test]
-    fn test_table_etag_round_trip_with_expiry() {
-        let etag = TableETag::new("s3://bucket/table/metadata.json", Some(1_750_000_000_123));
-        let ETag(wire) = etag.clone().into_etag();
-        let parsed = TableETag::parse(wire.trim_matches('"')).unwrap();
-        assert_eq!(parsed, etag);
-        assert_eq!(parsed.revalidate_after_ms(), Some(1_750_000_000_123));
-    }
-
-    #[test]
-    fn test_table_etag_metadata_hash_matches_legacy() {
-        // The metadata component must stay byte-identical to the legacy hash so
-        // a pre-upgrade client's echoed ETag still matches after upgrade.
-        let location = "s3://bucket/table/metadata.json";
-        let legacy_hash = format!("{:x}", xxh3_64(location.as_bytes()));
-        assert_eq!(TableETag::new(location, None).metadata_hash(), legacy_hash);
-    }
-
-    #[test]
-    fn test_table_etag_parse_rejects_legacy_and_junk() {
-        // Legacy bare hash → not the structured format.
-        assert!(TableETag::parse("e34615aade2e6333").is_none());
-        // Wrong prefix, empty hash, trailing junk, non-hex expiry.
-        assert!(TableETag::parse("lk2.abc").is_none());
-        assert!(TableETag::parse("lk1.").is_none());
-        assert!(TableETag::parse("lk1.abc.def.ghi").is_none());
-        assert!(TableETag::parse("lk1.abc.zzz").is_none());
+        assert!(!ETag::from("\"*\"").is_wildcard());
+        assert!(!ETag::from("W/\"*\"").is_wildcard());
+        assert!(!ETag::from("lk3.deadbeef").is_wildcard());
+        // Still a tag once normalised — one that matches nothing we mint.
+        assert_eq!(ETag::from("\"*\"").validator(), "*");
     }
 
     #[test]
@@ -358,35 +354,35 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            remote_signing_config: None,
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
         let response = load_table_result.into_response();
         let headers = response.headers();
 
-        let ETag(etag_expected) = create_etag("s3://bucket/table/metadata.json");
-        assert_eq!(headers.get(header::ETAG).unwrap(), &etag_expected);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "W/\"lk2.deadbeef\"");
     }
 
     #[test]
     #[cfg(feature = "axum")]
-    fn test_load_table_result_etag_embeds_revalidate_after() {
-        let table_metadata = create_table_metadata_mock();
+    fn test_load_table_result_emits_the_caller_supplied_etag_verbatim() {
+        // The tag is minted by the caller, which is the only place that knows the
+        // request inputs it has to cover. This type must not reinterpret it.
         let load_table_result = LoadTableResult {
             metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
-            metadata: table_metadata,
+            metadata: create_table_metadata_mock(),
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: Some(1_750_000_000_123),
+            remote_signing_config: None,
+            etag: Some(ETag::from("W/\"lk2.abc.199e1e0f9c3\"")),
         };
 
-        let ETag(etag) = load_table_result.etag().unwrap();
-        let expected =
-            TableETag::new("s3://bucket/table/metadata.json", Some(1_750_000_000_123)).into_etag();
-        assert_eq!(ETag(etag), expected);
-        // The revalidation point must round-trip out of the wire ETag.
-        let parsed = TableETag::parse(expected.as_str().trim_matches('"')).unwrap();
-        assert_eq!(parsed.revalidate_after_ms(), Some(1_750_000_000_123));
+        let response = load_table_result.into_response();
+        assert_eq!(
+            response.headers().get(header::ETAG).unwrap(),
+            "W/\"lk2.abc.199e1e0f9c3\""
+        );
     }
 
     #[test]
@@ -399,7 +395,9 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            remote_signing_config: None,
+            // Staged tables have no metadata location, so the caller mints no tag.
+            etag: None,
         };
 
         let response = load_table_result.into_response();
@@ -418,7 +416,8 @@ mod tests {
             metadata: table_metadata.clone(),
             config: None,
             storage_credentials: None,
-            credentials_revalidate_after_ms: None,
+            remote_signing_config: None,
+            etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
         let response = load_table_result.clone().into_response();
@@ -428,7 +427,14 @@ mod tests {
         let deserialized: LoadTableResult =
             serde_json::from_slice(&body_bytes).expect("Failed to deserialize body");
 
-        assert_eq!(deserialized, load_table_result);
+        // `etag` is `#[serde(skip)]` — it travels in the header, not the body — so
+        // it cannot survive a round trip and must be excluded from the comparison.
+        assert_eq!(deserialized.etag, None);
+        let expected = LoadTableResult {
+            etag: None,
+            ..load_table_result
+        };
+        assert_eq!(deserialized, expected);
     }
 
     fn create_table_metadata_mock() -> Arc<TableMetadata> {

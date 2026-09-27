@@ -65,32 +65,31 @@ const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
-/// Bounds how long a single connect attempt may hang before it is treated as a
-/// failure. Without this, reqwest falls back to the OS default, where a stalled
-/// TCP connect runs for tens of seconds before surfacing `ETIMEDOUT`
-/// (`os error 110`). That blows the entire retry budget on a single attempt, so
-/// transient connect failures (e.g. SNAT/ephemeral-port exhaustion against
-/// Azure) never get retried. Keep this comfortably below `RETRY_MAX_TOTAL_ELAPSED`
-/// so several attempts fit inside the budget.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Total wall-clock budget for retries. Must exceed `CONNECT_TIMEOUT` by enough
-/// to allow a few retries, otherwise a single slow connect expires the policy
-/// before any retry happens. The retry clock starts after the first attempt completes, so this
-/// budget covers the retries, not the initial request.
+/// Total wall-clock budget for retries. Must exceed [`crate::CONNECT_TIMEOUT`] by
+/// enough to allow a few retries — transient connect failures such as SNAT or
+/// ephemeral-port exhaustion against Azure are what they are for — otherwise a
+/// single slow connect expires the policy before any retry happens. The retry
+/// clock starts after the first attempt completes, so this budget covers the
+/// retries, not the initial request.
 const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_secs(30);
 
+/// Shared options for every ADLS client. `ClientOptions` carries the transport,
+/// and the SDK builders' `client_options()` replaces the whole struct, so the
+/// transport is set here to keep the custom [`HTTP_CLIENT`] — its connect timeout
+/// and its connection pool — in effect for the storage data plane.
 static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
-    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-        FixedRetryOptions::default()
-            .max_retries(3u32)
-            .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
-    ))
+    azure_core::ClientOptions::default()
+        .retry(RetryOptions::fixed(
+            FixedRetryOptions::default()
+                .max_retries(3u32)
+                .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
+        ))
+        .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
 });
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
+        .connect_timeout(crate::CONNECT_TIMEOUT)
         .build()
         // Only fails if the TLS backend or system DNS config can't be
         // initialized — i.e. the environment is fundamentally broken. The
@@ -220,7 +219,6 @@ impl AzureSettings {
 
         Ok(
             DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
                 .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .build(),
         )
@@ -238,7 +236,6 @@ impl AzureSettings {
 
         Ok(
             ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
                 .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .blob_service_client(),
         )

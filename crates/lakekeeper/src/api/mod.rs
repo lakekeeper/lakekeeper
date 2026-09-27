@@ -11,7 +11,9 @@ pub use iceberg_ext::catalog::rest::*;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use crate::request_metadata::RequestMetadataTestBuilder;
-pub use crate::request_metadata::{RequestMetadata, X_PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
+pub use crate::request_metadata::{
+    RequestMetadata, X_BREAK_GLASS_HEADER, X_PROJECT_ID_HEADER, X_REQUEST_ID_HEADER,
+};
 
 // Used only to group required traits for a State
 pub trait ThreadSafe: Clone + Send + Sync + 'static {}

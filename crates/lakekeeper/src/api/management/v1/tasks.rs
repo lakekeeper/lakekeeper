@@ -36,7 +36,10 @@ use crate::{
             CancelTasksFilter, ResolvedTaskEntity, TaskDetailsScope, TaskEntity, TaskFilter,
             TaskId, TaskInfo, TaskIntermediateStatus, TaskMetadata, TaskOutcome, TaskQueueName,
             TaskResolveScope, WarehouseTaskEntityId,
-            tabular_expiration_queue::QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
+            tabular_expiration_queue::{
+                LEGACY_QUEUE_NAME as SOFT_DELETION_LEGACY_QUEUE_NAME,
+                QUEUE_NAME as SOFT_DELETION_QUEUE_NAME,
+            },
         },
     },
 };
@@ -262,6 +265,10 @@ pub struct GetTaskDetailsResponse {
     /// Execution details for the current attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
+    /// Message for the current attempt: success result details if it
+    /// succeeded, or the failure reason if it failed. `null` while the
+    /// attempt is still running or scheduled.
+    pub message: Option<String>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
 }
@@ -275,12 +282,14 @@ impl TryFrom<TaskDetails> for GetTaskDetailsResponse {
             data,
             execution_details,
             attempts,
+            message,
         } = value;
 
         Ok(Self {
             task: WarehouseTaskInfo::try_from(task)?,
             task_data: data,
             execution_details,
+            message,
             attempts,
         })
     }
@@ -299,6 +308,10 @@ pub struct GetProjectTaskDetailsResponse {
     /// Execution details for the current attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
+    /// Message for the current attempt: success result details if it
+    /// succeeded, or the failure reason if it failed. `null` while the
+    /// attempt is still running or scheduled.
+    pub message: Option<String>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
 }
@@ -318,12 +331,14 @@ impl TryFrom<TaskDetails> for GetProjectTaskDetailsResponse {
             data,
             execution_details,
             attempts,
+            message,
         } = value;
 
         Ok(Self {
             task: ProjectTaskInfo::try_from(task)?,
             task_data: data,
             execution_details,
+            message,
             attempts,
         })
     }
@@ -818,6 +833,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 }
                 C::cancel_scheduled_tasks(
                     None,
+                    &[],
                     CancelTasksFilter::TaskIds(task_ids.clone()),
                     true,
                     t.transaction(),
@@ -1063,6 +1079,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ControlTaskAction::Cancel => {
                 C::cancel_scheduled_tasks(
                     None,
+                    &[],
                     CancelTasksFilter::TaskIds(task_ids),
                     true,
                     t.transaction(),
@@ -1536,7 +1553,12 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     let tabular_expiration_entities = resolved_tasks
         .values()
         .filter_map(|resolved_task| {
-            if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
+            // Match the current name and the pre-rename alias so cancelling a
+            // soft-deletion task enqueued before the rename still triggers the
+            // tabular undrop (clear `deleted_at`).
+            if resolved_task.queue_name == *SOFT_DELETION_QUEUE_NAME
+                || resolved_task.queue_name == *SOFT_DELETION_LEGACY_QUEUE_NAME
+            {
                 let resolved_task = &resolved_task.entity;
                 match resolved_task {
                     ResolvedTaskEntity::Table(t) => Some(TabularId::Table(t.table_id)),

@@ -248,9 +248,15 @@ pub enum UpdateError {
     IncompatibleProfiles(String, String),
 }
 
+impl From<UpdateError> for ErrorModel {
+    fn from(value: UpdateError) -> Self {
+        ErrorModel::bad_request(value.to_string(), "UpdateError", None)
+    }
+}
+
 impl From<UpdateError> for IcebergErrorResponse {
     fn from(value: UpdateError) -> Self {
-        ErrorModel::bad_request(value.to_string(), "UpdateError", None).into()
+        ErrorModel::from(value).into()
     }
 }
 

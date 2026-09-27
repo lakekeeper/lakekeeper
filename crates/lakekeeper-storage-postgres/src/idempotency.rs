@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use http::StatusCode;
 use lakekeeper::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
@@ -15,15 +14,24 @@ use super::{PostgresBackend, dbutils::DBErrorHandler as _};
 /// (task killed/aborted) and we take over.
 static CLEANUP_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 
-fn current_epoch_secs() -> u64 {
+/// Wall-clock seconds since the epoch, or `None` if the clock reads at or
+/// before it.
+///
+/// Never `0`, because that is [`CLEANUP_STARTED_AT`]'s idle sentinel. Folding a
+/// bad clock into it would make the claim below compare-exchange `0` for `0` —
+/// which succeeds for every caller at once, against a slot whose value never
+/// changes, so the claim would stop excluding anyone.
+fn current_epoch_secs() -> Option<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .ok()
+        .map(|d| d.as_secs())
+        .filter(|&secs| secs != 0)
 }
 
 /// Try to claim the cleanup slot. Returns the claimed timestamp if we won.
 fn try_claim_cleanup() -> Option<u64> {
-    let now = current_epoch_secs();
+    let now = current_epoch_secs()?;
     let prev = CLEANUP_STARTED_AT.load(Ordering::Relaxed);
     let timeout_secs = lakekeeper::CONFIG.idempotency.cleanup_timeout.as_secs();
     // Slot is free (0) or previous run timed out
@@ -48,23 +56,36 @@ impl PostgresBackend {
     pub(crate) async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: <Self as lakekeeper::service::CatalogStore>::State,
     ) -> Result<IdempotencyCheck> {
-        // Uses read_pool for performance. This is a fast-path optimization only —
-        // correctness is guaranteed by the INSERT at commit time. A stale replica
-        // might miss a recently committed key, causing duplicate work that the
-        // INSERT will catch. This is acceptable: the probability of replica lag
-        // AND a duplicate request is very low.
+        // Deliberately the write pool. The insert at commit time is not a
+        // sufficient backstop: handlers run their mutation first and only insert
+        // the key just before commit, so a replica that misses a just-committed
+        // record loses the replay entirely — `createTable` re-runs and dies on
+        // the tabular-name unique violation as a 409, the drop paths 404 on the
+        // already-gone entity. Retry-after-timeout is the whole point of the
+        // feature and is exactly when lag is likely, so this read has to be
+        // authoritative. It is a primary-key lookup and only runs when the
+        // client sent the header.
+        //
+        // `operation` is read as text rather than decoded into `EndpointFlat`.
+        // The `api_endpoints` enum grows over time, so during a rolling
+        // downgrade this replica can encounter a value written by a newer one.
+        // Decoding would fail the whole query and 500 every idempotent request
+        // in the warehouse until the records expire; a text compare just fails
+        // to match, which is the same answer for any endpoint this binary can
+        // actually serve.
         let record = sqlx::query!(
             r#"
-            SELECT http_status
+            SELECT http_status, operation::text as "operation!"
             FROM idempotency_record
             WHERE warehouse_id = $1 AND idempotency_key = $2
             "#,
             *warehouse_id,
             key.as_uuid(),
         )
-        .fetch_optional(&state.read_pool())
+        .fetch_optional(&state.write_pool())
         .await
         .map_err(|e: sqlx::Error| {
             e.into_error_model("Error checking idempotency key".to_string())
@@ -77,19 +98,29 @@ impl PostgresBackend {
         if fastrand::f32() < 0.01 {
             let pool = state.write_pool();
             tokio::spawn(async move {
+                // Unreachable: `lifetime` and `grace_period` parse from ISO-8601
+                // with years and months refused, so each is at most `u32::MAX`
+                // weeks and their sum stays under chrono's i64-millisecond
+                // ceiling. Skipping this run is nonetheless the right failure —
+                // retention has no upper bound to violate, whereas a shorter
+                // substitute would delete records inside their advertised
+                // lifetime, and a retry that finds its record gone re-executes
+                // the mutation. Computed before the claim so it cannot leak the
+                // slot.
+                let max_age = lakekeeper::CONFIG.idempotency.total_retention();
+                let Ok(max_age) = chrono::Duration::from_std(max_age) else {
+                    tracing::error!(
+                        max_age_secs = max_age.as_secs(),
+                        "Idempotency retention exceeds the representable range; skipping cleanup"
+                    );
+                    return;
+                };
+
                 let Some(claimed_at) = try_claim_cleanup() else {
                     return; // Another cleanup is already running
                 };
 
-                let max_age = lakekeeper::CONFIG.idempotency.total_retention();
-                let cutoff = chrono::Utc::now()
-                    - chrono::Duration::from_std(max_age).unwrap_or_else(|_| {
-                        tracing::warn!(
-                            max_age_secs = max_age.as_secs(),
-                            "Failed to convert max_age to chrono::Duration, using 1 hour fallback"
-                        );
-                        chrono::Duration::hours(1)
-                    });
+                let cutoff = chrono::Utc::now() - max_age;
                 match sqlx::query!(
                     r#"
                     DELETE FROM ONLY idempotency_record
@@ -121,23 +152,40 @@ impl PostgresBackend {
             return Ok(IdempotencyCheck::NewRequest);
         };
 
+        // The spec makes the key globally unique — never reused across operations.
+        // A client that breaks that rule must not be handed a replay of the other
+        // operation's response, which would be of the wrong shape entirely.
+        if record.operation != endpoint.to_string() {
+            return Err(lakekeeper::api::ErrorModel::bad_request(
+                "Idempotency-Key was already used for a different operation. \
+                 Keys must be globally unique and must not be reused across operations.",
+                "IdempotencyKeyReused",
+                None,
+            )
+            .into());
+        }
+
+        // Records are written only for committed successes, so any row means the
+        // mutation already happened. A non-2xx status is therefore unreachable
+        // today; it is refused rather than swallowed, because both ways of
+        // swallowing it are worse than a loud failure — re-running the mutation
+        // would break at-most-once, and replaying it as a success would report an
+        // outcome that never occurred.
         match record.http_status {
-            204 => Ok(IdempotencyCheck::ReplayNoContent),
-            status @ 200..300 => Ok(IdempotencyCheck::ReplaySuccess {
-                http_status: u16::try_from(status)
-                    .ok()
-                    .and_then(|s| StatusCode::from_u16(s).ok())
-                    .unwrap_or(StatusCode::OK),
-            }),
+            200..300 => Ok(IdempotencyCheck::Replay),
             status => {
-                // Unexpected status in DB — log and treat as new request
-                tracing::warn!(
+                tracing::error!(
                     warehouse_id = %warehouse_id,
                     idempotency_key = %key.as_uuid(),
                     status,
-                    "Unexpected http_status in idempotency record, treating as new request"
+                    "Idempotency record holds a non-success status, which the write path cannot produce"
                 );
-                Ok(IdempotencyCheck::NewRequest)
+                Err(lakekeeper::api::ErrorModel::internal(
+                    "Idempotency record holds an unexpected status and cannot be replayed.",
+                    "CorruptIdempotencyRecord",
+                    None,
+                )
+                .into())
             }
         }
     }
@@ -167,5 +215,42 @@ impl PostgresBackend {
         })?;
 
         Ok(result.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The claim protocol, end to end. Deliberately **one** test: it drives a
+    /// process-global static, and `cargo test` shares one process across a
+    /// crate's tests, so a second test touching the slot would race this one.
+    #[test]
+    fn the_cleanup_slot_admits_one_holder_until_released() {
+        CLEANUP_STARTED_AT.store(0, Ordering::Relaxed);
+
+        let claimed = try_claim_cleanup().expect("an idle slot is claimable");
+        assert_ne!(claimed, 0, "a claim must never store the idle sentinel");
+        assert!(
+            try_claim_cleanup().is_none(),
+            "a held slot must exclude a second claimant"
+        );
+
+        // Releasing someone else's claim is a no-op, so a run that overran its
+        // timeout cannot clear the claim that took over from it.
+        release_cleanup(claimed - 1);
+        assert!(
+            try_claim_cleanup().is_none(),
+            "the slot was released by a stale holder"
+        );
+
+        release_cleanup(claimed);
+        assert_eq!(CLEANUP_STARTED_AT.load(Ordering::Relaxed), 0);
+        assert!(
+            try_claim_cleanup().is_some(),
+            "a released slot is claimable again"
+        );
+
+        CLEANUP_STARTED_AT.store(0, Ordering::Relaxed);
     }
 }

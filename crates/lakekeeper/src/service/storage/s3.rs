@@ -11,7 +11,7 @@ use aws_config::SdkConfig;
 use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
-    catalog::rest::ErrorModel,
+    catalog::rest::{ErrorModel, RemoteSigningConfig},
     configs::{
         ConfigProperty as _,
         table::{TableProperties, client, creds, custom, s3, signer},
@@ -34,7 +34,7 @@ use crate::{
     api::{
         CatalogConfig,
         iceberg::{
-            supported_endpoints,
+            supported_endpoints, supported_endpoints_with_signing,
             v1::{DataAccess, tables::DataAccessMode},
         },
         management::v1::warehouse::TabularDeleteProfile,
@@ -54,7 +54,18 @@ use crate::{
     },
 };
 
-static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+/// The commercial AWS partition. Also the fallback whenever we cannot establish a partition,
+/// and the partition that S3-compatible stores expect in policy ARNs.
+const AWS_COMMERCIAL_PARTITION: &str = "aws";
+
+static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build S3 credential HTTP client")
+});
 
 #[derive(
     Hash, Debug, Eq, Clone, PartialEq, Serialize, Deserialize, typed_builder::TypedBuilder,
@@ -210,6 +221,12 @@ pub enum S3Credential {
     ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
     AwsSystemIdentity(S3AwsSystemIdentityCredential),
     CloudflareR2(S3CloudflareR2Credential),
+    /// **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+    /// future release.
+    ///
+    /// Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+    /// Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+    AliyunOss(S3AccessKeyCredential),
 }
 
 #[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,7 +326,10 @@ impl S3Profile {
         &self,
         credential: Option<&S3Credential>,
     ) -> Result<S3Storage, CredentialsError> {
-        let s3_settings = storage_profile_to_s3_settings(self);
+        let mut s3_settings = storage_profile_to_s3_settings(self);
+        // Alibaba Cloud OSS does not implement chunked encoding, so we need the fallback
+        // to "strict s3 compatibility behavious"; see `S3Settings`
+        s3_settings.s3_compat_checksums = matches!(credential, Some(S3Credential::AliyunOss(_)));
         let auth = credential
             .map(|c| S3Auth::try_from(c.clone()))
             .transpose()?;
@@ -344,6 +364,10 @@ impl S3Profile {
 
         if let Some(S3Credential::CloudflareR2(cloudflare_r2_credential)) = s3_credential {
             self.normalize_r2(cloudflare_r2_credential)?;
+        }
+
+        if let Some(S3Credential::AliyunOss(_)) = s3_credential {
+            self.normalize_oss()?;
         }
 
         if self.sts_enabled
@@ -423,7 +447,12 @@ impl S3Profile {
         CatalogConfig {
             defaults,
             overrides: HashMap::new(),
-            endpoints: supported_endpoints().to_vec(),
+            endpoints: if self.remote_signing_enabled {
+                supported_endpoints_with_signing().to_vec()
+            } else {
+                supported_endpoints().to_vec()
+            },
+            idempotency_key_lifetime: None,
         }
     }
 
@@ -465,10 +494,13 @@ impl S3Profile {
                     remote_signing = false;
                 }
                 let can_use_vended_credentials = self.sts_enabled
-                    || matches!(s3_credential, Some(S3Credential::CloudflareR2(..)));
+                    || matches!(
+                        s3_credential,
+                        Some(S3Credential::CloudflareR2(..) | S3Credential::AliyunOss(..))
+                    );
                 if vended_credentials && !(can_use_vended_credentials) {
                     tracing::debug!(
-                        "vended_credentials is explicitly requested but STS is disabled for this S3 warehouse and the credential type is not Cloudflare R2."
+                        "vended_credentials is explicitly requested but STS is disabled for this S3 warehouse and the credential type is not Cloudflare R2 or Alibaba Cloud OSS."
                     );
                     vended_credentials = false;
                 }
@@ -495,41 +527,48 @@ impl S3Profile {
         };
 
         let mut config = TableProperties::default();
-        let mut creds = TableProperties::default();
+        // Properties that qualify a credential — which endpoint, region and encryption it is for.
+        // Always emitted into `config`; they reach the client as `storage-credentials` only
+        // alongside an actual credential, which is why they are accumulated separately.
+        let mut credential_qualifiers = TableProperties::default();
         let mut credentials_expiration_ms: Option<i64> = None;
 
         if let Some(true) = self.path_style_access {
             config.insert(&s3::PathStyleAccess(true));
-            creds.insert(&s3::PathStyleAccess(true));
+            credential_qualifiers.insert(&s3::PathStyleAccess(true));
         }
 
         config.insert(&s3::Region(self.region.clone()));
-        creds.insert(&s3::Region(self.region.clone()));
+        credential_qualifiers.insert(&s3::Region(self.region.clone()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
             value: self.region.clone(),
         });
         config.insert(&client::Region(self.region.clone()));
-        creds.insert(&client::Region(self.region.clone()));
+        credential_qualifiers.insert(&client::Region(self.region.clone()));
 
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
-            creds.insert(&s3::Endpoint(endpoint.clone()));
+            credential_qualifiers.insert(&s3::Endpoint(endpoint.clone()));
         }
 
         // When the warehouse is configured with a KMS key, advertise SSE-KMS to clients so
         // their own writes (vended credentials or remote signing) encrypt with the same key,
         // independent of any S3 bucket-default-encryption configuration. Lakekeeper's own writes
-        // already set this header via lakekeeper-io. Mirrors region/endpoint by emitting into both
-        // the load config and the credential-refresh properties.
+        // already set this header via lakekeeper-io.
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
             config.insert(&s3::SseType("kms".to_string()));
             config.insert(&s3::SseKey(kms_key_arn.clone()));
-            creds.insert(&s3::SseType("kms".to_string()));
-            creds.insert(&s3::SseKey(kms_key_arn.clone()));
+            credential_qualifiers.insert(&s3::SseType("kms".to_string()));
+            credential_qualifiers.insert(&s3::SseKey(kms_key_arn.clone()));
         }
 
-        if vended_credentials {
+        // Only a vended credential may populate `creds`: callers turn a non-empty `creds` into a
+        // `storage-credentials` entry scoped to the table prefix, and a client honouring an entry
+        // that holds no credential builds a key-less secret for that prefix and then sends
+        // unsigned requests for every file below it, which the storage rejects with 403.
+        let creds = if vended_credentials {
+            let mut creds = credential_qualifiers;
             let cache_key = STCCacheKey::new(
                 stc_request.clone(),
                 self.into(),
@@ -575,9 +614,12 @@ impl S3Profile {
                     ),
                 ));
             }
-        }
+            creds
+        } else {
+            TableProperties::default()
+        };
 
-        if remote_signing {
+        let remote_signing_config = if remote_signing {
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
             push_fsspec_fileio_with_s3v4restsigner(&mut config);
@@ -585,18 +627,31 @@ impl S3Profile {
             let signer_uri = request_metadata.s3_signer_uri(warehouse_id);
             let signer_endpoint =
                 request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id);
-            // Iceberg 1.11.0 renamed `s3.signer.*` to `signer.*`. Emit both so clients >=1.11 read
-            // the new keys (no deprecation warning) and older clients keep using the old ones.
+            // Iceberg 1.11.0 renamed the client-side `s3.signer.*` properties to `signer.*`. Emit
+            // both so clients >=1.11 read the new keys (no deprecation warning) and older clients
+            // keep using the old ones. The spec deprecates `signer.uri`/`signer.endpoint` in
+            // favour of `remote-signing-config` below, but no released client reads that yet, and
+            // a client following the spec's resolution order picks these up first anyway.
             config.insert(&signer::Uri(signer_uri.clone()));
             config.insert(&signer::Endpoint(signer_endpoint.clone()));
             config.insert(&s3::SignerUri(signer_uri));
             config.insert(&s3::SignerEndpoint(signer_endpoint));
-        }
+
+            // Empty on purpose. The field carries no endpoint — a client that
+            // uses it calls the table's standard `/sign` route, which the
+            // `endpoints` capability list advertises — and we need nothing
+            // echoed back: the signer resolves the table from the path, falling
+            // back to the request location, which already survives a rename.
+            Some(RemoteSigningConfig::default())
+        } else {
+            None
+        };
 
         Ok(TableConfig {
             creds,
             config,
             credentials_expiration_ms,
+            remote_signing: remote_signing_config,
         })
     }
 
@@ -629,6 +684,10 @@ impl S3Profile {
         match s3_credential.cloned() {
             Some(S3Credential::CloudflareR2(c)) => self
                 .get_cloudflare_r2_temporary_credentials(sts_request, c)
+                .await
+                .map_err(Into::into),
+            Some(S3Credential::AliyunOss(c)) => self
+                .get_aliyun_oss_temporary_credentials(sts_request, c)
                 .await
                 .map_err(Into::into),
             c
@@ -755,6 +814,244 @@ impl S3Profile {
             .unwrap())
     }
 
+    /// Fetch downscoped temporary credentials from the Alibaba Cloud STS `AssumeRole` API.
+    ///
+    /// Alibaba Cloud OSS is S3-compatible for data-plane operations, but its STS uses the
+    /// Alibaba Cloud RPC signing scheme (HMAC-SHA1 over a canonicalized query string) rather than
+    /// AWS `SigV4`, so we cannot reuse the AWS SDK STS client. The role to assume is taken from the
+    /// storage profile (`sts_role_arn`, falling back to `assume_role_arn`), and access is scoped to
+    /// the table location via a RAM policy.
+    async fn get_aliyun_oss_temporary_credentials(
+        &self,
+        sts_request: &ShortTermCredentialsRequest,
+        cred: S3AccessKeyCredential,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let role_arn = self
+            .sts_role_arn
+            .as_ref()
+            .or(self.assume_role_arn.as_ref())
+            .ok_or_else(|| {
+                CredentialsError::Misconfiguration(
+                    "Either `sts-role-arn` or `assume-role-arn` (an Alibaba Cloud RAM role ARN) is \
+                     required for Storage Profiles using the `aliyun-oss` credential type."
+                        .to_string(),
+                )
+            })?;
+
+        let policy = Self::get_aliyun_oss_sts_policy_string(
+            &sts_request.table_location,
+            sts_request.storage_permissions,
+        )?;
+
+        let ttl_seconds = self.sts_token_validity_seconds;
+        let endpoint = self.aliyun_sts_endpoint();
+
+        // Build the parameters for the `AssumeRole` RPC action. Signing requires all business and
+        // system parameters (except `Signature`) to participate in the canonicalized query string.
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let timestamp = format_aliyun_iso8601(std::time::SystemTime::now());
+        let duration_seconds = i32::try_from(ttl_seconds).unwrap_or(3600).to_string();
+
+        let params = aliyun_assume_role_params(
+            role_arn,
+            &policy,
+            &duration_seconds,
+            &cred.access_key_id,
+            cred.external_id.as_deref(),
+            &nonce,
+            &timestamp,
+        );
+
+        let signature = sign_aliyun_rpc_request("POST", &params, &cred.secret_access_key);
+
+        // The signed request is sent as an `application/x-www-form-urlencoded` POST body.
+        let mut form: Vec<(String, String)> = params
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        form.push(("Signature".to_string(), signature));
+
+        let client = S3_HTTP_CLIENT.clone();
+        let response = client
+            .post(endpoint)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                source: Some(Box::new(e)),
+                reason: "Failed to request temporary credentials from the Alibaba Cloud STS \
+                         AssumeRole endpoint"
+                    .to_string(),
+            })?;
+
+        if !response.status().is_success() {
+            let status_code = response.status();
+            let error_message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            tracing::debug!(
+                "Failed to get temporary credentials from Alibaba Cloud STS ({status_code}): {error_message}",
+            );
+            return Err(CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!(
+                    "Failed to get temporary credentials from Alibaba Cloud STS ({status_code}): {error_message}",
+                ),
+            });
+        }
+
+        let tmp_credentials: AliyunAssumeRoleResponse =
+            response
+                .json()
+                .await
+                .map_err(|e| CredentialsError::ShortTermCredential {
+                    source: Some(Box::new(e)),
+                    reason: "Failed to parse AssumeRole response from Alibaba Cloud STS as json."
+                        .to_string(),
+                })?;
+        let creds = tmp_credentials.credentials;
+
+        // Use the expiration STS actually granted rather than recomputing `now + DurationSeconds`:
+        // STS may cap the lifetime below the requested duration, and honouring its value keeps the
+        // cached credential from being served past its real validity.
+        let expiration = aws_sdk_sts::primitives::DateTime::from_str(
+            &creds.expiration,
+            aws_sdk_sts::primitives::DateTimeFormat::DateTime,
+        )
+        .map_err(|e| CredentialsError::ShortTermCredential {
+            source: Some(Box::new(e)),
+            reason: format!(
+                "Failed to parse the `Expiration` returned by Alibaba Cloud STS ({:?}) as an \
+                 RFC-3339 timestamp.",
+                creds.expiration
+            ),
+        })?;
+
+        Ok(aws_sdk_sts::types::Credentials::builder()
+            .access_key_id(creds.access_key_id)
+            .secret_access_key(creds.access_key_secret)
+            .session_token(creds.security_token)
+            .expiration(expiration)
+            .build()
+            .unwrap())
+    }
+
+    /// Determine the Alibaba Cloud STS endpoint. Honours an explicit `sts_endpoint` override,
+    /// otherwise derives the regional endpoint from the profile `region`
+    /// (e.g. `https://sts.cn-hangzhou.aliyuncs.com`).
+    fn aliyun_sts_endpoint(&self) -> String {
+        if let Some(sts_endpoint) = &self.sts_endpoint {
+            sts_endpoint.to_string()
+        } else {
+            format!("https://sts.{}.aliyuncs.com", self.region)
+        }
+    }
+
+    /// Build the RAM policy string used to downscope Alibaba Cloud STS credentials to the table
+    /// location. Mirrors [`Self::get_sts_policy_string`] but emits Alibaba Cloud `acs:oss`
+    /// resource names and OSS actions instead of AWS S3 ones.
+    fn get_aliyun_oss_sts_policy_string(
+        table_location: &Location,
+        storage_permissions: StoragePermissions,
+    ) -> Result<String, CredentialsError> {
+        let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
+            CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}"),
+            }
+        })?;
+        let bucket = table_location.bucket_name().trim_end_matches('/');
+        let key = format!("{}/", table_location.key().join("/"));
+
+        // Alibaba Cloud RAM treats `*` and `?` as wildcards in `Resource` / `oss:Prefix` and, unlike
+        // AWS IAM, offers no escape sequence for a literal occurrence. A location containing either
+        // character would silently broaden the granted scope, so reject it instead of emitting a
+        // policy that grants more than the intended prefix.
+        if let Some(bad) = bucket
+            .chars()
+            .chain(key.chars())
+            .find(|c| *c == '*' || *c == '?')
+        {
+            return Err(CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!(
+                    "Could not generate downscoped Alibaba Cloud RAM policy: table location \
+                     contains the wildcard character `{bad}`, which cannot be escaped in an \
+                     `acs:oss` resource and would broaden the granted scope.",
+                ),
+            });
+        }
+
+        let key_wildcard = format!("{key}*");
+
+        // Object-scoped actions. `oss:ListParts` lists the parts of a single upload
+        // (`GET /{object}?uploadId=`) and is therefore object-scoped. Mirrors the AWS policy
+        // (`permission_to_actions`), which grants the object-scoped `s3:ListMultipartUploadParts`
+        // and never the bucket-wide multipart listing.
+        let object_actions = match storage_permissions {
+            StoragePermissions::Read => vec!["oss:GetObject", "oss:GetObjectVersion"],
+            StoragePermissions::ReadWrite => vec![
+                "oss:GetObject",
+                "oss:GetObjectVersion",
+                "oss:PutObject",
+                "oss:AbortMultipartUpload",
+                "oss:ListParts",
+            ],
+            StoragePermissions::ReadWriteDelete => vec![
+                "oss:GetObject",
+                "oss:GetObjectVersion",
+                "oss:PutObject",
+                "oss:AbortMultipartUpload",
+                "oss:ListParts",
+                "oss:DeleteObject",
+            ],
+        };
+
+        let policy = json!({
+            "Version": "1",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": object_actions,
+                    "Resource": format!("acs:oss:*:*:{bucket}/{key_wildcard}"),
+                },
+                {
+                    // `oss:Prefix` only constrains `oss:ListObjects`, so the prefix-conditioned
+                    // statement lists only that action.
+                    "Effect": "Allow",
+                    "Action": ["oss:ListObjects"],
+                    "Resource": format!("acs:oss:*:*:{bucket}"),
+                    "Condition": {
+                        "StringLike": {
+                            "oss:Prefix": key_wildcard,
+                        },
+                    },
+                },
+                {
+                    // Bucket-scoped, prefix-independent action granted unconditionally on the
+                    // bucket — a prefix condition would never match this prefix-less request and
+                    // would effectively deny it. An S3-SDK client (Lakekeeper vends OSS through the
+                    // S3-compatible data plane) calls `GetBucketLocation` to discover the bucket
+                    // region before issuing data-plane requests, mirroring the AWS policy's
+                    // `s3:GetBucketLocation` statement. We deliberately do NOT grant
+                    // `oss:ListMultipartUploads` here: it is bucket-wide (`GET /?uploads`) and
+                    // would let the credential enumerate in-progress uploads across every prefix in
+                    // the bucket. AWS grants no equivalent, and an Iceberg client only needs the
+                    // object-scoped `oss:ListParts` (granted above) to complete its own uploads.
+                    "Effect": "Allow",
+                    "Action": ["oss:GetBucketLocation"],
+                    "Resource": format!("acs:oss:*:*:{bucket}"),
+                },
+            ],
+        });
+
+        serde_json::to_string(&policy).map_err(|e| CredentialsError::ShortTermCredential {
+            source: Some(Box::new(e)),
+            reason: "Failed to serialize Alibaba Cloud STS downscoped policy".to_string(),
+        })
+    }
+
     async fn get_sts_token(
         &self,
         sts_request: &ShortTermCredentialsRequest,
@@ -859,7 +1156,10 @@ impl S3Profile {
 
         let v = assume_role_builder.send().await.map_err(|e| {
             let err_str = format!("{e:?}");
-            tracing::warn!("Failed to assume role via STS: {err_str}");
+            tracing::warn!(
+                "Failed to assume role via STS with partition `{}`: {err_str}",
+                self.sts_policy_partition()
+            );
             CredentialsError::ShortTermCredential {
                 source: Some(Box::new(e)),
                 reason: format!("Failed to assume role via STS: {err_str}").to_string(),
@@ -958,6 +1258,39 @@ impl S3Profile {
         }
     }
 
+    /// The AWS partition to write into the ARNs of a vended-credential policy.
+    ///
+    /// Derived rather than configured. Only AWS itself has partitions: the `region` and role
+    /// ARN of an S3-compatible store are free-form and would produce false positives, so those
+    /// keep the commercial partition that every S3-compatible store expects.
+    ///
+    /// A profile without an `endpoint` is the only one we know reaches AWS itself, because the
+    /// SDK resolves the endpoint from the region; there a region whose partition is known
+    /// decides. Every other profile — an explicit endpoint, a commercial region, a
+    /// pseudo-region such as `aws-us-gov-global`, or a region of a partition AWS adds after
+    /// this release — takes the partition of the role ARN, which is mandatory on the AWS STS
+    /// path.
+    fn sts_policy_partition(&self) -> &str {
+        if !matches!(self.flavor, S3Flavor::Aws) {
+            return AWS_COMMERCIAL_PARTITION;
+        }
+
+        self.endpoint
+            .is_none()
+            .then(|| partition_from_region(&self.region))
+            .flatten()
+            .or_else(|| {
+                [
+                    self.sts_role_arn.as_deref(),
+                    self.assume_role_arn.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .find_map(partition_from_arn)
+            })
+            .unwrap_or(AWS_COMMERCIAL_PARTITION)
+    }
+
     fn get_sts_policy_string(
         &self,
         table_location: &Location,
@@ -970,7 +1303,8 @@ impl S3Profile {
             }
         })?;
         let bucket_arn = format!(
-            "arn:aws:s3:::{}",
+            "arn:{}:s3:::{}",
+            self.sts_policy_partition(),
             table_location.bucket_name().trim_end_matches('/')
         );
         let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
@@ -1189,6 +1523,52 @@ impl S3Profile {
 
         Ok(())
     }
+
+    /// Normalize a profile that authenticates to Alibaba Cloud OSS.
+    ///
+    /// OSS is S3-compatible for the data plane, so it is always driven with the `S3Compat` flavor
+    /// and its temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API — hence
+    /// `sts_enabled` is forced on. An explicit `endpoint` is required (otherwise the AWS endpoint
+    /// template would be used for IO and requests would fail against OSS), and a RAM role ARN
+    /// (`sts_role_arn` or `assume_role_arn`) must be present because `AssumeRole` cannot be called
+    /// without one.
+    fn normalize_oss(&mut self) -> Result<(), InvalidProfileError> {
+        self.flavor = S3Flavor::S3Compat;
+        self.sts_enabled = true;
+
+        // OSS does not support path-style-access
+        // See https://www.alibabacloud.com/help/en/oss/developer-reference/use-amazon-s3-sdks-to-access-oss
+        if self.path_style_access == Some(true) {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "`path-style-access` must not be enabled for Alibaba Cloud OSS; OSS \
+                         supports only virtual-hosted-style addressing."
+                    .to_string(),
+                entity: "path-style-access".to_string(),
+            });
+        }
+
+        if self.endpoint.is_none() {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "Parameter `endpoint` is required for Alibaba Cloud OSS.".to_string(),
+                entity: "endpoint".to_string(),
+            });
+        }
+
+        if self.sts_role_arn.is_none() && self.assume_role_arn.is_none() {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "Either `sts-role-arn` or `assume-role-arn` (an Alibaba Cloud RAM role \
+                         ARN) is required for Storage Profiles using the `aliyun-oss` credential \
+                         type."
+                    .to_string(),
+                entity: "sts-role-arn".to_string(),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// Escape characters that IAM policy strings treat as pattern metacharacters
@@ -1217,6 +1597,9 @@ fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
         aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
         sts_session_tags: profile.sts_session_tags.clone(),
         legacy_md5_behavior: profile.legacy_md5_behavior,
+        // Set to true if S3 compatible storage does not support chunked encoding for transfers.
+        // Currently set per-credential by `lakekeeper_io` for Alibaba OSS; see `S3Settings`.
+        s3_compat_checksums: false,
     }
 }
 
@@ -1232,6 +1615,125 @@ struct R2TemporaryCredentialsResult {
     access_key_id: String,
     secret_access_key: String,
     session_token: String,
+}
+
+/// Successful `AssumeRole` response from the Alibaba Cloud STS API (`Format=JSON`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct AliyunAssumeRoleResponse {
+    credentials: AliyunStsCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct AliyunStsCredentials {
+    access_key_id: String,
+    access_key_secret: String,
+    security_token: String,
+    /// RFC-3339 UTC expiration returned by STS, e.g. `2015-04-09T11:52:19Z`. This is the
+    /// authoritative validity horizon (it reflects the shorter of the requested `DurationSeconds`
+    /// and any cap imposed by the role/policy), so we surface it to clients instead of recomputing
+    /// `now + DurationSeconds`.
+    expiration: String,
+}
+
+/// Format a timestamp as the ISO 8601 UTC string Alibaba Cloud RPC APIs expect,
+/// e.g. `2015-04-01T12:00:00Z`. Built manually so it does not depend on the `time` crate's
+/// optional `formatting` feature.
+fn format_aliyun_iso8601(time: std::time::SystemTime) -> String {
+    let dt: time::OffsetDateTime = time.into();
+    let dt = dt.to_offset(time::UtcOffset::UTC);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+    )
+}
+
+/// Build the business + system parameters for an Alibaba Cloud STS `AssumeRole` RPC call
+/// (everything except `Signature`, which is derived from these).
+///
+/// `external_id`, when present and non-empty, is forwarded as `ExternalId` so Alibaba Cloud RAM can
+/// enforce the `sts:ExternalId` trust-policy condition and prevent the confused-deputy problem.
+/// All parameters must be assembled here (before signing) because the RPC signature is computed
+/// over the full, sorted parameter set.
+fn aliyun_assume_role_params<'a>(
+    role_arn: &'a str,
+    policy: &'a str,
+    duration_seconds: &'a str,
+    access_key_id: &'a str,
+    external_id: Option<&'a str>,
+    nonce: &'a str,
+    timestamp: &'a str,
+) -> BTreeMap<&'a str, String> {
+    let mut params: BTreeMap<&str, String> = BTreeMap::new();
+    params.insert("Action", "AssumeRole".to_string());
+    params.insert("RoleArn", role_arn.to_string());
+    params.insert("RoleSessionName", "lakekeeper-sts".to_string());
+    params.insert("Policy", policy.to_string());
+    params.insert("DurationSeconds", duration_seconds.to_string());
+    params.insert("Format", "JSON".to_string());
+    params.insert("Version", "2015-04-01".to_string());
+    params.insert("AccessKeyId", access_key_id.to_string());
+    params.insert("SignatureMethod", "HMAC-SHA1".to_string());
+    params.insert("SignatureVersion", "1.0".to_string());
+    params.insert("SignatureNonce", nonce.to_string());
+    params.insert("Timestamp", timestamp.to_string());
+    if let Some(external_id) = external_id.filter(|id| !id.is_empty()) {
+        params.insert("ExternalId", external_id.to_string());
+    }
+    params
+}
+
+/// Sign an Alibaba Cloud RPC request using the HMAC-SHA1 scheme (`SignatureVersion=1.0`).
+///
+/// Reference: <https://www.alibabacloud.com/help/en/sdk/product-overview/rpc-mechanism>
+/// The string-to-sign is `HTTP-Method&percent-encode("/")&percent-encode(canonicalized-query)`,
+/// where the canonicalized query is the percent-encoded, alphabetically sorted `key=value` pairs
+/// joined by `&`. The signing key is the access-key secret with a trailing `&`.
+fn sign_aliyun_rpc_request(
+    http_method: &str,
+    params: &BTreeMap<&str, String>,
+    access_key_secret: &str,
+) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac as _};
+    use sha1::Sha1;
+
+    // BTreeMap iterates keys in sorted order, which is exactly what the canonicalization requires.
+    let canonicalized_query = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", aliyun_percent_encode(k), aliyun_percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let string_to_sign = format!(
+        "{}&{}&{}",
+        http_method,
+        aliyun_percent_encode("/"),
+        aliyun_percent_encode(&canonicalized_query),
+    );
+
+    let signing_key = format!("{access_key_secret}&");
+    let mut mac = Hmac::<Sha1>::new_from_slice(signing_key.as_bytes())
+        .expect("HMAC can take a key of any size");
+    mac.update(string_to_sign.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+}
+
+/// Percent-encode a string per Alibaba Cloud's RPC signing rules (RFC 3986 with `+`, `*`, and `%7E`
+/// adjustments). Alibaba Cloud requires uppercase hex, spaces as `%20`, and `~` left un-encoded.
+fn aliyun_percent_encode(input: &str) -> String {
+    const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(input, UNRESERVED).to_string()
 }
 
 /// Build an `S3Storage` client from vended-credentials properties.
@@ -1285,6 +1787,64 @@ fn validate_region(region: &str) -> Result<(), InvalidProfileError> {
         reason: e,
         entity: "region".to_string(),
     })
+}
+
+/// Extract the AWS partition from `arn:<partition>:<service>:...`.
+///
+/// Returns `None` for anything that is not an ARN naming an AWS partition, leaving the caller
+/// with its own default.
+fn partition_from_arn(arn: &str) -> Option<&str> {
+    let mut parts = arn.split(':');
+    if parts.next()? != "arn" {
+        return None;
+    }
+    let partition = parts.next()?;
+    // A partition is always followed by a non-empty service, for example `iam`.
+    if parts.next()?.is_empty() {
+        return None;
+    }
+
+    if !partition
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return None;
+    }
+
+    // Every AWS partition is named `aws` or `aws-<something>`. Other ARN namespaces exist and
+    // must not reach a policy: MinIO issues roles as `arn:minio:iam:::role/<id>`, and an
+    // `arn:minio:s3:::bucket` resource matches nothing in its policy engine.
+    if partition != AWS_COMMERCIAL_PARTITION && !partition.starts_with("aws-") {
+        return None;
+    }
+
+    Some(partition)
+}
+
+/// Map an AWS region to its partition, or `None` if no partition claims the region.
+///
+/// The prefixes are reduced from the `regionRegex` entries of the `partitions.json` that AWS
+/// publishes and that the AWS SDKs embed. They are mutually exclusive, so the order does not
+/// matter. Two deliberate inexactnesses: a string like `us-gov-1` is claimed here although AWS
+/// resolves it to the commercial partition, and `eusc-de-` is narrower than its regex group so
+/// that a future `eusc-fr-` region falls through rather than being guessed at. Regions of the
+/// commercial partition are not listed — the caller decides what `None` means.
+///
+/// If AWS adds a partition, add its prefix here.
+fn partition_from_region(region: &str) -> Option<&'static str> {
+    const PARTITION_PREFIXES: &[(&str, &str)] = &[
+        ("cn-", "aws-cn"),
+        ("us-gov-", "aws-us-gov"),
+        ("us-iso-", "aws-iso"),
+        ("us-isob-", "aws-iso-b"),
+        ("us-isof-", "aws-iso-f"),
+        ("eu-isoe-", "aws-iso-e"),
+        ("eusc-de-", "aws-eusc"),
+    ];
+
+    PARTITION_PREFIXES
+        .iter()
+        .find_map(|(prefix, partition)| region.starts_with(prefix).then_some(*partition))
 }
 
 fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
@@ -1342,7 +1902,7 @@ impl TryFrom<S3Credential> for S3Auth {
         }
 
         Ok(match credential {
-            S3Credential::AccessKey(c) => S3Auth::AccessKey(c.into()),
+            S3Credential::AccessKey(c) | S3Credential::AliyunOss(c) => S3Auth::AccessKey(c.into()),
             S3Credential::AwsSystemIdentity(c) => S3Auth::AwsSystemIdentity(c.into()),
             S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id,
@@ -1432,6 +1992,339 @@ pub(crate) mod test {
             },
         };
         assert_eq!(response, expected);
+    }
+
+    #[test]
+    fn test_deserialize_aliyun_assume_role_response() {
+        // Shape of a successful Alibaba Cloud STS `AssumeRole` response (`Format=JSON`).
+        let response = serde_json::json!({
+            "RequestId": "6894B13B-6D71-4EF5-88FA-F32781734A7F",
+            "AssumedRoleUser": {
+                "AssumedRoleId": "34158XXXXX2653686:lakekeeper-sts",
+                "Arn": "acs:ram::123456789012:role/oss-role/lakekeeper-sts"
+            },
+            "Credentials": {
+                "AccessKeyId": "STS.NUgYrLnoC37mZZCNnAbez",
+                "AccessKeySecret": "CVwjCkNzTMupZ8NbTCxCBSDoFwbz",
+                "SecurityToken": "CAESrAIIARKAAShQquMnLI==",
+                "Expiration": "2015-04-09T11:52:19Z"
+            }
+        });
+        let parsed: AliyunAssumeRoleResponse = serde_json::from_value(response).unwrap();
+        assert_eq!(
+            parsed.credentials,
+            AliyunStsCredentials {
+                access_key_id: "STS.NUgYrLnoC37mZZCNnAbez".to_string(),
+                access_key_secret: "CVwjCkNzTMupZ8NbTCxCBSDoFwbz".to_string(),
+                security_token: "CAESrAIIARKAAShQquMnLI==".to_string(),
+                expiration: "2015-04-09T11:52:19Z".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_aliyun_percent_encode() {
+        // Alibaba Cloud requires spaces as %20 (not '+'), '~' left unescaped, and '/' escaped.
+        assert_eq!(aliyun_percent_encode("a b"), "a%20b");
+        assert_eq!(aliyun_percent_encode("~"), "~");
+        assert_eq!(aliyun_percent_encode("/"), "%2F");
+        assert_eq!(aliyun_percent_encode("a=b&c"), "a%3Db%26c");
+        assert_eq!(aliyun_percent_encode("-_.~"), "-_.~");
+    }
+
+    #[test]
+    fn test_format_aliyun_iso8601() {
+        // 2015-04-09T11:52:19Z == 1428580339 seconds since the Unix epoch.
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_428_580_339);
+        assert_eq!(format_aliyun_iso8601(time), "2015-04-09T11:52:19Z");
+    }
+
+    #[test]
+    fn test_sign_aliyun_rpc_request() {
+        // Canonical example from the Alibaba Cloud RPC signing documentation.
+        // With AccessKeySecret "testsecret" and the parameters below, the documented signature
+        // (before URL-encoding) is `OLeaidS1JvxuMvnyHOwuJ+uX5qY=`.
+        let mut params: BTreeMap<&str, String> = BTreeMap::new();
+        params.insert("AccessKeyId", "testid".to_string());
+        params.insert("Action", "DescribeRegions".to_string());
+        params.insert("Format", "XML".to_string());
+        params.insert("SignatureMethod", "HMAC-SHA1".to_string());
+        params.insert(
+            "SignatureNonce",
+            "3ee8c1b8-83d3-44af-a94f-4e0ad82fd6cf".to_string(),
+        );
+        params.insert("SignatureVersion", "1.0".to_string());
+        params.insert("Timestamp", "2016-02-23T12:46:24Z".to_string());
+        params.insert("Version", "2014-05-26".to_string());
+
+        let signature = sign_aliyun_rpc_request("GET", &params, "testsecret");
+        assert_eq!(signature, "OLeaidS1JvxuMvnyHOwuJ+uX5qY=");
+    }
+
+    #[test]
+    fn test_aliyun_assume_role_params_include_external_id() {
+        // A non-empty external ID must be forwarded as `ExternalId` so it participates in the
+        // signature and Alibaba Cloud can enforce the `sts:ExternalId` trust-policy condition.
+        let params = aliyun_assume_role_params(
+            "acs:ram::123456789012:role/oss-role",
+            "{}",
+            "3600",
+            "test-ak",
+            Some("my-external-id"),
+            "nonce-1",
+            "2016-02-23T12:46:24Z",
+        );
+        assert_eq!(
+            params.get("ExternalId").map(String::as_str),
+            Some("my-external-id")
+        );
+    }
+
+    #[test]
+    fn test_aliyun_assume_role_params_omit_absent_or_empty_external_id() {
+        // Absent external ID: no `ExternalId` param.
+        let params = aliyun_assume_role_params(
+            "acs:ram::123456789012:role/oss-role",
+            "{}",
+            "3600",
+            "test-ak",
+            None,
+            "nonce-1",
+            "2016-02-23T12:46:24Z",
+        );
+        assert!(!params.contains_key("ExternalId"));
+
+        // Empty external ID must be treated the same as absent (Alibaba rejects an empty value).
+        let params_empty = aliyun_assume_role_params(
+            "acs:ram::123456789012:role/oss-role",
+            "{}",
+            "3600",
+            "test-ak",
+            Some(""),
+            "nonce-1",
+            "2016-02-23T12:46:24Z",
+        );
+        assert!(!params_empty.contains_key("ExternalId"));
+    }
+
+    #[test]
+    fn test_aliyun_oss_policy_scopes_to_table_prefix() {
+        let table_location: Location = "s3://bucket-name/wh/db/table".parse().unwrap();
+        let policy = S3Profile::get_aliyun_oss_sts_policy_string(
+            &table_location,
+            StoragePermissions::ReadWriteDelete,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        assert_eq!(
+            parsed["Statement"][0]["Resource"],
+            "acs:oss:*:*:bucket-name/wh/db/table/*"
+        );
+        // `oss:ListParts` is object-scoped (parts of a single upload) and belongs on the object
+        // statement. The bucket-wide `oss:ListMultipartUploads` must never appear anywhere in the
+        // policy — it would let the credential enumerate uploads across the whole bucket.
+        let object_actions = parsed["Statement"][0]["Action"].as_array().unwrap();
+        assert!(object_actions.contains(&json!("oss:ListParts")));
+        // ReadWriteDelete is the only arm that grants delete.
+        assert!(object_actions.contains(&json!("oss:DeleteObject")));
+        assert!(!policy.contains("oss:ListMultipartUploads"));
+
+        // The prefix-conditioned statement constrains only `oss:ListObjects`.
+        assert_eq!(parsed["Statement"][1]["Action"], json!(["oss:ListObjects"]));
+        assert_eq!(
+            parsed["Statement"][1]["Condition"]["StringLike"]["oss:Prefix"],
+            "wh/db/table/*"
+        );
+        // The bucket statement grants only region discovery (`oss:GetBucketLocation`),
+        // unconditionally on the bucket — a prefix condition would never match this prefix-less
+        // call and would deny it. It mirrors the AWS policy's `s3:GetBucketLocation`.
+        assert_eq!(
+            parsed["Statement"][2]["Action"],
+            json!(["oss:GetBucketLocation"])
+        );
+        assert_eq!(
+            parsed["Statement"][2]["Resource"],
+            "acs:oss:*:*:bucket-name"
+        );
+        assert!(parsed["Statement"][2]["Condition"].is_null());
+    }
+
+    #[test]
+    fn test_aliyun_oss_read_only_policy_omits_multipart_listing() {
+        // The bucket statement never grants multipart listing, regardless of permission level; a
+        // read-only credential's bucket statement is exactly `oss:GetBucketLocation`.
+        let table_location: Location = "s3://bucket-name/wh/db/table".parse().unwrap();
+        let policy =
+            S3Profile::get_aliyun_oss_sts_policy_string(&table_location, StoragePermissions::Read)
+                .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        assert_eq!(
+            parsed["Statement"][2]["Action"],
+            json!(["oss:GetBucketLocation"])
+        );
+        assert!(!policy.contains("oss:ListMultipartUploads"));
+    }
+
+    #[test]
+    fn test_aliyun_oss_read_write_policy_grants_writes_but_not_delete() {
+        let table_location: Location = "s3://bucket-name/wh/db/table".parse().unwrap();
+        let policy = S3Profile::get_aliyun_oss_sts_policy_string(
+            &table_location,
+            StoragePermissions::ReadWrite,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        let object_actions = parsed["Statement"][0]["Action"].as_array().unwrap();
+        assert!(object_actions.contains(&json!("oss:GetObject")));
+        assert!(object_actions.contains(&json!("oss:PutObject")));
+        assert!(object_actions.contains(&json!("oss:AbortMultipartUpload")));
+        assert!(object_actions.contains(&json!("oss:ListParts")));
+        assert!(!object_actions.contains(&json!("oss:DeleteObject")));
+        assert_eq!(
+            parsed["Statement"][2]["Action"],
+            json!(["oss:GetBucketLocation"])
+        );
+        assert!(!policy.contains("oss:ListMultipartUploads"));
+    }
+
+    #[test]
+    fn test_aliyun_sts_endpoint_derives_from_region() {
+        let profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        assert_eq!(
+            profile.aliyun_sts_endpoint(),
+            "https://sts.cn-hangzhou.aliyuncs.com"
+        );
+    }
+
+    #[test]
+    fn test_aliyun_sts_endpoint_honours_explicit_override() {
+        let profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_endpoint("https://sts-vpc.cn-shanghai.aliyuncs.com".parse().unwrap())
+            .sts_enabled(true)
+            .build();
+        assert_eq!(
+            profile.aliyun_sts_endpoint(),
+            "https://sts-vpc.cn-shanghai.aliyuncs.com/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_oss_forces_flavor_and_sts_and_requires_endpoint_and_role() {
+        let cred = S3Credential::AliyunOss(S3AccessKeyCredential {
+            access_key_id: "ak".to_string(),
+            secret_access_key: "sk".to_string(),
+            external_id: None,
+        });
+
+        // Missing endpoint is rejected.
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .sts_role_arn("acs:ram::123456789012:role/oss-role".to_string())
+            .sts_enabled(false)
+            .flavor(S3Flavor::Aws)
+            .build();
+        assert!(profile.normalize(Some(&cred)).is_err());
+
+        // Missing role ARN is rejected.
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .endpoint("https://oss-cn-hangzhou.aliyuncs.com".parse().unwrap())
+            .sts_enabled(false)
+            .flavor(S3Flavor::Aws)
+            .build();
+        assert!(profile.normalize(Some(&cred)).is_err());
+
+        // Valid profile: flavor is forced to S3Compat and STS is forced on even though the input
+        // set `flavor = Aws` and `sts_enabled = false`.
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .endpoint("https://oss-cn-hangzhou.aliyuncs.com".parse().unwrap())
+            .assume_role_arn("acs:ram::123456789012:role/oss-role".to_string())
+            .sts_enabled(false)
+            .flavor(S3Flavor::Aws)
+            .build();
+        profile.normalize(Some(&cred)).unwrap();
+        assert_eq!(profile.flavor, S3Flavor::S3Compat);
+        assert!(profile.sts_enabled);
+
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .endpoint("https://oss-cn-hangzhou.aliyuncs.com".parse().unwrap())
+            .assume_role_arn("acs:ram::123456789012:role/oss-role".to_string())
+            .path_style_access(true)
+            .sts_enabled(false)
+            .flavor(S3Flavor::Aws)
+            .build();
+        assert!(profile.normalize(Some(&cred)).is_err());
+    }
+
+    #[test]
+    fn test_aliyun_oss_policy_rejects_wildcard_in_table_path() {
+        // Alibaba Cloud RAM has no escape for a literal `*`, so a location containing one must be
+        // rejected rather than emitted as a policy that broadens the granted scope.
+        let table_location: Location = "s3://bucket-name/wh/evil*/table".parse().unwrap();
+        let err = S3Profile::get_aliyun_oss_sts_policy_string(
+            &table_location,
+            StoragePermissions::ReadWriteDelete,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CredentialsError::ShortTermCredential { .. }),
+            "expected ShortTermCredential error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_aliyun_oss_policy_rejects_question_mark_in_table_path() {
+        // `Location::from_str` rejects a raw `?`, so build via `extend()` (which does not re-parse)
+        // to check the policy path itself guards against the RAM wildcard.
+        let mut table_location: Location = "s3://bucket-name/wh".parse().unwrap();
+        table_location.extend(["ev?l", "table"]);
+        let err = S3Profile::get_aliyun_oss_sts_policy_string(
+            &table_location,
+            StoragePermissions::ReadWriteDelete,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CredentialsError::ShortTermCredential { .. }),
+            "expected ShortTermCredential error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_aliyun_assume_role_response_carries_returned_expiration() {
+        // Deserialize a full STS response and verify the `Expiration` STS returned survives onto
+        // the parsed credential and converts to the same instant the vended credential would carry
+        // — rather than a locally recomputed `now + DurationSeconds`.
+        let response = serde_json::json!({
+            "RequestId": "6894B13B-6D71-4EF5-88FA-F32781734A7F",
+            "Credentials": {
+                "AccessKeyId": "STS.NUgYrLnoC37mZZCNnAbez",
+                "AccessKeySecret": "CVwjCkNzTMupZ8NbTCxCBSDoFwbz",
+                "SecurityToken": "CAESrAIIARKAAShQquMnLI==",
+                "Expiration": "2015-04-09T11:52:19Z"
+            }
+        });
+        let parsed: AliyunAssumeRoleResponse = serde_json::from_value(response).unwrap();
+        let expiration = aws_sdk_sts::primitives::DateTime::from_str(
+            &parsed.credentials.expiration,
+            aws_sdk_sts::primitives::DateTimeFormat::DateTime,
+        )
+        .unwrap();
+        // 2015-04-09T11:52:19Z == 1428580339 seconds since the Unix epoch.
+        assert_eq!(expiration.secs(), 1_428_580_339);
     }
 
     #[test]
@@ -1670,7 +2563,9 @@ pub(crate) mod test {
         assert_eq!(location.to_string(), expected);
     }
 
-    pub(crate) mod minio_integration_tests {
+    /// Tests against the S3-compatible store configured via `LAKEKEEPER_TEST__S3_*`
+    /// (Silo in the Unittests workflow, SeaweedFS in the SeaweedFS workflow).
+    pub(crate) mod s3_compat_integration_tests {
         use std::sync::LazyLock;
 
         use super::test_block_on;
@@ -1714,6 +2609,38 @@ pub(crate) mod test {
             });
 
             (profile, cred)
+        }
+
+        #[test]
+        fn test_cors_preflight_against_the_test_storage() {
+            use crate::service::storage::validation::{ValidationCheckName, ValidationCheckStatus};
+
+            test_block_on(
+                async {
+                    let (profile, cred) =
+                        storage_profile(&format!("cors-{}", uuid::Uuid::now_v7()));
+                    let profile = StorageProfile::S3(profile);
+                    let report = profile
+                        .validate_access_report(
+                            Some(&StorageCredential::S3(cred)),
+                            None,
+                            &RequestMetadata::new_unauthenticated(),
+                        )
+                        .await;
+                    let check = report
+                        .checks
+                        .iter()
+                        .find(|c| c.name == ValidationCheckName::CorsOriginAllowed)
+                        .expect("report has a CORS check");
+                    // Silo allows every origin by default; other test stores may not.
+                    if std::env::var("LAKEKEEPER_TEST__S3_CORS_ALLOW_ALL").as_deref() == Ok("1") {
+                        assert_eq!(check.status, ValidationCheckStatus::Passed, "{check:?}");
+                    } else {
+                        assert_ne!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+                    }
+                },
+                true,
+            );
         }
 
         #[test]
@@ -2073,7 +3000,188 @@ pub(crate) mod test {
         }
     }
 
+    pub(crate) mod oss_integration_tests {
+        use super::{super::*, test_block_on};
+        use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile::builder()
+                .bucket(std::env::var("LAKEKEEPER_TEST__OSS_BUCKET").unwrap())
+                .key_prefix(uuid::Uuid::now_v7().to_string())
+                .endpoint(
+                    std::env::var("LAKEKEEPER_TEST__OSS_ENDPOINT")
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                )
+                .region(std::env::var("LAKEKEEPER_TEST__OSS_REGION").unwrap())
+                .sts_role_arn(std::env::var("LAKEKEEPER_TEST__OSS_STS_ROLE_ARN").unwrap())
+                // `normalize_oss` forces flavor=S3Compat and sts_enabled=true; set them for clarity.
+                .flavor(S3Flavor::S3Compat)
+                .sts_enabled(true)
+                .remote_signing_enabled(true)
+                .allow_alternative_protocols(false)
+                .legacy_md5_behavior(false)
+                .push_s3_delete_disabled(false)
+                .build();
+            let cred = S3Credential::AliyunOss(S3AccessKeyCredential {
+                access_key_id: std::env::var("LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY").unwrap(),
+                external_id: std::env::var("LAKEKEEPER_TEST__OSS_EXTERNAL_ID").ok(),
+            });
+
+            (profile, cred)
+        }
+
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
+
+                    profile.normalize(Some(&cred)).unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
+                },
+                true,
+            );
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test_multipart_upload_with_vended_credentials() {
+            test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+
+                    let table_location: lakekeeper_io::Location = format!(
+                        "s3://{}/{}",
+                        profile.bucket,
+                        profile.key_prefix.as_deref().unwrap_or("test")
+                    )
+                    .parse()
+                    .unwrap();
+
+                    // The downscoped policy must cover multipart writes but never the bucket-wide
+                    // `oss:ListMultipartUploads`.
+                    let policy = S3Profile::get_aliyun_oss_sts_policy_string(
+                        &table_location,
+                        StoragePermissions::ReadWriteDelete,
+                    )
+                    .unwrap();
+                    assert!(policy.contains("oss:AbortMultipartUpload"));
+                    assert!(policy.contains("oss:ListParts"));
+                    assert!(!policy.contains("oss:ListMultipartUploads"));
+
+                    let warehouse_id = WarehouseId::new_random();
+                    let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+                    let sts_request = ShortTermCredentialsRequest {
+                        table_location: table_location.clone(),
+                        storage_permissions: StoragePermissions::ReadWriteDelete,
+                        warehouse_id,
+                        tabular_id: tabular_info.tabular_id(),
+                    };
+                    let sts_creds = profile
+                        .get_temporary_credentials(&sts_request, Some(&cred))
+                        .await
+                        .unwrap();
+
+                    let s3_creds = aws_credential_types::Credentials::new(
+                        sts_creds.access_key_id(),
+                        sts_creds.secret_access_key(),
+                        Some(sts_creds.session_token().to_string()),
+                        None,
+                        "lakekeeper-test",
+                    );
+                    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .region(aws_config::Region::new(profile.region.clone()))
+                        .credentials_provider(s3_creds)
+                        .load()
+                        .await;
+                    let mut s3_builder = aws_sdk_s3::config::Config::from(&sdk_config).to_builder();
+                    if let Some(ref endpoint) = profile.endpoint {
+                        s3_builder = s3_builder.endpoint_url(endpoint.to_string());
+                    }
+                    s3_builder = s3_builder.request_checksum_calculation(
+                        aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired,
+                    );
+                    let s3_client = aws_sdk_s3::Client::from_conf(s3_builder.build());
+
+                    let key = format!(
+                        "{}/multipart-test-{}",
+                        profile.key_prefix.as_deref().unwrap_or("test"),
+                        uuid::Uuid::now_v7()
+                    );
+                    let create_resp = s3_client
+                        .create_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .send()
+                        .await
+                        .expect("create_multipart_upload must succeed with vended credentials");
+                    let upload_id = create_resp.upload_id().unwrap();
+
+                    s3_client
+                        .upload_part()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .part_number(1)
+                        .body(aws_sdk_s3::primitives::ByteStream::from(vec![
+                            b'x';
+                            5 * 1024
+                                * 1024
+                        ]))
+                        .send()
+                        .await
+                        .expect("upload_part must succeed with vended credentials");
+
+                    let list_resp = s3_client
+                        .list_parts()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("list_parts must succeed with vended credentials");
+                    assert_eq!(
+                        list_resp.parts().len(),
+                        1,
+                        "list_parts should return the uploaded part"
+                    );
+
+                    s3_client
+                        .abort_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("abort_multipart_upload must succeed with vended credentials");
+                },
+                true,
+            );
+        }
+    }
+
     fn client_managed_table_config(profile: &S3Profile) -> TableConfig {
+        table_config_for(profile, DataAccessMode::ClientManaged)
+    }
+
+    fn table_config_for(profile: &S3Profile, data_access: DataAccessMode) -> TableConfig {
         let warehouse_id = WarehouseId::new_random();
         let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
         let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
@@ -2085,7 +3193,7 @@ pub(crate) mod test {
         };
         test_block_on(
             profile.generate_table_config(
-                DataAccessMode::ClientManaged,
+                data_access,
                 None,
                 stc_request,
                 &tabular_info,
@@ -2094,6 +3202,189 @@ pub(crate) mod test {
             false,
         )
         .expect("generate_table_config failed")
+    }
+
+    /// Without STS there is nothing to vend, so `creds` must stay empty — whatever the client
+    /// asked for and whether or not remote signing takes over. A non-empty `creds` becomes a
+    /// `storage-credentials` entry scoped to the table prefix, and one holding no actual
+    /// credential makes clients stop signing requests for every file below that prefix.
+    #[test]
+    fn test_no_vendable_credential_yields_no_creds() {
+        for remote_signing_enabled in [false, true] {
+            let profile = S3Profile::builder()
+                .bucket("bucket-name".to_string())
+                .region("local".to_string())
+                .endpoint("http://s3-compatible:8333".parse().unwrap())
+                .sts_enabled(false)
+                .remote_signing_enabled(remote_signing_enabled)
+                .path_style_access(true)
+                .aws_kms_key_arn("arn:aws:kms:local:0:key/abcd-1234".to_string())
+                .flavor(S3Flavor::S3Compat)
+                .build();
+
+            for data_access in [
+                // What DuckDB sends by default: `ACCESS_DELEGATION_MODE 'vended_credentials'`.
+                DataAccessMode::ServerDelegated(DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                }),
+                DataAccessMode::ServerDelegated(DataAccess::not_specified()),
+                DataAccessMode::ClientManaged,
+            ] {
+                let table_config = table_config_for(&profile, data_access);
+                let context =
+                    format!("remote_signing_enabled={remote_signing_enabled}, {data_access:?}");
+
+                assert!(
+                    table_config.creds.inner().is_empty(),
+                    "creds must be empty when no credential is vended, got {:?} ({context})",
+                    table_config.creds.inner()
+                );
+                assert!(
+                    table_config
+                        .storage_credentials(&"s3://bucket-name/path/to/table".parse().unwrap())
+                        .is_none(),
+                    "no storage-credentials entry may be emitted ({context})"
+                );
+                // The client still needs the qualifying properties to reach the storage itself and
+                // to encrypt its writes with the warehouse's key — they only lose the `creds` copy.
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::Region>().as_deref(),
+                    Some("local"),
+                    "({context})"
+                );
+                assert!(
+                    table_config.config.get_prop_opt::<s3::Endpoint>().is_some(),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::PathStyleAccess>(),
+                    Some(true),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::SseType>().as_deref(),
+                    Some("kms"),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::SseKey>().as_deref(),
+                    Some("arn:aws:kms:local:0:key/abcd-1234"),
+                    "({context})"
+                );
+                // Remote signing is unaffected: it needs no client-side credential.
+                let signs_remotely = matches!(data_access, DataAccessMode::ServerDelegated(_))
+                    && remote_signing_enabled;
+                assert_eq!(
+                    table_config
+                        .config
+                        .get_prop_opt::<s3::RemoteSigningEnabled>(),
+                    signs_remotely.then_some(true),
+                    "({context})"
+                );
+                // Advertised only when we actually sign: it points the client at the per-table
+                // `/sign` route, which rejects requests for a table we do not sign for.
+                assert_eq!(
+                    table_config.remote_signing.is_some(),
+                    signs_remotely,
+                    "({context})"
+                );
+            }
+        }
+    }
+
+    /// The counterpart: a vended credential must travel *with* the properties that qualify it.
+    /// The credential-refresh response carries `creds` alone — no `config` — so a client that
+    /// refreshes loses region, endpoint and the SSE-KMS key unless they are mirrored here.
+    #[test]
+    fn test_vended_credential_carries_qualifying_properties() {
+        assert!(
+            CONFIG.cache.stc.enabled,
+            "test seeds the STC cache to keep STS out of a unit test"
+        );
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .endpoint("http://s3-compatible:8333".parse().unwrap())
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws:iam::123456789012:role/lakekeeper".to_string())
+            .remote_signing_enabled(false)
+            .path_style_access(true)
+            .aws_kms_key_arn(arn.to_string())
+            .flavor(S3Flavor::S3Compat)
+            .build();
+
+        let warehouse_id = WarehouseId::new_random();
+        let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+        let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions: StoragePermissions::ReadWriteDelete,
+            warehouse_id,
+            tabular_id: tabular_info.tabular_id(),
+        };
+        let expires_at_ms = 1_900_000_000_000_i64;
+
+        let table_config = test_block_on(
+            async {
+                // Seed the STC cache under this request's key: the read-through loader only runs
+                // on a miss, so no STS call is made. Random ids keep the key unique in the
+                // process-wide cache.
+                S3_STC_CACHE
+                    .insert(
+                        STCCacheKey::new(stc_request.clone(), (&profile).into(), None),
+                        CachedStc::new(
+                            aws_sdk_sts::types::Credentials::builder()
+                                .access_key_id("AKIAEXAMPLE")
+                                .secret_access_key("secret")
+                                .session_token("token")
+                                .expiration(aws_sdk_sts::primitives::DateTime::from_millis(
+                                    expires_at_ms,
+                                ))
+                                .build()
+                                .unwrap(),
+                            Instant::now().checked_add(Duration::from_hours(1)),
+                        ),
+                    )
+                    .await;
+                profile
+                    .generate_table_config(
+                        DataAccessMode::ServerDelegated(DataAccess {
+                            vended_credentials: true,
+                            remote_signing: false,
+                        }),
+                        None,
+                        stc_request,
+                        &tabular_info,
+                        &RequestMetadata::new_unauthenticated(),
+                    )
+                    .await
+                    .expect("generate_table_config failed")
+            },
+            false,
+        );
+
+        let creds = &table_config.creds;
+        assert_eq!(
+            creds.get_prop_opt::<s3::AccessKeyId>().as_deref(),
+            Some("AKIAEXAMPLE")
+        );
+        assert_eq!(
+            creds.get_prop_opt::<s3::Region>().as_deref(),
+            Some("us-east-1")
+        );
+        assert!(creds.get_prop_opt::<s3::Endpoint>().is_some());
+        assert_eq!(creds.get_prop_opt::<s3::PathStyleAccess>(), Some(true));
+        assert_eq!(creds.get_prop_opt::<s3::SseType>().as_deref(), Some("kms"));
+        assert_eq!(creds.get_prop_opt::<s3::SseKey>().as_deref(), Some(arn));
+        assert_eq!(table_config.credentials_expiration_ms, Some(expires_at_ms));
+        assert_eq!(
+            table_config
+                .storage_credentials(&table_location)
+                .map(|c| c.len()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2108,7 +3399,6 @@ pub(crate) mod test {
             .aws_kms_key_arn(arn.to_string())
             .build();
         let config = client_managed_table_config(&profile);
-        // Emitted into both the load config and the credential-refresh properties.
         assert_eq!(
             config.config.get_prop_opt::<s3::SseType>(),
             Some("kms".to_string())
@@ -2117,14 +3407,8 @@ pub(crate) mod test {
             config.config.get_prop_opt::<s3::SseKey>(),
             Some(arn.to_string())
         );
-        assert_eq!(
-            config.creds.get_prop_opt::<s3::SseType>(),
-            Some("kms".to_string())
-        );
-        assert_eq!(
-            config.creds.get_prop_opt::<s3::SseKey>(),
-            Some(arn.to_string())
-        );
+        // This profile vends nothing, so the SSE properties get no `creds` copy.
+        assert!(config.creds.inner().is_empty());
     }
 
     #[test]
@@ -2161,6 +3445,38 @@ pub(crate) mod test {
         );
         assert!(!config.defaults.contains_key("s3.sse.type"));
         assert!(!config.defaults.contains_key("s3.sse.key"));
+    }
+
+    /// `remote-signing-config` carries no endpoint, so the `endpoints` capability list is the
+    /// only place a client learns that the per-table `/sign` route is served here.
+    #[test]
+    fn catalog_config_advertises_the_sign_route_only_when_signing_is_enabled() {
+        let sign_route = "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign";
+        for remote_signing_enabled in [false, true] {
+            let profile = S3Profile::builder()
+                .bucket("bucket-name".to_string())
+                .region("us-east-1".to_string())
+                .flavor(S3Flavor::S3Compat)
+                .sts_enabled(false)
+                .remote_signing_enabled(remote_signing_enabled)
+                .build();
+            let config = profile.generate_catalog_config(
+                WarehouseId::new_random(),
+                &RequestMetadata::new_unauthenticated(),
+                crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+            );
+            assert_eq!(
+                config.endpoints.iter().any(|e| e == sign_route),
+                remote_signing_enabled,
+                "remote_signing_enabled={remote_signing_enabled}"
+            );
+            // The rest of the list is unchanged either way.
+            assert!(
+                config.endpoints.contains(
+                    &"GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".to_string()
+                )
+            );
+        }
     }
 
     #[test]
@@ -2338,6 +3654,207 @@ pub(crate) mod test {
             panic!("TableAccess Resource must be a scalar string, got: {resource}")
         });
         assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
+    }
+
+    fn govcloud_profile() -> S3Profile {
+        S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-gov-west-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts".to_string())
+            .build()
+    }
+
+    /// Every `Resource` of the vended-credential policy, keyed by `Sid`.
+    fn policy_resources(profile: &S3Profile) -> HashMap<String, String> {
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/wh/ns/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+
+        parsed["Statement"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|statement| {
+                (
+                    statement["Sid"].as_str().unwrap().to_string(),
+                    statement["Resource"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn policy_string_partitions_every_bucket_arn() {
+        // All three bucket ARNs have to carry the partition, not just the first one.
+        let resources = policy_resources(&govcloud_profile());
+
+        assert_eq!(
+            resources,
+            HashMap::from([
+                (
+                    "TableAccess".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name/wh/ns/table/*".to_string()
+                ),
+                (
+                    "ListBucketForFolder".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name".to_string()
+                ),
+                (
+                    "GetBucketLocation".to_string(),
+                    "arn:aws-us-gov:s3:::bucket-name".to_string()
+                ),
+            ])
+        );
+    }
+
+    /// The partition of an AWS profile whose endpoint the SDK resolves from the region.
+    fn partition_for(
+        region: &str,
+        sts_role_arn: Option<&str>,
+        assume_role_arn: Option<&str>,
+    ) -> String {
+        let mut profile = govcloud_profile();
+        profile.region = region.to_string();
+        profile.sts_role_arn = sts_role_arn.map(ToString::to_string);
+        profile.assume_role_arn = assume_role_arn.map(ToString::to_string);
+
+        profile.sts_policy_partition().to_string()
+    }
+
+    #[test]
+    fn partition_precedence() {
+        const GOV: &str = "arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts";
+        const COMMERCIAL: &str = "arn:aws:iam::123456789012:role/lakekeeper-sts";
+        const CN: &str = "arn:aws-cn:iam::123456789012:role/lakekeeper";
+
+        // A region whose partition is known decides, including against a role ARN that names
+        // another partition - that is a typo, not a reason to downscope elsewhere.
+        assert_eq!(
+            partition_for("us-gov-west-1", Some(GOV), None),
+            "aws-us-gov"
+        );
+        assert_eq!(
+            partition_for("us-gov-west-1", Some(COMMERCIAL), None),
+            "aws-us-gov"
+        );
+
+        // No prefix claims a commercial region, so there the role ARN decides - as it does for a
+        // region of a partition that AWS adds after this release.
+        assert_eq!(partition_for("us-east-1", Some(GOV), None), "aws-us-gov");
+        assert_eq!(
+            partition_for(
+                "xx-1",
+                Some("arn:aws-future:iam::123456789012:role/x"),
+                None
+            ),
+            "aws-future"
+        );
+
+        // The assume-role ARN is read when the sts-role ARN is absent, and when it is not an ARN.
+        assert_eq!(partition_for("xx-1", None, Some(CN)), "aws-cn");
+        assert_eq!(
+            partition_for("xx-1", Some("lakekeeper-sts"), Some(CN)),
+            "aws-cn"
+        );
+
+        // Defensive: `normalize` rejects an AWS profile that has STS enabled and no role ARN.
+        assert_eq!(partition_for("xx-1", None, None), "aws");
+    }
+
+    #[test]
+    fn the_region_decides_only_for_an_sdk_resolved_aws_endpoint() {
+        // An explicit endpoint can point anywhere, so an AWS-shaped region says nothing about the
+        // partition. This is the S3-compatible store that never set `flavor`.
+        let mut profile = govcloud_profile();
+        profile.endpoint = Some("https://obs.cn-north-4.myhuaweicloud.com".parse().unwrap());
+        profile.region = "cn-north-4".to_string();
+        profile.sts_role_arn = None;
+
+        assert_eq!(profile.sts_policy_partition(), "aws");
+
+        // With an endpoint set, the role ARN is all that is left to go on, and it still counts.
+        profile.sts_role_arn =
+            Some("arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts".to_string());
+
+        assert_eq!(profile.sts_policy_partition(), "aws-us-gov");
+
+        // Deliberately without an endpoint, so that only the flavor stops the region from being
+        // believed. MinIO accepts nothing but `arn:aws:s3:::` resources in a session policy, and
+        // issues its own roles as `arn:minio:iam:::role/<id>`.
+        let mut minio = govcloud_profile();
+        minio.flavor = S3Flavor::S3Compat;
+        minio.region = "cn-north-1".to_string();
+        minio.sts_role_arn = Some("arn:minio:iam:::role/lakekeeper".to_string());
+
+        assert_eq!(minio.sts_policy_partition(), "aws");
+    }
+
+    #[test]
+    fn partition_from_region_matches_the_aws_partition_data() {
+        // Every partition of the `partitions.json` that AWS publishes.
+        for (region, expected) in [
+            ("us-east-1", None),
+            ("eu-central-1", None),
+            ("mx-central-1", None),
+            ("cn-north-1", Some("aws-cn")),
+            ("us-gov-west-1", Some("aws-us-gov")),
+            ("us-iso-east-1", Some("aws-iso")),
+            ("us-isob-east-1", Some("aws-iso-b")),
+            ("us-isof-south-1", Some("aws-iso-f")),
+            ("eu-isoe-west-1", Some("aws-iso-e")),
+            ("eusc-de-east-1", Some("aws-eusc")),
+            // S3-compatible stores use arbitrary region strings.
+            ("local-01", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                partition_from_region(region),
+                expected,
+                "unexpected partition for region `{region}`"
+            );
+        }
+    }
+
+    #[test]
+    fn partition_from_arn_rejects_anything_but_an_arn() {
+        assert_eq!(
+            partition_from_arn("arn:aws:iam::123456789012:role/lakekeeper"),
+            Some("aws")
+        );
+        assert_eq!(
+            partition_from_arn("arn:aws-us-gov:iam::123456789012:role/lakekeeper"),
+            Some("aws-us-gov")
+        );
+
+        // ARNs of other namespaces name no AWS partition.
+        for not_an_arn in [
+            "arn:minio:iam:::role/lakekeeper",
+            "arn:sgws:identity::123:group/credentials-group-1",
+            "arn:aws2:iam::123456789012:role/lakekeeper",
+            // An `aws-` prefix does not excuse the rest of the segment.
+            "arn:aws-US-GOV:iam::123456789012:role/lakekeeper",
+            "arn:aws-cn_2:iam::123456789012:role/lakekeeper",
+            "",
+            "arn",
+            "arn:aws",
+            "arn:aws:",
+            "arn::iam::123456789012:role/lakekeeper",
+            "urn:aws:iam::123456789012:role/lakekeeper",
+            "arn:AWS:iam::123456789012:role/lakekeeper",
+            "lakekeeper-sts",
+        ] {
+            assert_eq!(
+                partition_from_arn(not_an_arn),
+                None,
+                "expected `{not_an_arn}` to yield no partition"
+            );
+        }
     }
 
     #[test]

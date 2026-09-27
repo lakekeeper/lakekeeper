@@ -11,8 +11,8 @@ use moka::{
 };
 
 use super::{
-    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
-    storage::StorageProfile,
+    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, TagDefinitionId, TagId,
+    ViewId, WarehouseId, storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -38,6 +38,11 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
+        authz::{
+            AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
+        },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -78,6 +83,10 @@ pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
 pub mod generic_table;
 pub use generic_table::*;
+mod tag;
+pub use tag::*;
+mod grant;
+pub use grant::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -263,6 +272,11 @@ pub struct CatalogCreateRoleRequest<'a> {
 #[derive(Debug, typed_builder::TypedBuilder)]
 pub struct CatalogCreateWarehouseRequest {
     pub warehouse_name: String,
+    /// ID to create the warehouse under. `None` leaves the choice to the
+    /// backend's own default. The management API always supplies one so the ID
+    /// is known before the insert; direct callers may omit it.
+    #[builder(default)]
+    pub warehouse_id: Option<WarehouseId>,
     pub storage_profile: StorageProfile,
     #[builder(default)]
     pub storage_secret_id: Option<SecretId>,
@@ -386,11 +400,16 @@ where
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
     /// Delete a warehouse.
+    ///
+    /// Returns the storage secret the deleted warehouse referenced, if any, so the
+    /// caller can clean it up. It must come from the row this call actually
+    /// deleted: read outside the transaction it could name a credential a
+    /// concurrent rotation has already replaced.
     async fn delete_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(), CatalogDeleteWarehouseError>;
+    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError>;
 
     /// Rename a warehouse.
     async fn rename_warehouse_impl<'a>(
@@ -547,7 +566,69 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError>;
 
+    /// Move a namespace to `destination`, re-parenting and/or renaming it.
+    ///
+    /// `destination` is the full new path of the namespace. Its last element is the new
+    /// name, the preceding elements identify the new parent; an empty prefix moves the
+    /// namespace to the warehouse root. Moving within a warehouse only — there is no
+    /// cross-warehouse form.
+    ///
+    /// Callers must validate `destination` (depth, illegal characters, reserved names)
+    /// *before* calling. This layer only enforces the invariants that require the
+    /// transaction, mirroring how `create_namespace_impl` relies on caller-side
+    /// validation.
+    ///
+    /// Namespaces that have child namespaces cannot be moved: the stored path of every
+    /// descendant would have to be rewritten, which is deliberately out of scope for now.
+    ///
+    /// A `destination` byte-identical to the namespace's current path is a no-op and
+    /// returns the unchanged namespace, so that retrying a successful move succeeds
+    /// rather than colliding with itself. Callers detect this via
+    /// [`MovedNamespace::is_noop`].
+    ///
+    /// `force` overrides protection, as it does for `drop_namespace_impl`.
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError>;
+
+    /// Rewrite any namespace path prefix that disagrees with its parent row's spelling, and
+    /// report how many rows were changed.
+    ///
+    /// Maintenance, not part of any request path: run from the post-migration hooks. A namespace's
+    /// path prefix references its parent, so it must carry the parent's stored spelling. Both write
+    /// paths now guarantee that (see `lock_parent_namespace`), but rows written before that fix can
+    /// disagree — and such a row, plus its whole subtree, can never be served from the namespace
+    /// cache, because `is_parent_ident` compares the prefix byte-wise and the reload re-inserts the
+    /// same bytes and fails identically.
+    ///
+    /// Implementations must be idempotent and safe to retry. The caller gates this on the migration
+    /// the repair is pinned to having just been applied, so it normally runs once per upgrade — but
+    /// `migrate --force-idempotent-post-migration-hooks` re-runs it on demand to recover from an
+    /// earlier failure, and re-pinning it to a later migration re-runs it for a newly found hole.
+    /// Both rely on repeat runs being harmless, and on what needs repairing being derived from the
+    /// data rather than from a stored marker.
+    async fn repair_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError>;
+
     // ---------------- Tabular Management ----------------
+    /// Rewrite any denormalised tabular copy of a namespace path that disagrees with the namespace
+    /// row it points at, and report how many rows were changed.
+    ///
+    /// Maintenance, not part of any request path: run from the post-migration hooks, after
+    /// [`CatalogStore::repair_namespace_path_casing_impl`], so that the copies adopt already
+    /// corrected namespace paths.
+    ///
+    /// Implementations must be idempotent and safe to retry, for the reasons given on
+    /// [`CatalogStore::repair_namespace_path_casing_impl`].
+    async fn repair_tabular_namespace_path_casing_impl(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<u64, CatalogBackendError>;
+
     async fn list_tabulars_impl(
         warehouse_id: WarehouseId,
         namespace_id: Option<NamespaceId>, // Filter by namespace
@@ -594,6 +675,8 @@ where
     async fn rename_tabular_impl(
         warehouse_id: WarehouseId,
         source_id: TabularId,
+        source_namespace_id: NamespaceId,
+        destination_namespace_id: NamespaceId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -766,6 +849,241 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
 
+    // ---------------- Grants ----------------
+    /// Apply a grant diff in one transaction, returning the grants actually created
+    /// and removed. Idempotent: re-granting creates nothing, re-revoking removes
+    /// nothing. Deletes are applied before writes, so a diff carrying the same grant
+    /// on both sides ends in the granted state.
+    async fn apply_grants_impl<'a>(
+        writes: &[GrantSpec],
+        deletes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AppliedGrants, ApplyGrantsStoreError>;
+
+    /// Insert grants, in the transaction that creates the resource they belong to.
+    /// Returns the grants actually created; an identical existing grant is skipped.
+    ///
+    /// Deliberately not [`Self::apply_grants_impl`] with an empty delete side: that path
+    /// serializes concurrent diffs per resource, and sets a transaction-local lock
+    /// timeout to do it that would then govern the rest of the caller's transaction.
+    /// The serialization exists for diffs that cross — each revoking what the other
+    /// adds — so an insert with no delete side has nothing to cross and needs none of it.
+    async fn insert_grants_impl<'a>(
+        writes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// Remove every grant held by a user, returning what was removed.
+    ///
+    /// Needed because users are soft-deleted, so no foreign key cascade fires for
+    /// them, and a returning account would otherwise regain its old grants.
+    async fn delete_grants_for_user_impl<'a>(
+        user_id: &UserId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// List direct grants matching `filter`.
+    async fn list_grants_impl(
+        filter: &GrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
+
+    /// One page of the direct grants held anywhere under `root`, keyset-paginated on
+    /// `(created_at, grant_id)` across every resource kind the root covers.
+    ///
+    /// No per-row authorization: the caller gates the whole subtree at the root, and one
+    /// answer there covers every member of the page.
+    async fn list_grants_in_subtree_impl(
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
+
+    /// How many namespaces a namespace-rooted subtree spans, the root included.
+    ///
+    /// Resolving the subtree is cheap; reading its grants is proportional to it. Callers
+    /// bound the expensive half by asking this first, so an oversized subtree is refused
+    /// with its actual size instead of running until a timeout.
+    async fn count_subtree_namespaces_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        catalog_state: Self::State,
+    ) -> Result<u64, ListGrantsStoreError>;
+
+    /// At most `limit` of the grants under `root` that match `filter`, plus whether more
+    /// remain — the read half of a revoke.
+    ///
+    /// Nothing here is authorized. The caller gates the whole batch at the root — one
+    /// content-independent answer covering everything beneath it — and that gate must
+    /// pass before this read runs, or a refusal reports what the subtree holds. The read
+    /// is split from the delete so no row lock is held across the authorizer call.
+    ///
+    /// Bounded rather than paginated: removed rows are gone, so re-issuing the same
+    /// request is the continuation. Termination is the caller's `created_before` ceiling,
+    /// which the store binds to the database's own clock when the caller supplies none
+    /// and reports back so the next call can repeat it.
+    ///
+    /// Grants on soft-deleted tabulars are always candidates, whatever `filter` says
+    /// about listing them: an undrop restores a table together with its grants.
+    async fn select_subtree_grant_candidates_impl(
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
+        limit: usize,
+        catalog_state: Self::State,
+    ) -> Result<GrantRevokeCandidates, ListGrantsStoreError>;
+
+    /// Remove exactly the rows named by `candidates`, returning what actually went.
+    ///
+    /// Idempotent: a candidate already revoked is simply absent from the result, so a
+    /// retry reports the delta rather than repeating it.
+    async fn revoke_grant_candidates_impl<'a>(
+        root: SubtreeGrantRoot,
+        candidates: &[GrantCandidate],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError>;
+
+    /// Every grant held by any of `principals` on any of `resources`.
+    ///
+    /// The authorization-evaluation fetch: an authorizer that resolves inherited
+    /// permissions itself asks for the request's resolved chain — server, project,
+    /// warehouse, the target's ancestor namespaces, and the targets — for the
+    /// principals the decision runs as. Narrowed on **both** axes, so neither a coarse
+    /// resource holding one grant per principal in the deployment nor a principal
+    /// holding one grant per table can make the answer large: the result is bounded by
+    /// chain size times privileges per level. Unpaginated and unordered.
+    ///
+    /// `principals` must be the **effective** set: the acting principal plus every role
+    /// they hold, transitively. `resources` must name everything that should count,
+    /// including [`GrantResource::Server`](crate::service::authz::GrantResource) —
+    /// nothing is implied. This resolves nothing itself, so an omitted role or ancestor
+    /// costs access rather than granting it. Tag definitions are not part of any
+    /// chain: a grant on a tag never bears on a decision about the objects it is
+    /// attached to unless the caller asks for that tag explicitly.
+    ///
+    /// Each returned grant echoes the matching entry of `resources`, so tables, views
+    /// and generic tables keep the kind the caller asked with — nothing is re-fetched
+    /// to reconstruct it. Entries must therefore be distinct per resource: naming the
+    /// same tabular twice with different kinds gets an unspecified one of them echoed.
+    /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
+    /// soft-deleted tabulars are included.
+    async fn list_grants_on_resources_impl(
+        principals: &[UserOrRoleId],
+        resources: &[GrantResource],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantSpec>, ListGrantsStoreError>;
+
+    // ---------------- Tag Management ----------------
+    async fn create_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        request: CatalogCreateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<TagDefinition, CreateTagDefinitionError>;
+
+    /// Return the tag definition scoped to its project, or `None` if absent (including
+    /// when it exists in a different project). Allowed values are fetched separately.
+    async fn get_tag_definition_impl(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError>;
+
+    /// Case-insensitive name lookup within the project (matches the `lower(name)`
+    /// unique index).
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError>;
+
+    async fn list_tag_definitions_impl(
+        project_id: &ProjectId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagDefinitionsResponse, ListTagDefinitionsError>;
+
+    /// The permitted values of an enumerated definition, sorted; empty for other kinds.
+    async fn get_tag_allowed_values_impl(
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<String>, CatalogBackendError>;
+
+    /// Replace `name`/`description`/`scope` and add (never remove) allowed values.
+    /// The widen-only / kind-immutable policy is enforced by the caller. Returns the
+    /// definition and its merged allowed values (read in the same transaction, empty
+    /// for non-enumerated) so the caller need not re-read after commit.
+    async fn update_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        request: UpdateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError>;
+
+    async fn delete_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), DeleteTagDefinitionError>;
+
+    /// Attach a definition to a target. Idempotent per (target, definition, source):
+    /// re-applying updates the value. Value legality is validated by the caller.
+    async fn apply_tag_impl<'a>(
+        tag_id: TagId,
+        tag_definition_id: TagDefinitionId,
+        target: TagTarget,
+        value: Option<&str>,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(Tag, bool), ApplyTagError>;
+
+    async fn remove_tag_impl<'a>(
+        tag_id: TagId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RemoveTagError>;
+
+    /// Atomically delete the `(target, definition, source)` attachment and return it
+    /// (or `None` if absent). Single-statement `DELETE ... RETURNING` in the write
+    /// transaction — no replica read, idempotent, and safe under concurrent deletes.
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError>;
+
+    /// The tags directly on `target`, each paired with its definition's name.
+    async fn list_tags_for_target_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
+    /// All direct column tags on `tabular_id` (every column with a tag), each paired
+    /// with its definition's name; the column is carried as the field-id in each
+    /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.
+    async fn list_column_tags_for_tabular_impl(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
+    /// Reverse lookup: the targets a definition is directly attached to, narrowed by
+    /// `filter` (all criteria combined with AND), keyset-paginated. No hierarchy expansion.
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        filter: &TagAttachmentFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError>;
+
+    /// Gather candidate effective tags for `target` (direct + ancestor tags with
+    /// containment distance and source). Unresolved/unfiltered; caller applies
+    /// visibility + most-specific-wins.
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError>;
+
     // ---------------- Role Assignment Management ----------------
     async fn sync_role_members_by_ident_impl<'a>(
         project_id: &ProjectId,
@@ -791,6 +1109,18 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
+
+    /// Every role each of `role_ids` is nested inside, transitively.
+    ///
+    /// Must return an entry for **every** id it was given: a role nested in
+    /// nothing maps to an empty vec rather than being absent. A short result is
+    /// treated as a backend error, because an omitted role cannot be told apart
+    /// from one with no ancestors, and reading it as none silently unscopes
+    /// every policy written against a parent role.
+    async fn list_role_ancestors_impl(
+        role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
@@ -989,6 +1319,7 @@ where
     // ------------- Tasks -------------
     async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
@@ -1046,6 +1377,7 @@ where
     /// If `queue_name` is `None`, cancel tasks in all queues.
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
+        legacy_queue_names: &[&TaskQueueName],
         filter: CancelTasksFilter,
         cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -1102,6 +1434,7 @@ where
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &crate::service::idempotency::IdempotencyKey,
+        endpoint: crate::api::endpoints::EndpointFlat,
         state: Self::State,
     ) -> Result<crate::service::idempotency::IdempotencyCheck>;
 

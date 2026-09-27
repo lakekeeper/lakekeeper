@@ -504,18 +504,20 @@ impl CatalogIndex {
                     .map(GenericTableId::new)
                     .map(|g| self.generic_tables.contains_key(&g))
             }
-            FgaType::User | FgaType::ModelVersion | FgaType::AuthModelId => None,
+            // Tag definitions are managed via the create_tag/delete_tag hooks and are
+            // not part of the catalog hierarchy index, so reconcile leaves them alone.
+            FgaType::User | FgaType::Tag | FgaType::ModelVersion | FgaType::AuthModelId => None,
         }
     }
 }
 
-fn split_fga(s: &str) -> Option<(FgaType, &str)> {
+pub(crate) fn split_fga(s: &str) -> Option<(FgaType, &str)> {
     use std::str::FromStr;
     let (ty, id) = s.split_once(':')?;
     Some((FgaType::from_str(ty).ok()?, id))
 }
 
-fn parse_uuid(s: &str) -> Option<uuid::Uuid> {
+pub(crate) fn parse_uuid(s: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(s).ok()
 }
 

@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT warehouse_id, table_id, schema_id,\n                      schema as \"schema!: sqlx::types::Json<serde_json::Value>\"\n               FROM table_schema\n               WHERE schema IS NOT NULL\n                 AND (warehouse_id, table_id, schema_id) > ($1, $2, $3)\n               ORDER BY warehouse_id, table_id, schema_id\n               LIMIT $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "table_schema",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "table_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "table_schema",
+            "name": "table_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "schema_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "table_schema",
+            "name": "schema_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "schema!: sqlx::types::Json<serde_json::Value>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "table_schema",
+            "name": "schema"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "084d8fa20a95ab0aed2b48c69e6ba8aa609c04dc9f748add23e89ab0a3f5ac5a"
+}

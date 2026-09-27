@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tag_definition WHERE project_id = $1 AND tag_definition_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "78defc0d955ffb8155d4938ab093a31378a3acd801995fb14328fceec07ab7bc"
+}

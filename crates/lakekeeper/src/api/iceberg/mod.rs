@@ -302,6 +302,25 @@ pub(crate) fn supported_endpoints() -> &'static [String] {
     &SUPPORTED_ENDPOINTS
 }
 
+/// [`supported_endpoints`] plus the spec's per-table signing route.
+///
+/// Signing is not in the common list because it is only reachable on S3
+/// warehouses that allow remote signing. It has to be advertised somewhere
+/// though: the route is the endpoint `remote-signing-config` implies, and a
+/// client that gates calls on this list would otherwise never make one.
+pub(crate) fn supported_endpoints_with_signing() -> &'static [String] {
+    static ENDPOINTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+        let mut endpoints = SUPPORTED_ENDPOINTS.clone();
+        endpoints.push(
+            crate::api::endpoints::SignEndpoint::S3RequestByTableName
+                .as_http_route()
+                .replace(" /catalog/", " /"),
+        );
+        endpoints
+    });
+    &ENDPOINTS
+}
+
 #[cfg(test)]
 mod test {
     use uuid::Uuid;

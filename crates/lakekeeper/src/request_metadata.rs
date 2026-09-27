@@ -32,6 +32,16 @@ const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
 pub const X_PROJECT_ID_HEADER: &str = "x-project-id";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 
+/// Request header by which a caller explicitly marks a request as an emergency
+/// override attempt. Captured only: it is recorded on [`RequestMetadata`] and
+/// offered to the [`Authorizer`](crate::service::authz::Authorizer), which
+/// decides whether it means anything at all. The built-in authorizers ignore
+/// it, so on its own the header changes no decision. Any value that is non-empty
+/// after trimming sets the flag and is retained, truncated, as the caller's stated
+/// reason for the audit record — send a ticket reference, e.g.
+/// `x-break-glass: INC-1234 undoing lockout forbid`.
+pub const X_BREAK_GLASS_HEADER: &str = "x-break-glass";
+
 pub const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
 pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
@@ -39,32 +49,59 @@ pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
 pub const X_PROJECT_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_PROJECT_ID_HEADER);
 pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUEST_ID_HEADER);
+pub const X_BREAK_GLASS_HEADER_NAME: HeaderName = HeaderName::from_static(X_BREAK_GLASS_HEADER);
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
+/// The `User-Agent` request header, recorded as the caller sent it.
+///
+/// Deliberately not parsed into a client taxonomy. The value is surfaced in the
+/// audit log, where a normalised form would be a reconstruction rather than
+/// evidence, and where classifying it would mean maintaining a parser against
+/// strings the caller chooses. Consumers classify; Lakekeeper records.
 #[derive(Debug, Clone)]
-pub enum UserAgent {
-    // User-Agent: PyIceberg/<version>
-    PyIceberg { version: String },
-    Unknown(String),
+pub struct UserAgent(String);
+
+/// Truncate `value` to at most `max_len` bytes without splitting a UTF-8 code
+/// point — a partial character would not survive JSON encoding.
+#[cfg(any(feature = "router", test))]
+fn truncate_at_char_boundary(value: &str, max_len: usize) -> &str {
+    let mut end = value.len().min(max_len);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 impl UserAgent {
-    #[cfg(feature = "router")]
-    fn parse(user_agent: &str) -> Self {
-        if let Some(version) = user_agent.strip_prefix("PyIceberg/") {
-            Self::PyIceberg {
-                version: version.to_string(),
-            }
-        } else {
-            Self::Unknown(user_agent.to_string())
-        }
+    /// Longest header value retained. The header is caller-controlled and is
+    /// recorded on every audit event, so it is bounded at capture.
+    #[cfg(any(feature = "router", test))]
+    const MAX_LEN: usize = 256;
+
+    #[cfg(any(feature = "router", test))]
+    pub(crate) fn parse(user_agent: &str) -> Self {
+        Self(truncate_at_char_boundary(user_agent, Self::MAX_LEN).to_string())
+    }
+
+    /// The header value, truncated at capture to a bounded length.
+    ///
+    /// Caller-supplied and unverified — see the audit-log documentation.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The version from a `PyIceberg/<version>` user agent, if this is one.
+    #[must_use]
+    pub fn pyiceberg_version(&self) -> Option<&str> {
+        self.0.strip_prefix("PyIceberg/")
     }
 }
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
     /// Full bypass including data-plane actions.
@@ -91,6 +128,8 @@ impl PrivilegeSource {
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
+    /// When the request reached Lakekeeper's middleware.
+    received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
     token_roles: Option<TokenRoles>,
@@ -107,6 +146,11 @@ pub struct RequestMetadata {
     engines: MatchedEngines,
     idempotency_key: Option<IdempotencyKey>,
     is_instance_admin: bool,
+    /// The reason the caller stated in [`X_BREAK_GLASS_HEADER`]: `Some` iff the
+    /// header was sent and held something after trimming, truncated to a bounded
+    /// length. Captured as sent, save for undecodable bytes; whether an emergency
+    /// override is permitted, and for what, is the authorizer's business.
+    break_glass: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +246,21 @@ impl RequestMetadata {
         self.is_instance_admin
     }
 
+    /// Whether the caller sent [`X_BREAK_GLASS_HEADER`] with a value that was
+    /// non-empty after trimming.
+    #[must_use]
+    pub fn break_glass_requested(&self) -> bool {
+        self.break_glass.is_some()
+    }
+
+    /// The reason the caller stated when marking the request as an emergency
+    /// override, for audit records. `Some("true")` is a caller who sent the bare
+    /// conventional value rather than a reason.
+    #[must_use]
+    pub fn break_glass_reason(&self) -> Option<&str> {
+        self.break_glass.as_deref()
+    }
+
     /// Set the matched trusted engines for this request.
     pub fn set_engines(&mut self, engines: MatchedEngines) -> &mut Self {
         self.engines = engines;
@@ -274,6 +333,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id,
             project_id: None,
             authentication: None,
@@ -287,6 +347,7 @@ impl RequestMetadata {
             admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
+            break_glass: None,
         }
     }
 
@@ -339,6 +400,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_unauthenticated() -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id: Uuid::now_v7(),
             project_id: None,
             authentication: None,
@@ -352,6 +414,7 @@ impl RequestMetadata {
             admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
+            break_glass: None,
         }
     }
 
@@ -368,6 +431,29 @@ impl RequestMetadata {
     ) -> &mut Self {
         self.idempotency_key = Some(key);
         self
+    }
+
+    /// Set the stated reason, as if [`X_BREAK_GLASS_HEADER`] had been sent with
+    /// this value. Lets tests exercise an authorizer's handling of the flag
+    /// without going through header parsing.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_break_glass(&mut self, reason: Option<String>) -> &mut Self {
+        self.break_glass = reason;
+        self
+    }
+
+    /// The project the request itself names, before any default is applied.
+    ///
+    /// [`Self::preferred_project_id`] answers "which project should this request read", folding
+    /// in the configured default. This answers the narrower question "did the caller say which
+    /// project" — which is what an authorizer needs to tell a caller who named the wrong
+    /// project apart from one who named none and got the default.
+    ///
+    /// The two cannot be told apart from `preferred_project_id` alone: a request naming the
+    /// default project and a request naming nothing return the same value.
+    #[must_use]
+    pub fn requested_project_id(&self) -> Option<&ArcProjectId> {
+        self.project_id.as_ref()
     }
 
     #[must_use]
@@ -463,6 +549,15 @@ impl RequestMetadata {
         &self.actor
     }
 
+    /// The request's actor, rendered for an audit event.
+    ///
+    /// The one way to put this request's actor on a record, so every record
+    /// raised while serving it agrees on who the caller is.
+    #[must_use]
+    pub fn audit_actor(&self) -> crate::service::events::backends::audit::AuditActor<'_> {
+        crate::service::events::backends::audit::AuditActor(&self.actor)
+    }
+
     #[must_use]
     pub fn authentication(&self) -> Option<&Authentication> {
         self.authentication.as_ref()
@@ -495,6 +590,20 @@ impl RequestMetadata {
             .map(Arc::new)
             .or(self.preferred_project_id())
             .ok_or(ProjectIdMissing)
+    }
+
+    /// When the request reached Lakekeeper's middleware. Time limits that must
+    /// fit inside `LAKEKEEPER__MAX_REQUEST_TIME` count from here.
+    #[must_use]
+    pub fn received_at(&self) -> tokio::time::Instant {
+        self.received_at
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_received_at(mut self, received_at: tokio::time::Instant) -> Self {
+        self.received_at = received_at;
+        self
     }
 
     /// Get the host that the request was made to.
@@ -575,25 +684,42 @@ pub struct RequestMetadataTestBuilder {
     pub is_instance_admin: bool,
     #[builder(default, setter(strip_option))]
     pub token_roles: Option<TokenRoles>,
+    /// Roles a post-authentication admission gate resolved for the caller. In
+    /// production only the auth middleware sets these (via the `pub(crate)`
+    /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests
+    /// construct a request that carries them.
+    #[builder(default, setter(strip_option))]
+    pub admission_roles: Option<TokenRoles>,
+    /// The `User-Agent` header the caller sent, as captured by the request
+    /// middleware. Lets tests exercise the audit log's `user_agent` field.
+    #[builder(default, setter(strip_option))]
+    pub user_agent: Option<UserAgent>,
+    /// Fixed request id. Random by default, as in production; set it where a
+    /// test compares a whole emitted record against a committed one, which a
+    /// fresh uuid per run would make impossible.
+    #[builder(default = Uuid::now_v7())]
+    pub request_id: Uuid,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
         Self {
-            request_id: Uuid::now_v7(),
+            received_at: tokio::time::Instant::now(),
+            request_id: b.request_id,
             authentication: b.authentication,
             base_url: b.base_url,
             actor: b.actor.into(),
             project_id: b.project_id,
             matched_path: b.matched_path,
             request_method: b.request_method,
-            user_agent: None,
+            user_agent: b.user_agent,
             engines: MatchedEngines::default(),
             token_roles: b.token_roles,
-            admission_roles: None,
+            admission_roles: b.admission_roles,
             idempotency_key: None,
             is_instance_admin: b.is_instance_admin,
+            break_glass: None,
         }
     }
 }
@@ -656,6 +782,8 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .and_then(|hv| hv.to_str().ok())
         .map(UserAgent::parse);
 
+    let break_glass = break_glass_from_headers(&headers);
+
     let idempotency_key = if CONFIG.idempotency.enabled {
         match IdempotencyKey::from_headers(&headers) {
             Ok(key) => key,
@@ -666,6 +794,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     };
 
     request.extensions_mut().insert(RequestMetadata {
+        received_at: tokio::time::Instant::now(),
         request_id,
         authentication: None,
         token_roles: None,
@@ -679,6 +808,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         engines: MatchedEngines::default(),
         idempotency_key,
         is_instance_admin: false,
+        break_glass,
     });
     next.run(request).await
 }
@@ -697,6 +827,25 @@ pub fn determine_forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Extract the break-glass justification from [`X_BREAK_GLASS_HEADER`], if
+/// any non-empty value was sent. Bounded to the same length as the
+/// `User-Agent` capture, for the same reason: caller-controlled and recorded
+/// on every audit event.
+#[cfg(any(feature = "router", test))]
+fn break_glass_from_headers(headers: &HeaderMap) -> Option<String> {
+    // Read as bytes, not `to_str`: that accepts only visible ASCII, so a reason
+    // carrying an umlaut or a dash the sender's keyboard produced would drop the
+    // whole claim — flag included — and the event would not record that an override
+    // was requested at all. Losing the evidence is worse than mangling one
+    // character, so undecodable bytes are replaced rather than rejected.
+    let value = String::from_utf8_lossy(headers.get(X_BREAK_GLASS_HEADER)?.as_bytes());
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(truncate_at_char_boundary(value, UserAgent::MAX_LEN).to_string())
 }
 
 pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
@@ -775,6 +924,88 @@ mod test {
     use http::{HeaderMap, header::HeaderValue};
 
     use super::*;
+
+    /// The audit log records the user agent as the caller sent it, so the
+    /// header must survive capture byte-for-byte. A parsed representation that
+    /// only kept the version would make the recorded value a reconstruction
+    /// rather than evidence.
+    #[test]
+    fn a_user_agent_is_captured_verbatim() {
+        for raw in [
+            "PyIceberg/0.9.1",
+            "Trino/476",
+            "Apache-Spark/3.5.1 (Scala/2.12)",
+            "",
+        ] {
+            assert_eq!(UserAgent::parse(raw).as_str(), raw);
+        }
+    }
+
+    /// The two project accessors answer different questions, and the difference is the
+    /// whole reason the narrower one exists: a request that names no project still has a
+    /// preferred one when a default is configured, and a consumer that cannot tell those
+    /// apart cannot report "you named the wrong project" without also rejecting callers who
+    /// named nothing at all.
+    #[test]
+    fn a_requested_project_is_distinct_from_a_preferred_one() {
+        let named = ProjectId::from(uuid::Uuid::from_u128(1));
+        let mut with_header = RequestMetadata::new_unauthenticated();
+        with_header.with_project_id(named.clone());
+        assert_eq!(
+            with_header.requested_project_id().map(AsRef::as_ref),
+            Some(&named)
+        );
+        assert_eq!(with_header.preferred_project_id().as_deref(), Some(&named));
+
+        let without_header = RequestMetadata::new_unauthenticated();
+        assert_eq!(
+            without_header.requested_project_id(),
+            None,
+            "a request that names no project must say so, whatever the default is"
+        );
+        assert_eq!(
+            without_header.preferred_project_id(),
+            DEFAULT_PROJECT_ID.clone(),
+            "while the preferred project still falls back to the configured default"
+        );
+    }
+
+    /// The header is caller-controlled and lands on every audit record, so its
+    /// length is bounded at capture rather than at emit.
+    #[test]
+    fn an_overlong_user_agent_is_truncated() {
+        let raw = "x".repeat(UserAgent::MAX_LEN * 2);
+        let captured = UserAgent::parse(&raw);
+        assert_eq!(captured.as_str().len(), UserAgent::MAX_LEN);
+        assert!(raw.starts_with(captured.as_str()));
+    }
+
+    /// Truncation must not split a multi-byte character — a partial code point
+    /// would render as invalid JSON in the audit log.
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // 'ä' is two bytes, so a 256-byte cut lands mid-character.
+        let raw = "ä".repeat(UserAgent::MAX_LEN);
+        let captured = UserAgent::parse(&raw);
+        assert!(captured.as_str().len() <= UserAgent::MAX_LEN);
+        assert!(raw.starts_with(captured.as_str()));
+    }
+
+    /// The ADLS SAS-property workaround needs the `PyIceberg` version; it is
+    /// derived from the raw header rather than stored separately.
+    #[test]
+    fn a_pyiceberg_version_is_derived_from_the_raw_header() {
+        assert_eq!(
+            UserAgent::parse("PyIceberg/0.9.1").pyiceberg_version(),
+            Some("0.9.1")
+        );
+        assert_eq!(UserAgent::parse("Trino/476").pyiceberg_version(), None);
+        // Case-sensitive prefix: a different product is not PyIceberg.
+        assert_eq!(
+            UserAgent::parse("pyiceberg/0.9.1").pyiceberg_version(),
+            None
+        );
+    }
 
     #[test]
     fn test_bypass_matrix() {
@@ -1096,6 +1327,77 @@ mod test {
             result,
             Some("https://example.com/api/lakekeeper".to_string())
         );
+    }
+
+    #[test]
+    fn break_glass_header_nonempty_value_activates_and_is_retained() {
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static("true"));
+        assert_eq!(break_glass_from_headers(&headers).as_deref(), Some("true"));
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_static("INC-1234 undoing lockout forbid"),
+        );
+        assert_eq!(
+            break_glass_from_headers(&headers).as_deref(),
+            Some("INC-1234 undoing lockout forbid")
+        );
+    }
+
+    #[test]
+    fn break_glass_header_absent_or_empty_is_inactive() {
+        let headers = HeaderMap::new();
+        assert!(break_glass_from_headers(&headers).is_none());
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static(""));
+        assert!(break_glass_from_headers(&headers).is_none());
+    }
+
+    /// A reason is free-form prose an operator types under pressure, so it routinely
+    /// carries a non-ASCII character. `HeaderValue::to_str` accepts only visible
+    /// ASCII, and rejecting on that basis would discard the claim itself, not just
+    /// the wording — leaving no record that an override was requested.
+    #[test]
+    fn break_glass_reason_survives_non_ascii_and_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes("INC-1234 Störfall behoben".as_bytes()).unwrap(),
+        );
+        assert_eq!(
+            break_glass_from_headers(&headers).as_deref(),
+            Some("INC-1234 Störfall behoben")
+        );
+
+        // Whitespace-only is no reason at all, and must not set the flag.
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_static("   "));
+        assert!(break_glass_from_headers(&headers).is_none());
+
+        // Undecodable bytes are replaced, never dropped: the claim still records.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_BREAK_GLASS_HEADER,
+            HeaderValue::from_bytes(&[b'I', b'N', b'C', 0xFF]).unwrap(),
+        );
+        assert!(break_glass_from_headers(&headers).is_some_and(|reason| reason.starts_with("INC")));
+    }
+
+    #[test]
+    fn break_glass_reason_is_bounded() {
+        let long = "x".repeat(10_000);
+        let mut headers = HeaderMap::new();
+        headers.insert(X_BREAK_GLASS_HEADER, HeaderValue::from_str(&long).unwrap());
+        let reason = break_glass_from_headers(&headers).unwrap();
+        assert!(reason.len() < long.len());
+        assert_eq!(reason.len(), UserAgent::MAX_LEN);
+    }
+
+    #[test]
+    fn break_glass_default_inactive_on_test_metadata() {
+        let metadata = RequestMetadata::new_unauthenticated();
+        assert!(!metadata.break_glass_requested());
+        assert!(metadata.break_glass_reason().is_none());
     }
 
     #[test]

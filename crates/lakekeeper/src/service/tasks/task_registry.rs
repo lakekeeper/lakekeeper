@@ -103,6 +103,11 @@ struct RegisteredQueue {
     /// fast with `400` instead of producing a task the worker can't decode
     /// at pickup. Built from the `D` generic at `register_queue` time.
     payload_validator_fn: ValidatorFn,
+    /// Names this queue was known by before a rename. The config endpoints
+    /// resolve these to the queue's current name so requests against an old
+    /// `task-queue/{name}/config` path keep working. From
+    /// `TaskConfig::legacy_queue_names` at registration time.
+    legacy_names: Vec<&'static TaskQueueName>,
 }
 
 impl std::fmt::Debug for RegisteredQueue {
@@ -112,6 +117,7 @@ impl std::fmt::Debug for RegisteredQueue {
             .field("schema_validator_fn", &"Fn(...)")
             .field("schedule_eligibility_fn", &"Fn(...)")
             .field("payload_validator_fn", &"Fn(...)")
+            .field("legacy_names", &self.legacy_names)
             .finish()
     }
 }
@@ -171,6 +177,26 @@ impl RegisteredTaskQueues {
             .await
             .get_key_value(queue_name)
             .map(|(k, _)| *k)
+    }
+
+    /// Resolve a possibly-legacy queue name to the current name of the queue
+    /// that answers to it. Returns the canonical `&'static TaskQueueName` when
+    /// `queue_name` is a registered queue or one of its pre-rename aliases;
+    /// `None` when no registered queue claims it. Lets the config endpoints
+    /// accept requests against an old `task-queue/{name}/config` path.
+    #[must_use]
+    pub async fn resolve_queue_name(
+        &self,
+        queue_name: &TaskQueueName,
+    ) -> Option<&'static TaskQueueName> {
+        let queues = self.queues.read().await;
+        if let Some((name, _)) = queues.get_key_value(queue_name) {
+            return Some(*name);
+        }
+        queues
+            .iter()
+            .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
+            .map(|(name, _)| *name)
     }
 
     /// Structural payload validator for the schedule endpoint. Returns
@@ -352,6 +378,7 @@ impl TaskQueueRegistry {
                 schema_validator_fn,
                 schedule_eligibility_fn,
                 payload_validator_fn,
+                legacy_names: T::legacy_queue_names(),
             },
         ) {
             tracing::warn!("Overwriting registration for queue `{queue_name}`");
@@ -378,7 +405,7 @@ impl TaskQueueRegistry {
 
         let catalog_state_clone_for_tabular_expiration = catalog_state.clone();
         self.register_queue::<
-            tabular_expiration_queue::TabularExpirationQueueConfig,
+            tabular_expiration_queue::SoftDeletionQueueConfig,
             tabular_expiration_queue::TabularExpirationPayload,
         >(
             QueueRegistration {
@@ -398,7 +425,7 @@ impl TaskQueueRegistry {
                         }
                     })
                 }),
-                num_workers: CONFIG.task_tabular_expiration_workers,
+                num_workers: CONFIG.task_soft_deletion_workers,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
             },

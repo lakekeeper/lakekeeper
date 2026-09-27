@@ -150,6 +150,12 @@ pub enum OpenFGAError {
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
+    #[error(
+        "OpenFGA writes at most {max} tuples per batch, but the grants API accepts diffs of \
+         up to {required} entries — a full diff could not be applied atomically. These two \
+         limits must be raised together."
+    )]
+    GrantBatchLimitTooSmall { required: usize, max: i32 },
     #[error(transparent)]
     Parse(#[from] ParseOpenFgaEntityError),
     #[error("Project ID could not be inferred from request. Please the x-project-id header.")]
@@ -226,6 +232,7 @@ impl AuthorizationFailureSource for OpenFGAError {
             }
             e @ (OpenFGAError::ActiveAuthModelNotFound(_)
             | OpenFGAError::StoreNotFound(_)
+            | OpenFGAError::GrantBatchLimitTooSmall { .. }
             | OpenFGAError::InvalidQuery(_)) => {
                 ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(e)))
             }
@@ -242,7 +249,8 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::BatchCheckError(_)
             | OpenFGAError::MissingItemInBatchCheck(_)
             | OpenFGAError::ActiveAuthModelNotFound(_)
-            | OpenFGAError::StoreNotFound(_) => {
+            | OpenFGAError::StoreNotFound(_)
+            | OpenFGAError::GrantBatchLimitTooSmall { .. } => {
                 AuthorizationFailureReason::InternalAuthorizationError
             }
             OpenFGAError::Parse(e) => e.to_failure_reason(),

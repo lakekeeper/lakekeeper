@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use axum_prometheus::metrics;
 use iceberg::NamespaceIdent;
 use moka::{
     future::Cache,
@@ -18,13 +17,11 @@ use crate::{
     CONFIG, WarehouseId,
     service::{
         NamespaceId, NamespaceWithParent,
-        cache_metrics::{
-            METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
-            METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
-            METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
-        },
+        cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
-        catalog_store::namespace::NamespaceHierarchy,
+        catalog_store::namespace::{
+            NamespaceHierarchy, is_same_namespace_path_ignoring_ascii_case,
+        },
     },
 };
 
@@ -128,6 +125,27 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     }
 }
 
+/// Drop a single `(warehouse_id, ident)` → id mapping.
+///
+/// Needed after a move: the namespace keeps its id but its path changes, so the entry for
+/// the *old* path would otherwise keep resolving until TTL. Relying on the `Replaced`
+/// eviction cascade is not enough — it only fires when a `NAMESPACE_CACHE` entry actually
+/// exists to be replaced, while `IDENT_TO_ID_CACHE` entries can outlive it (see the
+/// residual note in `namespace_cache_invalidate`).
+#[allow(dead_code)] // Only required for listeners which are behind a feature flag
+pub(super) async fn namespace_cache_invalidate_ident(
+    warehouse_id: WarehouseId,
+    ident: &NamespaceIdent,
+) {
+    if CONFIG.cache.namespace.enabled {
+        tracing::debug!("Invalidating namespace ident {ident:?} from ident cache");
+        IDENT_TO_ID_CACHE
+            .invalidate(&(warehouse_id, namespace_ident_to_cache_key(ident)))
+            .await;
+        update_cache_size_metric();
+    }
+}
+
 #[allow(dead_code)] // Only required for listeners which are behind a feature flag
 pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
@@ -198,13 +216,9 @@ pub(super) async fn namespace_cache_insert_multiple(
 
 /// Update the cache size metric with the current number of entries
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_cache_size_metric() {
-    let () = &*METRICS_INITIALIZED; // Ensure metrics are described
-    metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace")
-        .set(NAMESPACE_CACHE.entry_count() as f64);
-    metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace_ident_to_id")
-        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
+    set_cache_size("namespace", NAMESPACE_CACHE.entry_count());
+    set_cache_size("namespace_ident_to_id", IDENT_TO_ID_CACHE.entry_count());
 }
 
 /// Get a namespace by ID, reconstructing the hierarchy from cached parents.
@@ -217,13 +231,13 @@ pub(super) async fn namespace_cache_get_by_id(
     // Reconstruct hierarchy by collecting parents
     if let Some(hierarchy) = build_hierarchy_from_cache(&cached).await {
         tracing::debug!("Namespace id {namespace_id} found in cache with valid parent versions");
-        metrics::counter!(METRIC_NAMESPACE_CACHE_HITS, "cache_type" => "namespace").increment(1);
+        record_cache_hit("namespace");
         Some(hierarchy)
     } else {
         tracing::debug!(
             "Failed to build complete hierarchy for namespace id {namespace_id} from cache"
         );
-        metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace").increment(1);
+        record_cache_miss("namespace");
         None
     }
 }
@@ -236,12 +250,10 @@ pub(super) async fn namespace_cache_get_by_ident(
     update_cache_size_metric();
     let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
     let Some(namespace_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
-        metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace_ident_to_id")
-            .increment(1);
+        record_cache_miss("namespace_ident_to_id");
         return None;
     };
-    metrics::counter!(METRIC_NAMESPACE_CACHE_HITS, "cache_type" => "namespace_ident_to_id")
-        .increment(1);
+    record_cache_hit("namespace_ident_to_id");
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
     let result = namespace_cache_get_by_id(namespace_id).await;
     if result.is_none() {
@@ -249,6 +261,35 @@ pub(super) async fn namespace_cache_get_by_ident(
             "Namespace id {namespace_id} not found in cache, invalidating stale ident mapping for {namespace_ident}"
         );
         IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+        return None;
+    }
+
+    // The id resolved, but that does not mean it still answers to the name we were asked for.
+    // A move retires only the canonical `previous_ident`, and the `Replaced` cascade keys off
+    // the canonical ident too — so an entry primed by an earlier caller's case variant outlives
+    // the move and would serve the pre-move path as a *hit*. Compare what we resolved against
+    // what was requested and treat a mismatch as the miss it is.
+    //
+    // Shares `is_same_namespace_path_ignoring_ascii_case` with the move guard deliberately: both
+    // ask whether two paths name the same namespace, and both need its conservative direction.
+    // Reporting a difference the catalog does not have costs a DB read here; wrongly reporting a
+    // match would serve exactly the stale hit this check exists to prevent. See that helper for
+    // why the folding is ASCII-only, and the collation drift test that pins it.
+    if let Some(hierarchy) = &result {
+        // `NAMESPACE_CACHE` stores canonical-case entries with no `requested_ident`, so this is
+        // the canonical path.
+        if !is_same_namespace_path_ignoring_ascii_case(
+            hierarchy.namespace_ident().as_ref(),
+            namespace_ident.as_ref(),
+        ) {
+            tracing::debug!(
+                "Namespace id {namespace_id} no longer answers to {namespace_ident}; retiring the \
+                 stale ident mapping"
+            );
+            IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+            record_cache_miss("namespace_ident_to_id");
+            return None;
+        }
     }
     result
 }
@@ -407,7 +448,11 @@ async fn build_hierarchy_from_cache(namespace: &NamespaceWithParent) -> Option<N
             current_namespace.namespace_ident(),
             parent_cached.namespace_ident(),
         ) {
-            tracing::debug!(
+            // `warn!`, not `debug!`: both write paths now guarantee the prefix matches, so this
+            // fires either after a parent rename (expected, self-healing) or because a write path
+            // regressed — and the latter is otherwise a silent doubling of every read for the
+            // affected subtree, with no metric to notice it by.
+            tracing::warn!(
                 "Detected parent ident mismatch for namespace {}: Parent namespace has name `{}`, which is not the parent. Invalidating Cache.",
                 current_namespace.namespace_ident(),
                 parent_cached.namespace_ident()
@@ -436,10 +481,14 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
     let child = child_ident.as_ref();
     let parent = found_parent_ident.as_ref();
 
-    // Both idents come from NAMESPACE_CACHE which only stores canonical case
-    // (requested_ident is stripped at insertion), so child_canonical[:-1] and
-    // parent_canonical are byte-identical by construction for any valid
-    // hierarchy. A mismatch here indicates stale cache state (e.g. rename).
+    // Both idents come from NAMESPACE_CACHE, which only ever stores canonical case
+    // (`requested_ident` is stripped at insertion). The stored prefix is byte-identical to the
+    // parent row's name because both write paths that place a namespace under a parent take the
+    // ancestor segments from the locked parent row rather than from the caller — see
+    // `lock_parent_namespace` in `lakekeeper-storage-postgres`. So a mismatch here means stale
+    // cache state: a renamed parent whose descendants still hold the old prefix. That is what this
+    // check exists to detect, and it is the *only* detector, because the version gate above passes
+    // a parent that the rename itself refreshed.
     let expected_parent = &child[..child.len().saturating_sub(1)];
     expected_parent == parent
 }
@@ -503,6 +552,27 @@ impl EventListener for NamespaceCacheEventListener {
             request_metadata: _request_metadata,
         } = event;
         namespace_cache_insert(updated_namespace).await;
+        Ok(())
+    }
+
+    async fn namespace_moved(&self, event: events::MoveNamespaceEvent) -> anyhow::Result<()> {
+        let events::MoveNamespaceEvent {
+            warehouse_id,
+            namespace,
+            previous_ident,
+            previous_parent: _previous_parent,
+            request_metadata: _request_metadata,
+        } = event;
+
+        // Order matters. Retire the old path first: until it is gone the namespace is
+        // reachable under a name it no longer has, and on this replica that is a stale
+        // *hit*, not a miss. Only then publish the new state.
+        //
+        // Moves are leaf-only, so no descendant entries can be holding a stale prefix —
+        // that assumption has to be revisited if recursive moves are added. A move also writes a
+        // canonical destination prefix, so `is_parent_ident` cannot fire for the moved row itself.
+        namespace_cache_invalidate_ident(warehouse_id, &previous_ident).await;
+        namespace_cache_insert(namespace).await;
         Ok(())
     }
 }
@@ -829,6 +899,384 @@ mod tests {
         // Verify ident-to-id cache is also invalidated
         let cached_by_ident = namespace_cache_get_by_ident(&namespace_ident, warehouse_id).await;
         assert!(cached_by_ident.is_none());
+    }
+
+    /// A move keeps the namespace id but changes its path. The old path must stop
+    /// resolving and the new one must start — otherwise this replica serves a stale *hit*
+    /// (not a miss) for a name the namespace no longer has, until TTL.
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn test_namespace_moved_retires_old_ident_and_publishes_new() {
+        use crate::{api::RequestMetadata, service::events::EventListener as _};
+
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let old_ident = NamespaceIdent::from_vec(vec!["move_src".to_string()]).unwrap();
+        let new_ident = NamespaceIdent::from_vec(vec!["move_dst".to_string()]).unwrap();
+
+        let before = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                old_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            None,
+        );
+        namespace_cache_insert(before).await;
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_some(),
+            "precondition: the old path resolves before the move"
+        );
+
+        // Version bumps on a rename (the DB trigger fires on namespace_name changes), so
+        // the insert is not rejected by the version gate.
+        let after = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                new_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                1,
+            ),
+            None,
+        );
+
+        NamespaceCacheEventListener
+            .namespace_moved(events::MoveNamespaceEvent {
+                warehouse_id,
+                namespace: after,
+                previous_ident: old_ident.clone(),
+                previous_parent: None,
+                request_metadata: Arc::new(RequestMetadata::new_unauthenticated()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_none(),
+            "the pre-move path must no longer resolve"
+        );
+        let by_new = namespace_cache_get_by_ident(&new_ident, warehouse_id).await;
+        assert_eq!(
+            by_new.map(|h| h.namespace_id()),
+            Some(namespace_id),
+            "the post-move path must resolve to the same namespace id"
+        );
+        assert_eq!(
+            namespace_cache_get_by_id(namespace_id)
+                .await
+                .map(|h| h.namespace_ident().clone()),
+            Some(new_ident),
+            "the by-id entry must carry the new canonical path"
+        );
+    }
+
+    /// `is_parent_ident` is the only detector of a descendant still holding a renamed parent's old
+    /// prefix — the version gate cannot see it, because the rename refreshes the parent entry. This
+    /// pins the mismatch branch, which nothing exercised before: the hierarchy test above only
+    /// covers the passing direction.
+    ///
+    /// It is also what made a caller-cased stored prefix so expensive: the row could never be
+    /// served from cache, and the reload re-inserted the same bytes and failed identically. Both
+    /// write paths now canonicalise the prefix, so this fires only for a genuine stale prefix.
+    #[tokio::test]
+    async fn namespace_cache_get_by_id_misses_when_child_prefix_disagrees_with_parent() {
+        let warehouse_id = WarehouseId::new_random();
+        let parent_id = NamespaceId::new_random();
+        let child_id = NamespaceId::new_random();
+
+        // Parent stored as `a/B`, child holding `a/b/c` — what a caller-cased create used to store.
+        namespace_cache_insert_multiple(vec![
+            test_namespace_with_parent(
+                test_namespace(
+                    parent_id,
+                    NamespaceIdent::from_vec(vec!["a".to_string(), "B".to_string()]).unwrap(),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                None,
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    child_id,
+                    NamespaceIdent::from_vec(vec![
+                        "a".to_string(),
+                        "b".to_string(),
+                        "c".to_string(),
+                    ])
+                    .unwrap(),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((parent_id, 0)),
+            ),
+        ])
+        .await;
+
+        assert!(
+            namespace_cache_get_by_id(child_id).await.is_none(),
+            "a child whose prefix does not byte-match its parent's ident must not be served"
+        );
+        assert!(
+            NAMESPACE_CACHE.get(&child_id).await.is_none(),
+            "the offending child entry is invalidated"
+        );
+        assert!(
+            NAMESPACE_CACHE.get(&parent_id).await.is_some(),
+            "the parent entry stays resident — only the child is invalidated"
+        );
+    }
+
+    /// The converse, at depth 3, so the walk crosses more than one parent link.
+    #[tokio::test]
+    async fn namespace_cache_get_by_id_hits_when_the_prefix_is_canonical() {
+        let warehouse_id = WarehouseId::new_random();
+        let grandparent_id = NamespaceId::new_random();
+        let parent_id = NamespaceId::new_random();
+        let child_id = NamespaceId::new_random();
+
+        let path = |parts: &[&str]| {
+            NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+        };
+
+        namespace_cache_insert_multiple(vec![
+            test_namespace_with_parent(
+                test_namespace(
+                    grandparent_id,
+                    path(&["a"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                None,
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    parent_id,
+                    path(&["a", "B"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((grandparent_id, 0)),
+            ),
+            test_namespace_with_parent(
+                test_namespace(
+                    child_id,
+                    path(&["a", "B", "c"]),
+                    warehouse_id,
+                    Some(Utc::now()),
+                    0,
+                ),
+                Some((parent_id, 0)),
+            ),
+        ])
+        .await;
+
+        let hierarchy = namespace_cache_get_by_id(child_id)
+            .await
+            .expect("a canonical prefix chain must be served from cache");
+        assert_eq!(hierarchy.parents.len(), 2, "both ancestors were resolved");
+    }
+
+    /// A by-name lookup with non-canonical case primes **two** `IDENT_TO_ID_CACHE` keys: the
+    /// caller's case and the canonical one. A move retires only the canonical `previous_ident`,
+    /// and the `Replaced` cascade also keys off the canonical ident — so the case-variant key
+    /// survives, still pointing at a live namespace under its *new* name.
+    ///
+    /// Without a check that the resolved namespace still answers to the requested name, that is
+    /// a stale **hit**: the pre-move path keeps returning 200 until TTL.
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn test_namespace_moved_retires_case_variant_old_ident() {
+        use crate::{api::RequestMetadata, service::events::EventListener as _};
+
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let canonical_old = NamespaceIdent::from_vec(vec!["variant_src".to_string()]).unwrap();
+        let variant_old = NamespaceIdent::from_vec(vec!["VaRiAnt_SrC".to_string()]).unwrap();
+        let new_ident = NamespaceIdent::from_vec(vec!["variant_dst".to_string()]).unwrap();
+
+        // What a by-name lookup with the caller's casing stores: the entry is canonical, the
+        // requested ident is the caller's, and both ident keys are primed.
+        namespace_cache_insert(NamespaceWithParent {
+            namespace: test_namespace(
+                namespace_id,
+                canonical_old.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            parent: None,
+            requested_ident: Some(variant_old.clone()),
+        })
+        .await;
+        assert!(
+            namespace_cache_get_by_ident(&variant_old, warehouse_id)
+                .await
+                .is_some(),
+            "precondition: the caller's casing resolves before the move"
+        );
+
+        NamespaceCacheEventListener
+            .namespace_moved(events::MoveNamespaceEvent {
+                warehouse_id,
+                namespace: test_namespace_with_parent(
+                    test_namespace(
+                        namespace_id,
+                        new_ident.clone(),
+                        warehouse_id,
+                        Some(Utc::now()),
+                        1,
+                    ),
+                    None,
+                ),
+                previous_ident: canonical_old.clone(),
+                previous_parent: None,
+                request_metadata: Arc::new(RequestMetadata::new_unauthenticated()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            namespace_cache_get_by_ident(&canonical_old, warehouse_id)
+                .await
+                .is_none(),
+            "the canonical pre-move path must no longer resolve"
+        );
+        assert!(
+            namespace_cache_get_by_ident(&variant_old, warehouse_id)
+                .await
+                .is_none(),
+            "a case variant of the pre-move path must not resolve either — it names a path \
+             that no longer exists"
+        );
+        assert_eq!(
+            namespace_cache_get_by_ident(&new_ident, warehouse_id)
+                .await
+                .map(|h| h.namespace_id()),
+            Some(namespace_id),
+            "the post-move path must still resolve"
+        );
+    }
+
+    /// `namespace_cache_invalidate` removes via `Op::Remove`, which fires the eviction listener
+    /// with cause `Explicit`. That listener is what retires the canonical `IDENT_TO_ID_CACHE`
+    /// key — so the cascade must be observable immediately after the call, not merely
+    /// eventually. Asserted on the ident cache directly: going through
+    /// `namespace_cache_get_by_ident` would pass either way, since it invalidates a dangling
+    /// key itself when the by-id load misses.
+    #[tokio::test]
+    async fn test_namespace_cache_invalidate_cascades_to_ident_key_synchronously() {
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let ns_ident = NamespaceIdent::from_vec(vec!["cascade_probe".to_string()]).unwrap();
+        let ident_key = (
+            warehouse_id,
+            namespace_ident_to_cache_key(&ns_ident.clone()),
+        );
+
+        namespace_cache_insert(test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                ns_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            None,
+        ))
+        .await;
+        assert_eq!(
+            IDENT_TO_ID_CACHE.get(&ident_key).await,
+            Some(namespace_id),
+            "precondition: the ident key is primed"
+        );
+
+        namespace_cache_invalidate(namespace_id).await;
+
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
+            "the primary entry is gone"
+        );
+        assert!(
+            IDENT_TO_ID_CACHE.get(&ident_key).await.is_none(),
+            "the Explicit-cause eviction listener must have retired the ident key by the time \
+             namespace_cache_invalidate returns"
+        );
+    }
+
+    /// The two caches have independent jittered TTLs, so an `IDENT_TO_ID_CACHE` entry can
+    /// outlive its `NAMESPACE_CACHE` entry. With no entry to replace, the `Replaced`
+    /// eviction cascade never fires, so a move must retire the old ident explicitly.
+    ///
+    /// Without that, looking up the pre-move path is a stale *hit* rather than a miss:
+    /// `namespace_cache_get_by_ident` resolves ident → id → loads by id and never checks
+    /// that the loaded namespace still answers to the requested name.
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn test_namespace_moved_retires_old_ident_without_primary_entry() {
+        use crate::{api::RequestMetadata, service::events::EventListener as _};
+
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let old_ident = NamespaceIdent::from_vec(vec!["residual_src".to_string()]).unwrap();
+        let new_ident = NamespaceIdent::from_vec(vec!["residual_dst".to_string()]).unwrap();
+
+        // Residual secondary-index entry with no primary entry behind it.
+        IDENT_TO_ID_CACHE
+            .insert(
+                (warehouse_id, namespace_ident_to_cache_key(&old_ident)),
+                namespace_id,
+            )
+            .await;
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
+            "precondition: no primary entry, so no Replaced eviction can fire"
+        );
+
+        let after = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                new_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                1,
+            ),
+            None,
+        );
+
+        NamespaceCacheEventListener
+            .namespace_moved(events::MoveNamespaceEvent {
+                warehouse_id,
+                namespace: after,
+                previous_ident: old_ident.clone(),
+                previous_parent: None,
+                request_metadata: Arc::new(RequestMetadata::new_unauthenticated()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_none(),
+            "the pre-move path must not resolve to the moved namespace"
+        );
+        assert_eq!(
+            namespace_cache_get_by_ident(&new_ident, warehouse_id)
+                .await
+                .map(|h| h.namespace_id()),
+            Some(namespace_id),
+        );
     }
 
     #[tokio::test]

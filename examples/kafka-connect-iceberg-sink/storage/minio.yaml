@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: minio
-          image: quay.io/minio/minio:RELEASE.2024-08-03T04-33-23Z
+          image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
           args:
             - server
             - /data
@@ -41,7 +41,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
         - name: bucket-init
-          image: quay.io/minio/mc
+          image: pgsty/mc:RELEASE.2026-09-13T00-00-00Z
           command: ["/bin/sh", "-c"]
           args:
             - |

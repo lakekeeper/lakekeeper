@@ -14,7 +14,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 
 use crate::{
     dbutils::DBErrorHandler,
-    tabular::table::{assigned_rows_as_i64, first_row_id_as_i64},
+    tabular::table::{assigned_rows_as_i64, first_row_id_as_i64, normalized_schema},
 };
 
 pub(super) async fn remove_schemas(
@@ -26,6 +26,22 @@ pub(super) async fn remove_schemas(
     if schema_ids.is_empty() {
         return Ok(());
     }
+
+    // Delete schema_field rows explicitly (before the anchor) so the AFTER DELETE statement
+    // trigger fires with a populated transition table and reaps orphaned tabular_field rows.
+    let _ = sqlx::query!(
+        r#"DELETE FROM schema_field
+           WHERE warehouse_id = $1 AND tabular_id = $2 AND schema_id = ANY($3::INT[])"#,
+        *warehouse_id,
+        *table_id,
+        &schema_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Failed to remove schema fields")
+    })?;
 
     let _ = sqlx::query!(
         r#"DELETE FROM table_schema
@@ -55,29 +71,42 @@ pub(super) async fn insert_schemas(
     }
 
     let num_schemas = schema_iter.len();
-    let mut ids = Vec::with_capacity(num_schemas);
-    let mut schemas = Vec::with_capacity(num_schemas);
+    let schemas: Vec<&SchemaRef> = schema_iter.collect();
+    let ids: Vec<i32> = schemas.iter().map(|s| s.schema_id()).collect();
     let table_ids = vec![*table_id; num_schemas];
 
-    for s in schema_iter {
-        ids.push(s.schema_id());
-        schemas.push(serde_json::to_value(s).map_err(|e| SerializationError::new("schema", e))?);
-    }
-
+    // Anchor rows only — content lives in `schema_field` (written below); the legacy `schema` JSONB
+    // column is left NULL.
     let _ = sqlx::query!(
-        r#"INSERT INTO table_schema(schema_id, table_id, schema, warehouse_id)
-           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[], $4::JSONB[])"#,
+        r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id)
+           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[])"#,
         &ids,
         &table_ids,
         *warehouse_id,
-        &schemas
     )
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
         e.into_catalog_backend_error()
-            .append_detail("Failed to insert schema")
+            .append_detail("Failed to insert schema anchor")
     })?;
+
+    // Accumulate every schema's fields into one batch and issue a single bulk write, instead of one
+    // flush per schema.
+    let mut batch = SchemaFieldBatch::default();
+    for s in schemas {
+        let flat = normalized_schema::flatten_schema(s).map_err(|e| {
+            InternalBackendErrors::InternalConversionError(ConversionError::new(
+                "Failed to flatten schema into normalized schema_field rows",
+                e,
+            ))
+        })?;
+        batch.push_schema(*warehouse_id, *table_id, s.schema_id(), &flat);
+    }
+    batch
+        .flush(transaction)
+        .await
+        .map_err(InternalBackendErrors::CatalogBackendError)?;
 
     Ok(())
 }
@@ -848,4 +877,226 @@ pub(crate) async fn remove_table_encryption_keys(
     })?;
 
     Ok(())
+}
+
+/// Accumulator for a bulk `schema_field` + `tabular_field` write. The 14 parallel arrays are the
+/// query's UNNEST columns. Reusable across flushes: `flush` clears them so the same batch can be
+/// refilled — the migration backfill uses this to bound statement size independent of the read page.
+#[derive(Default)]
+pub(crate) struct SchemaFieldBatch {
+    warehouse_ids: Vec<uuid::Uuid>,
+    tabular_ids: Vec<uuid::Uuid>,
+    schema_ids: Vec<i32>,
+    field_ids: Vec<i32>,
+    parents: Vec<Option<i32>>,
+    ordinals: Vec<i32>,
+    names: Vec<String>,
+    requireds: Vec<bool>,
+    docs: Vec<Option<String>>,
+    type_kinds: Vec<String>,
+    type_params: Vec<Option<serde_json::Value>>,
+    initial_defaults: Vec<Option<serde_json::Value>>,
+    write_defaults: Vec<Option<serde_json::Value>>,
+    is_identifiers: Vec<bool>,
+}
+
+impl SchemaFieldBatch {
+    /// Append every field of one schema. `warehouse_id`/`tabular_id`/`schema_id` are repeated per
+    /// field. One loop appends to all 14 arrays in lockstep — this is the alignment guarantee.
+    pub(crate) fn push_schema(
+        &mut self,
+        warehouse_id: uuid::Uuid,
+        tabular_id: uuid::Uuid,
+        schema_id: i32,
+        flat: &[crate::tabular::table::normalized_schema::FlatField],
+    ) {
+        for f in flat {
+            self.warehouse_ids.push(warehouse_id);
+            self.tabular_ids.push(tabular_id);
+            self.schema_ids.push(schema_id);
+            self.field_ids.push(f.field_id);
+            self.parents.push(f.parent_field_id);
+            self.ordinals.push(f.ordinal);
+            self.names.push(f.name.clone());
+            self.requireds.push(f.required);
+            self.docs.push(f.doc.clone());
+            self.type_kinds.push(f.type_kind.as_str().to_string());
+            self.type_params.push(f.type_params.clone());
+            self.initial_defaults.push(f.initial_default.clone());
+            self.write_defaults.push(f.write_default.clone());
+            self.is_identifiers.push(f.is_identifier);
+        }
+    }
+
+    /// Number of accumulated field rows (used to decide when to flush).
+    pub(crate) fn field_count(&self) -> usize {
+        self.field_ids.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.field_ids.is_empty()
+    }
+
+    /// Issue the two bulk INSERTs (the tabular_field spine first so the schema_field FK is
+    /// satisfied, then schema_field) and clear all arrays so the batch can be reused. No-op when empty.
+    pub(crate) async fn flush(
+        &mut self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), lakekeeper::service::CatalogBackendError> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        // push_schema is the only mutator and appends to all 14 arrays in lockstep; this catches a
+        // future second mutator that forgets one array, which would misalign the UNNEST columns.
+        let n = self.field_ids.len();
+        debug_assert!(
+            self.warehouse_ids.len() == n
+                && self.tabular_ids.len() == n
+                && self.schema_ids.len() == n
+                && self.parents.len() == n
+                && self.ordinals.len() == n
+                && self.names.len() == n
+                && self.requireds.len() == n
+                && self.docs.len() == n
+                && self.type_kinds.len() == n
+                && self.type_params.len() == n
+                && self.initial_defaults.len() == n
+                && self.write_defaults.len() == n
+                && self.is_identifiers.len() == n,
+            "SchemaFieldBatch arrays must be length-aligned"
+        );
+
+        // The tabular_field spine goes first: schema_field has an FK to it, so the parent rows must
+        // exist before the child insert. Reuse the same warehouse/tabular/field arrays. ON CONFLICT
+        // DO NOTHING absorbs both intra-statement duplicate triples (a field_id repeats across schema
+        // versions) and rows already present, so no Rust-side dedup is needed.
+        sqlx::query!(
+            r#"INSERT INTO tabular_field (warehouse_id, tabular_id, field_id)
+            SELECT u.warehouse_id, u.tabular_id, u.field_id
+            FROM UNNEST($1::uuid[], $2::uuid[], $3::int[]) AS u(warehouse_id, tabular_id, field_id)
+            ON CONFLICT DO NOTHING"#,
+            &self.warehouse_ids,
+            &self.tabular_ids,
+            &self.field_ids,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to write column identity")
+        })?;
+
+        sqlx::query!(
+            r#"INSERT INTO schema_field
+                (warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
+                 required, doc, type_kind, type_params, initial_default, write_default, is_identifier)
+            SELECT u.warehouse_id, u.tabular_id, u.schema_id, u.field_id, u.parent_field_id,
+                   u.ordinal, u.name, u.required, u.doc, u.type_kind::iceberg_type_kind,
+                   u.type_params, u.initial_default, u.write_default, u.is_identifier
+            FROM UNNEST(
+                $1::uuid[], $2::uuid[], $3::int[], $4::int[], $5::int[], $6::int[], $7::text[],
+                $8::bool[], $9::text[], $10::text[], $11::jsonb[], $12::jsonb[], $13::jsonb[],
+                $14::bool[]
+            ) AS u(warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
+                   required, doc, type_kind, type_params, initial_default, write_default,
+                   is_identifier)"#,
+            &self.warehouse_ids,
+            &self.tabular_ids,
+            &self.schema_ids,
+            &self.field_ids,
+            &self.parents as _,
+            &self.ordinals,
+            &self.names,
+            &self.requireds,
+            &self.docs as _,
+            &self.type_kinds,
+            &self.type_params as _,
+            &self.initial_defaults as _,
+            &self.write_defaults as _,
+            &self.is_identifiers,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to write normalized schema")
+        })?;
+
+        self.warehouse_ids.clear();
+        self.tabular_ids.clear();
+        self.schema_ids.clear();
+        self.field_ids.clear();
+        self.parents.clear();
+        self.ordinals.clear();
+        self.names.clear();
+        self.requireds.clear();
+        self.docs.clear();
+        self.type_kinds.clear();
+        self.type_params.clear();
+        self.initial_defaults.clear();
+        self.write_defaults.clear();
+        self.is_identifiers.clear();
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+    use lakekeeper::{WarehouseId, service::TableId};
+
+    use crate::{
+        CatalogState, tabular::table::tests::create_table_with_schema,
+        warehouse::test::initialize_warehouse,
+    };
+
+    fn two_col_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(0)
+            .with_identifier_field_ids(vec![1])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::required(2, "name", Type::Primitive(PrimitiveType::String)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    async fn count(pool: &sqlx::PgPool, table: &str, wh: WarehouseId, table_id: TableId) -> i64 {
+        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND tabular_id=$2");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(q))
+            .bind(*wh)
+            .bind(*table_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_writes_schema_field_and_tabular_field(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        // create_table -> insert_schemas writes schema_field + tabular_field for the current schema
+        // (SchemaFieldBatch::flush is the chokepoint it calls).
+        let (table_id, schema) =
+            create_table_with_schema(state.clone(), wh, two_col_schema()).await;
+
+        assert_eq!(count(&pool, "schema_field", wh, table_id).await, 2);
+        assert_eq!(count(&pool, "tabular_field", wh, table_id).await, 2);
+
+        // is_identifier flags match the persisted schema's identifier_field_ids.
+        let ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT field_id FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND is_identifier ORDER BY field_id",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut expected: Vec<i32> = schema.identifier_field_ids().collect();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+    }
 }

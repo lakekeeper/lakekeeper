@@ -3,7 +3,8 @@ use std::str::FromStr;
 use lakekeeper::{
     api::management::v1::check::RoleAssignee,
     service::{
-        GenericTableId, NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
+        GenericTableId, NamespaceId, ProjectId, RoleId, ServerId, TableId, TagDefinitionId, ViewId,
+        WarehouseId,
         authn::{Actor, UserId},
         authz::{
             RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
@@ -44,6 +45,16 @@ impl OpenFgaEntity for RoleId {
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Role
+    }
+}
+
+impl OpenFgaEntity for TagDefinitionId {
+    fn to_openfga(&self) -> String {
+        format!("{}:{self}", self.openfga_type())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Tag
     }
 }
 

@@ -1,13 +1,191 @@
 use crate::{
+    WarehouseId,
+    api::{Result, endpoints::EndpointFlat},
+    request_metadata::RequestMetadata,
     server::tables::parse_location,
     service::{
-        NamespaceHierarchy, TabularId,
+        CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy, NamespaceId, TabularId,
+        Transaction,
+        authz::Authorizer,
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         storage::{
             StorageProfile,
             storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
         },
     },
 };
+
+/// Claim the request's idempotency key inside the rename transaction.
+///
+/// Returns the transaction so the caller can go on to commit it. A key another in-flight
+/// request already holds is not an error the caller can recover from, so the transaction is
+/// rolled back here and the request fails; `None` is a no-op. Every rename endpoint answers
+/// 204, which is the status recorded against the key.
+pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+    mut transaction: C::Transaction,
+    warehouse_id: WarehouseId,
+    key: Option<IdempotencyKey>,
+    endpoint: EndpointFlat,
+) -> Result<C::Transaction> {
+    let Some(key) = key else {
+        return Ok(transaction);
+    };
+
+    let claimed = C::try_insert_idempotency_key(
+        warehouse_id,
+        &IdempotencyInfo::builder()
+            .key(key)
+            .endpoint(endpoint)
+            .http_status(StatusCode::NO_CONTENT)
+            .build(),
+        transaction.transaction(),
+    )
+    .await?;
+    if claimed {
+        return Ok(transaction);
+    }
+
+    transaction
+        .rollback()
+        .await
+        .inspect_err(|e| {
+            tracing::warn!("Rollback failed after idempotency conflict: {e}");
+        })
+        .ok();
+    Err(ErrorModel::request_in_progress().into())
+}
+
+/// Fail a rename whose row landed in a different namespace than authorization was
+/// evaluated against.
+///
+/// A backstop, not the defence. The destination namespace is resolved once, before the
+/// transaction, and `rename_tabular` pins the row to that id rather than resolving the
+/// destination name a second time — so this holds by construction and should never fire.
+/// It stays because the alternative is silent: were the statement to resolve the
+/// destination itself again, authorization would have been checked against one namespace
+/// while the row moved into another, and the authorizer would be re-pointed at the wrong
+/// one — or, when the two happen to coincide with the source, not re-pointed at all.
+/// Nothing about that reaches the caller or shows up in an assignment listing.
+///
+/// Called before the commit, so returning here rolls the rename back.
+pub(crate) fn ensure_authorized_destination(
+    authorized: NamespaceId,
+    committed: NamespaceId,
+) -> Result<()> {
+    if authorized == committed {
+        return Ok(());
+    }
+    tracing::warn!(
+        "Rename destination namespace changed under the request: authorized {authorized}, \
+         landed in {committed}. Refusing the rename."
+    );
+    Err(ErrorModel::conflict(
+        "The destination namespace changed while the request was in flight. Please retry.",
+        "DestinationNamespaceChanged",
+        None,
+    )
+    .into())
+}
+
+/// Commit a rename, re-pointing the tabular's authorizer hierarchy when it crosses
+/// namespaces.
+///
+/// A tabular inherits its permissions from the namespace it hangs under, so a rename that
+/// changes the namespace has to move that edge or the tabular keeps inheriting from the
+/// namespace it left.
+///
+/// Namespaces are compared by id, not ident, because namespace idents are case-insensitive:
+/// `a.t -> A.t2` names one namespace and is not a move. Re-pointing a tabular onto the
+/// namespace it already has would still converge here — the attach rewrites what the detach
+/// removed — but it would spend two pointless OpenFGA round trips on the common in-place
+/// rename, and open a window in which a crash between them leaves the tabular with no parent
+/// at all.
+///
+/// Detach-then-commit-then-attach, so that every failure mode leaves the authorizer
+/// *missing* an edge rather than holding an extra one; see the hook docs on
+/// [`Authorizer::detach_tabular_parent`] and [`Authorizer::attach_tabular_parent`] for the
+/// full ordering contract. Consumes the transaction: nothing may run between the detach and
+/// the commit.
+///
+/// Three residual windows, all requiring reconciliation rather than a retry:
+///
+/// * An **ambiguous commit** — the connection dies after Postgres commits but before the
+///   ack — surfaces as `Err`, and the compensation below then re-attaches a namespace the
+///   tabular has actually left. That is the one path that can leave a surplus edge. It is
+///   the same trade the namespace move makes, and `--mode add-and-delete-drift` is its
+///   repair.
+/// * A **failed post-commit attach** leaves the tabular parentless, and no retry repairs
+///   it. With an idempotency key the replay short-circuits before reaching this function,
+///   because the key was inserted in the committed transaction; without one the storage
+///   layer rejects the retry, because the tabular is no longer in the namespace the caller
+///   names as its source. Reconciliation is the repair path, not retry — and its default
+///   additive mode suffices, because the missing edge is one the catalog implies.
+/// * **Two renames of the same tabular in flight** serialize in the catalog, but their
+///   OpenFGA writes are not ordered against each other: the first rename's post-commit
+///   attach can land after the second's pre-commit detach of the same namespace, leaving
+///   that namespace attached to a tabular that has since moved on. Only
+///   `--mode add-and-delete-drift` retracts the survivor.
+pub(crate) async fn commit_rename_with_reparent<C: CatalogStore, A: Authorizer>(
+    transaction: C::Transaction,
+    authorizer: &A,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    tabular_id: TabularId,
+    source_namespace_id: NamespaceId,
+    destination_namespace_id: NamespaceId,
+) -> Result<()> {
+    let reparented = source_namespace_id != destination_namespace_id;
+
+    // Pre-commit: retire the old edge. Hard error — nothing is committed yet, so failing
+    // here leaves both systems as they were.
+    if reparented {
+        authorizer
+            .detach_tabular_parent(metadata, warehouse_id, tabular_id, source_namespace_id)
+            .await?;
+    }
+
+    if let Err(err) = transaction.commit().await {
+        // The rename did not happen, so put the old edge back. Best effort: if this also
+        // fails the tabular is left parentless, which is fail-closed and repairable by an
+        // additive reconcile.
+        if reparented {
+            authorizer
+                .attach_tabular_parent(metadata, warehouse_id, tabular_id, source_namespace_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        "Failed to restore the parent of {} {tabular_id} in the authorizer \
+                         after a failed commit: {}",
+                        tabular_id.typ_str(),
+                        e.error
+                    );
+                })
+                .ok();
+        }
+        return Err(err);
+    }
+
+    // Post-commit: publish the new edge, now that the catalog has accepted the rename. Its
+    // failure cannot be reported — the rename happened — so it is logged and left to
+    // reconciliation, per the contract on `attach_tabular_parent`.
+    if reparented {
+        authorizer
+            .attach_tabular_parent(metadata, warehouse_id, tabular_id, destination_namespace_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to re-parent {} {tabular_id} in the authorizer: {}",
+                    tabular_id.typ_str(),
+                    e.error
+                );
+            })
+            .ok();
+    }
+
+    Ok(())
+}
 
 pub(super) fn determine_tabular_location(
     namespace_hierarchy: &NamespaceHierarchy,
@@ -182,3 +360,21 @@ use iceberg::TableIdent;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
 use lakekeeper_io::Location;
 pub(crate) use list_entities;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point is to fail closed, so the two directions are pinned separately.
+    #[test]
+    fn authorized_destination_must_be_the_one_the_row_landed_in() {
+        let authorized = NamespaceId::new_random();
+        assert!(ensure_authorized_destination(authorized, authorized).is_ok());
+
+        let landed_elsewhere = NamespaceId::new_random();
+        let err = ensure_authorized_destination(authorized, landed_elsewhere)
+            .expect_err("a destination that moved under the request must not be accepted");
+        assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
+        assert_eq!(err.error.r#type, "DestinationNamespaceChanged");
+    }
+}

@@ -4,13 +4,16 @@
 //! types, so they can live in the audit-event payload while each authorizer
 //! maps its own diagnostics down to them.
 
+use serde::{Deserialize, Serialize};
+
 /// One authorization verdict together with the diagnostics that explain it.
 ///
 /// Returned per checked `(resource, action)` tuple by the batch authorizer
-/// methods. `allowed` is the decision; `determined_by` lists the policies or
-/// rules that determined it. `determined_by` is empty when the authorizer
-/// produces no per-decision diagnostics (`AllowAll`, OpenFGA) or for a
-/// default-deny where no policy matched.
+/// methods. `allowed` is the decision; `determined_by` lists the factors that
+/// determined it — matched policies, or a system-authority override.
+/// `determined_by` is empty when the authorizer produces no per-decision
+/// diagnostics (`AllowAll`, OpenFGA) or for a default-deny where no policy
+/// matched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizationDecision {
     pub allowed: bool,
@@ -69,32 +72,100 @@ impl From<bool> for AuthorizationDecision {
 
 /// A single factor that contributed to an authorization decision.
 ///
-/// Enum-tagged so new producers (restriction-profile matched rules, native
-/// OSS-authorizer diagnostics) add a variant without breaking existing audit
-/// consumers.
-#[derive(Clone, Debug, PartialEq, Eq, valuable::Valuable)]
+/// Discriminated by `type`: `policy` names a policy the authorizer matched, and
+/// `system-authority` records that a built-in authority tier decided the request. The
+/// schema is a closed `oneOf` over those two, so a further kind is a schema change a
+/// generated client has to be rebuilt for rather than one it absorbs on its own.
+// Deliberately a plain comment, not a doc comment: `utoipa` copies doc comments into the
+// public OpenAPI schema, and what follows is internal to this repository.
+//
+// Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
+// diagnostics) add a variant here without restructuring the type.
+//
+// The audit log is the rendering where the kind set is genuinely open: that log's
+// contract tells consumers to treat an unrecognised value as opaque, so a new variant
+// costs them nothing. The management API schema above is closed and makes no such
+// promise — do not restate the audit-log tolerance there.
+//
+// The two renderings differ, deliberately. The `serde` attributes below govern the
+// management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
+// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
+// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
+// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
+// never an absent field, unlike the hand-written `visit` impls elsewhere in the record.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    valuable::Valuable,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based
     /// authorizer.
+    #[cfg_attr(feature = "open-api", schema(title = "DeterminingFactorPolicy"))]
+    #[serde(rename_all = "kebab-case")]
     Policy {
         /// Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
         /// `PolicyId`). Always present.
         policy_id: String,
-        /// Optional human-facing name the author gave the policy (e.g. a `@name`
-        /// or `@id` annotation). Neither required nor guaranteed unique; `None`
+        /// Human-facing name the author gave the policy (e.g. a `@name` or
+        /// `@id` annotation). Neither required nor guaranteed unique; absent
         /// when the author provided none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         /// Whether the policy permits or forbids.
         effect: PolicyEffect,
-        /// Opaque origin of the policy (e.g. a policy-source identifier). `None`
-        /// when the producer cannot attribute a source.
+        /// Opaque origin of the policy (e.g. a policy-source identifier).
+        /// Absent when the authorizer cannot attribute a source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
+    },
+    /// An allow contributed by a built-in/system authority tier that takes
+    /// precedence over normal authored policy — e.g. a recovery mechanism that
+    /// lets a privileged system role act despite a policy that would otherwise
+    /// forbid it. Its presence means the verdict rested on built-in authority
+    /// rather than on a configured policy.
+    #[cfg_attr(
+        feature = "open-api",
+        schema(title = "DeterminingFactorSystemAuthority")
+    )]
+    #[serde(rename_all = "kebab-case")]
+    SystemAuthority {
+        /// Opaque, authorizer-assigned identifier of the built-in authority
+        /// tier that granted the action. Absent when none can be attributed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        /// Human-facing reason the tier applied (e.g. an administrator
+        /// lockout-recovery grant). Absent when the authorizer gives none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 
 /// Whether a determining policy permits or forbids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, valuable::Valuable)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    valuable::Valuable,
+    strum_macros::VariantArray,
+    strum_macros::VariantNames,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
 pub enum PolicyEffect {
+    /// The policy grants the action.
     Permit,
+    /// The policy denies the action.
     Forbid,
 }

@@ -4,6 +4,7 @@ use std::{
 };
 
 use iceberg::{NamespaceIdent, TableIdent};
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use crate::{
     WarehouseId,
@@ -38,6 +39,70 @@ pub(crate) type TabularAuthzAction<'a> = (
         CatalogGenericTableAction,
     >,
 );
+
+#[derive(thiserror::Error, Debug)]
+#[error("Referenced-by chain of {depth} views exceeds the maximum depth of {max_depth} views")]
+pub(crate) struct ReferencedByDepthExceeded {
+    pub(crate) depth: usize,
+    pub(crate) max_depth: usize,
+}
+
+impl From<ReferencedByDepthExceeded> for IcebergErrorResponse {
+    fn from(value: ReferencedByDepthExceeded) -> Self {
+        let typ = "ReferencedByDepthExceeded";
+        let boxed = Box::new(value);
+        let message = boxed.to_string();
+
+        ErrorModel::bad_request(message, typ, Some(boxed)).into()
+    }
+}
+
+/// Bounds the client-supplied `referenced_by` chain to `max_depth` views.
+///
+/// Every entry widens the authorization work for the request: it is resolved,
+/// authorized and sorted alongside the target tabular. The bound is checked on
+/// the raw supplied list, before [`effective_referenced_by`] narrows it — so it
+/// is a property of the request, not of engine trust, and an untrusted caller
+/// whose chain would have been ignored is rejected just the same. Deduplication
+/// happens downstream; the client controls the raw depth, so that is what is
+/// capped.
+///
+/// `max_depth` is taken as an argument rather than read from the global config
+/// so that callers pass `CONFIG.referenced_by.max_nesting_depth` explicitly and
+/// the wiring is observable in tests.
+pub(crate) fn validate_referenced_by_depth(
+    referenced_by: Option<&[ReferencingView]>,
+    max_depth: usize,
+) -> Result<(), ReferencedByDepthExceeded> {
+    let depth = referenced_by.map_or(0, <[ReferencingView]>::len);
+    if depth > max_depth {
+        return Err(ReferencedByDepthExceeded { depth, max_depth });
+    }
+    Ok(())
+}
+
+/// Validates a client-supplied `referenced_by` chain: its depth, then the
+/// identifier of every entry.
+///
+/// Entries are held to the same identifier rules as the target of the request
+/// (`MAX_NAMESPACE_DEPTH`, no `.` in namespace parts, no empty parts or name).
+/// Without this, the cap would bound the *number* of entries but not their
+/// *size*: a chain of legal length whose entries carry deeply nested namespace
+/// idents still expands in the parent-path CTE of `get_namespaces_by_name`.
+/// Nothing legitimate is rejected — namespace creation enforces the same rules,
+/// so an entry that fails here cannot name a view that exists.
+///
+/// Depth is checked first, so the per-entry loop is itself bounded.
+pub(crate) fn validate_referenced_by(
+    referenced_by: Option<&[ReferencingView]>,
+    max_depth: usize,
+) -> crate::api::Result<()> {
+    validate_referenced_by_depth(referenced_by, max_depth)?;
+    for view in referenced_by.unwrap_or(&[]) {
+        super::validate_table_or_view_ident(view.as_ref())?;
+    }
+    Ok(())
+}
 
 /// Filters `referenced_by` based on engine presence. Without a trusted engine
 /// we cannot determine the DEFINER/INVOKER security model, so the parameter
@@ -341,22 +406,32 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
 /// chain. Consumers pick which results they care about based on the entry's
 /// role in their operation (target vs. intermediate).
 ///
-/// - **Table** (only ever the last entry) → `GetMetadata` + `ReadData` +
+/// `target` is the tabular being loaded; every other entry is an intermediate
+/// referenced-by view. The role is decided by **ident**, not slice position —
+/// the same key `interpret_authz_results_for_load_view` uses to consume these
+/// results — so the two sides can never disagree about which entry is the
+/// target, regardless of how the chain is ordered or assembled.
+///
+/// - **Table** (only ever the target) → `GetMetadata` + `ReadData` +
 ///   `WriteData`. `loadTable` uses all three: `GetMetadata` to gate presence,
 ///   `ReadData` / `WriteData` to decide which storage-credential scope to
 ///   return.
-/// - **View** → `GetMetadata` + `Select`. `GetMetadata` is the metadata check
-///   (used by `loadView` on the target view). `Select` is the data-plane
-///   check (used by any consumer that enforces denial on intermediate views
-///   — it's what gates DEFINER chain traversal past the control-plane
-///   bypass).
+/// - **Target view** → `GetMetadata` only. `loadView` consults `GetMetadata`
+///   and discards everything else, so emitting `Select` here would make the
+///   authorizer evaluate (and log) a decision that never gates anything.
+/// - **Intermediate view** (a DEFINER referenced-by view) → `GetMetadata` +
+///   `Select`. `Select` is the data-plane check that gates DEFINER chain
+///   traversal past the control-plane bypass; intermediate consumers enforce
+///   denial on it.
 #[must_use]
-pub fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
-    tabulars: &[ResolvedTabular],
-) -> Vec<TabularAuthzAction<'_>> {
+pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
+    tabulars: &'a [ResolvedTabular],
+    target: &TableIdent,
+) -> Vec<TabularAuthzAction<'a>> {
     tabulars
         .iter()
         .flat_map(|resolved| {
+            let is_target = resolved.tabular.tabular_ident() == target;
             let is_delegated_execution = resolved.is_delegated_execution;
             let user = resolved.user.as_ref();
             let tabular = &resolved.tabular;
@@ -381,7 +456,15 @@ pub fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
                 })
                 .collect::<Vec<_>>(),
                 ViewOrTableInfo::View(info) => {
-                    vec![CatalogViewAction::GetMetadata, CatalogViewAction::Select]
+                    // Target view: only `GetMetadata` is ever consulted (by
+                    // `loadView`). Intermediate views additionally enforce
+                    // `Select` for DEFINER chain traversal.
+                    let view_actions = if is_target {
+                        vec![CatalogViewAction::GetMetadata]
+                    } else {
+                        vec![CatalogViewAction::GetMetadata, CatalogViewAction::Select]
+                    };
+                    view_actions
                         .into_iter()
                         .map(|action| {
                             (
@@ -423,14 +506,109 @@ pub fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
 mod tests {
     use std::collections::HashMap;
 
+    use http::StatusCode;
     use iceberg::{NamespaceIdent, TableIdent};
 
     use super::*;
     use crate::{
         WarehouseId,
         config::{MatchedEngines, TrinoEngineConfig, TrustedEngine},
+        server::namespace::MAX_NAMESPACE_DEPTH,
         service::TableInfo,
     };
+
+    fn referencing_views(n: usize) -> Vec<ReferencingView> {
+        (0..n)
+            .map(|i| {
+                ReferencingView::new(TableIdent::new(
+                    NamespaceIdent::new("ns".to_string()),
+                    format!("view_{i}"),
+                ))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_validate_referenced_by_depth_accepts_none_and_empty() {
+        validate_referenced_by_depth(None, 0).unwrap();
+        validate_referenced_by_depth(Some(&[]), 0).unwrap();
+    }
+
+    /// The limit governing the check is the one passed in, not a hardcoded
+    /// value: each case uses a different bound and the accepted depth tracks it.
+    #[test]
+    fn test_validate_referenced_by_depth_boundary() {
+        for max_depth in [0, 1, 3, 10] {
+            let at_limit = referencing_views(max_depth);
+            validate_referenced_by_depth(Some(&at_limit), max_depth)
+                .unwrap_or_else(|_| panic!("a chain of exactly {max_depth} is accepted"));
+
+            let over_limit = referencing_views(max_depth + 1);
+            let err = validate_referenced_by_depth(Some(&over_limit), max_depth)
+                .expect_err("one over the limit is rejected");
+            assert_eq!(err.depth, max_depth + 1);
+            assert_eq!(err.max_depth, max_depth);
+
+            let response = IcebergErrorResponse::from(err);
+            assert_eq!(response.error.code, StatusCode::BAD_REQUEST.as_u16());
+            assert_eq!(response.error.r#type, "ReferencedByDepthExceeded");
+            // The rendered message carries both numbers, not just the fields.
+            assert_eq!(
+                response.error.message,
+                format!(
+                    "Referenced-by chain of {} views exceeds the maximum depth of {max_depth} views",
+                    max_depth + 1
+                )
+            );
+        }
+    }
+
+    fn deep_view(depth: usize) -> ReferencingView {
+        let parts: Vec<String> = (0..depth).map(|i| format!("ns{i}")).collect();
+        ReferencingView::new(TableIdent::new(
+            NamespaceIdent::from_vec(parts).unwrap(),
+            "v".to_string(),
+        ))
+    }
+
+    /// Entries are held to the same identifier rules as the request target, so
+    /// the cap bounds the size of a chain and not merely its length.
+    #[test]
+    fn test_validate_referenced_by_rejects_oversized_entry_idents() {
+        let ok = [deep_view(MAX_NAMESPACE_DEPTH as usize)];
+        validate_referenced_by(Some(&ok), 10).expect("an entry at the namespace limit is accepted");
+
+        let too_deep = [deep_view(MAX_NAMESPACE_DEPTH as usize + 1)];
+        let err = validate_referenced_by(Some(&too_deep), 10)
+            .expect_err("an entry past the namespace limit is rejected");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+        assert_eq!(err.error.r#type, "NamespaceDepthExceeded");
+    }
+
+    /// Depth is checked before the per-entry loop, so an over-deep chain of
+    /// oversized entries reports the chain error and never walks the entries.
+    #[test]
+    fn test_validate_referenced_by_checks_depth_before_entries() {
+        let over: Vec<ReferencingView> = (0..11)
+            .map(|_| deep_view(MAX_NAMESPACE_DEPTH as usize + 1))
+            .collect();
+        let err = validate_referenced_by(Some(&over), 10).expect_err("rejected");
+        assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+    }
+
+    /// The bound is checked on the raw client-supplied list, before
+    /// [`effective_referenced_by`] narrows it — so an untrusted caller, whose
+    /// chain would otherwise be ignored entirely, is rejected just the same.
+    #[test]
+    fn test_validate_referenced_by_depth_ignores_engine_trust() {
+        let engines = MatchedEngines::default();
+        assert!(!engines.is_trusted());
+
+        let over_limit = referencing_views(11);
+        assert!(effective_referenced_by(Some(&over_limit), &engines).is_none());
+        validate_referenced_by_depth(Some(&over_limit), 10)
+            .expect_err("rejected even though the chain would be ignored");
+    }
 
     #[test]
     fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_base_tabular_namespace() {
@@ -921,6 +1099,7 @@ mod tests {
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
+        let target = table.tabular_ident.clone();
         let tabulars = vec![ResolvedTabular {
             tabular: ViewOrTableInfo::Table(table),
             user: actor.to_user_or_role(),
@@ -928,7 +1107,8 @@ mod tests {
             namespace,
         }];
 
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target);
 
         assert_eq!(actions.len(), 3);
         assert!(
@@ -939,12 +1119,16 @@ mod tests {
     }
 
     #[test]
-    fn test_build_actions_single_view_produces_get_metadata_and_select() {
+    fn test_build_actions_target_view_produces_only_get_metadata() {
         let warehouse_id = WarehouseId::new_random();
         let view = ViewInfo::new_random(warehouse_id);
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
+        // A single view is the target. loadView only consults `GetMetadata`,
+        // so `Select` must not be emitted — evaluating it would produce a
+        // discarded authorization decision.
+        let target = view.tabular_ident.clone();
         let tabulars = vec![ResolvedTabular {
             tabular: ViewOrTableInfo::View(view),
             user: actor.to_user_or_role(),
@@ -952,14 +1136,9 @@ mod tests {
             namespace,
         }];
 
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target);
 
-        assert_eq!(actions.len(), 2);
-        assert!(
-            actions
-                .iter()
-                .all(|(_, a)| matches!(a, ActionOnTableOrView::View(_)))
-        );
         let emitted: Vec<_> = actions
             .iter()
             .filter_map(|(_, a)| match a {
@@ -967,8 +1146,56 @@ mod tests {
                 ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => None,
             })
             .collect();
-        assert!(emitted.contains(&CatalogViewAction::GetMetadata));
-        assert!(emitted.contains(&CatalogViewAction::Select));
+        assert_eq!(emitted, vec![CatalogViewAction::GetMetadata]);
+    }
+
+    #[test]
+    fn test_build_actions_intermediate_view_includes_select() {
+        let warehouse_id = WarehouseId::new_random();
+        let intermediate = ViewInfo::new_random(warehouse_id);
+        let target = ViewInfo::new_random(warehouse_id);
+        let intermediate_ns =
+            NamespaceHierarchy::new_with_id(warehouse_id, intermediate.namespace_id);
+        let target_ns = NamespaceHierarchy::new_with_id(warehouse_id, target.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        // Chain of two views: the first is an intermediate referenced-by view,
+        // the second is the target.
+        let target_ident = target.tabular_ident.clone();
+        let tabulars = vec![
+            ResolvedTabular {
+                tabular: ViewOrTableInfo::View(intermediate),
+                user: actor.to_user_or_role(),
+                is_delegated_execution: false,
+                namespace: intermediate_ns,
+            },
+            ResolvedTabular {
+                tabular: ViewOrTableInfo::View(target),
+                user: actor.to_user_or_role(),
+                is_delegated_execution: false,
+                namespace: target_ns,
+            },
+        ];
+
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target_ident);
+
+        let emitted: Vec<_> = actions
+            .iter()
+            .filter_map(|(_, a)| match a {
+                ActionOnTableOrView::View(v) => Some(v.action.clone()),
+                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => None,
+            })
+            .collect();
+        // Intermediate view: GetMetadata + Select. Target view: GetMetadata only.
+        assert_eq!(
+            emitted,
+            vec![
+                CatalogViewAction::GetMetadata,
+                CatalogViewAction::Select,
+                CatalogViewAction::GetMetadata,
+            ]
+        );
     }
 
     #[test]
@@ -981,6 +1208,7 @@ mod tests {
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
+        let target = view.tabular_ident.clone();
         let tabulars = vec![ResolvedTabular {
             tabular: ViewOrTableInfo::View(view),
             user: actor.to_user_or_role(),
@@ -988,9 +1216,10 @@ mod tests {
             namespace,
         }];
 
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target);
 
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 1);
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(v.is_delegated_execution),
@@ -1009,6 +1238,7 @@ mod tests {
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
+        let target = view.tabular_ident.clone();
         let tabulars = vec![ResolvedTabular {
             tabular: ViewOrTableInfo::View(view),
             user: actor.to_user_or_role(),
@@ -1016,9 +1246,10 @@ mod tests {
             namespace,
         }];
 
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target);
 
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 1);
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(!v.is_delegated_execution),

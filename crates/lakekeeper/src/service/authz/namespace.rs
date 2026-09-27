@@ -31,9 +31,15 @@ pub trait NamespaceAction
 where
     Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogNamespaceAction>,
 {
+    /// Whether this is one of the grant-read actions; see the warehouse twin.
+    fn is_grant_read(&self) -> bool;
 }
 
-impl NamespaceAction for CatalogNamespaceAction {}
+impl NamespaceAction for CatalogNamespaceAction {
+    fn is_grant_read(&self) -> bool {
+        matches!(self, Self::ReadGrants | Self::ReadSubtreeGrants { .. })
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZCannotSeeNamespace {
@@ -425,6 +431,10 @@ pub trait AuthzNamespaceOps: Authorizer {
                     )
                     .into()
                 })
+            } else if is_allowed && action.is_grant_read() {
+                // The grant-read actions double as visibility; see the same arm in
+                // require_warehouse_action.
+                Ok(namespace)
             } else {
                 return Err(cant_see_err);
             }

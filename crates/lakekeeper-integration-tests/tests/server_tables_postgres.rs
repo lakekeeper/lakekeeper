@@ -13,8 +13,8 @@ use iceberg::{
     },
 };
 use iceberg_ext::catalog::rest::{
-    CommitTableRequest, CommitTransactionRequest, CreateNamespaceResponse, CreateTableRequest,
-    LoadTableResult, RenameTableRequest,
+    CommitTableRequest, CommitTransactionRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+    CreateTableRequest, LoadTableResult, RenameTableRequest,
 };
 use itertools::Itertools;
 use lakekeeper::{
@@ -30,8 +30,11 @@ use lakekeeper::{
             },
         },
         management::v1::{
-            ApiServer as ManagementApiServer, table::TableManagementService,
-            warehouse::TabularDeleteProfile,
+            ApiServer as ManagementApiServer,
+            table::TableManagementService,
+            warehouse::{
+                Service as _, TabularDeleteProfile, UpdateWarehouseFormatVersionPolicyRequest,
+            },
         },
     },
     server::{
@@ -39,13 +42,15 @@ use lakekeeper::{
         tables::{CommitContext, commit_tables_with_authz},
     },
     service::{
-        CatalogStore, CatalogTabularOps, SecretStore, State, TableId, TabularListFlags, UserId,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
+        TableId, TabularListFlags, Transaction as _, UserId,
         authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table_request as create_request, impl_pagination_tests, memory_io_profile,
-    setup_simple, tabular_test_multi_warehouse_setup,
+    assert_advertises_client_planning, create_ns, create_table as create_table_helper,
+    create_table_request as create_request, create_view, drop_table as drop_table_helper,
+    impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
@@ -773,6 +778,27 @@ async fn test_default_format_version_is_v2(pg_pool: PgPool) {
     .unwrap();
 
     assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+}
+
+/// `createTable` returns a `LoadTableResult`, so it carries the same advertisement
+/// `loadTable` does.
+#[sqlx::test]
+async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let table = CatalogServer::create_table(
+        ns_params,
+        create_table_request_with_format("planning_advertised", None),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_advertises_client_planning(table.config.as_ref(), "createTable");
 }
 
 #[sqlx::test]
@@ -2400,6 +2426,289 @@ async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
     assert_eq!(response.error.code, StatusCode::NOT_FOUND);
 }
 
+/// Tables, views and generic tables share one name space, so the spec's
+/// "already exists as a table **or view**" applies across types.
+#[sqlx::test]
+async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(ctx.clone(), prefix.clone(), "rename_ns", "the_table", false)
+        .await
+        .unwrap();
+    create_view(ctx.clone(), &prefix, "rename_ns", "the_view", None)
+        .await
+        .unwrap();
+
+    let err = CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_table".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace,
+                name: "the_view".to_string(),
+            },
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::CONFLICT);
+    assert_eq!(err.error.r#type, "AlreadyExistsException");
+}
+
+/// A rename must land in the namespace that bears the destination name *now*, not in the
+/// one a stale cache entry says bears it.
+///
+/// Namespace idents resolve through a per-process `ident -> id` map with no cross-replica
+/// invalidation, so a replica that did not serve a namespace move keeps answering with the
+/// namespace that used to hold the name. That is manufactured here by moving `after` away
+/// and letting a different namespace take the name, both written straight to the catalog as
+/// another replica's writes would arrive — the endpoint emits the events this process's
+/// cache listens to, the storage layer does not.
+///
+/// What this pins is the endpoint's side: the destination has to be read uncached, or the
+/// request authorizes the namespace that used to hold the name and hands its id down, and
+/// the write — which requires that id to still bear the name — refuses a rename the catalog
+/// can perfectly well perform. The write's side of the contract, that a destination id is
+/// used as given rather than re-resolved from the name, cannot be reached from here once the
+/// read is fresh; `test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails`
+/// covers it directly.
+#[sqlx::test]
+async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+
+    create_ns(ctx.clone(), prefix.clone(), "source_ns".to_string()).await;
+    create_ns(ctx.clone(), prefix.clone(), "after".to_string()).await;
+    create_table_helper(ctx.clone(), prefix.clone(), "source_ns", "tbl", false)
+        .await
+        .unwrap();
+
+    let after = NamespaceIdent::new("after".to_string());
+    let vacating_id =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+
+    // Another replica's writes: the storage layer emits no events, so this process's cache
+    // keeps mapping `after` to the namespace that has since been renamed away.
+    let mut t =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::move_namespace(
+        warehouse_id,
+        vacating_id,
+        &NamespaceIdent::new("elsewhere".to_string()),
+        false,
+        t.transaction(),
+    )
+    .await
+    .unwrap();
+    let taker_id = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: after.clone(),
+            properties: None,
+        },
+        t.transaction(),
+    )
+    .await
+    .unwrap()
+    .namespace_id();
+    t.commit().await.unwrap();
+    assert_ne!(taker_id, vacating_id);
+
+    // The premise of the test. Were the cached mapping to be repaired by something else, the
+    // rename below would pass without exercising anything.
+    let cached =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+    assert_eq!(
+        cached, vacating_id,
+        "the cached `after` mapping must still be the stale one for this test to mean anything"
+    );
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: NamespaceIdent::new("source_ns".to_string()),
+                name: "tbl".to_string(),
+            },
+            destination: TableIdent {
+                namespace: after.clone(),
+                name: "tbl".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("`after` names a namespace that exists; the rename must not fail on a stale id");
+
+    let moved = PostgresBackend::get_table_info(
+        warehouse_id,
+        TableIdent {
+            namespace: after,
+            name: "tbl".to_string(),
+        },
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("the table must be findable under its new name");
+    assert_eq!(
+        moved.namespace_id, taker_id,
+        "the table must land in the namespace that bears `after` now, not the stale one"
+    );
+}
+
+/// A soft-deleted table does not hold its name — `createTable` reuses it, so
+/// `renameTable` must too.
+#[sqlx::test]
+async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(3600),
+        },
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_source",
+        false,
+    )
+    .await
+    .unwrap();
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_dropped",
+        false,
+    )
+    .await
+    .unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        &prefix,
+        "rename_ns",
+        "the_dropped",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix.clone())),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_source".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_dropped".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent {
+                namespace: ns.namespace,
+                name: "the_dropped".to_string(),
+            },
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the renamed table must be loadable under the reused name");
+}
+
+#[sqlx::test]
+async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pool).await;
+
+    // Register reuses an existing table's metadata file; overwrite lets it attach
+    // to a live name without a drop first.
+    let source = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("planning_register".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let registered = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("planning_register".to_string())
+            .metadata_location(source.metadata_location.unwrap())
+            .overwrite(true)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("registering over the same name must succeed");
+
+    assert_advertises_client_planning(registered.config.as_ref(), "registerTable");
+}
+
 #[sqlx::test]
 async fn test_register_table_with_overwrite(pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
@@ -2473,6 +2782,7 @@ async fn test_register_table_with_overwrite(pool: PgPool) {
     CatalogServer::register_table(
         ns_params.clone(),
         register_request.clone(),
+        DataAccess::not_specified(),
         ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
@@ -2490,6 +2800,7 @@ async fn test_register_table_with_overwrite(pool: PgPool) {
     let result = CatalogServer::register_table(
         ns_params.clone(),
         register_request_with_overwrite,
+        DataAccess::not_specified(),
         ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
@@ -2710,5 +3021,247 @@ async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
         .await
         .unwrap()
         .expect("table and metadata should still exist");
+    }
+}
+
+/// `registerTable` is the only way a table enters a warehouse without going
+/// through `createTable`, so it has to honour the format-version policy too.
+/// Otherwise the setting is advisory: a warehouse restricted to v1/v2 quietly
+/// acquires a v3 table, and the failure surfaces later in whichever engine
+/// cannot read it.
+#[sqlx::test]
+async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+
+    // All three versions are allowed by default, so both tables can be created
+    // before the policy is tightened underneath them.
+    let mut metadata_locations = HashMap::new();
+    for (name, version) in [
+        ("v3_table", FormatVersion::V3),
+        ("v2_table", FormatVersion::V2),
+    ] {
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request_with_format(name, Some(version)),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(table.metadata.format_version(), version);
+
+        // Registering reuses the metadata file, so the original table has to go
+        // first — two tables cannot share one table UUID. Keep the data.
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: name.to_string(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        metadata_locations.insert(version, table.metadata_location.clone().unwrap());
+    }
+
+    ManagementApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V1, FormatVersion::V2],
+            default_format_version: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let register = |name: &str, version: FormatVersion| {
+        let request = iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name(name.to_string())
+            .metadata_location(metadata_locations[&version].clone())
+            .build();
+        CatalogServer::register_table(
+            ns_params.clone(),
+            request,
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let err = register("registered_v3", FormatVersion::V3)
+        .await
+        .expect_err("a v3 file must not register into a v1/v2 warehouse");
+    assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+
+    // A permitted version still registers, so the gate is not a blanket refusal.
+    register("registered_v2", FormatVersion::V2)
+        .await
+        .expect("a v2 file is allowed by the policy");
+}
+
+/// `data-access` on register is only observable against a storage profile that
+/// actually vends. The memory profile the rest of this file uses ignores it and
+/// returns an empty config, so these live against a real S3-compatible store.
+mod register_data_access {
+    /// Named so nextest's default profile filters it out; CI runs it against the
+    /// store configured via `LAKEKEEPER_TEST__S3_*`.
+    pub mod s3_compat_integration_tests {
+        use lakekeeper::api::iceberg::v1::DataAccessMode;
+        use lakekeeper_integration_tests::s3_compatible_profile;
+
+        use super::super::*;
+
+        type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
+
+        async fn drop_keeping_data(ctx: &Ctx, ns_params: &NamespaceParameters, table: &TableIdent) {
+            CatalogServer::drop_table(
+                TableParameters {
+                    prefix: ns_params.prefix.clone(),
+                    table: table.clone(),
+                },
+                DropParams {
+                    purge_requested: false,
+                    force: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("dropping without purge must leave the metadata file in place");
+        }
+
+        async fn register(
+            ctx: &Ctx,
+            ns_params: &NamespaceParameters,
+            metadata_location: &str,
+            data_access: impl Into<DataAccessMode> + Send,
+        ) -> LoadTableResult {
+            CatalogServer::register_table(
+                ns_params.clone(),
+                iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                    .name("registered".to_string())
+                    .metadata_location(metadata_location.to_string())
+                    .build(),
+                data_access,
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+        }
+
+        #[sqlx::test]
+        async fn test_register_honors_the_requested_data_access(pool: PgPool) {
+            let (profile, cred) = s3_compatible_profile();
+            let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+                pool,
+                profile,
+                Some(cred),
+                AllowAllAuthorizer::default(),
+                TabularDeleteProfile::Hard {},
+                None,
+            )
+            .await;
+            let ns = create_ns(
+                ctx.clone(),
+                warehouse.warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let table = TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "registered".to_string(),
+            };
+
+            // Creating writes the metadata file that register then reads back.
+            let created = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request(Some("registered".to_string()), Some(false)),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+            let metadata_location = created.metadata_location.clone().unwrap();
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let client_managed = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccessMode::ClientManaged,
+            )
+            .await;
+            assert!(
+                client_managed.storage_credentials.is_none(),
+                "client-managed must suppress vending, got {:?}",
+                client_managed.storage_credentials
+            );
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let vended = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+            )
+            .await;
+            let credentials = vended
+                .storage_credentials
+                .expect("vended-credentials must reach the modern storage-credentials field");
+            assert_eq!(credentials.len(), 1);
+            // The tag encodes the delegation the config was built for, so the two
+            // registrations must not hand a client a validator for the other's scope.
+            assert_ne!(
+                client_managed.etag, vended.etag,
+                "the ETag must distinguish the delegation the response was built for"
+            );
+            // A vended credential expires, so the tag must carry its revalidation
+            // point — `lk2.<hash>.<revalidate-after-hex>`. Without the third
+            // segment the client holds a validator that can never yield a 304.
+            let vended_etag = vended.etag.expect("a vending response must be taggable");
+            assert_eq!(
+                vended_etag.as_str().split('.').count(),
+                3,
+                "expected a revalidation point in {}",
+                vended_etag.as_str()
+            );
+            let client_managed_etag = client_managed.etag.expect("still taggable without creds");
+            assert_eq!(
+                client_managed_etag.as_str().split('.').count(),
+                2,
+                "no credential means no revalidation point: {}",
+                client_managed_etag.as_str()
+            );
+        }
     }
 }

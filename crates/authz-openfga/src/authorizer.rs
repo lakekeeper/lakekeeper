@@ -13,15 +13,16 @@ use lakekeeper::{
         Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, InternalErrorMessage, NamespaceId,
         NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
+        TableId, TabularId, TagDefinition, TagDefinitionId, UserId, ViewId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
-            ListRoleAssignmentsError, ListRoleAssignmentsResultPage, MalformedRoleAssignment,
-            ManagesRoleAssignments, NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow,
-            UserOrRole, UserOrRoleId,
+            CatalogUserAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
+            ListProjectsResponse, ListRoleAssignmentsError, ListRoleAssignmentsResultPage,
+            MalformedRoleAssignment, ManagesGrants, ManagesRoleAssignments, NamespaceParent,
+            PrivilegeDescriptor, ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole,
+            UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -49,7 +50,7 @@ use crate::{
     models::OpenFgaType,
     relations::{
         self, GenericTableRelation, NamespaceRelation, OpenFgaRelation, ProjectRelation,
-        ReducedRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+        ReducedRelation, RoleRelation, ServerRelation, TableRelation, TagRelation, ViewRelation,
         WarehouseRelation,
     },
 };
@@ -98,6 +99,7 @@ impl Authorizer for OpenFGAAuthorizer {
     type GenericTableAction = GenericTableRelation;
     type UserAction = CatalogUserAction;
     type RoleAction = RoleRelation;
+    type TagAction = TagRelation;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -279,6 +281,49 @@ impl Authorizer for OpenFGAAuthorizer {
             .into_iter()
             .map(|(_, allowed)| AuthorizationDecision::from(allowed))
             .collect())
+    }
+
+    async fn are_allowed_tag_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        tags_with_actions: &[(&TagDefinition, Self::TagAction)],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
+
+        let items: Vec<_> = tags_with_actions
+            .iter()
+            .map(|(tag, action)| CheckRequestTupleKey {
+                user: user.clone(),
+                relation: action.to_string(),
+                object: tag.tag_definition_id.to_openfga(),
+            })
+            .collect();
+
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique tag objects for permission checks
+            let unique_tags: HashSet<_> = tags_with_actions
+                .iter()
+                .map(|(tag, _)| tag.tag_definition_id.to_openfga())
+                .collect();
+
+            unique_tags
+                .into_iter()
+                .map(|tag_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: TagRelation::CanReadAssignments.to_string(),
+                    object: tag_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_user_actions_impl(
@@ -769,6 +814,35 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&role_id).await
     }
 
+    async fn create_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+        parent_project_id: ArcProjectId,
+    ) -> AuthorizerResult<()> {
+        let actor = metadata.actor();
+
+        self.require_no_relations(&tag_definition_id).await?;
+        let mut tuples =
+            crate::tuples::hierarchy_tuples_for_tag(&parent_project_id, tag_definition_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_tag(
+            actor,
+            tag_definition_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn delete_tag(
+        &self,
+        _metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+    ) -> AuthorizerResult<()> {
+        self.delete_all_relations(&tag_definition_id).await
+    }
+
     async fn create_project(
         &self,
         metadata: &RequestMetadata,
@@ -854,6 +928,64 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
+    async fn detach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        parent: NamespaceParent,
+    ) -> AuthorizerResult<()> {
+        // Derived from the same helper that writes them, so the delete cannot drift from
+        // the write. A condition cannot participate in a delete, hence the reshape.
+        let deletes = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id)
+            .into_iter()
+            .map(|t| TupleKeyWithoutCondition {
+                user: t.user,
+                relation: t.relation,
+                object: t.object,
+            })
+            .collect::<Vec<_>>();
+        // Idempotent, and deliberately *not* a strict write whose `CannotDeleteTupleNotFound`
+        // we swallow. A hierarchy edge is two tuples (forward `parent` plus the inverse), and
+        // a strict write is atomic: if only one of them is already gone the whole delete
+        // fails, so treating that error as "already applied" would leave the surviving tuple
+        // in place — a stale parent edge, which is the exact silent-inheritance failure this
+        // ordering exists to prevent. `on_missing: Ignore` applies per tuple, so a
+        // half-removed edge converges instead.
+        self.client
+            .write_with_options(None, Some(deletes), WriteOptions::new_idempotent())
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to detach namespace {namespace_id} from parent: {e}");
+            })
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        parent: NamespaceParent,
+    ) -> AuthorizerResult<()> {
+        // Its own OpenFGA transaction, separate from the detach, so the two halves of a move
+        // converge independently on replay.
+        //
+        // Idempotent for the same reason as the detach: the edge is two tuples and a strict
+        // write is atomic, so if only the forward tuple already exists the whole write fails
+        // and the inverse would never be written. `on_duplicate: Ignore` applies per tuple.
+        let writes = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id);
+        self.client
+            .write_with_options(Some(writes), None, WriteOptions::new_idempotent())
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to attach namespace {namespace_id} to parent: {e}");
+            })
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
@@ -918,8 +1050,95 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&(warehouse_id, view_id)).await
     }
 
+    async fn detach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        parent: NamespaceId,
+    ) -> AuthorizerResult<()> {
+        // Derived from the same helper that writes them, so the delete cannot drift from
+        // the write. A condition cannot participate in a delete, hence the reshape.
+        let deletes = crate::tuples::hierarchy_tuples_for_tabular(warehouse_id, tabular_id, parent)
+            .into_iter()
+            .map(|t| TupleKeyWithoutCondition {
+                user: t.user,
+                relation: t.relation,
+                object: t.object,
+            })
+            .collect::<Vec<_>>();
+        // Idempotent for the same reason as `detach_namespace_parent`: the edge is two
+        // tuples and a strict write is atomic, so a half-removed edge would leave the
+        // surviving tuple — a live parent edge — in place. `on_missing: Ignore` applies per
+        // tuple, so it converges instead.
+        self.client
+            .write_with_options(None, Some(deletes), WriteOptions::new_idempotent())
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Failed to detach {} {tabular_id} from namespace {parent}: {e}",
+                    tabular_id.typ_str()
+                );
+            })
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn attach_tabular_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        parent: NamespaceId,
+    ) -> AuthorizerResult<()> {
+        // Its own OpenFGA transaction, separate from the detach, so the two halves of a
+        // move converge independently on replay.
+        let writes = crate::tuples::hierarchy_tuples_for_tabular(warehouse_id, tabular_id, parent);
+        self.client
+            .write_with_options(Some(writes), None, WriteOptions::new_idempotent())
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Failed to attach {} {tabular_id} to namespace {parent}: {e}",
+                    tabular_id.typ_str()
+                );
+            })
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
     fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {
         Some(self)
+    }
+
+    fn grants(&self) -> Option<&dyn ManagesGrants> {
+        Some(self)
+    }
+
+    fn grantable_privileges(&self, resource_type: ResourceType) -> &'static [PrivilegeDescriptor] {
+        crate::grant::vocabulary(resource_type)
+    }
+
+    /// Parses the name back to a relation instead of scanning the vocabulary — same
+    /// answer, without walking a list per listed row.
+    fn is_grantable_privilege(&self, resource_type: ResourceType, privilege: &str) -> bool {
+        crate::grant::is_known_privilege(resource_type, privilege)
+    }
+
+    async fn are_allowed_grants_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        target: &GrantTarget<'_>,
+        checks: &[GrantAuthorityCheck<'_>],
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        // Only the ids are used: the resolved ancestry the target carries is for
+        // authorizers that resolve inheritance themselves, and this one reads it from its
+        // own tuples instead.
+        self.grant_authority(metadata, for_user, &target.resource(), checks)
+            .await
     }
 }
 
@@ -1194,7 +1413,7 @@ impl OpenFGAAuthorizer {
     ///
     /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
     /// [`openfga_client::client::OpenFgaClient::read`].
-    async fn read_higher_consistency(
+    pub(crate) async fn read_higher_consistency(
         &self,
         page_size: i32,
         tuple_key: impl Into<Option<ReadRequestTupleKey>>,
@@ -1215,10 +1434,21 @@ impl OpenFGAAuthorizer {
         &self,
         tuple_key: Option<impl Into<ReadRequestTupleKey>>,
     ) -> Result<Vec<Tuple>, OpenFGABackendUnavailable> {
-        self.client
-            .read_all_pages(tuple_key, 100, 500)
+        self.read_all_result(tuple_key)
             .await
             .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
+    }
+
+    /// As [`Self::read_all`], but with the client error verbatim.
+    ///
+    /// The page cap is reported as an error rather than by truncating, and it means
+    /// "too many tuples", not "backend down". Use this where the two must be told
+    /// apart; [`Self::read_all`] folds both into unavailability.
+    pub(crate) async fn read_all_result(
+        &self,
+        tuple_key: Option<impl Into<ReadRequestTupleKey>>,
+    ) -> Result<Vec<Tuple>, openfga_client::error::Error> {
+        self.client.read_all_pages(tuple_key, 100, 500).await
     }
 
     /// A convenience wrapper around check
@@ -1241,7 +1471,7 @@ impl OpenFGAAuthorizer {
     /// The `items` parameter should contain the pre-built check requests for the actions.
     /// The `guard_tuples` parameter should contain permission checks to verify the actor
     /// has the right to inspect another user's permissions. If empty, no permission checks are performed.
-    async fn check_actions_with_permission_guard(
+    pub(crate) async fn check_actions_with_permission_guard(
         &self,
         _actor: &Actor,
         mut items: Vec<CheckRequestTupleKey>,
@@ -1400,16 +1630,25 @@ impl OpenFGAAuthorizer {
                         .map_err(authz_to_error_no_audit)?;
 
                     if !tuples.tuples.is_empty() {
-                        return Err(IcebergErrorResponse::from(
-                            ErrorModel::conflict(
-                                format!(
-                                    "Object to create {fga_object_str} is used as user for type {o}",
-                                ),
-                                "ObjectUsedInRelation",
-                                None,
-                            )
-                                .append_detail(format!("Found: {tuples:?}")),
-                        ));
+                        // The tuples name other entities — a warehouse's hierarchy
+                        // tuple carries its owning project — and for a 4xx the
+                        // error `stack` is serialized to the caller verbatim. Now
+                        // that a caller can pick the id being created, and so aim
+                        // this check at an id they do not own, the tuples go to the
+                        // log rather than into the response.
+                        tracing::warn!(
+                            object = %fga_object_str,
+                            related_type = %o,
+                            ?tuples,
+                            "Refusing to create an object that is still used as a user in existing relations"
+                        );
+                        return Err(IcebergErrorResponse::from(ErrorModel::conflict(
+                            format!(
+                                "Object to create {fga_object_str} is used as user for type {o}",
+                            ),
+                            "ObjectUsedInRelation",
+                            None,
+                        )));
                     }
                 }
 
@@ -1675,6 +1914,15 @@ pub(crate) mod tests {
                 .unwrap_err();
             assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
             assert_eq!(err.error.r#type, "ObjectUsedInRelation");
+            // The tuples that triggered the refusal must not travel to the caller:
+            // for a 4xx the error `stack` is serialized verbatim, and the tuples
+            // name a *different* object than the one being created (here the
+            // server, for a warehouse its owning project). They belong in the log.
+            let rendered = format!("{:?}", err.error);
+            assert!(
+                !rendered.contains("this_server"),
+                "refusal disclosed the related object: {rendered}"
+            );
         }
 
         #[tokio::test]
@@ -1934,6 +2182,656 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&user).await.unwrap_err();
             authorizer.delete_user_relations(&user).await.unwrap();
             authorizer.require_no_relations(&user).await.unwrap();
+        }
+
+        /// Read every tuple in the store as `(user, relation, object)` triples,
+        /// dropping the model-version bookkeeping tuples.
+        async fn all_tuples(
+            authorizer: &OpenFGAAuthorizer,
+        ) -> std::collections::HashSet<(String, String, String)> {
+            authorizer
+                .client
+                .read_all_pages(None::<ReadRequestTupleKey>, 100, 1000)
+                .await
+                .expect("read_all_pages")
+                .into_iter()
+                .filter_map(|t| t.key)
+                .filter(|k| k.relation != "exists" && k.relation != "openfga_id")
+                .map(|k| (k.user, k.relation, k.object))
+                .collect()
+        }
+
+        /// The hook re-points a namespace's hierarchy against a real store: the destination's
+        /// edges appear, the source's disappear, and everything else is untouched.
+        ///
+        /// The unit tests in `crate::tuples::tests` pin the tuple *shapes*; this pins that
+        /// writing and deleting them actually lands, which is the part a model-only test
+        /// (`store.fga.yaml`) and a fake authorizer both miss.
+        #[tokio::test]
+        async fn test_move_namespace_repoints_hierarchy_tuples() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let old_parent = NamespaceId::new_random();
+            let moved = NamespaceId::new_random();
+            // A sibling that must be left alone by the move.
+            let bystander = NamespaceId::new_random();
+
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    old_parent,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, bystander, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+
+            let old_forward = (
+                format!("namespace:{old_parent}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let old_inverse = (
+                format!("namespace:{moved}"),
+                "child".to_string(),
+                format!("namespace:{old_parent}"),
+            );
+            let new_forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let new_inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            let bystander_edge = (
+                format!("namespace:{old_parent}"),
+                "parent".to_string(),
+                format!("namespace:{bystander}"),
+            );
+
+            let before = all_tuples(&authorizer).await;
+            assert!(
+                before.contains(&old_forward),
+                "precondition: {old_forward:?}"
+            );
+            assert!(
+                before.contains(&old_inverse),
+                "precondition: {old_inverse:?}"
+            );
+            assert!(!before.contains(&new_forward));
+
+            // Re-parent from the namespace to the warehouse root — the case where the
+            // inverse relation changes kind (`child` → `namespace`). Detach first, then
+            // attach, the order the API layer uses around its commit.
+            authorizer
+                .detach_namespace_parent(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+            authorizer
+                .attach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .unwrap();
+
+            let after = all_tuples(&authorizer).await;
+            assert!(after.contains(&new_forward), "missing {new_forward:?}");
+            assert!(after.contains(&new_inverse), "missing {new_inverse:?}");
+            assert!(
+                !after.contains(&old_forward),
+                "stale edge survived: {old_forward:?}"
+            );
+            assert!(
+                !after.contains(&old_inverse),
+                "stale edge survived: {old_inverse:?}"
+            );
+            assert!(
+                after.contains(&bystander_edge),
+                "the move must not disturb sibling namespaces"
+            );
+
+            // Ownership is unrelated to hierarchy and must survive the move.
+            assert!(after.contains(&(
+                "user:oidc~mover".to_string(),
+                "ownership".to_string(),
+                format!("namespace:{moved}"),
+            )));
+        }
+
+        /// Replaying the hook must converge rather than fail.
+        ///
+        /// This is why the implementation is two writes instead of one: OpenFGA rejects a
+        /// write whose tuple already exists and a delete whose tuple is already gone, so a
+        /// single combined transaction could never be retried after partial application.
+        #[tokio::test]
+        async fn test_move_namespace_is_idempotent() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let old_parent = NamespaceId::new_random();
+            let moved = NamespaceId::new_random();
+
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    old_parent,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+
+            // Replay the detach/attach pair three times. Both halves must tolerate their
+            // own "already applied" error, or the second round fails.
+            let mut after_first = None;
+            for attempt in 1..=3 {
+                authorizer
+                    .detach_namespace_parent(
+                        &metadata,
+                        moved,
+                        NamespaceParent::Namespace(old_parent),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("detach on attempt {attempt} failed: {e:?}"));
+                authorizer
+                    .attach_namespace_parent(
+                        &metadata,
+                        moved,
+                        NamespaceParent::Warehouse(warehouse_id),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("attach on attempt {attempt} failed: {e:?}"));
+
+                let tuples = all_tuples(&authorizer).await;
+                match &after_first {
+                    None => after_first = Some(tuples),
+                    Some(first) => assert_eq!(
+                        &tuples, first,
+                        "replay {attempt} must not change the tuple set"
+                    ),
+                }
+            }
+        }
+
+        /// A hierarchy edge is *two* tuples, and a strict OpenFGA write is atomic. So a
+        /// half-present edge — one direction there, the other not — must still converge.
+        ///
+        /// This is the state a strict write plus "treat already-applied as success" gets
+        /// wrong: the write fails because of the one tuple that conflicts, the error is
+        /// swallowed, and the sibling tuple is silently never applied. For a detach that
+        /// leaves a live parent edge behind.
+        #[tokio::test]
+        async fn test_detach_namespace_parent_converges_from_half_removed_edge() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let moved = NamespaceId::new_random();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .unwrap();
+
+            // Remove only the inverse tuple, leaving the forward `parent` edge in place.
+            let inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            authorizer
+                .client
+                .write_with_options(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: inverse.0.clone(),
+                        relation: inverse.1.clone(),
+                        object: inverse.2.clone(),
+                    }]),
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            let forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let half = all_tuples(&authorizer).await;
+            assert!(
+                half.contains(&forward),
+                "precondition: forward edge remains"
+            );
+            assert!(
+                !half.contains(&inverse),
+                "precondition: inverse edge is gone"
+            );
+
+            authorizer
+                .detach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .expect("detach must tolerate a half-removed edge");
+
+            let after = all_tuples(&authorizer).await;
+            assert!(
+                !after.contains(&forward),
+                "the surviving forward edge must be removed, not skipped: {forward:?}"
+            );
+            assert!(!after.contains(&inverse));
+        }
+
+        /// The attach mirror image: one direction already present must not stop the other
+        /// from being written, or the namespace ends up with a half-built parent edge.
+        #[tokio::test]
+        async fn test_attach_namespace_parent_converges_from_half_present_edge() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let moved = NamespaceId::new_random();
+
+            // Only the forward tuple, as if a previous attempt applied half an edge.
+            let forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            authorizer
+                .client
+                .write_with_options(
+                    Some(vec![TupleKey {
+                        user: forward.0.clone(),
+                        relation: forward.1.clone(),
+                        object: forward.2.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            authorizer
+                .attach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .expect("attach must tolerate a half-present edge");
+
+            let inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            let after = all_tuples(&authorizer).await;
+            assert!(after.contains(&forward));
+            assert!(
+                after.contains(&inverse),
+                "the missing inverse edge must be written, not skipped: {inverse:?}"
+            );
+        }
+
+        /// Re-parenting a table must move the *permissions* it inherits, not just its
+        /// tuples.
+        ///
+        /// Asserted through `can_get_metadata` against the deployed model rather than by
+        /// restating tuples, because that is what the reported bug was: the catalog moved
+        /// the table, OpenFGA kept the old `parent` edge, and a principal granted only on
+        /// the source namespace kept reading the table from its new home.
+        #[tokio::test]
+        #[expect(clippy::too_many_lines)]
+        async fn test_reparent_table_moves_inherited_permissions() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let source_ns = NamespaceId::new_random();
+            let destination_ns = NamespaceId::new_random();
+            let table_id = TableId::new_random();
+
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    source_ns,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    destination_ns,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_table(&metadata, warehouse_id, table_id, source_ns)
+                .await
+                .unwrap();
+
+            // One principal granted on each namespace, and nothing granted on the table
+            // itself — so every answer below is inherited through `parent`.
+            let source_reader = UserId::new_unchecked("oidc", "source-reader");
+            let destination_reader = UserId::new_unchecked("oidc", "destination-reader");
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: format!("user:{source_reader}"),
+                            relation: NamespaceRelation::Select.to_string(),
+                            object: format!("namespace:{source_ns}"),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: format!("user:{destination_reader}"),
+                            relation: NamespaceRelation::Select.to_string(),
+                            object: format!("namespace:{destination_ns}"),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let can_read = async |user: &UserId| {
+                authorizer
+                    .check(CheckRequestTupleKey {
+                        user: format!("user:{user}"),
+                        relation: TableRelation::CanGetMetadata.to_string(),
+                        object: (warehouse_id, table_id).to_openfga(),
+                    })
+                    .await
+                    .unwrap()
+            };
+
+            assert!(
+                can_read(&source_reader).await,
+                "precondition: a grant on the source namespace reaches the table"
+            );
+            assert!(
+                !can_read(&destination_reader).await,
+                "precondition: a grant on the destination namespace does not yet reach it"
+            );
+
+            authorizer
+                .detach_tabular_parent(
+                    &metadata,
+                    warehouse_id,
+                    TabularId::Table(table_id),
+                    source_ns,
+                )
+                .await
+                .unwrap();
+            authorizer
+                .attach_tabular_parent(
+                    &metadata,
+                    warehouse_id,
+                    TabularId::Table(table_id),
+                    destination_ns,
+                )
+                .await
+                .unwrap();
+
+            assert!(
+                !can_read(&source_reader).await,
+                "a grant on the namespace the table left must no longer reach it"
+            );
+            assert!(
+                can_read(&destination_reader).await,
+                "a grant on the namespace the table moved into must now reach it"
+            );
+
+            // Ownership is unrelated to hierarchy and must survive the move, as must the
+            // sibling namespace's own edges.
+            let after = all_tuples(&authorizer).await;
+            assert!(after.contains(&(
+                "user:oidc~admin".to_string(),
+                "ownership".to_string(),
+                (warehouse_id, table_id).to_openfga(),
+            )));
+            assert!(after.contains(&(
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{source_ns}"),
+            )));
+        }
+
+        /// Views and generic tables ride the same hook, and each has its own object type
+        /// and `parent` relation. A dispatcher that fell through to the table helper would
+        /// leave the real edge live — invisible unless the other two are exercised too.
+        #[tokio::test]
+        async fn test_reparent_view_and_generic_table_repoint_their_own_edges() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let source_ns = NamespaceId::new_random();
+            let destination_ns = NamespaceId::new_random();
+            let view_id = ViewId::new_random();
+            let generic_id = GenericTableId::new_random();
+
+            for ns in [source_ns, destination_ns] {
+                authorizer
+                    .create_namespace(&metadata, ns, NamespaceParent::Warehouse(warehouse_id))
+                    .await
+                    .unwrap();
+            }
+            authorizer
+                .create_view(&metadata, warehouse_id, view_id, source_ns)
+                .await
+                .unwrap();
+            authorizer
+                .create_generic_table(&metadata, warehouse_id, generic_id, source_ns)
+                .await
+                .unwrap();
+
+            for tabular in [
+                TabularId::View(view_id),
+                TabularId::GenericTable(generic_id),
+            ] {
+                authorizer
+                    .detach_tabular_parent(&metadata, warehouse_id, tabular, source_ns)
+                    .await
+                    .unwrap();
+                authorizer
+                    .attach_tabular_parent(&metadata, warehouse_id, tabular, destination_ns)
+                    .await
+                    .unwrap();
+            }
+
+            let after = all_tuples(&authorizer).await;
+            for object in [
+                (warehouse_id, view_id).to_openfga(),
+                (warehouse_id, generic_id).to_openfga(),
+            ] {
+                assert!(
+                    after.contains(&(
+                        format!("namespace:{destination_ns}"),
+                        "parent".to_string(),
+                        object.clone(),
+                    )),
+                    "missing forward edge to the destination for {object}"
+                );
+                assert!(
+                    after.contains(&(
+                        object.clone(),
+                        "child".to_string(),
+                        format!("namespace:{destination_ns}"),
+                    )),
+                    "missing inverse edge to the destination for {object}"
+                );
+                assert!(
+                    !after.contains(&(
+                        format!("namespace:{source_ns}"),
+                        "parent".to_string(),
+                        object.clone(),
+                    )),
+                    "stale forward edge to the source survived for {object}"
+                );
+                assert!(
+                    !after.contains(&(
+                        object.clone(),
+                        "child".to_string(),
+                        format!("namespace:{source_ns}"),
+                    )),
+                    "stale inverse edge to the source survived for {object}"
+                );
+            }
+        }
+
+        /// Replaying the pair must converge rather than fail — the retry path after a
+        /// crash between the detach and the attach.
+        #[tokio::test]
+        async fn test_reparent_tabular_is_idempotent() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let source_ns = NamespaceId::new_random();
+            let destination_ns = NamespaceId::new_random();
+            let table_id = TableId::new_random();
+
+            authorizer
+                .create_table(&metadata, warehouse_id, table_id, source_ns)
+                .await
+                .unwrap();
+
+            let mut after_first = None;
+            for attempt in 1..=3 {
+                authorizer
+                    .detach_tabular_parent(
+                        &metadata,
+                        warehouse_id,
+                        TabularId::Table(table_id),
+                        source_ns,
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("detach on attempt {attempt} failed: {e:?}"));
+                authorizer
+                    .attach_tabular_parent(
+                        &metadata,
+                        warehouse_id,
+                        TabularId::Table(table_id),
+                        destination_ns,
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("attach on attempt {attempt} failed: {e:?}"));
+
+                let tuples = all_tuples(&authorizer).await;
+                match &after_first {
+                    None => after_first = Some(tuples),
+                    Some(first) => assert_eq!(
+                        &tuples, first,
+                        "replay {attempt} must not change the tuple set"
+                    ),
+                }
+            }
+        }
+
+        /// A hierarchy edge is *two* tuples and a strict OpenFGA write is atomic, so a
+        /// half-applied edge must still converge in both directions. For the detach, the
+        /// failure this guards is the worst one available: the surviving forward tuple is a
+        /// live parent edge, silently keeping the old namespace's grants in force.
+        #[tokio::test]
+        async fn test_reparent_tabular_converges_from_half_applied_edges() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let source_ns = NamespaceId::new_random();
+            let destination_ns = NamespaceId::new_random();
+            let table_id = TableId::new_random();
+            let table_obj = (warehouse_id, table_id).to_openfga();
+
+            authorizer
+                .create_table(&metadata, warehouse_id, table_id, source_ns)
+                .await
+                .unwrap();
+
+            // Drop only the inverse tuple, as if a previous detach applied half an edge.
+            authorizer
+                .client
+                .write_with_options(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: table_obj.clone(),
+                        relation: NamespaceRelation::Child.to_string(),
+                        object: format!("namespace:{source_ns}"),
+                    }]),
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            authorizer
+                .detach_tabular_parent(
+                    &metadata,
+                    warehouse_id,
+                    TabularId::Table(table_id),
+                    source_ns,
+                )
+                .await
+                .expect("detach must tolerate a half-removed edge");
+
+            let after_detach = all_tuples(&authorizer).await;
+            assert!(
+                !after_detach.contains(&(
+                    format!("namespace:{source_ns}"),
+                    "parent".to_string(),
+                    table_obj.clone(),
+                )),
+                "the surviving forward edge must be removed, not skipped"
+            );
+
+            // Write only the forward tuple, as if a previous attach applied half an edge.
+            authorizer
+                .client
+                .write_with_options(
+                    Some(vec![TupleKey {
+                        user: format!("namespace:{destination_ns}"),
+                        relation: TableRelation::Parent.to_string(),
+                        object: table_obj.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            authorizer
+                .attach_tabular_parent(
+                    &metadata,
+                    warehouse_id,
+                    TabularId::Table(table_id),
+                    destination_ns,
+                )
+                .await
+                .expect("attach must tolerate a half-present edge");
+
+            let after_attach = all_tuples(&authorizer).await;
+            assert!(
+                after_attach.contains(&(
+                    table_obj.clone(),
+                    "child".to_string(),
+                    format!("namespace:{destination_ns}"),
+                )),
+                "the missing inverse edge must be written, not skipped"
+            );
         }
 
         #[tokio::test]

@@ -19,7 +19,14 @@ use veil::Redact;
 
 use crate::InitializeClientError;
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(crate::CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build GCS HTTP client")
+});
 
 #[derive(Debug, Eq, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct GCSSettings {}

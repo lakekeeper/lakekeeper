@@ -77,6 +77,14 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
 ) -> Result<()> {
     let task_queues = context.v1_state.registered_task_queues;
 
+    // Accept the queue's pre-rename name on the config path: resolve it to the
+    // current name before validating and persisting, so config set against an
+    // old name lands on the same row the worker reads.
+    let queue_name = task_queues
+        .resolve_queue_name(queue_name)
+        .await
+        .unwrap_or(queue_name);
+
     if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
         validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
             ErrorModel::bad_request(
@@ -152,6 +160,14 @@ pub(crate) async fn get_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
     queue_name: &TaskQueueName,
     context: ApiContext<State<A, C, S>>,
 ) -> Result<GetTaskQueueConfigResponse> {
+    // Resolve a pre-rename name to the queue's current name so a config read
+    // against an old path returns the config the worker actually uses.
+    let queue_name = context
+        .v1_state
+        .registered_task_queues
+        .resolve_queue_name(queue_name)
+        .await
+        .unwrap_or(queue_name);
     let config = C::get_task_queue_config(filter, queue_name, context.v1_state.catalog)
         .await?
         .unwrap_or_else(|| GetTaskQueueConfigResponse {

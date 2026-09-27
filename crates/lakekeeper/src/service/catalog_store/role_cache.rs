@@ -1,6 +1,5 @@
 use std::{sync::LazyLock, time::Duration};
 
-use axum_prometheus::metrics;
 use moka::{
     future::Cache,
     notification::RemovalCause,
@@ -14,11 +13,7 @@ use crate::{
     CONFIG,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, RoleId,
-        cache_metrics::{
-            METRIC_CACHE_HITS_TOTAL as METRIC_ROLE_CACHE_HITS,
-            METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
-            METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
-        },
+        cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
     },
 };
@@ -209,23 +204,19 @@ where
 
 /// Update the cache size metric with the current number of entries
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_cache_size_metric() {
-    let () = &*METRICS_INITIALIZED; // Ensure metrics are described
-    metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role")
-        .set(ROLE_CACHE.entry_count() as f64);
-    metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role_ident_to_id")
-        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
+    set_cache_size("role", ROLE_CACHE.entry_count());
+    set_cache_size("role_ident_to_id", IDENT_TO_ID_CACHE.entry_count());
 }
 
 pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
     update_cache_size_metric();
     if let Some(role) = ROLE_CACHE.get(&role_id).await {
         tracing::debug!("Role id {role_id} found in cache");
-        metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role").increment(1);
+        record_cache_hit("role");
         Some(role)
     } else {
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
+        record_cache_miss("role");
         None
     }
 }
@@ -265,16 +256,15 @@ pub(super) async fn role_cache_get_by_ident(
     update_cache_size_metric();
     let ident_key = (project_id, ident.clone());
     let Some(role_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role_ident_to_id")
-            .increment(1);
+        record_cache_miss("role_ident_to_id");
         return None;
     };
-    metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role_ident_to_id").increment(1);
+    record_cache_hit("role_ident_to_id");
     tracing::debug!("Role ident {ident} resolved in ident-to-id cache to id {role_id}");
 
     if let Some(role) = ROLE_CACHE.get(&role_id).await {
         tracing::debug!("Role id {role_id} found in cache");
-        metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role").increment(1);
+        record_cache_hit("role");
         Some(role)
     } else {
         tracing::debug!(
@@ -282,7 +272,7 @@ pub(super) async fn role_cache_get_by_ident(
         );
         IDENT_TO_ID_CACHE.remove(&ident_key).await;
         update_cache_size_metric();
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
+        record_cache_miss("role");
         None
     }
 }

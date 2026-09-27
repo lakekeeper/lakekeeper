@@ -2,15 +2,18 @@
 
 pub(crate) mod az;
 mod cache;
+mod cors;
 pub mod error;
 pub(crate) mod gcs;
 pub mod s3;
+pub mod stackit;
 pub mod storage_layout;
+pub mod validation;
 
 use std::{
     collections::HashMap,
     str::FromStr as _,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub use az::{AzCredential, EndpointMode, GenericAdlsProfile, OneLakeProfile, TopLevelFolder};
@@ -19,13 +22,23 @@ use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::{NamespaceIdent, TableIdent};
-use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
+// `rest::StorageCredential` is the response-side credential entry; `StorageCredential` in this
+// module is the warehouse's stored secret. Aliased to keep the two apart.
+use iceberg_ext::{
+    catalog::rest::{
+        ErrorModel, RemoteSigningConfig, StorageCredential as VendedStorageCredential,
+    },
+    configs::table::TableProperties,
+};
 use lakekeeper_io::{
     InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
     s3::S3Location,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
+pub use stackit::{
+    StackitAccessKeyCredential, StackitCredential, StackitProfile, StackitStorageService,
+};
 use uuid::Uuid;
 
 use super::{NamespaceId, TableId, secrets::SecretInStorage};
@@ -45,6 +58,10 @@ use crate::{
             storage_layout::{
                 DEFAULT_LAYOUT, NamespaceNameContext, NamespacePath, StorageLayout,
                 TabularNameContext,
+            },
+            validation::{
+                ProbeDeadlines, ReportBuilder, SKIPPED_BY_CONFIG, SKIPPED_PREREQUISITE,
+                STORAGE_CHECKS, ValidationCheck, ValidationCheckName, ValidationReport, elapsed_ms,
             },
         },
     },
@@ -73,6 +90,11 @@ pub enum StorageProfile {
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
     S3(S3Profile),
+    /// STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
+    /// set and STACKIT's own endpoint derivation and credentials-group STS.
+    #[serde(rename = "stackit")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileStackit"))]
+    Stackit(StackitProfile),
     #[serde(rename = "gcs")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileGcs"))]
     Gcs(GcsProfile),
@@ -86,6 +108,7 @@ enum StorageProfileBorrowed<'a> {
     Adls(&'a GenericAdlsProfile),
     OneLake(&'a OneLakeProfile),
     S3(&'a S3Profile),
+    Stackit(&'a StackitProfile),
     Gcs(&'a GcsProfile),
     #[cfg(feature = "test-utils")]
     Memory(&'a MemoryProfile),
@@ -115,12 +138,43 @@ pub enum StoragePermissions {
 
 #[derive(Debug)]
 pub struct TableConfig {
+    /// The vended credential plus the properties qualifying it (region, endpoint,
+    /// refresh endpoint, ...), or empty when no credential was vended.
+    ///
+    /// Empty exactly when nothing was vended — backends must not park properties
+    /// here that make sense without a credential. [`Self::storage_credentials`]
+    /// relies on it.
     pub(crate) creds: TableProperties,
     pub(crate) config: TableProperties,
     /// Actual expiry (epoch ms) of the vended credentials in [`Self::creds`], or
     /// `None` if none expire. Set wherever a backend vends an expiring
     /// credential; the source for the `loadTable` `ETag`'s revalidation point.
     pub(crate) credentials_expiration_ms: Option<i64>,
+    /// Signer settings to advertise, or `None` when the backend does not use
+    /// remote signing. Emitting it tells the client to sign against the table's
+    /// standard `/sign` path rather than the deprecated `signer.*` config keys.
+    pub(crate) remote_signing: Option<RemoteSigningConfig>,
+}
+
+impl TableConfig {
+    /// The `storage-credentials` entry to return for a tabular at `prefix`, or
+    /// `None` if no credential was vended.
+    ///
+    /// A credential-less entry is never emitted: clients honouring it scope a
+    /// key-less secret to `prefix` and then send unsigned requests for every file
+    /// below it, which the storage rejects — while the credentials the client
+    /// already had would have worked.
+    pub(crate) fn storage_credentials(
+        &self,
+        prefix: &Location,
+    ) -> Option<Vec<VendedStorageCredential>> {
+        (!self.creds.inner().is_empty()).then(|| {
+            vec![VendedStorageCredential {
+                prefix: prefix.to_string(),
+                config: self.creds.clone().into(),
+            }]
+        })
+    }
 }
 
 /// Half of a credential's remaining lifetime, capped at 1h — the window during
@@ -182,6 +236,13 @@ impl std::fmt::Display for ShortTermCredentialsRequest {
     }
 }
 
+/// The checks that exercise credentials vended to clients.
+const VENDED_CHECKS: [ValidationCheckName; 3] = [
+    ValidationCheckName::VendedCredentialsIssued,
+    ValidationCheckName::VendedCredentialsReadWrite,
+    ValidationCheckName::VendedCredentialsScopeEnforced,
+];
+
 impl StorageProfile {
     #[must_use]
     pub fn generate_catalog_config(
@@ -194,6 +255,19 @@ impl StorageProfile {
             StorageProfile::S3(profile) => {
                 profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
+            StorageProfile::Stackit(profile) => profile
+                .generate_catalog_config(warehouse_id, request_metadata, delete_profile)
+                .unwrap_or_else(|e| {
+                    // Only fails for an un-normalized profile, which cannot be
+                    // persisted. Still keep `endpoints` populated: clients read
+                    // it to discover what the server supports, and an empty list
+                    // reads as "nothing supported" rather than as a fault.
+                    tracing::warn!("Could not build a catalog config for the STACKIT profile: {e}");
+                    CatalogConfig {
+                        endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
+                        ..CatalogConfig::default()
+                    }
+                }),
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::OneLake(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
@@ -202,6 +276,7 @@ impl StorageProfile {
                 overrides: std::collections::HashMap::new(),
                 defaults: std::collections::HashMap::new(),
                 endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
+                idempotency_key_lifetime: None,
             },
         }
     }
@@ -213,7 +288,7 @@ impl StorageProfile {
     pub fn is_hierarchical(&self) -> bool {
         match self {
             StorageProfile::Adls(_) | StorageProfile::OneLake(_) => true,
-            StorageProfile::S3(_) | StorageProfile::Gcs(_) => false,
+            StorageProfile::S3(_) | StorageProfile::Stackit(_) | StorageProfile::Gcs(_) => false,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
         }
@@ -227,6 +302,9 @@ impl StorageProfile {
     pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
         match (self, other) {
             (StorageProfile::S3(this_profile), StorageProfile::S3(other_profile)) => {
+                this_profile.update_with(other_profile).map(Into::into)
+            }
+            (StorageProfile::Stackit(this_profile), StorageProfile::Stackit(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
@@ -262,6 +340,15 @@ impl StorageProfile {
                 .lakekeeper_io(
                     secret
                         .map(|s| s.try_to_s3())
+                        .transpose()
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
+            StorageProfile::Stackit(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_stackit())
                         .transpose()
                         .map_err(CredentialsError::from)?,
                 )
@@ -308,6 +395,7 @@ impl StorageProfile {
     pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         match self {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
+            StorageProfile::Stackit(profile) => profile.base_location(),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::OneLake(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
@@ -343,6 +431,7 @@ impl StorageProfile {
     pub fn storage_type(&self) -> &'static str {
         match self {
             StorageProfile::S3(_) => "s3",
+            StorageProfile::Stackit(_) => "stackit",
             StorageProfile::Adls(_) => "adls",
             StorageProfile::OneLake(_) => "onelake",
             StorageProfile::Gcs(_) => "gcs",
@@ -367,6 +456,7 @@ impl StorageProfile {
         match self {
             // Real backends vend expiring credentials — a new one should land here.
             StorageProfile::S3(_)
+            | StorageProfile::Stackit(_)
             | StorageProfile::Adls(_)
             | StorageProfile::OneLake(_)
             | StorageProfile::Gcs(_) => true,
@@ -398,6 +488,20 @@ impl StorageProfile {
         };
 
         match self {
+            StorageProfile::Stackit(profile) => {
+                profile
+                    .generate_table_config(
+                        data_access,
+                        secret
+                            .map(|s| s.try_to_stackit())
+                            .transpose()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        tabular_info,
+                        request_metadata,
+                    )
+                    .await
+            }
             StorageProfile::S3(profile) => {
                 profile
                     .generate_table_config(
@@ -464,6 +568,7 @@ impl StorageProfile {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
                 credentials_expiration_ms: None,
+                remote_signing: None,
             }),
         }
     }
@@ -498,6 +603,12 @@ impl StorageProfile {
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
+            StorageProfile::Stackit(prof) => prof.normalize(
+                credential
+                    .map(|s| s.try_to_stackit())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            ),
             StorageProfile::Adls(prof) => prof.normalize(),
             StorageProfile::OneLake(prof) => prof.normalize(
                 credential
@@ -511,26 +622,181 @@ impl StorageProfile {
         }
     }
 
-    /// Validate physical access
+    /// Validate physical access.
     ///
     /// If location is not provided, a dummy table location is used.
     ///
+    /// The first failure among the checks of [`Self::validate_access_report`].
+    /// Prefer the report when the outcome is shown to a human. The CORS check is
+    /// not run: it can only warn, and warnings do not fail this call.
+    ///
     /// # Errors
     /// Fails if a file cannot be written and deleted.
-    #[allow(clippy::too_many_lines)]
     pub async fn validate_access(
         &self,
         credential: Option<&StorageCredential>,
         location: Option<&Location>,
         request_metadata: &RequestMetadata,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<(), ErrorModel> {
         if CONFIG.skip_storage_validation {
-            tracing::debug!("Storage validation is disabled, skipping validation of credentials.");
             return Ok(());
         }
+        let deadlines = ProbeDeadlines::from_request_limit(
+            request_metadata.received_at(),
+            CONFIG.max_request_time,
+        );
+        Box::pin(self.access_probes(credential, location, request_metadata, deadlines))
+            .await
+            .into_result()
+    }
 
-        let io = self.file_io(credential).await?;
+    /// Validate physical access, reporting the outcome of every individual probe.
+    ///
+    /// Never returns an error: a configuration that cannot be reached produces a
+    /// report with failed checks, not an `Err`. Checks that cannot run because a
+    /// prerequisite failed are recorded as skipped, so the report always accounts
+    /// for every probe.
+    ///
+    /// If location is not provided, a dummy table location is used.
+    pub async fn validate_access_report(
+        &self,
+        credential: Option<&StorageCredential>,
+        location: Option<&Location>,
+        request_metadata: &RequestMetadata,
+    ) -> ValidationReport {
+        if CONFIG.skip_storage_validation {
+            tracing::debug!("Storage validation is disabled, skipping validation of credentials.");
+            let mut report = ReportBuilder::new();
+            for name in STORAGE_CHECKS {
+                report.skip(name, SKIPPED_BY_CONFIG);
+            }
+            return report.build();
+        }
 
+        let deadlines = ProbeDeadlines::from_request_limit(
+            request_metadata.received_at(),
+            CONFIG.max_request_time,
+        );
+        // The CORS preflight needs no credential, so it runs alongside the access
+        // probes and is reported even when they stop early.
+        let (access, cors) = tokio::join!(
+            Box::pin(self.access_probes(credential, location, request_metadata, deadlines)),
+            Box::pin(cors::cors_check(
+                self,
+                request_metadata.base_url(),
+                deadlines
+            )),
+        );
+        let mut checks = access.checks;
+        checks.push(cors);
+        ValidationReport::new(checks)
+    }
+
+    /// The probes that exercise storage with Lakekeeper's own and vended
+    /// credentials. Always accounts for each of them, as passed, failed or skipped.
+    async fn access_probes(
+        &self,
+        credential: Option<&StorageCredential>,
+        location: Option<&Location>,
+        request_metadata: &RequestMetadata,
+        deadlines: ProbeDeadlines,
+    ) -> ValidationReport {
+        let mut report = ReportBuilder::new();
+
+        let started = Instant::now();
+        let io = match deadlines
+            .probe(async {
+                self.file_io(credential)
+                    .await
+                    .map_err(ValidationError::from)
+            })
+            .await
+        {
+            Ok(io) => {
+                report.push(ValidationCheck::passed(
+                    ValidationCheckName::StorageClientInitialized,
+                    elapsed_ms(started),
+                ));
+                io
+            }
+            Err(e) => {
+                report.push(ValidationCheck::failed(
+                    ValidationCheckName::StorageClientInitialized,
+                    elapsed_ms(started),
+                    e,
+                ));
+                report.skip(
+                    ValidationCheckName::LakekeeperReadWrite,
+                    SKIPPED_PREREQUISITE,
+                );
+                for name in VENDED_CHECKS {
+                    report.skip(name, SKIPPED_PREREQUISITE);
+                }
+                report.skip(ValidationCheckName::Cleanup, SKIPPED_PREREQUISITE);
+                return report.build();
+            }
+        };
+
+        let test_location = match self.validation_test_location(location) {
+            Ok(test_location) => test_location,
+            // Reported against the read/write probe on purpose: this function owns
+            // only the physical-access checks, and profile shape has already been
+            // reported by the caller. Without a location there is nothing to write
+            // to, so the probe is what failed.
+            Err(e) => {
+                report.push(ValidationCheck::failed(
+                    ValidationCheckName::LakekeeperReadWrite,
+                    0,
+                    e,
+                ));
+                for name in VENDED_CHECKS {
+                    report.skip(name, SKIPPED_PREREQUISITE);
+                }
+                report.skip(ValidationCheckName::Cleanup, SKIPPED_PREREQUISITE);
+                return report.build();
+            }
+        };
+        tracing::debug!("Validating direct read/write access to {test_location}");
+
+        // Direct and vended access run in parallel. Each side reports its own
+        // checks so that a failure on one does not mask the other.
+        let (direct, vended) = tokio::join!(
+            self.direct_read_write_check(&io, &test_location, deadlines),
+            self.vended_credentials_checks(credential, &test_location, request_metadata, deadlines),
+        );
+        report.push(direct);
+        report.extend(vended);
+
+        report.push(
+            deadlines
+                .cleanup(self.validate_cleanup(&io, &test_location))
+                .await,
+        );
+        tracing::debug!("Access validation finished");
+        report.build()
+    }
+
+    /// Whether the profile vends temporary credentials to clients.
+    fn credential_vending_enabled(&self) -> bool {
+        match self {
+            StorageProfile::S3(profile) => profile.sts_enabled,
+            StorageProfile::Stackit(profile) => profile.sts_enabled,
+            StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::OneLake(profile) => profile.sas_enabled,
+            StorageProfile::Gcs(profile) => profile.sts_enabled,
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => false,
+        }
+    }
+
+    /// `location` if given, else a fresh table location below a fresh namespace.
+    fn validation_test_location(
+        &self,
+        location: Option<&Location>,
+    ) -> Result<Location, ValidationError> {
+        if let Some(location) = location {
+            return Ok(location.clone());
+        }
         let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
             name: "test_namespace".to_string(),
             uuid: Uuid::now_v7(),
@@ -540,84 +806,109 @@ impl StorageProfile {
             uuid: Uuid::now_v7(),
         };
         let ns_location = self.default_namespace_location(&namespace_path)?;
-        let test_location = location.map_or_else(
-            || self.default_tabular_location(&ns_location, &tabular_name_context),
-            std::borrow::ToOwned::to_owned,
-        );
-        tracing::debug!("Validating direct read/write access to {test_location}");
+        Ok(self.default_tabular_location(&ns_location, &tabular_name_context))
+    }
 
-        // Test vended-credentials access
-        let test_vended_credentials = match self {
-            StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Adls(profile) => profile.sas_enabled,
-            StorageProfile::OneLake(profile) => profile.sas_enabled,
-            StorageProfile::Gcs(profile) => profile.sts_enabled,
-            #[cfg(feature = "test-utils")]
-            StorageProfile::Memory(_) => false,
-        };
+    /// The `lakekeeper-read-write` check, with the warehouse's own credential.
+    async fn direct_read_write_check(
+        &self,
+        io: &StorageBackend,
+        test_location: &Location,
+        deadlines: ProbeDeadlines,
+    ) -> ValidationCheck {
+        // Timed here, not after the caller's join: otherwise this check would
+        // report the slower concurrent branch's wall time.
+        let started = Instant::now();
+        let name = ValidationCheckName::LakekeeperReadWrite;
+        match deadlines
+            .probe(self.validate_read_write_lakekeeper(io, test_location))
+            .await
+        {
+            Ok(()) => ValidationCheck::passed(name, elapsed_ms(started)),
+            Err(e) => ValidationCheck::failed(name, elapsed_ms(started), e),
+        }
+    }
 
-        // Run both validations in parallel
-        let direct_validation = self.validate_read_write_lakekeeper(&io, &test_location);
-        let vended_validation = async {
-            if test_vended_credentials {
-                self.validate_vended_credentials_access(
-                    credential,
-                    &test_location,
-                    request_metadata,
-                )
-                .await?;
-            }
-            Ok::<(), ValidationError>(())
-        };
+    /// The vended-credentials checks, skipped when the profile vends none.
+    async fn vended_credentials_checks(
+        &self,
+        credential: Option<&StorageCredential>,
+        test_location: &Location,
+        request_metadata: &RequestMetadata,
+        deadlines: ProbeDeadlines,
+    ) -> Vec<ValidationCheck> {
+        if !self.credential_vending_enabled() {
+            return VENDED_CHECKS
+                .into_iter()
+                .map(|name| {
+                    ValidationCheck::skipped(
+                        name,
+                        "Credential vending is not enabled for this storage profile.",
+                    )
+                })
+                .collect();
+        }
+        self.validate_vended_credentials_access(
+            credential,
+            test_location,
+            request_metadata,
+            deadlines,
+        )
+        .await
+    }
 
-        let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
-        let validation_err = match (direct_result, vended_result) {
-            (Ok(()), Ok(())) => None,
-            (Err(e), Ok(()) | Err(_)) | (Ok(()), Err(e)) => Some(e),
-        };
+    /// Remove everything validation wrote and confirm the location is empty again.
+    ///
+    /// Reported as its own check: leftover probe files are a real finding on
+    /// buckets with restrictive lifecycle or object-lock policies, where write
+    /// succeeds but delete does not.
+    async fn validate_cleanup(
+        &self,
+        io: &impl LakekeeperStorage,
+        test_location: &Location,
+    ) -> ValidationCheck {
+        let started = Instant::now();
         tracing::debug!("Cleanup started");
         if let Err(e) = io.remove_all(test_location.as_str()).await {
             tracing::warn!("Cleanup failed after validation: {e}");
-        } else {
-            tracing::debug!("Cleanup finished");
+            return ValidationCheck::failed(
+                ValidationCheckName::Cleanup,
+                elapsed_ms(started),
+                ValidationError::from(e),
+            );
         }
-        if let Some(e) = validation_err {
-            return Err(e);
-        }
+        tracing::debug!("Cleanup finished");
 
-        match is_empty(&io, &test_location).await {
-            Err(ValidationError::IoOperationFailed(io_error)) => {
-                tracing::info!("Error while checking location is empty: {io_error}");
-                Err(ValidationError::IoOperationFailed(io_error))
-            }
-            Ok(false) => Err(InvalidLocationError::new(
-                test_location.to_string(),
-                "Files are left after remove_all on test location".to_string(),
-            )
-            .into()),
+        match is_empty(io, test_location).await {
             Ok(true) => {
                 tracing::debug!("Location is empty");
-                Ok(Ok(()))
+                ValidationCheck::passed(ValidationCheckName::Cleanup, elapsed_ms(started))
             }
-            Err(other) => {
-                tracing::info!("Unrecoverable error: {other:?}");
-                Ok(Err(other))
+            Ok(false) => ValidationCheck::failed(
+                ValidationCheckName::Cleanup,
+                elapsed_ms(started),
+                ValidationError::from(InvalidLocationError::new(
+                    test_location.to_string(),
+                    "Files are left after remove_all on test location".to_string(),
+                )),
+            ),
+            Err(e) => {
+                tracing::info!("Error while checking location is empty: {e}");
+                ValidationCheck::failed(ValidationCheckName::Cleanup, elapsed_ms(started), e)
             }
-        }??;
-        tracing::debug!("Access validation finished");
-        Ok(())
+        }
     }
 
-    /// Validate access with vended credentials
+    /// Validate access with vended credentials.
     ///
-    /// # Errors
-    /// Fails if a file cannot be written and deleted using vended credentials.
+    /// Returns one check per probe; never fails as a whole.
     async fn validate_vended_credentials_access(
         &self,
         credential: Option<&StorageCredential>,
         test_location: &Location,
         request_metadata: &RequestMetadata,
-    ) -> Result<(), ValidationError> {
+        deadlines: ProbeDeadlines,
+    ) -> Vec<ValidationCheck> {
         tracing::debug!("Validating vended credentials access to: {test_location}");
 
         // Create a sub-location for testing vended credentials access
@@ -641,6 +932,95 @@ impl StorageProfile {
             updated_at: None,
         };
 
+        let issue_started = Instant::now();
+        let sts_storage = deadlines
+            .probe(self.issue_vended_credentials(
+                credential,
+                &sub_location,
+                request_metadata,
+                &tabular_info,
+            ))
+            .await;
+        let sts_storage = match sts_storage {
+            Ok(sts_storage) => sts_storage,
+            Err(e) => {
+                return vec![
+                    ValidationCheck::failed(
+                        ValidationCheckName::VendedCredentialsIssued,
+                        elapsed_ms(issue_started),
+                        e,
+                    ),
+                    ValidationCheck::skipped(
+                        ValidationCheckName::VendedCredentialsReadWrite,
+                        SKIPPED_PREREQUISITE,
+                    ),
+                    ValidationCheck::skipped(
+                        ValidationCheckName::VendedCredentialsScopeEnforced,
+                        SKIPPED_PREREQUISITE,
+                    ),
+                ];
+            }
+        };
+        let issue_check = ValidationCheck::passed(
+            ValidationCheckName::VendedCredentialsIssued,
+            elapsed_ms(issue_started),
+        );
+
+        tracing::debug!(
+            "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
+        );
+
+        // Run both validations in parallel
+        let read_write_validation = async {
+            let started = Instant::now();
+            let result = deadlines
+                .probe(self.validate_read_write_lakekeeper(&sts_storage, &sub_location))
+                .await;
+            (elapsed_ms(started), result)
+        };
+        let no_write_validation = async {
+            let started = Instant::now();
+            let result = deadlines
+                .probe(self.validate_no_write_access_lakekeeper(&sts_storage, test_location))
+                .await;
+            (elapsed_ms(started), result)
+        };
+
+        let ((rw_ms, read_write_result), (nw_ms, no_write_result)) =
+            tokio::join!(read_write_validation, no_write_validation);
+
+        // Both are reported independently — the no-write failure means downscoped
+        // credentials were over-permissive, which is a security signal that must
+        // not be hidden by an unrelated read/write failure.
+        if let (Err(rw), Err(nw)) = (&read_write_result, &no_write_result) {
+            tracing::warn!(
+                "Both vended-credentials validations failed. Read/write: {rw:?}. No-write: {nw:?}"
+            );
+        }
+
+        let mut checks = ReportBuilder::new();
+        checks.push(issue_check);
+        checks.record_timed(
+            ValidationCheckName::VendedCredentialsReadWrite,
+            rw_ms,
+            read_write_result,
+        );
+        checks.record_timed(
+            ValidationCheckName::VendedCredentialsScopeEnforced,
+            nw_ms,
+            no_write_result,
+        );
+        checks.build().checks
+    }
+
+    /// Issue downscoped credentials for `sub_location` and build a storage client from them.
+    async fn issue_vended_credentials(
+        &self,
+        credential: Option<&StorageCredential>,
+        sub_location: &Location,
+        request_metadata: &RequestMetadata,
+        tabular_info: &TabularInfo<TableId>,
+    ) -> Result<StorageBackend, ValidationError> {
         let tbl_config = self
             .generate_table_config(
                 DataAccess {
@@ -649,16 +1029,16 @@ impl StorageProfile {
                 }
                 .into(),
                 credential,
-                &sub_location,
+                sub_location,
                 StoragePermissions::ReadWriteDelete,
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
                 request_metadata,
-                &tabular_info,
+                tabular_info,
             )
             .await?;
 
-        let sts_storage: StorageBackend = match &self {
+        Ok(match &self {
             StorageProfile::S3(_) => {
                 tracing::debug!("Building S3 storage from vended credentials.");
                 s3::lakekeeper_io_from_vended_table_config(&tbl_config.config)
@@ -669,6 +1049,12 @@ impl StorageProfile {
                 tracing::debug!("Building ADLS storage from vended credentials.");
                 profile
                     .lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
+            }
+            StorageProfile::Stackit(_) => {
+                tracing::debug!("Building STACKIT storage from vended credentials.");
+                s3::lakekeeper_io_from_vended_table_config(&tbl_config.config)
                     .await?
                     .into()
             }
@@ -689,33 +1075,7 @@ impl StorageProfile {
             StorageProfile::Memory(_) => {
                 unreachable!("Local profile does not support vended credentials access validation")
             }
-        };
-
-        tracing::debug!(
-            "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
-        );
-
-        // Run both validations in parallel
-        let read_write_validation =
-            self.validate_read_write_lakekeeper(&sts_storage, &sub_location);
-        let no_write_validation =
-            self.validate_no_write_access_lakekeeper(&sts_storage, test_location);
-
-        let (read_write_result, no_write_result) =
-            tokio::join!(read_write_validation, no_write_validation);
-
-        // If both validations failed, surface both — the no-write failure means
-        // downscoped credentials were over-permissive, which is a security signal
-        // that should not be hidden by an unrelated read/write failure.
-        if let (Err(rw), Err(nw)) = (&read_write_result, &no_write_result) {
-            tracing::warn!(
-                "Both vended-credentials validations failed. Read/write: {rw:?}. No-write: {nw:?}"
-            );
-        }
-        read_write_result?;
-        no_write_result?;
-
-        Ok(())
+        })
     }
 
     async fn validate_read_write_lakekeeper(
@@ -876,6 +1236,9 @@ impl StorageProfile {
             (StorageProfile::S3(profile), StorageProfile::S3(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
+            (StorageProfile::Stackit(profile), StorageProfile::Stackit(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
             (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
@@ -1015,6 +1378,7 @@ impl StorageProfile {
     pub fn layout(&self) -> Option<&StorageLayout> {
         match self {
             StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::Stackit(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
             StorageProfile::OneLake(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
@@ -1039,6 +1403,23 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
+// This is a two-level union: `type` selects s3/az/gcs here, and
+// `credential-type` then selects within `S3Credential` / `AzCredential` /
+// `GcsCredential`, which are unions in their own right. On the wire that is
+// `{"type": "s3", "credential-type": "access-key", ...}`.
+//
+// Nested unions cannot survive into a generated client, so `api_doc()`
+// multiplies the two levels out into nine flat leaves — see
+// `expand_unions_composing_unions`. Adding a credential variant here needs no
+// change there; the expansion is derived.
+//
+// One constraint to be aware of when adding variants: the expansion can only
+// emit a usable union while a single property still identifies a leaf, and the
+// only one that does is `credential-type` (`type` alone maps `s3` to four
+// leaves). Reusing a `credential-type` value under a different `type` would
+// leave no valid discriminator, and the pass then deliberately skips the union
+// rather than emit something misleading — downstream generators would need
+// their own preprocessing again.
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
@@ -1059,6 +1440,22 @@ pub enum StorageCredential {
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialS3"))]
     S3(S3Credential),
+    /// Credentials for STACKIT Object Storage.
+    ///
+    /// Example payload:
+    ///
+    /// ```
+    /// use lakekeeper::service::storage::StorageCredential;
+    /// let cred: StorageCredential = serde_json::from_str(r#"{
+    ///     "type": "stackit",
+    ///     "credential-type": "access-key",
+    ///     "access-key-id": "...",
+    ///     "secret-access-key": "..."
+    ///   }"#).unwrap();
+    /// ```
+    #[serde(rename = "stackit")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageCredentialStackit"))]
+    Stackit(StackitCredential),
     /// Credentials for Az storage
     ///
     /// Example payload:
@@ -1123,6 +1520,17 @@ pub enum StorageCredentialType {
     /// GCS credential type
     #[serde(rename = "gcs")]
     Gcs(GcsCredentialType),
+    /// STACKIT credential type
+    #[serde(rename = "stackit")]
+    Stackit(StackitCredentialType),
+}
+
+/// The type of STACKIT credential.
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StackitCredentialType {
+    AccessKey,
 }
 
 /// The type of S3 credential.
@@ -1133,6 +1541,7 @@ pub enum S3CredentialType {
     AccessKey,
     AwsSystemIdentity,
     CloudflareR2,
+    AliyunOss,
 }
 
 /// The type of Azure credential.
@@ -1163,6 +1572,7 @@ impl StorageCredential {
                 S3Credential::AccessKey(_) => S3CredentialType::AccessKey,
                 S3Credential::AwsSystemIdentity(_) => S3CredentialType::AwsSystemIdentity,
                 S3Credential::CloudflareR2(_) => S3CredentialType::CloudflareR2,
+                S3Credential::AliyunOss(_) => S3CredentialType::AliyunOss,
             }),
             StorageCredential::Az(az) => StorageCredentialType::Az(match az {
                 AzCredential::ClientCredentials { .. } => AzCredentialType::ClientCredentials,
@@ -1172,6 +1582,9 @@ impl StorageCredential {
             StorageCredential::Gcs(gcs) => StorageCredentialType::Gcs(match gcs {
                 GcsCredential::ServiceAccountKey { .. } => GcsCredentialType::ServiceAccountKey,
                 GcsCredential::GcpSystemIdentity {} => GcsCredentialType::GcpSystemIdentity,
+            }),
+            StorageCredential::Stackit(stackit) => StorageCredentialType::Stackit(match stackit {
+                StackitCredential::AccessKey(_) => StackitCredentialType::AccessKey,
             }),
         }
     }
@@ -1191,6 +1604,7 @@ impl StorageCredential {
     pub fn storage_type(&self) -> &'static str {
         match self {
             StorageCredential::S3(_) => "s3",
+            StorageCredential::Stackit(_) => "stackit",
             StorageCredential::Az(_) => "adls",
             StorageCredential::Gcs(_) => "gcs",
         }
@@ -1206,6 +1620,20 @@ impl StorageCredential {
             _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
                 to: "s3",
+            }),
+        }
+    }
+
+    /// Try to convert the credential into a STACKIT credential.
+    ///
+    /// # Errors
+    /// Fails if the credential is not a STACKIT credential.
+    pub fn try_to_stackit(&self) -> Result<&StackitCredential, UnexpectedStorageType> {
+        match self {
+            Self::Stackit(credential) => Ok(credential),
+            _ => Err(UnexpectedStorageType {
+                is: self.storage_type(),
+                to: "stackit",
             }),
         }
     }
@@ -1268,6 +1696,259 @@ pub(crate) async fn is_empty(
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod validate_access_report_tests {
+    use super::*;
+    use crate::{
+        request_metadata::RequestMetadata,
+        service::storage::{
+            AzCredential,
+            s3::{S3AccessKeyCredential, S3Profile},
+            validation::{ValidationCheckName, ValidationCheckStatus},
+        },
+    };
+
+    /// A profile pointing at a port nothing listens on: the client builds fine,
+    /// every request fails. Exercises the failure branch without a live backend.
+    fn unreachable_s3_profile() -> (StorageProfile, StorageCredential) {
+        let profile: StorageProfile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .key_prefix("validation".to_string())
+            .region("local".to_string())
+            .endpoint("http://127.0.0.1:1".parse().expect("valid url"))
+            .path_style_access(true)
+            .sts_enabled(false)
+            .flavor(S3Flavor::S3Compat)
+            .build()
+            .into();
+        let credential: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "minioadmin".to_string(),
+            secret_access_key: "minioadmin".to_string(),
+            external_id: None,
+        })
+        .into();
+        (profile, credential)
+    }
+
+    fn status_of(report: &ValidationReport, name: ValidationCheckName) -> ValidationCheckStatus {
+        report
+            .checks
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("missing check {name}"))
+            .status
+    }
+
+    /// Storage that accepts connections and never answers, so every request hangs.
+    async fn stalled_s3_profile() -> (StorageProfile, StorageCredential) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let (profile, credential) = unreachable_s3_profile();
+        let StorageProfile::S3(mut profile) = profile else {
+            unreachable!()
+        };
+        profile.endpoint = Some(format!("http://{addr}").parse().unwrap());
+        (profile.into(), credential)
+    }
+
+    #[tokio::test]
+    async fn stalled_storage_is_reported_within_the_request_limit() {
+        let (mut profile, credential) = stalled_s3_profile().await;
+        profile.normalize(Some(&credential)).expect("well-formed");
+        // Arrived 24s ago against the 30s default: the probes' two thirds are
+        // spent, and one second of cleanup time remains.
+        let received_at = tokio::time::Instant::now()
+            .checked_sub(Duration::from_secs(24))
+            .unwrap();
+        let request = RequestMetadata::new_unauthenticated().with_received_at(received_at);
+
+        let started = std::time::Instant::now();
+        let report = profile
+            .validate_access_report(Some(&credential), None, &request)
+            .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+
+        let error_of = |name| {
+            report
+                .checks
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.error.as_ref())
+                .map(|e| e.message.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            report.checks.iter().any(|c| c
+                .error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("probe time limit"))),
+            "{:?}",
+            report.checks
+        );
+        assert!(
+            error_of(ValidationCheckName::Cleanup).contains("cleanup time limit"),
+            "{:?}",
+            report.checks
+        );
+    }
+
+    #[tokio::test]
+    async fn the_report_accounts_for_the_cors_check() {
+        let profile = StorageProfile::Memory(MemoryProfile::default());
+        let report = profile
+            .validate_access_report(None, None, &RequestMetadata::new_unauthenticated())
+            .await;
+        assert_eq!(
+            status_of(&report, ValidationCheckName::CorsOriginAllowed),
+            ValidationCheckStatus::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_storage_is_a_cors_warning_not_a_failure() {
+        let (mut profile, credential) = unreachable_s3_profile();
+        profile
+            .normalize(Some(&credential))
+            .expect("profile is well-formed");
+        let report = profile
+            .validate_access_report(
+                Some(&credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+        assert_eq!(
+            status_of(&report, ValidationCheckName::CorsOriginAllowed),
+            ValidationCheckStatus::Warning
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_storage_fails_the_probe_and_skips_vending() {
+        let (mut profile, credential) = unreachable_s3_profile();
+        profile
+            .normalize(Some(&credential))
+            .expect("profile is well-formed");
+
+        let report = profile
+            .validate_access_report(
+                Some(&credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+
+        assert!(!report.valid, "{:?}", report.checks);
+        // The client builds even when the endpoint is dead — the failure has to
+        // show up on the probe, not on construction.
+        assert_eq!(
+            status_of(&report, ValidationCheckName::StorageClientInitialized),
+            ValidationCheckStatus::Passed
+        );
+        assert_eq!(
+            status_of(&report, ValidationCheckName::LakekeeperReadWrite),
+            ValidationCheckStatus::Failed
+        );
+        // sts_enabled = false, so vending is not applicable rather than broken.
+        for name in [
+            ValidationCheckName::VendedCredentialsIssued,
+            ValidationCheckName::VendedCredentialsReadWrite,
+            ValidationCheckName::VendedCredentialsScopeEnforced,
+        ] {
+            assert_eq!(
+                status_of(&report, name),
+                ValidationCheckStatus::Skipped,
+                "{name}"
+            );
+        }
+
+        // Every failed check must carry an error, and the collapse used by
+        // create/update must name the check that failed first.
+        for check in report.checks.iter().filter(|c| c.is_failed()) {
+            assert!(check.error.is_some(), "{} has no error", check.name);
+        }
+        let error = report.into_result().expect_err("report has failures");
+        assert!(
+            error
+                .message
+                .starts_with("Storage validation failed [lakekeeper-read-write]:"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn every_check_is_reported_exactly_once_on_the_failure_path() {
+        let (mut profile, credential) = unreachable_s3_profile();
+        profile.normalize(Some(&credential)).expect("well-formed");
+
+        let report = profile
+            .validate_access_report(
+                Some(&credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+
+        // `validate_access_report` owns exactly the storage-side checks.
+        let names: Vec<_> = report.checks.iter().map(|c| c.name).collect();
+        assert_eq!(names, STORAGE_CHECKS, "unexpected checks or order");
+    }
+
+    #[tokio::test]
+    async fn backend_init_failure_skips_every_downstream_check() {
+        // A credential of the wrong storage type: the client cannot be built at all.
+        let (profile, _) = unreachable_s3_profile();
+        let wrong_credential: StorageCredential = AzCredential::SharedAccessKey {
+            key: "x".to_string(),
+        }
+        .into();
+
+        let report = profile
+            .validate_access_report(
+                Some(&wrong_credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+
+        assert!(!report.valid, "{:?}", report.checks);
+        assert_eq!(
+            status_of(&report, ValidationCheckName::StorageClientInitialized),
+            ValidationCheckStatus::Failed
+        );
+        for name in [
+            ValidationCheckName::LakekeeperReadWrite,
+            ValidationCheckName::VendedCredentialsIssued,
+            ValidationCheckName::VendedCredentialsReadWrite,
+            ValidationCheckName::VendedCredentialsScopeEnforced,
+            ValidationCheckName::Cleanup,
+        ] {
+            assert_eq!(
+                status_of(&report, name),
+                ValidationCheckStatus::Skipped,
+                "{name} should be skipped when the backend cannot be built"
+            );
+        }
+        assert_eq!(
+            report.checks.iter().filter(|c| c.is_failed()).count(),
+            1,
+            "{:?}",
+            report.checks
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1679,12 +2360,12 @@ mod tests {
         }
     }
 
-    mod minio_integration_tests {
+    mod s3_compat_integration_tests {
         use super::*;
 
         #[test]
         fn test_vended_s3_compat() {
-            use super::super::s3::test::minio_integration_tests::storage_profile;
+            use super::super::s3::test::s3_compat_integration_tests::storage_profile;
 
             test_block_on(
                 async {
@@ -1816,7 +2497,7 @@ mod tests {
                     .unwrap()
                     .into(),
             ),
-            StorageProfile::S3(_) => (
+            StorageProfile::S3(_) | StorageProfile::Stackit(_) => (
                 s3::lakekeeper_io_from_vended_table_config(&config1.config)
                     .await
                     .unwrap()

@@ -5,13 +5,13 @@ use iceberg::spec::{
     FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
 };
-use iceberg_ext::catalog::rest::StorageCredential;
 use lakekeeper_io::{InvalidLocationError, LakekeeperStorage as _, Location, StorageBackend};
 use uuid::Uuid;
 
 use super::{
     super::{io::write_file, require_warehouse_id},
-    validate_table_properties,
+    etag::{StorageAccess, TableETag, TableResponseShape},
+    load_response_config, validate_table_properties,
 };
 use crate::{
     WarehouseId,
@@ -19,7 +19,8 @@ use crate::{
         endpoints::EndpointFlat,
         iceberg::v1::{
             ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters,
-            Result, TableIdent, TableParameters, tables::DataAccessMode,
+            Result, TableIdent, TableParameters,
+            tables::{DataAccessMode, SnapshotsQuery},
         },
     },
     request_metadata::RequestMetadata,
@@ -29,8 +30,12 @@ use crate::{
     },
     service::{
         AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
-        State, TableCreation, TableId, TabularId, Transaction,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        State, TableCreation, TableId, TabularId, TabularListFlags, Transaction,
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
+        contract_verification::ContractVerification,
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -120,13 +125,29 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     // ------------------- IDEMPOTENCY CHECK -------------------
     let idempotency_key = request_metadata.idempotency_key().copied();
     if let Some(ref key) = idempotency_key {
-        let check =
-            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        let check = C::check_idempotency_key(
+            warehouse_id,
+            key,
+            EndpointFlat::CatalogV1CreateTable,
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
         if check.is_replay() {
             let table_ident = TableIdent::new(parameters.namespace.clone(), request.name.clone());
             let load_params = TableParameters {
                 prefix: parameters.prefix.clone(),
                 table: table_ident,
+            };
+            // `stage_create` tables are persisted with no metadata_location, and
+            // the original response returned exactly that. Replaying through an
+            // active-only load would 404 on a key whose request in fact
+            // succeeded. Only a staging retry gets the relaxation: `loadTable`
+            // otherwise refuses staged tables outright, so a plain create's key
+            // must not become a way to read one.
+            let list_flags = if request.stage_create.unwrap_or(false) {
+                TabularListFlags::active_and_staged()
+            } else {
+                TabularListFlags::active()
             };
             return super::replay_load_table::<C, A, S>(
                 load_params,
@@ -134,6 +155,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
                 state,
                 request_metadata,
                 "createTable",
+                list_flags,
             )
             .await;
         }
@@ -271,6 +293,13 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         warehouse.default_format_version,
     )?;
 
+    state
+        .v1_state
+        .contract_verifiers
+        .check_create_table(&request, &table_metadata)
+        .await?
+        .into_result()?;
+
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let (table_info, staged_table_id) = C::create_table(
         TableCreation {
@@ -324,12 +353,15 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // This requires the storage secret
     // because the table config might contain vended-credentials based
     // on the `data_access` parameter.
+    // Bound once and reused for the ETag shape below, so the tag can never
+    // describe a different access scope than the config it accompanies.
+    let storage_permissions = StoragePermissions::ReadWriteDelete;
     let config = storage_profile
         .generate_table_config(
             data_access,
             storage_secret_ref,
             &table_location,
-            StoragePermissions::ReadWriteDelete,
+            storage_permissions,
             &request_metadata,
             &table_info,
         )
@@ -338,19 +370,33 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let credentials_revalidate_after_ms = config
         .credentials_expiration_ms
         .map(credential_revalidate_after_ms);
-    let storage_credentials = (!config.creds.inner().is_empty()).then(|| {
-        vec![StorageCredential {
-            prefix: table_location.to_string(),
-            config: config.creds.into(),
-        }]
-    });
+    let storage_credentials = config.storage_credentials(&table_location);
+    // Full (empty) snapshot list, tagged with the delegation and permission
+    // scope the config above was generated for.
+    let shape = TableResponseShape::new(
+        SnapshotsQuery::All,
+        StorageAccess::Config {
+            delegation: data_access,
+            permissions: storage_permissions,
+            warehouse_version: warehouse.version,
+        },
+    );
 
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location.as_ref().map(ToString::to_string),
         metadata: table_metadata.clone(),
-        config: Some(config.config.into()),
+        remote_signing_config: config.remote_signing.clone(),
+        config: Some(load_response_config(Some(config.config))),
         storage_credentials,
-        credentials_revalidate_after_ms,
+        etag: metadata_location.as_ref().map(|loc| {
+            TableETag::new(
+                warehouse_id,
+                loc.as_str(),
+                shape,
+                credentials_revalidate_after_ms,
+            )
+            .into_etag()
+        }),
     };
 
     // Create table in authorizer
@@ -364,6 +410,19 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         .await?;
 
     guard.mark_authorizer_created();
+
+    // Grants the table is born with, in the transaction that creates it: they reference
+    // a table no other transaction can see yet.
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
+        &authorizer,
+        &request_metadata,
+        &GrantResource::Table {
+            warehouse_id,
+            table_id,
+        },
+        t.transaction(),
+    )
+    .await?;
 
     // Insert idempotency key in the same transaction.
     if let Some(key) = idempotency_key
@@ -390,6 +449,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // Commit transaction
     t.commit().await?;
 
+    // Held across the create event below, which consumes the context.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
+
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {
         authorizer
@@ -406,6 +469,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         table.name,
         Arc::new(request),
     );
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(load_table_result)
 }
