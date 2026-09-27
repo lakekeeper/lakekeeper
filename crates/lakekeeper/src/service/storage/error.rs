@@ -26,6 +26,8 @@ pub enum ValidationError {
     Deserialization(#[source] Box<serde_json::Error>),
     #[error("Failed to finish decompressing file: {0}")]
     FileDecompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
+    #[error(transparent)]
+    TableConfig(Box<TableConfigError>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +131,9 @@ impl From<TableConfigError> for ValidationError {
     fn from(value: TableConfigError) -> Self {
         match value {
             TableConfigError::Credentials(e) => Box::new(e).into(),
+            TableConfigError::ExplainedMisconfiguration { .. } => {
+                ValidationError::TableConfig(Box::new(value))
+            }
             TableConfigError::FailedDependency(_) | TableConfigError::Misconfiguration(_) => {
                 let reason = value.to_string();
                 ValidationError::InvalidProfile(Box::new(InvalidProfileError {
@@ -197,6 +202,7 @@ impl From<ValidationError> for ErrorModel {
                 "FileDecompressionError",
                 Some(e),
             ),
+            ValidationError::TableConfig(e) => (*e).into(),
         }
     }
 }
@@ -215,6 +221,18 @@ pub enum TableConfigError {
     FailedDependency(String),
     #[error("Misconfiguration: {0}")]
     Misconfiguration(String),
+    /// A misconfiguration reported by the storage, explained as what to change.
+    #[error("Misconfiguration: {message}")]
+    ExplainedMisconfiguration {
+        /// What is wrong and what to change.
+        message: String,
+        /// The error's `type`, naming the specific misconfiguration.
+        error_type: &'static str,
+        /// What the storage answered, for the error's `stack`.
+        details: Vec<String>,
+        #[source]
+        source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
+    },
     #[error("Internal error: {0}")]
     Internal(
         String,
@@ -222,21 +240,35 @@ pub enum TableConfigError {
     ),
 }
 
-impl From<TableConfigError> for IcebergErrorResponse {
+impl From<TableConfigError> for ErrorModel {
     fn from(value: TableConfigError) -> Self {
         match value {
             TableConfigError::Credentials(e) => e.into(),
             e @ TableConfigError::FailedDependency(_) => {
                 ErrorModel::failed_dependency(e.to_string(), "FailedDependency", Some(Box::new(e)))
-                    .into()
             }
             e @ TableConfigError::Misconfiguration(_) => {
-                ErrorModel::bad_request(e.to_string(), "Misconfiguration", Some(Box::new(e))).into()
+                ErrorModel::bad_request(e.to_string(), "Misconfiguration", Some(Box::new(e)))
+            }
+            TableConfigError::ExplainedMisconfiguration {
+                message,
+                error_type,
+                details,
+                source,
+            } => {
+                ErrorModel::bad_request(format!("Misconfiguration: {message}"), error_type, source)
+                    .append_details(details)
             }
             e @ TableConfigError::Internal(_, _) => {
-                ErrorModel::internal(e.to_string(), "StsError", Some(Box::new(e))).into()
+                ErrorModel::internal(e.to_string(), "StsError", Some(Box::new(e)))
             }
         }
+    }
+}
+
+impl From<TableConfigError> for IcebergErrorResponse {
+    fn from(value: TableConfigError) -> Self {
+        ErrorModel::from(value).into()
     }
 }
 
@@ -271,6 +303,11 @@ pub enum CredentialsError {
         reason: String,
         source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     },
+    #[error("Failed to create short-term credential: STS refused the request: {}", rejection.summary())]
+    StsRejected {
+        rejection: StsRejection,
+        source: Box<dyn std::error::Error + 'static + Send + Sync>,
+    },
     #[error("{0}")]
     UnexpectedStorageType(#[from] UnexpectedStorageType),
     #[error("Failed to serialize credential.")]
@@ -288,6 +325,11 @@ impl From<CredentialsError> for ErrorModel {
         match boxed.as_ref() {
             CredentialsError::ShortTermCredential { .. } => {
                 ErrorModel::precondition_failed(message, "ShortTermCredentialError", Some(boxed))
+            }
+            CredentialsError::StsRejected { rejection, .. } => {
+                let request_id = rejection.request_id_line();
+                ErrorModel::precondition_failed(message, "ShortTermCredentialError", Some(boxed))
+                    .append_details(request_id)
             }
             CredentialsError::UnexpectedStorageType(_) => {
                 ErrorModel::internal(message, "UnexpectedStorageProfileType", Some(boxed))
@@ -314,6 +356,49 @@ impl From<CredentialsError> for ErrorModel {
 impl From<CredentialsError> for IcebergErrorResponse {
     fn from(value: CredentialsError) -> Self {
         ErrorModel::from(value).into()
+    }
+}
+
+/// What an STS endpoint answered when it refused to issue credentials.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StsRejection {
+    pub http_status: Option<u16>,
+    /// The error code, e.g. `AccessDenied`.
+    pub code: Option<String>,
+    /// The endpoint's own error message, or why no answer arrived.
+    pub message: Option<String>,
+    pub request_id: Option<String>,
+}
+
+impl StsRejection {
+    /// The answer on one line, e.g. `AccessDenied (HTTP 403): User ... is not authorized`.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let status = self.http_status.map(|s| format!("HTTP {s}"));
+        let head = match (&self.code, status) {
+            (Some(code), Some(status)) => format!("{code} ({status})"),
+            (Some(code), None) => code.clone(),
+            (None, Some(status)) => status,
+            (None, None) => "no response".to_string(),
+        };
+        match &self.message {
+            Some(message) => format!("{head}: {message}"),
+            None => head,
+        }
+    }
+
+    /// Lines for an error's `stack`: the answer and the request id.
+    #[must_use]
+    pub fn details(&self) -> Vec<String> {
+        let mut lines = vec![format!("STS answered {}", self.summary())];
+        lines.extend(self.request_id_line());
+        lines
+    }
+
+    fn request_id_line(&self) -> Option<String> {
+        self.request_id
+            .as_ref()
+            .map(|id| format!("STS request ID: {id}"))
     }
 }
 

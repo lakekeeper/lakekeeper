@@ -22,7 +22,8 @@ use veil::Redact;
 use super::{
     S3Credential, S3Flavor, S3Profile, ShortTermCredentialsRequest, TableConfig,
     error::{
-        CredentialsError, InvalidProfileError, TableConfigError, UpdateError, ValidationError,
+        CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
+        ValidationError,
     },
     s3::{S3AccessKeyCredential, S3UrlStyleDetectionMode},
     storage_layout::StorageLayout,
@@ -447,8 +448,7 @@ impl StackitProfile {
     ///
     /// # Errors
     /// Fails if credentials cannot be vended. `StorageGRID`'s own errors are
-    /// translated into STACKIT-specific advice by
-    /// [`explain_stackit_sts_failure`].
+    /// translated into STACKIT-specific advice by `explain_sts_failure`.
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
@@ -471,55 +471,92 @@ impl StackitProfile {
             .map_err(|e| self.explain_sts_failure(e))
     }
 
-    /// Rewrite a `StorageGRID` failure into advice a STACKIT customer can act on.
+    /// Rewrite a `StorageGRID` STS failure into advice a STACKIT customer can act on.
     ///
     /// The raw errors name `StorageGRID` concepts a STACKIT customer never sees,
-    /// and the trust-policy prerequisite is invisible in them.
+    /// and the trust-policy prerequisite is invisible in them. What STS answered
+    /// moves to the error's details.
     fn explain_sts_failure(&self, error: TableConfigError) -> TableConfigError {
-        let raw = error.to_string();
-        let advice = if raw.contains("MethodNotAllowed") {
-            Some(format!(
-                "STACKIT storage in region `{}` does not offer an STS endpoint. This is \
-                 StorageGRID older than 12.0. Ask STACKIT support to migrate the storage, or \
-                 set `sts-enabled` to false to use remote signing instead.",
-                self.region
-            ))
-        } else if raw.contains("cannot be found") {
-            Some(format!(
-                "STACKIT could not find the credentials group `{}`. Check the URN against the \
-                 credentials group — note it uses the group's ID, not its display name.",
-                self.credentials_group_urn.as_deref().unwrap_or("<unset>")
-            ))
-        } else if raw.contains("Invalid resource type") || raw.contains("Failed to parse RoleArn") {
-            Some(
-                "`credentials-group-urn` is not a STACKIT credentials-group URN. It must look \
-                 like `urn:sgws:identity::<account>:group/credentials-group-<id>`."
-                    .to_string(),
-            )
-        } else if raw.contains("AccessDenied") || raw.contains("not authorized") {
-            self.credentials_group_urn.as_deref().map(|urn| {
+        let TableConfigError::Credentials(CredentialsError::StsRejected { rejection, .. }) = &error
+        else {
+            return error;
+        };
+        let Some((error_type, message)) = self.sts_advice(rejection) else {
+            return error;
+        };
+        let details = rejection.details();
+        TableConfigError::ExplainedMisconfiguration {
+            message,
+            error_type,
+            details,
+            source: Some(Box::new(error)),
+        }
+    }
+
+    /// The error type and advice for an STS answer STACKIT is known to give.
+    fn sts_advice(&self, rejection: &StsRejection) -> Option<(&'static str, String)> {
+        let urn = self.credentials_group_urn.as_deref().unwrap_or("<unset>");
+        let message = rejection.message.as_deref().unwrap_or_default();
+        let code = rejection.code.as_deref();
+        // Every branch keeps the one fact needed to act: engines show only the
+        // message, not the details.
+        if rejection.http_status == Some(405) || code == Some("MethodNotAllowed") {
+            Some((
+                "StackitStsUnavailable",
                 format!(
-                    "STACKIT refused to assume credentials group `{urn}`. The group needs a \
-                     trust policy allowing `sts:AssumeRole`: {}",
-                    trust_policy_hint(urn)
-                )
-            })
+                    "This STACKIT storage in region `{}` does not offer STS yet. Set \
+                     `sts-enabled` to false to use remote signing.",
+                    self.region
+                ),
+            ))
+        } else if message.contains("cannot be found") {
+            Some((
+                "StackitCredentialsGroupNotFound",
+                format!(
+                    "STACKIT could not find the credentials group `{urn}`. Check \
+                     `credentials-group-urn`: it uses the group's ID \
+                     (`credentials-group-<id>`), not its display name, and the account of \
+                     the project that holds the bucket."
+                ),
+            ))
+        } else if message.contains("Failed to parse RoleArn") {
+            Some((
+                "StackitCredentialsGroupUrnInvalid",
+                format!(
+                    "`credentials-group-urn` `{urn}` is not a STACKIT credentials-group URN. \
+                     It must look like `urn:sgws:identity::<account>:group/credentials-group-<id>`."
+                ),
+            ))
+        } else if code == Some("AccessDenied") {
+            let principal = assuming_principal(message)
+                .map_or_else(|| urn.replace(":group/", ":user/"), ToString::to_string);
+            Some((
+                "StackitTrustPolicyMissing",
+                format!(
+                    "STACKIT refused to let `{principal}` assume the credentials group \
+                     `{urn}`. Add this trust policy to the credentials group: {}",
+                    trust_policy(&principal)
+                ),
+            ))
         } else {
             None
-        };
-
-        match advice {
-            Some(advice) => TableConfigError::Misconfiguration(format!("{advice} ({raw})")),
-            None => error,
         }
     }
 }
 
-/// The trust policy a STACKIT credentials group needs before it can be assumed.
+/// The principal STACKIT names in `User: <principal> is not authorized ...`.
+fn assuming_principal(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("User: ")?
+        .split_once(" is not authorized")
+        .map(|(principal, _)| principal)
+}
+
+/// A trust policy allowing `principal` to assume a STACKIT credentials group.
 ///
-/// The principal is the same URN with `:group/` replaced by `:user/`.
-fn trust_policy_hint(group_urn: &str) -> String {
-    let principal = group_urn.replace(":group/", ":user/");
+/// A group's own access keys act as the group's URN with `:group/` replaced
+/// by `:user/`.
+fn trust_policy(principal: &str) -> String {
     format!(
         r#"{{"Statement":[{{"Action":"sts:AssumeRole","Effect":"Allow","Principal":{{"AWS":"{principal}"}}}}]}}"#
     )
@@ -944,17 +981,142 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_trust_policy_hint_names_the_user_form_of_the_group() {
-        let hint = trust_policy_hint(
-            "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3",
-        );
+    const GROUP: &str = "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3";
+
+    /// The table-config error STS produces for `rejection`.
+    fn sts_failure(status: u16, code: Option<&str>, message: Option<&str>) -> TableConfigError {
+        TableConfigError::Credentials(CredentialsError::StsRejected {
+            rejection: StsRejection {
+                http_status: Some(status),
+                code: code.map(ToString::to_string),
+                message: message.map(ToString::to_string),
+                request_id: Some("1234567890123456".to_string()),
+            },
+            source: Box::new(std::io::Error::other("sdk error")),
+        })
+    }
+
+    fn explained(error: TableConfigError) -> iceberg_ext::catalog::rest::ErrorModel {
+        let explained = profile().explain_sts_failure(error);
         assert!(
-            hint.contains(
+            matches!(
+                explained,
+                TableConfigError::ExplainedMisconfiguration { .. }
+            ),
+            "{explained:?}"
+        );
+        explained.into()
+    }
+
+    #[test]
+    fn a_missing_trust_policy_names_the_principal_that_was_refused() {
+        // The access key belongs to another group than the one assumed.
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6 is \
+                 not authorized to perform: sts:AssumeRole on resource: \
+                 urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3.",
+            ),
+        ));
+        assert_eq!(model.r#type, "StackitTrustPolicyMissing");
+        assert_eq!(model.code, 400);
+        assert!(
+            model.message.contains(
+                r#""AWS":"urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6""#
+            ),
+            "{}",
+            model.message
+        );
+        assert!(model.message.contains(GROUP), "{}", model.message);
+        assert_eq!(
+            model.stack,
+            vec![
+                "STS answered AccessDenied (HTTP 403): User: \
+                 urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6 is not \
+                 authorized to perform: sts:AssumeRole on resource: \
+                 urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3."
+                    .to_string(),
+                "STS request ID: 1234567890123456".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trust_policy_hint_falls_back_to_the_user_form_of_the_group() {
+        let model = explained(sts_failure(403, Some("AccessDenied"), None));
+        assert!(
+            model.message.contains(
                 r#""AWS":"urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3""#
             ),
-            "{hint}"
+            "{}",
+            model.message
         );
+    }
+
+    #[test]
+    fn an_unknown_group_is_not_mistaken_for_a_missing_trust_policy() {
+        // STACKIT answers `AccessDenied` for an unknown group too.
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "Group: urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3 \
+                 cannot be found.",
+            ),
+        ));
+        assert_eq!(model.r#type, "StackitCredentialsGroupNotFound");
+        assert!(
+            model.message.contains("not its display name"),
+            "{}",
+            model.message
+        );
+    }
+
+    #[test]
+    fn a_malformed_urn_is_explained() {
+        for message in [
+            "Failed to parse RoleArn: Invalid resource type in IAM ARN (or identity URN): \
+             urn:sgws:identity::12345678901234567890:role/lakekeeper",
+            "Failed to parse RoleArn: Invalid ARN/URN format: not-a-urn",
+        ] {
+            let model = explained(sts_failure(400, Some("ValidationError"), Some(message)));
+            assert_eq!(model.r#type, "StackitCredentialsGroupUrnInvalid");
+        }
+    }
+
+    #[test]
+    fn storage_without_sts_is_explained_without_naming_internals() {
+        // The endpoint answers with an S3 error document STS cannot parse.
+        let model = explained(sts_failure(405, None, None));
+        assert_eq!(model.r#type, "StackitStsUnavailable");
+        assert!(
+            model.message.contains("`sts-enabled` to false"),
+            "{}",
+            model.message
+        );
+        assert!(!model.message.contains("StorageGRID"), "{}", model.message);
+    }
+
+    #[test]
+    fn an_unknown_sts_answer_is_passed_through() {
+        let error = profile().explain_sts_failure(sts_failure(500, Some("InternalError"), None));
+        assert!(
+            matches!(
+                error,
+                TableConfigError::Credentials(CredentialsError::StsRejected { .. })
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn explained_messages_hold_no_raw_response() {
+        let model = explained(sts_failure(403, Some("AccessDenied"), Some("denied")));
+        for raw in ["ErrorMetadata", "SdkBody", "Headers", "ServiceError"] {
+            assert!(!model.message.contains(raw), "{}", model.message);
+        }
     }
 
     #[test]

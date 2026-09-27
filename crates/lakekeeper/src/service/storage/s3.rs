@@ -46,7 +46,7 @@ use crate::{
             StoragePermissions, TableConfig,
             cache::{CachedStc, S3_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
-                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
                 ValidationError,
             },
             storage_layout::StorageLayout,
@@ -1155,14 +1155,13 @@ impl S3Profile {
         };
 
         let v = assume_role_builder.send().await.map_err(|e| {
-            let err_str = format!("{e:?}");
             tracing::warn!(
-                "Failed to assume role via STS with partition `{}`: {err_str}",
+                "Failed to assume role via STS with partition `{}`: {e:?}",
                 self.sts_policy_partition()
             );
-            CredentialsError::ShortTermCredential {
-                source: Some(Box::new(e)),
-                reason: format!("Failed to assume role via STS: {err_str}").to_string(),
+            CredentialsError::StsRejected {
+                rejection: sts_rejection(&e),
+                source: Box::new(e),
             }
         })?;
 
@@ -1916,6 +1915,104 @@ impl TryFrom<S3Credential> for S3Auth {
                 external_id: None, // Cloudflare R2 does not use external ID
             }),
         })
+    }
+}
+
+/// What STS answered to a failed `AssumeRole`, without the raw response.
+fn sts_rejection(
+    error: &aws_sdk_sts::error::SdkError<aws_sdk_sts::operation::assume_role::AssumeRoleError>,
+) -> StsRejection {
+    use aws_sdk_sts::{error::ProvideErrorMetadata as _, operation::RequestId as _};
+
+    let message = error.message().map(ToString::to_string).or_else(|| {
+        // Timeouts and connection failures carry no service message.
+        error
+            .as_service_error()
+            .is_none()
+            .then(|| aws_sdk_sts::error::DisplayErrorContext(error).to_string())
+    });
+    StsRejection {
+        http_status: error.raw_response().map(|r| r.status().as_u16()),
+        code: error.code().map(ToString::to_string),
+        message,
+        request_id: error.request_id().map(ToString::to_string),
+    }
+}
+
+#[cfg(test)]
+mod sts_rejection_tests {
+    use aws_sdk_sts::{error::ErrorMetadata, operation::assume_role::AssumeRoleError};
+    use aws_smithy_runtime_api::http::{Response, StatusCode};
+    use aws_smithy_types::body::SdkBody;
+
+    use super::*;
+
+    type AssumeRoleSdkError = aws_sdk_sts::error::SdkError<AssumeRoleError>;
+
+    fn service_error(status: u16, code: Option<&str>, message: Option<&str>) -> AssumeRoleSdkError {
+        let mut meta = ErrorMetadata::builder();
+        if let Some(code) = code {
+            meta = meta.code(code);
+        }
+        if let Some(message) = message {
+            meta = meta.message(message);
+        }
+        let mut response = Response::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from("<ErrorResponse><Error>raw body</Error></ErrorResponse>"),
+        );
+        response
+            .headers_mut()
+            .insert("x-amz-request-id", "1234567890123456");
+        AssumeRoleSdkError::service_error(AssumeRoleError::generic(meta.build()), response)
+    }
+
+    #[test]
+    fn a_service_error_keeps_status_code_message_and_request_id() {
+        let rejection = sts_rejection(&service_error(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is not authorized",
+            ),
+        ));
+        assert_eq!(rejection.http_status, Some(403));
+        assert_eq!(rejection.code.as_deref(), Some("AccessDenied"));
+        assert_eq!(rejection.request_id.as_deref(), Some("1234567890123456"));
+        assert_eq!(
+            rejection.summary(),
+            "AccessDenied (HTTP 403): User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is not authorized"
+        );
+    }
+
+    #[test]
+    fn an_unparsable_error_body_keeps_the_status() {
+        // An endpoint without STS answers with an S3 error document the STS
+        // parser cannot read.
+        let rejection = sts_rejection(&service_error(405, None, None));
+        assert_eq!(rejection.http_status, Some(405));
+        assert_eq!(rejection.summary(), "HTTP 405");
+    }
+
+    #[test]
+    fn the_error_message_holds_no_raw_response() {
+        let error = CredentialsError::StsRejected {
+            rejection: sts_rejection(&service_error(403, Some("AccessDenied"), Some("denied"))),
+            source: Box::new(std::io::Error::other("sdk error")),
+        };
+        let model = ErrorModel::from(error);
+        assert_eq!(
+            model.message,
+            "Failed to create short-term credential: STS refused the request: AccessDenied (HTTP \
+             403): denied"
+        );
+        assert_eq!(
+            model.stack,
+            vec!["STS request ID: 1234567890123456".to_string()]
+        );
+        for raw in ["ErrorMetadata", "SdkBody", "Headers", "raw body"] {
+            assert!(!model.message.contains(raw), "{}", model.message);
+        }
     }
 }
 
