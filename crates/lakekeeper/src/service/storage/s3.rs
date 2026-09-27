@@ -1924,18 +1924,35 @@ fn sts_rejection(
 ) -> StsRejection {
     use aws_sdk_sts::{error::ProvideErrorMetadata as _, operation::RequestId as _};
 
-    let message = error.message().map(ToString::to_string).or_else(|| {
-        // Timeouts and connection failures carry no service message.
-        error
-            .as_service_error()
-            .is_none()
-            .then(|| aws_sdk_sts::error::DisplayErrorContext(error).to_string())
-    });
+    let message = error
+        .message()
+        .map(ToString::to_string)
+        .or_else(|| failure_kind(error).map(ToString::to_string));
     StsRejection {
         http_status: error.raw_response().map(|r| r.status().as_u16()),
         code: error.code().map(ToString::to_string),
         message,
         request_id: error.request_id().map(ToString::to_string),
+    }
+}
+
+/// A fixed description of a failure that carries no service error. The error
+/// itself stays out: its text can include the raw response.
+fn failure_kind(
+    error: &aws_sdk_sts::error::SdkError<aws_sdk_sts::operation::assume_role::AssumeRoleError>,
+) -> Option<&'static str> {
+    use aws_sdk_sts::error::SdkError;
+
+    match error {
+        SdkError::ServiceError(_) => None,
+        SdkError::TimeoutError(_) => Some("STS did not answer in time"),
+        SdkError::DispatchFailure(failure) if failure.is_timeout() => {
+            Some("STS did not answer in time")
+        }
+        SdkError::DispatchFailure(_) => Some("Could not connect to STS"),
+        SdkError::ResponseError(_) => Some("STS sent an answer that could not be read"),
+        SdkError::ConstructionFailure(_) => Some("The STS request could not be built"),
+        _ => Some("The STS request failed"),
     }
 }
 
@@ -1994,6 +2011,63 @@ mod sts_rejection_tests {
         assert_eq!(rejection.summary(), "HTTP 405");
     }
 
+    fn raw_response(status: u16) -> Response {
+        let mut response = Response::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from("<Error>raw body</Error>"),
+        );
+        response
+            .headers_mut()
+            .insert("x-leaky-header", "raw header");
+        response
+    }
+
+    #[test]
+    fn failures_without_a_service_error_are_named_without_the_raw_error() {
+        use aws_smithy_runtime_api::client::result::ConnectorError;
+
+        let cases = [
+            (
+                AssumeRoleSdkError::timeout_error("raw timeout"),
+                "STS did not answer in time",
+            ),
+            (
+                AssumeRoleSdkError::dispatch_failure(ConnectorError::io("raw io".into())),
+                "Could not connect to STS",
+            ),
+            (
+                AssumeRoleSdkError::dispatch_failure(ConnectorError::timeout("raw io".into())),
+                "STS did not answer in time",
+            ),
+            (
+                AssumeRoleSdkError::response_error("raw parse", raw_response(502)),
+                "STS sent an answer that could not be read",
+            ),
+            (
+                AssumeRoleSdkError::construction_failure("raw construction"),
+                "The STS request could not be built",
+            ),
+        ];
+        for (error, expected) in cases {
+            let rejection = sts_rejection(&error);
+            assert_eq!(rejection.message.as_deref(), Some(expected), "{error:?}");
+            assert!(rejection.code.is_none());
+            let summary = rejection.summary();
+            for raw in ["raw ", "SdkBody", "Headers", "x-leaky-header"] {
+                assert!(!summary.contains(raw), "{summary}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreadable_answer_keeps_its_status() {
+        let rejection = sts_rejection(&AssumeRoleSdkError::response_error(
+            "raw parse",
+            raw_response(405),
+        ));
+        assert_eq!(rejection.http_status, Some(405));
+    }
+
     #[test]
     fn the_error_message_holds_no_raw_response() {
         let error = CredentialsError::StsRejected {
@@ -2003,8 +2077,8 @@ mod sts_rejection_tests {
         let model = ErrorModel::from(error);
         assert_eq!(
             model.message,
-            "Failed to create short-term credential: STS refused the request: AccessDenied (HTTP \
-             403): denied"
+            "Failed to create short-term credential: STS request failed: AccessDenied (HTTP 403): \
+             denied"
         );
         assert_eq!(
             model.stack,

@@ -303,7 +303,7 @@ pub enum CredentialsError {
         reason: String,
         source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     },
-    #[error("Failed to create short-term credential: STS refused the request: {}", rejection.summary())]
+    #[error("Failed to create short-term credential: STS request failed: {}", rejection.summary())]
     StsRejected {
         rejection: StsRejection,
         source: Box<dyn std::error::Error + 'static + Send + Sync>,
@@ -359,13 +359,13 @@ impl From<CredentialsError> for IcebergErrorResponse {
     }
 }
 
-/// What an STS endpoint answered when it refused to issue credentials.
+/// What a failed STS request returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StsRejection {
     pub http_status: Option<u16>,
     /// The error code, e.g. `AccessDenied`.
     pub code: Option<String>,
-    /// The endpoint's own error message, or why no answer arrived.
+    /// The endpoint's own error message, or a fixed description of the failure.
     pub message: Option<String>,
     pub request_id: Option<String>,
 }

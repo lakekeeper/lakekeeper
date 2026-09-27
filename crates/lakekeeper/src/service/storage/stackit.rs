@@ -1112,6 +1112,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_and_table_loads_report_the_same_explained_error() {
+        let failure = || {
+            profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), Some("denied")))
+        };
+        let from_validation =
+            iceberg_ext::catalog::rest::ErrorModel::from(ValidationError::from(failure()));
+        let from_table_load =
+            iceberg_ext::catalog::rest::IcebergErrorResponse::from(failure()).error;
+        for model in [&from_validation, &from_table_load] {
+            assert_eq!(model.r#type, "StackitTrustPolicyMissing");
+            assert_eq!(model.code, 400);
+            assert!(
+                model
+                    .message
+                    .starts_with("Misconfiguration: STACKIT refused"),
+                "{}",
+                model.message
+            );
+            assert_eq!(model.stack.len(), 2, "{:?}", model.stack);
+        }
+        assert_eq!(from_validation.message, from_table_load.message);
+    }
+
+    #[test]
     fn explained_messages_hold_no_raw_response() {
         let model = explained(sts_failure(403, Some("AccessDenied"), Some("denied")));
         for raw in ["ErrorMetadata", "SdkBody", "Headers", "ServiceError"] {
