@@ -93,11 +93,12 @@ pub enum ValidationCheckName {
     /// Reported as `warning` when it does not: the warehouse works without it.
     CorsOriginAllowed,
     /// The STACKIT bucket policy keeps out the project's other credentials
-    /// groups, which otherwise reach every bucket of the project. Passes when a
-    /// `Deny` statement spares only the groups in its `NotPrincipal`. Reported as
-    /// `warning` when the policy is missing, does not restrict access, or cannot
-    /// be read. Skipped for other storage.
-    BucketPolicyRestrictsAccess,
+    /// groups, which otherwise reach every bucket of the project. Passes when
+    /// `Deny` statements, which spare only named credentials groups in their
+    /// `NotPrincipal`, deny every action on the bucket and on the warehouse's
+    /// objects without a `Condition`. Reported as `warning` when the policy is
+    /// missing, leaves access open, or cannot be read. Skipped for other storage.
+    BucketAccessRestricted,
 }
 
 /// The outcome of a single check.
@@ -389,7 +390,7 @@ pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 8] = [
     ValidationCheckName::VendedCredentialsScopeEnforced,
     ValidationCheckName::Cleanup,
     ValidationCheckName::CorsOriginAllowed,
-    ValidationCheckName::BucketPolicyRestrictsAccess,
+    ValidationCheckName::BucketAccessRestricted,
 ];
 
 /// Reason recorded when the server has storage validation switched off.

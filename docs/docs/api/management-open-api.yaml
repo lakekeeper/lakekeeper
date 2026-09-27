@@ -15299,7 +15299,7 @@ components:
 
             Requires `credentials-group-urn`, and a trust policy on that group
             allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
-            STACKIT storage that does not offer STS yet.
+            STACKIT storage without STS.
         sts-token-validity-seconds:
           type: integer
           format: int64
@@ -17067,7 +17067,7 @@ components:
         - vended-credentials-scope-enforced
         - cleanup
         - cors-origin-allowed
-        - bucket-policy-restricts-access
+        - bucket-access-restricted
     ValidationCheckStatus:
       type: string
       description: |-

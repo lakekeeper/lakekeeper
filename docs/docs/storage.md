@@ -70,7 +70,7 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
     { "name": "cors-origin-allowed", "status": "warning", "duration-ms": 41,
       "error": { "message": "CORS does not allow origin `https://lakekeeper.example.com` for `GET`, `HEAD`, `PUT`, `POST`, `DELETE`. ...", "type": "CorsOriginNotAllowed", "code": 412,
         "stack": ["`GET`, `HEAD`, `PUT`, `POST`, `DELETE`: Access-Control-Allow-Origin expected `https://lakekeeper.example.com` or `*`, found no header"] } },
-    { "name": "bucket-policy-restricts-access", "status": "skipped", "reason": "Only checked for STACKIT, ..." }
+    { "name": "bucket-access-restricted", "status": "skipped", "reason": "Only checked for STACKIT, ..." }
   ]
 }
 ```
@@ -93,7 +93,7 @@ Checks:
 | `vended-credentials-scope-enforced` | Downscoped credentials are refused write access *outside* the table location |
 | `cleanup` | Everything written during validation was removed again |
 | `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does. Reported as `warning` when it does not. Skipped for ADLS and OneLake |
-| `bucket-policy-restricts-access` | The STACKIT bucket policy keeps out the project's other credentials groups, see [Restricting bucket access](#restricting-bucket-access). Reported as `warning` when the policy is missing, does not restrict access, or cannot be read. Skipped for other storage |
+| `bucket-access-restricted` | The STACKIT bucket policy keeps out the project's other credentials groups, see [Restricting bucket access](#restricting-bucket-access). Reported as `warning` when the policy is missing, leaves access open, or cannot be read. Skipped for other storage |
 
 A check is `skipped` when it does not apply (credential vending is disabled, or the check only applies to a different operation) or when a prerequisite failed; the `reason` field says which. Skipped checks do not make a configuration invalid.
 
@@ -834,7 +834,7 @@ Select the service that holds your bucket. When the endpoint is derived, Lakekee
 
 Lakekeeper authenticates with an access key created inside a STACKIT credentials group. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name.
 
-To be assumed, the group needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`. Set it through the STACKIT API, authenticated with a STACKIT service account token. `<group-uuid>` is the credentials group's UUID from the STACKIT API or portal:
+To be assumed, the group needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`. Set it through the STACKIT API, authenticated with a STACKIT service account token. `<group-uuid>` is the credentials group's ID as the STACKIT API lists it, a UUID, which differs from the `credentials-group-<id>` part of its URN:
 
 ```bash
 curl -X POST \
@@ -883,7 +883,7 @@ A POST request to `/management/v1/warehouse` to create a warehouse on the data p
 
 ### Restricting bucket access
 
-Every credentials group of a STACKIT project can read and write every bucket of the project, including groups created later for other applications. A bucket policy is the only way to narrow this. We recommend one that denies all access to every group except Lakekeeper's and an admin group:
+Every credentials group of a STACKIT project can read and write every bucket of the project, including groups created later for other applications. A bucket policy is the only way to narrow this. We recommend one that denies all access to every group except Lakekeeper's and an admin group, and lets only the admin group change the policy:
 
 ```json
 {
@@ -902,12 +902,23 @@ Every credentials group of a STACKIT project can read and write every bucket of 
         "urn:sgws:s3:::my-warehouse",
         "urn:sgws:s3:::my-warehouse/*"
       ]
+    },
+    {
+      "Sid": "OnlyAdminChangesPolicy",
+      "Effect": "Deny",
+      "NotPrincipal": {
+        "SGWS": "urn:sgws:identity::12345678901234567890:group/credentials-group-d4e5f6"
+      },
+      "Action": ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"],
+      "Resource": "urn:sgws:s3:::my-warehouse"
     }
   ]
 }
 ```
 
-List Lakekeeper's `credentials-group-urn` and the URN of your admin group, and replace `my-warehouse` with the bucket name. Credentials that Lakekeeper vends act as the group in `credentials-group-urn`, so they keep working. Apply the policy through the S3 API with an access key of either listed group:
+In the example, `credentials-group-a1b2c3` is Lakekeeper's `credentials-group-urn` and `credentials-group-d4e5f6` is the admin group; replace both and `my-warehouse` with your values. The second statement keeps Lakekeeper's access key, and anyone who obtains it, from changing or removing the policy. Credentials that Lakekeeper vends act as the group in `credentials-group-urn`, so they keep working.
+
+Apply the policy through the S3 API with the admin group's access key. Any group can set the first policy; afterwards only the admin group can change it. Use the endpoint of the Warehouse's storage service, e.g. `https://dataplatform.storage.eu01.onstackit.cloud` for the data platform storage service:
 
 ```bash
 aws s3api put-bucket-policy \
@@ -917,9 +928,9 @@ aws s3api put-bucket-policy \
 ```
 
 !!! warning "Lock-out risk"
-    The policy also denies the bucket to every group it does not list, including groups used by admin tooling. If Lakekeeper's group is the only one listed, only its access key can change or remove the policy again. Keep a dedicated admin or break-glass group in `NotPrincipal`, and store its access key safely.
+    The policy denies the bucket to every group it does not list, including groups used by admin tooling, and only the admin group can change or remove it. Use a dedicated admin or break-glass group, store its access key safely, and keep it listed in both statements.
 
-[Storage validation](#validating-a-storage-configuration) reads the bucket policy with the Warehouse's access key and reports a `bucket-policy-restricts-access` warning when the bucket has no policy, when no `Deny` statement uses `NotPrincipal`, or when the policy cannot be read. It checks the policy's structure only: the S3 API does not reveal which group an access key belongs to, so validation cannot confirm that the listed groups are the right ones. Access can also be restricted by other means, which is why the finding is a warning.
+[Storage validation](#validating-a-storage-configuration) reads the bucket policy with the Warehouse's access key and reports a `bucket-access-restricted` warning when the bucket has no policy, when the policy cannot be read, or when no `Deny` statements deny all actions (`s3:*`) on both the bucket and the Warehouse's objects without a `Condition` while sparing only named credentials groups in `NotPrincipal`. The bucket and its objects may be covered by separate statements. The warning lists, for the closest statement, what it expected and what it found. A `passed` check means the policy has this shape; it does not tell whether the groups in `NotPrincipal` are the right ones, because the S3 API does not reveal which group an access key belongs to. Access can also be restricted by other means, which is why the finding is a warning.
 
 ### CORS
 
