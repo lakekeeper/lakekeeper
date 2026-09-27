@@ -12,10 +12,9 @@ use crate::{
     ProjectId,
     api::iceberg::v1::PaginationQuery,
     service::{
-        CatalogBackendError, CatalogStore, InvalidPaginationToken, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ProjectIdNotFoundError, TabularId, TagDefinitionId, TagId,
-        Transaction, WarehouseId, define_transparent_error, impl_error_stack_methods,
-        impl_from_with_detail,
+        CatalogBackendError, CatalogStore, InvalidPaginationToken, NamespaceId,
+        ProjectIdNotFoundError, TabularId, TagDefinitionId, TagId, Transaction, WarehouseId,
+        define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
@@ -499,47 +498,14 @@ pub fn resolve_effective_tags(
     candidates
 }
 
-/// The ancestors of `target`, nearest first, ready for
-/// [`resolve_effective_tags_from_chain`].
-///
-/// Built from the hierarchy the caller already has, so the order is always right.
-/// `hierarchy` is the namespace `target` is, or the one it sits in. Writing the chain by
-/// hand is how a sibling namespace ends up counted as an ancestor.
-///
-/// Empty for a column or a warehouse, which inherit nothing, and for a target that does
-/// not belong to `hierarchy`.
-#[must_use]
-pub fn tag_ancestors(target: TagTarget, hierarchy: &NamespaceHierarchy) -> Vec<TagTarget> {
-    let own = &hierarchy.namespace;
-    let warehouse_id = own.namespace.warehouse_id;
-    let as_target = |namespace: &NamespaceWithParent| TagTarget::Namespace {
-        warehouse_id,
-        namespace_id: namespace.namespace_id(),
-    };
-    let above = hierarchy
-        .parents
-        .iter()
-        .map(as_target)
-        .chain(std::iter::once(TagTarget::Warehouse(warehouse_id)));
-    match target {
-        TagTarget::Tabular {
-            warehouse_id: tabular_warehouse,
-            ..
-        } if tabular_warehouse == warehouse_id => {
-            std::iter::once(as_target(own)).chain(above).collect()
-        }
-        TagTarget::Namespace { namespace_id, .. } if namespace_id == own.namespace_id() => {
-            above.collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
 /// The effective tags on ONE object, folded from the direct tags of its chain.
 ///
 /// Gives the same set `?effective=true` returns, from rows read with
-/// [`CatalogStore::list_tags_on_targets_impl`]. Build `ancestors` with [`tag_ancestors`]:
-/// the order decides which tag wins, and nothing here can check it.
+/// [`CatalogStore::list_tags_on_targets_impl`]. `ancestors` lists what the object sits
+/// in, nearest first: for a tabular its namespace, then each parent namespace, then the
+/// warehouse. The order decides which tag wins, and nothing here can check it. Only the
+/// object's own line of descent belongs in it: a sibling namespace listed here counts as
+/// an ancestor.
 ///
 /// Rows for objects outside the chain are skipped, so one batch of rows can be folded for
 /// each of its objects in turn. Do not instead gather several objects' candidates and pass
@@ -1557,7 +1523,7 @@ mod tests {
         );
     }
 
-    // ---------- resolve_effective_tags_from_chain / tag_ancestors ----------
+    // ---------- resolve_effective_tags_from_chain ----------
 
     /// warehouse > outer > inner > table, plus a sibling namespace `other` under `outer`.
     struct Chain {
@@ -1736,49 +1702,5 @@ mod tests {
         let rows = rivals(c.table, "own", c.inner, "inherited");
         let resolved = resolve_effective_tags_from_chain(as_view, &[c.inner, c.outer, c.wh], &rows);
         assert_eq!(shape(&resolved), vec![("sensitivity", Some("own"), 0)]);
-    }
-
-    #[test]
-    fn tag_ancestors_follows_the_hierarchy() {
-        let warehouse_id = WarehouseId::from(Uuid::now_v7());
-        let (inner_id, outer_id) = (NamespaceId::new_random(), NamespaceId::new_random());
-        let hierarchy = NamespaceHierarchy {
-            namespace: NamespaceWithParent::test_default(inner_id, warehouse_id),
-            parents: vec![NamespaceWithParent::test_default(outer_id, warehouse_id)],
-        };
-        let namespace = |namespace_id| TagTarget::Namespace {
-            warehouse_id,
-            namespace_id,
-        };
-        let wh = TagTarget::Warehouse(warehouse_id);
-        let table = TagTarget::Tabular {
-            warehouse_id,
-            tabular_id: TabularId::Table(TableId::from(Uuid::now_v7())),
-        };
-
-        // A tabular inherits from the namespace it sits in, then everything above.
-        assert_eq!(
-            tag_ancestors(table, &hierarchy),
-            vec![namespace(inner_id), namespace(outer_id), wh]
-        );
-        // A namespace inherits from everything above it, not from itself.
-        assert_eq!(
-            tag_ancestors(namespace(inner_id), &hierarchy),
-            vec![namespace(outer_id), wh]
-        );
-
-        // Nothing for targets that inherit nothing or do not belong to this hierarchy.
-        let column = TagTarget::Column {
-            warehouse_id,
-            tabular_id: TabularId::Table(TableId::from(Uuid::now_v7())),
-            field_id: 1,
-        };
-        let elsewhere = TagTarget::Tabular {
-            warehouse_id: WarehouseId::from(Uuid::now_v7()),
-            tabular_id: TabularId::Table(TableId::from(Uuid::now_v7())),
-        };
-        for target in [column, wh, namespace(outer_id), elsewhere] {
-            assert_eq!(tag_ancestors(target, &hierarchy), Vec::new(), "{target:?}");
-        }
     }
 }

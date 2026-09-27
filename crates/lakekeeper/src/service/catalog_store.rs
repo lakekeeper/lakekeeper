@@ -1065,9 +1065,9 @@ where
     /// one round trip for a whole containment chain instead of one per object.
     ///
     /// Direct tags only: no ancestors are walked and no children expanded. For inherited
-    /// tags, also name each object's ancestors — built with [`tag_ancestors`], nearest
-    /// first — and fold the rows with [`resolve_effective_tags_from_chain`], one object at a
-    /// time. An ancestor left out silently costs that object the tags it would inherit.
+    /// tags, also name each object's ancestors, and fold the rows with
+    /// [`resolve_effective_tags_from_chain`], one object at a time. An ancestor left out
+    /// silently costs that object the tags it would inherit.
     ///
     /// A tabular carries only its own tags; its columns are separate targets.
     ///

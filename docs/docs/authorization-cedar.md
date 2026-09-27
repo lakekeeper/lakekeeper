@@ -39,7 +39,7 @@ Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have 
 
 ## RBAC and ABAC Support
 
-Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
+Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties, or the [governance tags](#tag-based-access-control) in effect on an object — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
 
 ## Token-Based Role Matching with `project_roles`
 
@@ -259,6 +259,67 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 !!! tip
     Because malformed access-control values are rejected on write, you can rely on the `roles`/`users` sets being accurate and complete during read-path authorization.
+
+## Tag-Based Access Control
+
+[Governance tags](./tags.md) on warehouses, namespaces, tables, views and generic tables are visible to Cedar policies, so access can follow classification. For example, keep `pii` data from everyone outside a compliance role, or open a namespace to readers once it is tagged `published`.
+
+### How Tags Are Exposed to Cedar
+
+Every Warehouse, Namespace, Table, View and GenericTable entity carries a `lowercase_tags` attribute of type `ResourceTags`. This is a Cedar entity with one tag per governance tag in effect on the object, each holding a `TagValue` record:
+
+```
+type TagValue = {
+    value:     String,       // the value in effect, as applied; "" for a marker tag
+    values:    Set<String>,  // every value this tag has on the object or above it
+    inherited: Bool,         // whether `value` comes from a namespace or warehouse above
+}
+```
+
+The tags are the object's [effective tags](./tags.md#effective-inherited-tags), the same set `?effective=true` returns: its own tags plus those inherited from the namespaces and the warehouse above it. When one tag is applied at several levels, the nearest one wins. Column tags are not included.
+
+Keys are the tag's name in lower case, so `hasTag("pii")` also matches a tag named `PII`. Tag names are unique per project ignoring case, so a rename that only changes case keeps matching. Values keep their case.
+
+```cedar
+// The object, or anything above it, is tagged pii
+resource.lowercase_tags.hasTag("pii")
+
+// The value in effect
+resource.lowercase_tags.hasTag("sensitivity") &&
+resource.lowercase_tags.getTag("sensitivity").value == "restricted"
+
+// Applied to this object itself, not inherited
+resource.lowercase_tags.hasTag("sensitivity") &&
+!resource.lowercase_tags.getTag("sensitivity").inherited
+```
+
+Guard every `getTag` with `hasTag`: any key may be missing, and Cedar rejects a policy that reads a tag without checking for it first.
+
+### Rules a Lower Level Cannot Weaken
+
+The nearest value wins, so a tag applied to a table replaces the value the table would inherit. If namespace `finance` is tagged `sensitivity=restricted` and a table inside it `sensitivity=public`, the table's `value` is `public`. Anyone allowed to tag that table could lift a restriction set on the namespace.
+
+When a rule must hold whatever is applied further down, check `values` instead. It keeps every value on the way down, and a lower level cannot remove one:
+
+```cedar
+// Restricted data, wherever the restriction was applied, only for the compliance group.
+forbid (
+    principal,
+    action in Lakekeeper::Action::"TableSelectActions",
+    resource is Lakekeeper::Table
+)
+when {
+    resource.lowercase_tags.hasTag("sensitivity") &&
+    resource.lowercase_tags.getTag("sensitivity").values.contains("restricted")
+}
+unless {
+    principal is Lakekeeper::User &&
+    principal.project_roles.contains({provider_id: "oidc", source_id: "compliance"})
+};
+```
+
+!!! note "Custom schemas"
+    If you replace the schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, it must declare `lowercase_tags` on these five entities, and `ResourceTags` and `TagValue` exactly as the shipped schema does. Lakekeeper refuses to start otherwise.
 
 ## User Identity Derivations
 

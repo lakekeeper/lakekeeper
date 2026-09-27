@@ -1398,9 +1398,8 @@ mod tests {
     use lakekeeper::{
         api::iceberg::types::PageToken,
         service::{
-            CatalogNamespaceOps, CatalogStore, NamespaceHierarchy, TabularId, TagScope,
-            TagValueKind, TagValueSpec, Transaction as _, resolve_effective_tags,
-            resolve_effective_tags_from_chain, tag_ancestors,
+            CatalogStore, TabularId, TagScope, TagValueKind, TagValueSpec, Transaction as _,
+            resolve_effective_tags, resolve_effective_tags_from_chain,
         },
     };
 
@@ -3079,10 +3078,9 @@ mod tests {
     /// answers for the same object, or what a user is shown and what a policy enforces
     /// drift apart.
     ///
-    /// Ancestors come from real store hierarchies through [`tag_ancestors`], as a caller
-    /// builds them. The fixture: a table under `x.y`, a sibling branch `x.z` in the same
-    /// batch, one definition at every level, one on the two `x` namespaces only, one on the
-    /// warehouse only, and a column tag.
+    /// The fixture: a table under `x.y`, a sibling branch `x.z` in the same batch, one
+    /// definition at every level, one on the two `x` namespaces only, one on the warehouse
+    /// only, and a column tag.
     #[sqlx::test]
     async fn test_folded_chain_matches_the_effective_tags_api(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -3093,9 +3091,15 @@ mod tests {
             NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
         };
         let (outer, inner, sibling) = (ident(&["x"]), ident(&["x", "y"]), ident(&["x", "z"]));
+        let mut namespace_ids = Vec::new();
         for namespace in [&outer, &inner, &sibling] {
-            initialize_namespace(state.clone(), warehouse_id, namespace, None).await;
+            namespace_ids.push(
+                initialize_namespace(state.clone(), warehouse_id, namespace, None)
+                    .await
+                    .namespace_id(),
+            );
         }
+        let [outer_id, inner_id, sibling_id]: [NamespaceId; 3] = namespace_ids.try_into().unwrap();
         let table = initialize_table(
             warehouse_id,
             state.clone(),
@@ -3115,30 +3119,18 @@ mod tests {
         )
         .await;
 
-        // Hierarchies as the catalog hands them out.
-        let mut hierarchies = Vec::new();
-        for namespace in [outer, inner, sibling] {
-            hierarchies.push(
-                PostgresBackend::get_namespace(warehouse_id, namespace, state.clone())
-                    .await
-                    .unwrap()
-                    .unwrap(),
-            );
-        }
-        let [outer_h, inner_h, sibling_h]: [NamespaceHierarchy; 3] =
-            hierarchies.try_into().unwrap();
-        let namespace_target = |hierarchy: &NamespaceHierarchy| TagTarget::Namespace {
+        let namespace_target = |namespace_id| TagTarget::Namespace {
             warehouse_id,
-            namespace_id: hierarchy.namespace.namespace_id(),
+            namespace_id,
         };
         let tabular_target = |table_id| TagTarget::Tabular {
             warehouse_id,
             tabular_id: TabularId::Table(table_id),
         };
         let wh_target = TagTarget::Warehouse(warehouse_id);
-        let outer_target = namespace_target(&outer_h);
-        let inner_target = namespace_target(&inner_h);
-        let sibling_target = namespace_target(&sibling_h);
+        let outer_target = namespace_target(outer_id);
+        let inner_target = namespace_target(inner_id);
+        let sibling_target = namespace_target(sibling_id);
         let table_target = tabular_target(table.table_id);
         let sibling_table_target = tabular_target(sibling_table.table_id);
         let column_target = TagTarget::Column {
@@ -3214,14 +3206,16 @@ mod tests {
         .await
         .unwrap();
 
+        // Each object's own line of descent, nearest first.
+        let table_ancestors = vec![inner_target, outer_target, wh_target];
         for (target, ancestors) in [
-            (table_target, tag_ancestors(table_target, &inner_h)),
-            (inner_target, tag_ancestors(inner_target, &inner_h)),
-            (outer_target, tag_ancestors(outer_target, &outer_h)),
-            (sibling_target, tag_ancestors(sibling_target, &sibling_h)),
+            (table_target, table_ancestors.clone()),
+            (inner_target, vec![outer_target, wh_target]),
+            (outer_target, vec![wh_target]),
+            (sibling_target, vec![outer_target, wh_target]),
             (
                 sibling_table_target,
-                tag_ancestors(sibling_table_target, &sibling_h),
+                vec![sibling_target, outer_target, wh_target],
             ),
             (wh_target, Vec::new()),
             // Given ancestors on purpose: a column must ignore them.
@@ -3251,7 +3245,7 @@ mod tests {
         };
         let text = |s: &str| Some(s.to_string());
         assert_eq!(
-            shape(table_target, &tag_ancestors(table_target, &inner_h)),
+            shape(table_target, &table_ancestors),
             vec![
                 // The nearer of two namespaces wins.
                 (
@@ -3260,7 +3254,7 @@ mod tests {
                     1,
                     EffectiveTagSource::Namespace {
                         warehouse_id,
-                        namespace_id: inner_h.namespace.namespace_id(),
+                        namespace_id: inner_id,
                     }
                 ),
                 // The table's own tag beats its ancestors; the sibling's never appears.
