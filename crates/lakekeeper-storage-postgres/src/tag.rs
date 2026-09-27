@@ -866,8 +866,13 @@ where
             t.tag_id, t.tag_definition_id,
             t.warehouse_id, t.namespace_id, t.tabular_id, t.field_id,
             t.value, t.source AS "source: TagSource",
-            t.created_at, t.updated_at, td.name
-        FROM tag t JOIN tag_definition td USING (tag_definition_id)
+            t.created_at, t.updated_at,
+            -- Looked up per row, not joined: a join lets the planner hash or merge every
+            -- project's definitions, measured ~20 ms against 0.04 ms for a table load.
+            -- `!`: the foreign key guarantees the definition exists.
+            (SELECT td.name FROM tag_definition td
+             WHERE td.tag_definition_id = t.tag_definition_id) AS "name!"
+        FROM tag t
         WHERE (t.warehouse_id = ANY($1) AND t.namespace_id IS NULL
                AND t.tabular_id IS NULL AND t.field_id IS NULL)
            OR (t.warehouse_id = ANY($2) AND t.namespace_id = ANY($3)
