@@ -944,10 +944,13 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 /// (S3, GCS) have no real directories, so this is a no-op for them.
 ///
 /// For each namespace location, checks if the folder is empty on storage
-/// and removes it if so. Only acts on locations strictly below the warehouse
-/// base (via [`Location::is_sublocation_of`]) to prevent accidental deletion
-/// of the warehouse root (on flat layouts the persisted namespace location
-/// equals the warehouse base).
+/// and deletes the directory entry via [`delete_empty_directory`] if so.
+/// Uses a non-recursive directory delete so the backend rejects the call
+/// if children appeared between the emptiness check and the delete (TOCTOU
+/// safety). Only acts on locations strictly below the warehouse base (via
+/// [`Location::is_sublocation_of`]) to prevent accidental deletion of the
+/// warehouse root (on flat layouts the persisted namespace location equals
+/// the warehouse base).
 ///
 /// # Limitations
 /// - Only removes folders already empty at drop time. Table-data purge is
@@ -1023,9 +1026,13 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
             continue;
         }
 
+        // Fast-path: skip non-empty directories without attempting deletion.
         match crate::service::storage::is_empty(&file_io, location).await {
             Ok(true) => {
-                if let Err(e) = super::io::remove_all(&file_io, location).await {
+                // Use non-recursive directory delete for TOCTOU safety: if
+                // children appeared between the emptiness check and this call,
+                // the backend rejects the delete (e.g. ADLS returns 409).
+                if let Err(e) = super::io::delete_empty_directory(&file_io, location).await {
                     tracing::warn!(
                         "Failed to remove empty namespace folder for namespace {ns_id} at {location}: {e}"
                     );
