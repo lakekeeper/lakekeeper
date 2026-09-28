@@ -272,8 +272,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 
 const FIX_HINT: &str = "Browser-based access from the Lakekeeper UI (LoQE) needs a CORS \
     policy allowing GET, HEAD, PUT, POST and DELETE from this origin, all request headers, \
-    and exposing ETag and Content-Range. See the storage documentation, section \
-    \"CORS Configuration\".";
+    and exposing ETag and Content-Range. See the storage documentation, section \"CORS\".";
 
 /// The `cors-origin-allowed` check for `profile`, probed with the origin of `base_url`.
 pub(crate) async fn cors_check(
