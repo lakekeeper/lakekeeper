@@ -25,7 +25,10 @@ use crate::{
         ErrorModel, Result,
         iceberg::v1::{PageToken, Prefix},
     },
-    service::{CatalogStore, authz::Authorizer, secrets::SecretStore, storage::StorageCredential},
+    service::{
+        CatalogStore, Transaction, authz::Authorizer, secrets::SecretStore,
+        storage::StorageCredential,
+    },
 };
 
 pub trait MetadataProperties {
@@ -215,21 +218,25 @@ impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
     }
 }
 
-pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: CatalogStore>(
+/// Reads and authorizes pages until one is full of allowed entities.
+///
+/// `fetch_fn` runs in a read transaction that is committed before `authorize_fn` sees the
+/// page: an authorizer may read the catalog itself, and a connection held meanwhile lets
+/// concurrent lists exhaust the read pool.
+pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: CatalogStore>(
     page_size: Option<i64>,
     page_token: PageToken,
-    mut fetch_fn: FetchFun,
-    transaction: &'d mut C::Transaction,
-) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
-where
-    FetchFun: for<'c> FnMut(
+    catalog_state: C::State,
+    mut fetch_fn: impl for<'c> FnMut(
         i64,
         Option<String>,
         &'c mut C::Transaction,
-    ) -> BoxFuture<'c, Result<UnfilteredPage<Entity, EntityId>>>,
-    // you may feel tempted to change the Vec<String> of page-tokens to Option<String>
-    // a word of advice: don't, we need to take the nth page-token of the next page when
-    // we're filling a auth-filtered page. Without a vec, that won't fly.
+    ) -> BoxFuture<'c, Result<Page>>,
+    mut authorize_fn: impl FnMut(i64, Page) -> BoxFuture<'a, Result<UnfilteredPage<Entity, EntityId>>>,
+) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
+// you may feel tempted to change the Vec<String> of page-tokens to Option<String>
+// a word of advice: don't, we need to take the nth page-token of the next page when
+// we're filling a auth-filtered page. Without a vec, that won't fly.
 {
     let page_size = page_size
         .unwrap_or(if matches!(page_token, PageToken::NotSpecified) {
@@ -243,7 +250,8 @@ where
         .expect("should be running on at least 32 bit architecture");
 
     let page_token = page_token.as_option().map(ToString::to_string);
-    let unfiltered_page = fetch_fn(page_size, page_token, transaction).await?;
+    let page = read_page::<C, _>(&catalog_state, page_size, page_token, &mut fetch_fn).await?;
+    let unfiltered_page = authorize_fn(page_size, page).await?;
 
     if unfiltered_page.is_partial() && !unfiltered_page.has_authz_denied_items() {
         return Ok((unfiltered_page.entities, unfiltered_page.entity_ids, None));
@@ -253,12 +261,15 @@ where
         unfiltered_page.take_n_authz_approved(page_as_usize);
 
     while entities.len() < page_as_usize {
-        let new_unfiltered_page = fetch_fn(
-            CONFIG.pagination_size_default.into(),
+        let refill_size = CONFIG.pagination_size_default.into();
+        let page = read_page::<C, _>(
+            &catalog_state,
+            refill_size,
             next_page_token.clone(),
-            transaction,
+            &mut fetch_fn,
         )
         .await?;
+        let new_unfiltered_page = authorize_fn(refill_size, page).await?;
 
         let number_of_requested_items = page_as_usize - entities.len();
         let page_was_authz_reduced = new_unfiltered_page.has_authz_denied_items();
@@ -277,4 +288,20 @@ where
     }
 
     Ok((entities, entity_ids, next_page_token))
+}
+
+async fn read_page<C: CatalogStore, Page>(
+    catalog_state: &C::State,
+    page_size: i64,
+    page_token: Option<String>,
+    fetch_fn: &mut impl for<'c> FnMut(
+        i64,
+        Option<String>,
+        &'c mut C::Transaction,
+    ) -> BoxFuture<'c, Result<Page>>,
+) -> Result<Page> {
+    let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
+    let page = fetch_fn(page_size, page_token, &mut t).await?;
+    t.commit().await?;
+    Ok(page)
 }

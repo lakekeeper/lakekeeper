@@ -105,17 +105,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             event_ctx.emit_authz(authz_result)?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
         let (idents, ids, next_page_token) = server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token.clone(),
+            state.v1_state.catalog,
             |ps, page_token, trx| {
                 let parent = parent.clone();
-                let authorizer = authorizer.clone();
-                let warehouse = warehouse.clone();
-                let request_metadata = event_ctx.request_metadata().clone();
                 async move {
-                    let request_metadata = &request_metadata;
                     let query = ListNamespacesQuery {
                         page_size: Some(ps),
                         page_token: page_token.into(),
@@ -123,12 +119,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         return_uuids: true,
                         return_protection_status: true,
                     };
-
+                    Ok(C::list_namespaces(warehouse_id, &query, trx.transaction()).await?)
+                }
+                .boxed()
+            },
+            |ps, list_namespaces| {
+                let authorizer = authorizer.clone();
+                let warehouse = warehouse.clone();
+                let request_metadata = event_ctx.request_metadata().clone();
+                async move {
+                    let request_metadata = &request_metadata;
                     // list_namespaces gives us a HashMap<Id, Ident> and a Vec<(Id, Token)>, in order
                     // to do sane pagination, we need to rely on the order of the Vec<(Id, Token)> to
                     // return the correct next page token which is why we do these unholy things here.
-                    let list_namespaces =
-                        C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
                     let parent_namespaces = list_namespaces.parent_namespaces;
                     let (ids, responses, tokens): (Vec<_>, Vec<_>, Vec<_>) = list_namespaces
                         .namespaces
@@ -181,10 +184,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 }
                 .boxed()
             },
-            &mut t,
         )
         .await?;
-        t.commit().await?;
         let (namespaces, protection): (Vec<_>, Vec<_>) = idents
             .into_iter()
             .map(|n| (n.namespace_ident().clone(), n.is_protected()))

@@ -2594,6 +2594,18 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
+        /// Awaited by every catalog object check. See [`Self::with_check_hook`].
+        check_hook: Option<CheckHook>,
+    }
+
+    /// A future run by each check, as `HidingAuthorizer` holds it.
+    #[derive(Clone)]
+    struct CheckHook(Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>);
+
+    impl std::fmt::Debug for CheckHook {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("CheckHook")
+        }
     }
 
     impl Default for HidingAuthorizer {
@@ -2610,6 +2622,24 @@ pub mod tests {
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
+                check_hook: None,
+            }
+        }
+
+        /// Await `hook` in every server, project, warehouse, namespace and tabular check,
+        /// so a test can stand in for an authorizer that reads the catalog while deciding.
+        #[must_use]
+        pub fn with_check_hook(
+            mut self,
+            hook: impl Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync + 'static,
+        ) -> Self {
+            self.check_hook = Some(CheckHook(Arc::new(hook)));
+            self
+        }
+
+        async fn run_check_hook(&self) {
+            if let Some(CheckHook(hook)) = &self.check_hook {
+                hook().await;
             }
         }
 
@@ -2798,6 +2828,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             actions: &[Self::ServerAction],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             Ok(vec![AuthorizationDecision::allow(); actions.len()])
         }
 
@@ -2807,6 +2838,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = projects_with_actions
                 .iter()
                 .map(|(project_id, action)| {
@@ -2828,6 +2860,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = warehouses_with_actions
                 .iter()
                 .map(|(warehouse, action)| {
@@ -2852,6 +2885,7 @@ pub mod tests {
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(namespace, action)| {
@@ -2880,6 +2914,7 @@ pub mod tests {
                 ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -2914,6 +2949,7 @@ pub mod tests {
                 ActionOnView<'_, '_, impl AuthZViewInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -2949,6 +2985,7 @@ pub mod tests {
                 ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
