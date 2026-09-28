@@ -5,8 +5,9 @@ use aws_sdk_s3::{
     operation::{
         complete_multipart_upload::CompleteMultipartUploadError,
         create_multipart_upload::CreateMultipartUploadError, delete_object::DeleteObjectError,
-        delete_objects::DeleteObjectsError, list_objects_v2::ListObjectsV2Error,
-        put_object::PutObjectError, upload_part::UploadPartError,
+        delete_objects::DeleteObjectsError, get_bucket_policy::GetBucketPolicyError,
+        list_objects_v2::ListObjectsV2Error, put_object::PutObjectError,
+        upload_part::UploadPartError,
     },
 };
 
@@ -194,6 +195,29 @@ pub(crate) fn parse_list_objects_v2_error(
     );
 
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+/// `Ok(None)` when the bucket has no policy, the error otherwise.
+pub(crate) fn parse_get_bucket_policy_error(
+    err: SdkError<GetBucketPolicyError>,
+    bucket: &str,
+) -> Result<Option<String>, IOError> {
+    let e = err.into_service_error();
+    let code = e.meta().code();
+    if code == Some("NoSuchBucketPolicy") {
+        return Ok(None);
+    }
+
+    let lakekeeper_kind = code
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error while reading the bucket policy: {e}"),
+        |m| format!("S3 get bucket policy failed: {m}"),
+    );
+
+    Err(IOError::new(lakekeeper_kind, msg, format!("s3://{bucket}")).set_source(e))
 }
 
 pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {

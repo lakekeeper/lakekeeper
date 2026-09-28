@@ -50,7 +50,7 @@ For a runnable end-to-end example (warehouse setup, STS credentials, create/load
 
 ### Remote signing (S3 without STS)
 
-Vended credentials need an STS endpoint. Some S3-compatible storages (for example Scaleway, or OVH) don't offer one. Then [remote signing](./storage.md#s3) is the only way to grant access, and it works for generic tables exactly as it does for Iceberg tables.
+Vended credentials need an STS endpoint. Some S3-compatible storages (for example Scaleway, or OVH) don't offer one. Then [remote signing](./storage-s3.md#remote-signing) is the only way to grant access, and it works for generic tables exactly as it does for Iceberg tables.
 
 Nothing extra needs to be configured on the table: as long as the warehouse's S3 storage profile has `remote-signing-enabled` set to `true`, the load and credentials responses of a generic table carry the signing properties in their `config`:
 
@@ -60,7 +60,7 @@ Nothing extra needs to be configured on the table: as long as the warehouse's S3
 | `signer.uri` (and legacy `s3.signer.uri`) | Base URI of the sign endpoint |
 | `signer.endpoint` (and legacy `s3.signer.endpoint`) | Path of the sign endpoint for this generic table, `v1/signer/{warehouse-id}/tabular-id/{generic-table-id}/v1/aws/s3/sign` |
 
-As with Iceberg tables, whether signing or vended credentials is offered depends on the `X-Iceberg-Access-Delegation` header and the storage profile — see [Disabling Credential Vending & Remote Signing](./storage.md#disabling-credential-vending-remote-signing). Request `remote-signing` explicitly if your client supports both and the storage has no STS.
+As with Iceberg tables, whether signing or vended credentials is offered depends on the `X-Iceberg-Access-Delegation` header and the storage profile — see [Disabling Credential Vending and Remote Signing](./storage.md#disabling-credential-vending-and-remote-signing). Request `remote-signing` explicitly if your client supports both and the storage has no STS.
 
 The client then sends each S3 request it wants to make to that endpoint and receives the `Authorization` headers back. Lakekeeper authorizes every signing request against the generic table's own permissions:
 
