@@ -66,7 +66,7 @@ use crate::{
     server::{
         self,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
-        tabular::list_entities,
+        tabular::{authorize_entities, fetch_entities},
     },
     service::{
         AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
@@ -86,7 +86,7 @@ use crate::{
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
-            context::{ResolvedNamespace, ResolvedTable},
+            context::{ResolvedNamespace, ResolvedTable, authz_to_error_no_audit},
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
@@ -241,23 +241,27 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }));
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let can_list_everything = authorizer
+            .is_allowed_namespace_action(
+                event_ctx.request_metadata(),
+                None,
+                &warehouse,
+                &namespace.parents,
+                &namespace.namespace,
+                CatalogNamespaceAction::ListEverything,
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_inner();
         let (table_infos, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
-                list_entities!(
-                    Table,
-                    list_tables,
-                    warehouse,
-                    namespace,
-                    authorizer,
-                    event_ctx
-                ),
-                &mut t,
+                state.v1_state.catalog,
+                fetch_entities!(list_tables, namespace, can_list_everything),
+                authorize_entities!(Table, warehouse, authorizer, event_ctx),
             )
             .await?;
-        t.commit().await?;
         let mut identifiers = Vec::with_capacity(table_infos.len());
         let mut protection_status = Vec::with_capacity(table_infos.len());
         for table_info in table_infos {

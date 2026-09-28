@@ -89,7 +89,7 @@ non-default MinIO or another S3-compatible backend.
 
 ### OneLake (Microsoft Fabric)
 
-Both the Rust integration tests and the Python Spark suite (`spark_onelake`) authenticate with the same dedicated Entra app reg, configured through `LAKEKEEPER_TEST__ONELAKE_CLIENT_*` / `_TENANT_ID`. The app reg needs a Fabric workspace role that permits reading and writing lakehouse data, such as Contributor.
+Both the Rust integration tests and the Python Spark suite (`spark_onelake`) authenticate with the same dedicated Entra app reg, configured through `LAKEKEEPER_TEST__ONELAKE_CLIENT_*` / `_TENANT_ID`. The app reg needs a Fabric workspace role that permits reading and writing lakehouse data, such as Contributor. The workspace must also accept user-delegated SAS tokens; see the OneLake credentials section of `docs/docs/storage.md` for the two Fabric settings involved.
 
 | Var | Required by | Purpose |
 |---|---|---|

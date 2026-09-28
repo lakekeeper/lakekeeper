@@ -32,8 +32,11 @@ jobs:
       dockerfile: "docker/full-debug.Dockerfile"
       image_name: "lakekeeper-local"
 
+  # Waits for the image so the capacity only bills once the suites can use it;
+  # the build takes around 25 minutes, longer when runners are contended.
   resume:
     name: resume capacity
+    needs: docker
     runs-on: ubuntu-24.04
     environment: onelake-integration
     permissions:
@@ -79,10 +82,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # An empty `rustflags` keeps the action from exporting RUSTFLAGS, which
+      # would replace `build.rustflags` from `.cargo/config.toml`, including the
+      # `--cfg tracing_unstable` that `tracing::field::valuable` requires.
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          rustflags: ""
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 

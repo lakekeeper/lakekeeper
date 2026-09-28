@@ -1,6 +1,7 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 pub(crate) mod az;
+mod bucket_policy;
 mod cache;
 mod cors;
 pub mod error;
@@ -614,8 +615,9 @@ impl StorageProfile {
     /// If location is not provided, a dummy table location is used.
     ///
     /// The first failure among the checks of [`Self::validate_access_report`].
-    /// Prefer the report when the outcome is shown to a human. The CORS check is
-    /// not run: it can only warn, and warnings do not fail this call.
+    /// Prefer the report when the outcome is shown to a human. The CORS and
+    /// bucket-access checks are not run: they can only warn, and warnings do not
+    /// fail this call.
     ///
     /// # Errors
     /// Fails if a file cannot be written and deleted.
@@ -664,18 +666,23 @@ impl StorageProfile {
             request_metadata.received_at(),
             CONFIG.max_request_time,
         );
-        // The CORS preflight needs no credential, so it runs alongside the access
-        // probes and is reported even when they stop early.
-        let (access, cors) = tokio::join!(
+        // The CORS preflight and the bucket-policy read are independent of the
+        // access probes, so they run alongside them and are reported even when
+        // the probes stop early.
+        let (access, cors, bucket_policy) = tokio::join!(
             Box::pin(self.access_probes(credential, location, request_metadata, deadlines)),
             Box::pin(cors::cors_check(
                 self,
                 request_metadata.base_url(),
                 deadlines
             )),
+            Box::pin(bucket_policy::bucket_access_check(
+                self, credential, deadlines
+            )),
         );
         let mut checks = access.checks;
         checks.push(cors);
+        checks.push(bucket_policy);
         ValidationReport::new(checks)
     }
 
@@ -1792,15 +1799,21 @@ mod validate_access_report_tests {
     }
 
     #[tokio::test]
-    async fn the_report_accounts_for_the_cors_check() {
+    async fn the_report_accounts_for_the_warning_checks() {
         let profile = StorageProfile::Memory(MemoryProfile::default());
         let report = profile
             .validate_access_report(None, None, &RequestMetadata::new_unauthenticated())
             .await;
-        assert_eq!(
-            status_of(&report, ValidationCheckName::CorsOriginAllowed),
-            ValidationCheckStatus::Skipped
-        );
+        for name in [
+            ValidationCheckName::CorsOriginAllowed,
+            ValidationCheckName::BucketAccessRestricted,
+        ] {
+            assert_eq!(
+                status_of(&report, name),
+                ValidationCheckStatus::Skipped,
+                "{name}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1892,6 +1905,41 @@ mod validate_access_report_tests {
         // `validate_access_report` owns exactly the storage-side checks.
         let names: Vec<_> = report.checks.iter().map(|c| c.name).collect();
         assert_eq!(names, STORAGE_CHECKS, "unexpected checks or order");
+    }
+
+    #[tokio::test]
+    async fn backend_init_failure_skips_the_bucket_access_check() {
+        let profile = StorageProfile::Stackit(
+            super::stackit::StackitProfile::builder()
+                .bucket("my-bucket".to_string())
+                .region("eu01".to_string())
+                .credentials_group_urn(
+                    "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3"
+                        .to_string(),
+                )
+                .build(),
+        );
+        let wrong_credential: StorageCredential = AzCredential::SharedAccessKey {
+            key: "x".to_string(),
+        }
+        .into();
+
+        let report = profile
+            .validate_access_report(
+                Some(&wrong_credential),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            )
+            .await;
+
+        assert_eq!(
+            status_of(&report, ValidationCheckName::StorageClientInitialized),
+            ValidationCheckStatus::Failed
+        );
+        assert_eq!(
+            status_of(&report, ValidationCheckName::BucketAccessRestricted),
+            ValidationCheckStatus::Skipped
+        );
     }
 
     #[tokio::test]
