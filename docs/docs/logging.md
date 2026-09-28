@@ -1060,7 +1060,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 
 ### 3. Validation Check Logs
 
-Internal errors raised while validating a warehouse's storage profile or credentials. Emitted only for 5xx-class failures, and only when the error is not marked to skip logging.
+Errors raised while validating a warehouse's storage profile or credentials, emitted when the error is not marked to skip logging. A 4xx-class failure is the caller's to fix and is logged at INFO; a 5xx is the server's and is logged at ERROR, with the stack stripped from what the caller receives. Both carry the same fields.
 
 **Identified by:** `"event_source": "validation_check"`
 
@@ -1068,6 +1068,8 @@ Internal errors raised while validating a warehouse's storage profile or credent
 | ------- | ------ | ----------------------------------------------------------------------- |
 | `check` | String | Name of the validation check that failed                                |
 | `error` | String | The underlying error, `Debug`-formatted — not structured, and not a stable contract |
+
+The `error_id` on both is the id the caller was handed, so a user's report resolves to the logged detail.
 
 Unlike audit logs, this source carries **no format version** and no stability guarantee: `error` is a `Debug` rendering whose content may change at any release. Use it for support correlation, not for automated parsing.
 
