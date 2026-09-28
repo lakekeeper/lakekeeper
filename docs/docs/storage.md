@@ -16,11 +16,13 @@ Each storage has its own page with its configuration parameters, credentials and
 |---|---|---|---|---|---|
 | [S3](storage-s3.md): AWS, S3-compatible storage, Cloudflare R2, Alibaba Cloud OSS | `s3` | STS, where the storage offers it | Yes | AWS | Yes |
 | [STACKIT Object Storage](storage-stackit.md) | `stackit` | STS on a credentials group | Yes | No | Yes |
-| [Azure Data Lake Storage Gen2](storage-adls.md) | `adls` | SAS tokens | No | Yes | No |
+| [Azure Data Lake Storage Gen2](storage-adls.md) | `adls` | SAS tokens | No | Yes | Read-only |
 | [OneLake (Microsoft Fabric)](storage-onelake.md) | `onelake` | User-delegated SAS tokens | No | Yes | No |
 | [Google Cloud Storage](storage-gcs.md) | `gcs` | Downscoped STS tokens | No | Yes | Yes |
 
 A system identity is the identity the Lakekeeper process runs as, such as an instance profile or a managed identity. Warehouses that use it need no stored credential; each storage page explains how to enable it.
+
+LoQE reads storage only with vended credentials, because DuckDB does not support remote signing.
 
 ## Locations
 
@@ -64,9 +66,9 @@ Remote signing applies to [Generic Tables](./generic-tables.md) as well as Icebe
 
 ## CORS
 
-[LoQE, the in-browser query console](engines.md#loqe), reads and writes table data directly from object storage, so the bucket must return a CORS (Cross-Origin Resource Sharing) policy that allows requests from the Lakekeeper origin. This applies to S3, STACKIT and Google Cloud Storage; LoQE does not support ADLS or OneLake. [Storage validation](storage-validation.md) reports a `cors-origin-allowed` warning when the Lakekeeper origin is not allowed.
+[LoQE, the in-browser query console](engines.md#loqe), reads and writes table data directly from object storage, so the bucket must return a CORS (Cross-Origin Resource Sharing) policy that allows requests from the Lakekeeper origin. This applies to S3, STACKIT, Google Cloud Storage and ADLS, which LoQE only reads; LoQE does not support OneLake. It also applies only when the Warehouse vends credentials, because LoQE cannot use remote signing. [Storage validation](storage-validation.md) reports a `cors-origin-allowed` warning when the Lakekeeper origin is not allowed.
 
-Each storage page has the policy and how to apply it: [S3](storage-s3.md#cors), [STACKIT](storage-stackit.md#cors), [Google Cloud Storage](storage-gcs.md#cors).
+Each storage page has the policy and how to apply it: [S3](storage-s3.md#cors), [STACKIT](storage-stackit.md#cors), [Google Cloud Storage](storage-gcs.md#cors), [ADLS](storage-adls.md#cors).
 
 ## Storage Layout
 

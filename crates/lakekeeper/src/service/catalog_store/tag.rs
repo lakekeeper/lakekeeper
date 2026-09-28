@@ -498,6 +498,120 @@ pub fn resolve_effective_tags(
     candidates
 }
 
+/// The effective tags on ONE object, folded from the direct tags of its chain.
+///
+/// Gives the same set `?effective=true` returns, from rows read with
+/// [`CatalogStore::list_tags_on_targets_impl`]. `ancestors` lists what the object sits
+/// in, nearest first: for a tabular its namespace, then each parent namespace, then the
+/// warehouse. The order decides which tag wins, and nothing here can check it. Only the
+/// object's own line of descent belongs in it: a sibling namespace listed here counts as
+/// an ancestor.
+///
+/// Rows for objects outside the chain are skipped, so one batch of rows can be folded for
+/// each of its objects in turn. Do not instead gather several objects' candidates and pass
+/// them to [`resolve_effective_tags`] yourself: it keeps one row per definition across all
+/// of them, so the objects merge.
+///
+/// Columns and warehouses ignore `ancestors`, since they inherit nothing. An entry that
+/// cannot be an ancestor — a tabular, a column, anything in another warehouse — is skipped
+/// and takes no depth.
+///
+/// One difference from the API: if the object itself no longer exists, the API returns
+/// nothing, while this still returns its ancestors' tags.
+///
+/// [`CatalogStore::list_tags_on_targets_impl`]: crate::service::CatalogStore::list_tags_on_targets_impl
+#[must_use]
+pub fn resolve_effective_tags_from_chain(
+    target: TagTarget,
+    ancestors: &[TagTarget],
+    rows: &[TagWithName],
+) -> Vec<EffectiveTagCandidate> {
+    let mut position = std::collections::HashMap::new();
+    position.insert(object_key(target), (0, EffectiveTagSource::Direct));
+
+    if !matches!(target, TagTarget::Column { .. } | TagTarget::Warehouse(_)) {
+        let mut distance: i32 = 0;
+        for &ancestor in ancestors {
+            let origin = match ancestor {
+                TagTarget::Warehouse(warehouse_id) => {
+                    EffectiveTagSource::Warehouse { warehouse_id }
+                }
+                TagTarget::Namespace {
+                    warehouse_id,
+                    namespace_id,
+                } => EffectiveTagSource::Namespace {
+                    warehouse_id,
+                    namespace_id,
+                },
+                // Columns do not inherit, so nothing inherits from a tabular or a column.
+                TagTarget::Tabular { .. } | TagTarget::Column { .. } => continue,
+            };
+            if ancestor.warehouse_id() != target.warehouse_id() {
+                continue;
+            }
+            // Only a new entry takes a depth, so a repeat keeps its nearest position.
+            if let std::collections::hash_map::Entry::Vacant(slot) =
+                position.entry(object_key(ancestor))
+            {
+                distance = distance.saturating_add(1);
+                slot.insert((distance, origin));
+            }
+        }
+    }
+
+    let candidates = rows
+        .iter()
+        .filter_map(|row| {
+            let (distance, origin) = position.get(&object_key(row.tag.target))?;
+            Some(EffectiveTagCandidate {
+                tag_id: row.tag.tag_id,
+                tag_definition_id: row.tag.tag_definition_id,
+                name: row.definition_name.clone(),
+                value: row.tag.value.clone(),
+                source: row.tag.source,
+                created_at: row.tag.created_at,
+                updated_at: row.tag.updated_at,
+                distance: *distance,
+                origin: *origin,
+            })
+        })
+        .collect();
+    resolve_effective_tags(candidates)
+}
+
+/// An object's identity, leaving out a tabular's kind. Both SQL reads match a tabular by
+/// id alone, so the fold must too — or one table spelled two ways loses its own tags.
+fn object_key(
+    target: TagTarget,
+) -> (
+    WarehouseId,
+    Option<NamespaceId>,
+    Option<uuid::Uuid>,
+    Option<i32>,
+) {
+    match target {
+        TagTarget::Warehouse(warehouse_id) => (warehouse_id, None, None, None),
+        TagTarget::Namespace {
+            warehouse_id,
+            namespace_id,
+        } => (warehouse_id, Some(namespace_id), None, None),
+        TagTarget::Tabular {
+            warehouse_id,
+            tabular_id,
+        } => (warehouse_id, None, Some(*tabular_id.as_ref()), None),
+        TagTarget::Column {
+            warehouse_id,
+            tabular_id,
+            field_id,
+        } => (
+            warehouse_id,
+            None,
+            Some(*tabular_id.as_ref()),
+            Some(field_id),
+        ),
+    }
+}
+
 /// The value contract of a tag definition at write time. Bundling `allowed_values`
 /// into `Enumerated` makes the illegal combinations — a marker carrying values, an
 /// enumerated definition with none — unrepresentable for callers. Borrowed and never
@@ -1061,6 +1175,9 @@ where
     ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError> {
         Self::list_effective_tag_candidates_impl(target, catalog_state).await
     }
+
+    // Deliberately no wrapper for `list_tags_on_targets_impl`: the evaluation-path fetch
+    // gets its ergonomic surface with its first caller, shaped by what that caller needs.
 }
 
 impl<T> CatalogTagOps for T where T: CatalogStore {}
@@ -1404,5 +1521,186 @@ mod tests {
             .scope(),
             TagScope::Column
         );
+    }
+
+    // ---------- resolve_effective_tags_from_chain ----------
+
+    /// warehouse > outer > inner > table, plus a sibling namespace `other` under `outer`.
+    struct Chain {
+        warehouse_id: WarehouseId,
+        table_uuid: Uuid,
+        wh: TagTarget,
+        outer: TagTarget,
+        inner: TagTarget,
+        other: TagTarget,
+        table: TagTarget,
+    }
+
+    fn chain() -> Chain {
+        let warehouse_id = WarehouseId::from(Uuid::now_v7());
+        let namespace = |id| TagTarget::Namespace {
+            warehouse_id,
+            namespace_id: NamespaceId::from(id),
+        };
+        let table_uuid = Uuid::now_v7();
+        Chain {
+            warehouse_id,
+            table_uuid,
+            wh: TagTarget::Warehouse(warehouse_id),
+            outer: namespace(Uuid::now_v7()),
+            inner: namespace(Uuid::now_v7()),
+            other: namespace(Uuid::now_v7()),
+            table: TagTarget::Tabular {
+                warehouse_id,
+                tabular_id: TabularId::Table(TableId::from(table_uuid)),
+            },
+        }
+    }
+
+    fn row(target: TagTarget, name: &str, value: Option<&str>) -> TagWithName {
+        TagWithName {
+            tag: Tag {
+                tag_id: TagId::new_random(),
+                tag_definition_id: TagDefinitionId::new_random(),
+                target,
+                value: value.map(str::to_string),
+                source: TagSource::Manual,
+                created_at: Utc::now(),
+                updated_at: None,
+            },
+            definition_name: name.to_string(),
+        }
+    }
+
+    /// Two rows of one definition, so they compete in resolution.
+    fn rivals(a: TagTarget, a_value: &str, b: TagTarget, b_value: &str) -> Vec<TagWithName> {
+        let mut first = row(a, "sensitivity", Some(a_value));
+        let mut second = row(b, "sensitivity", Some(b_value));
+        second.tag.tag_definition_id = first.tag.tag_definition_id;
+        first.definition_name = "sensitivity".to_string();
+        vec![first, second]
+    }
+
+    fn shape(resolved: &[EffectiveTagCandidate]) -> Vec<(&str, Option<&str>, i32)> {
+        let mut shape: Vec<_> = resolved
+            .iter()
+            .map(|c| (c.name.as_str(), c.value.as_deref(), c.distance))
+            .collect();
+        shape.sort_unstable();
+        shape
+    }
+
+    #[test]
+    fn chain_order_sets_the_distance() {
+        let c = chain();
+        let rows = [row(c.outer, "owner", None), row(c.wh, "region", None)];
+        let resolved = resolve_effective_tags_from_chain(c.table, &[c.inner, c.outer, c.wh], &rows);
+        assert_eq!(
+            shape(&resolved),
+            vec![("owner", None, 2), ("region", None, 3)]
+        );
+        let owner = resolved.iter().find(|r| r.name == "owner").unwrap();
+        assert_eq!(
+            owner.origin,
+            EffectiveTagSource::Namespace {
+                warehouse_id: c.warehouse_id,
+                namespace_id: match c.outer {
+                    TagTarget::Namespace { namespace_id, .. } => namespace_id,
+                    _ => unreachable!(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn the_nearest_ancestor_wins() {
+        let c = chain();
+        let rows = rivals(c.inner, "near", c.outer, "far");
+        let resolved = resolve_effective_tags_from_chain(c.table, &[c.inner, c.outer, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("sensitivity", Some("near"), 1)]);
+    }
+
+    #[test]
+    fn the_objects_own_tag_is_direct_and_wins() {
+        let c = chain();
+        let rows = rivals(c.table, "own", c.inner, "inherited");
+        let resolved = resolve_effective_tags_from_chain(c.table, &[c.inner, c.outer, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("sensitivity", Some("own"), 0)]);
+        assert_eq!(resolved[0].origin, EffectiveTagSource::Direct);
+    }
+
+    #[test]
+    fn entries_that_cannot_be_ancestors_take_no_depth() {
+        let c = chain();
+        let foreign = TagTarget::Namespace {
+            warehouse_id: WarehouseId::from(Uuid::now_v7()),
+            namespace_id: NamespaceId::from(Uuid::now_v7()),
+        };
+        let column = TagTarget::Column {
+            warehouse_id: c.warehouse_id,
+            tabular_id: TabularId::Table(TableId::from(c.table_uuid)),
+            field_id: 1,
+        };
+        // A tabular, a repeat, a column and another warehouse's namespace, all skipped:
+        // the warehouse still sits at depth 2, right after `inner`.
+        let ancestors = [c.table, c.inner, c.inner, column, foreign, c.wh];
+        let rows = [row(c.wh, "region", None), row(foreign, "leaked", None)];
+        let resolved = resolve_effective_tags_from_chain(c.other, &ancestors, &rows);
+        assert_eq!(shape(&resolved), vec![("region", None, 2)]);
+    }
+
+    #[test]
+    fn a_repeated_ancestor_keeps_its_nearest_position() {
+        let c = chain();
+        let rows = rivals(c.inner, "inner", c.outer, "outer");
+        let resolved =
+            resolve_effective_tags_from_chain(c.table, &[c.inner, c.outer, c.inner, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("sensitivity", Some("inner"), 1)]);
+    }
+
+    #[test]
+    fn columns_and_warehouses_ignore_ancestors() {
+        let c = chain();
+        let column = TagTarget::Column {
+            warehouse_id: c.warehouse_id,
+            tabular_id: TabularId::Table(TableId::from(c.table_uuid)),
+            field_id: 1,
+        };
+        let rows = [
+            row(column, "masked", None),
+            row(c.table, "on-table", None),
+            row(c.inner, "on-namespace", None),
+            row(c.wh, "on-warehouse", None),
+        ];
+        let resolved =
+            resolve_effective_tags_from_chain(column, &[c.table, c.inner, c.outer, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("masked", None, 0)]);
+
+        let resolved = resolve_effective_tags_from_chain(c.wh, &[c.inner, c.outer], &rows);
+        assert_eq!(shape(&resolved), vec![("on-warehouse", None, 0)]);
+    }
+
+    #[test]
+    fn rows_outside_the_chain_are_skipped() {
+        let c = chain();
+        let rows = [
+            row(c.other, "sibling", None),
+            row(c.inner, "ancestor", None),
+        ];
+        let resolved = resolve_effective_tags_from_chain(c.table, &[c.inner, c.outer, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("ancestor", None, 1)]);
+    }
+
+    #[test]
+    fn one_tabular_spelled_two_ways_is_one_object() {
+        let c = chain();
+        let as_view = TagTarget::Tabular {
+            warehouse_id: c.warehouse_id,
+            tabular_id: TabularId::View(ViewId::from(c.table_uuid)),
+        };
+        // Rows read with the table spelling, folded with the view spelling.
+        let rows = rivals(c.table, "own", c.inner, "inherited");
+        let resolved = resolve_effective_tags_from_chain(as_view, &[c.inner, c.outer, c.wh], &rows);
+        assert_eq!(shape(&resolved), vec![("sensitivity", Some("own"), 0)]);
     }
 }

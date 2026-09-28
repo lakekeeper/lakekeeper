@@ -216,6 +216,9 @@ pub struct IOError {
     message: String,
     location: Option<String>,
     context: Vec<String>,
+    /// HTTP status the storage answered with. Set by backends that record it
+    /// (currently ADLS).
+    http_status: Option<u16>,
     source: Option<anyhow::Error>,
 }
 
@@ -228,6 +231,7 @@ impl IOError {
             source: None,
             kind,
             context: Vec::new(),
+            http_status: None,
         }
     }
 
@@ -239,7 +243,19 @@ impl IOError {
             source: None,
             kind,
             context: Vec::new(),
+            http_status: None,
         }
+    }
+
+    /// Record the HTTP status the storage answered with. Set by backends that
+    /// record it (currently ADLS).
+    ///
+    /// `kind` groups statuses (401 and 403 are both `PermissionDenied`); the
+    /// status keeps them apart for callers that react to one specifically.
+    #[must_use]
+    pub fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
     }
 
     /// Add location information to the error
@@ -285,6 +301,13 @@ impl IOError {
     #[must_use]
     pub fn context(&self) -> &[String] {
         &self.context
+    }
+
+    /// The HTTP status the storage answered with. Set by backends that record it
+    /// (currently ADLS); `None` otherwise.
+    #[must_use]
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
     }
 
     #[must_use]

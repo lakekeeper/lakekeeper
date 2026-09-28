@@ -14,8 +14,9 @@ use crate::{
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogTableAction,
-            DeterminingFactor, GrantResource, PolicyEffect, UserOrRoleId,
+            ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogTableAction, DeterminingFactor, GrantResource, PolicyEffect, RoleSourceSystem,
+            UserOrRoleId,
         },
         events::{
             Authorization,
@@ -476,6 +477,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_single",
     "authz_failed_context",
     "authz_succeeded_rich_action_context",
+    "authz_succeeded_create_role_source_system",
     "grant_created",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
@@ -707,6 +709,39 @@ fn fixture_authz_succeeded_with_idempotency_key() {
     });
 
     assert_matches_fixture("authz_succeeded_idempotency_key", &contract_fields(record));
+}
+
+/// A role create that names an external identity: `create_role` carries
+/// `requested_provider_id` and `requested_source_id` next to `name`. Built from the
+/// real action, so the fixture pins what `CatalogProjectAction::CreateRole` emits.
+#[test]
+fn fixture_authz_succeeded_create_role_source_system() {
+    let action = CatalogProjectAction::CreateRole {
+        name: Some("analysts".to_string()),
+        source_system: Some(RoleSourceSystem {
+            provider_id: "ldap".parse().expect("valid provider id"),
+            source_id: "analysts".parse().expect("valid source id"),
+        }),
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::one(
+                EntityDescriptor::new(EntityType::Project).field(
+                    FIELD_NAME_PROJECT_ID,
+                    &"00000000-0000-0000-0000-000000000000",
+                ),
+            )),
+            actions: Arc::new(vec![action.action_descriptor()]),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![fixture_plain_authorization()]),
+        })
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_create_role_source_system",
+        &contract_fields(record),
+    );
 }
 
 /// A denied authorization. Carries `failure_reason` and `error`, which succeeded

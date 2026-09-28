@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM role_assignment_sync\n        WHERE project_id = $1 AND provider_id = $2 AND user_id = ANY($3::TEXT[])\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90566007360f408c332bab00cbbc18aa51fd0c268e5025f094d1579798c49d2d"
+}
