@@ -835,6 +835,16 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
+    /// Lock the role row until the transaction ends and return the number of grants
+    /// the role holds. While the lock is held no assignment, membership edge or grant
+    /// naming this role can be added, so the count stays exact until commit.
+    /// `RoleIdNotFoundInProject` if the role is not in `project_id`.
+    async fn lock_role_and_count_grants_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, DeleteRoleError>;
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -1176,6 +1186,15 @@ where
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    /// Delete the role-provider sync records of `user_ids` for `provider_id` in
+    /// `project_id`, so the provider re-syncs those users on their next request.
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //

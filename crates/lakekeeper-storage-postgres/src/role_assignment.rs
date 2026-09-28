@@ -13,12 +13,13 @@ use lakekeeper::{
         LAKEKEEPER_ROLE_PROVIDER_NAME, ListCatalogRoleMembersPage, ListRoleMembersResult,
         ListRolesPage, ListUserRoleAssignmentsResult, RemoveRoleMembersError,
         RemoveRoleMembersResult, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
-        RoleAssignmentUserNotFound, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleMemberKind,
-        RoleMembershipCycle, RoleMembershipDepthExceeded, RoleMembershipDirection,
-        RoleMembershipEntry, RoleMembershipLockTimeout, RoleNameAlreadyExists,
-        RoleNotManuallyAssignable, RoleProviderId, SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        UniqueMembers, UniqueRoles, UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
+        RoleAssignmentUserNotFound, RoleDeletedDuringSync, RoleId, RoleIdNotFoundInProject,
+        RoleIdent, RoleMemberKind, RoleMembershipCycle, RoleMembershipDepthExceeded,
+        RoleMembershipDirection, RoleMembershipEntry, RoleMembershipLockTimeout,
+        RoleNameAlreadyExists, RoleNotManuallyAssignable, RoleProviderId,
+        SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles,
+        UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
     },
 };
 use uuid::Uuid;
@@ -46,6 +47,21 @@ where
             .into();
     }
     e.into_catalog_backend_error().into()
+}
+
+/// [`map_role_upsert_error`] for the user-centric sync, which also inserts
+/// assignments: a role deleted after the statement read it fails the assignment's
+/// foreign key.
+fn map_user_sync_error(e: sqlx::Error) -> SyncUserRoleAssignmentsError {
+    if let sqlx::Error::Database(ref db) = e
+        && db.is_foreign_key_violation()
+        && db.constraint() == Some("role_assignment_role_id_fkey")
+    {
+        return RoleDeletedDuringSync::new()
+            .append_detail(db.message())
+            .into();
+    }
+    map_role_upsert_error(e)
 }
 
 fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
@@ -398,7 +414,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(map_role_upsert_error::<SyncUserRoleAssignmentsError>)?;
+    .map_err(map_user_sync_error)?;
 
     // Second query within the same transaction: the CTE-driven INSERT/DELETE
     // (added_assignments / removed_assignments) and sync_ts upsert writes are
@@ -1136,6 +1152,36 @@ pub(crate) async fn affected_users_for_membership_edges<
         .map(|id| user_id_from_db(id))
         .collect::<Result<Vec<_>, _>>()
         .map_err(CatalogBackendError::new_unexpected)
+}
+
+// ─── expire_role_assignment_syncs ─────────────────────────────────────────────
+
+/// Delete the sync records of `user_ids` for `provider_id` in `project_id`, so the
+/// provider re-syncs those users on their next request.
+pub(crate) async fn expire_role_assignment_syncs<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    user_ids: &[UserId],
+    connection: E,
+) -> Result<(), CatalogBackendError> {
+    let user_ids: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
+    sqlx::query!(
+        r#"
+        DELETE FROM role_assignment_sync
+        WHERE project_id = $1 AND provider_id = $2 AND user_id = ANY($3::TEXT[])
+        "#,
+        project_id.as_str(),
+        provider_id.as_str(),
+        &user_ids,
+    )
+    .execute(connection)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    Ok(())
 }
 
 // ─── list_role_memberships ────────────────────────────────────────────────────
@@ -2169,6 +2215,221 @@ mod tests {
         .await
         .unwrap();
         t.commit().await.unwrap();
+    }
+
+    /// A role deleted while a sync assigns it fails the sync's assignment insert on
+    /// the foreign key. The standalone sync retries once, and the retry recreates
+    /// the role the provider still reports, under a new id.
+    #[sqlx::test]
+    async fn sync_retries_when_its_role_is_deleted_concurrently(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&ident, "Group 1")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let first = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
+        let deleted_role_id = first.roles[0].role_id;
+
+        // Delete the role in an open transaction; the sync below starts while the
+        // row is locked and only proceeds once the delete commits.
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            deleted_role_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            .await
+            .unwrap();
+
+        let bob_id = Arc::new(UserId::new_unchecked("oidc", "bob"));
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&bob_id, "Bob"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        // Commit only once the sync waits on the locked row, so its first attempt
+        // always collides with the delete and only the retry can succeed.
+        let commit_delete = async {
+            wait_for_lock_waiter(&pool).await;
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, commit_delete);
+
+        let synced = synced.expect("the retry succeeds");
+        assert_eq!(synced.roles.len(), 1);
+        assert_eq!(*synced.roles[0].role_ident, *ident);
+        assert_ne!(
+            synced.roles[0].role_id, deleted_role_id,
+            "the role is recreated under a new id"
+        );
+    }
+
+    /// Expiring sync records removes the named users' records for that provider
+    /// only: their records for other providers, other users' records, and every
+    /// assignment stay.
+    #[sqlx::test]
+    async fn expiring_syncs_removes_only_the_named_users_provider_records(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let other_provider = RoleProviderId::new_unchecked("okta");
+        let staff = Arc::new(RoleIdent::new_unchecked("ldap", "staff"));
+        let engineering = Arc::new(RoleIdent::new_unchecked("okta", "engineering"));
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let bob_id = Arc::new(UserId::new_unchecked("oidc", "bob"));
+        for (user_id, name, provider_id, ident, role_name) in [
+            (&alice_id, "Alice", &provider, &staff, "Staff"),
+            (
+                &alice_id,
+                "Alice",
+                &other_provider,
+                &engineering,
+                "Engineering",
+            ),
+            (&bob_id, "Bob", &provider, &staff, "Staff"),
+        ] {
+            PostgresBackend::sync_user_role_assignments(
+                make_user(user_id, name),
+                &project_id,
+                provider_id,
+                &[make_role(ident, role_name)],
+                state.clone(),
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        }
+
+        PostgresBackend::expire_role_assignment_syncs_impl(
+            &project_id,
+            &provider,
+            &[(*alice_id).clone()],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        let alice_after = list_role_assignments_for_user(&alice_id, &pool)
+            .await
+            .unwrap();
+        let alice_providers: Vec<_> = alice_after
+            .provider_sync_times
+            .iter()
+            .map(|s| s.provider_id.clone())
+            .collect();
+        assert_eq!(alice_providers, vec![other_provider]);
+        assert_eq!(alice_after.roles.len(), 2, "assignments stay");
+        let bob_after = list_role_assignments_for_user(&bob_id, &pool)
+            .await
+            .unwrap();
+        assert_eq!(bob_after.provider_sync_times.len(), 1);
+    }
+
+    /// A role delete and a re-sync of one of its members that already holds its sync
+    /// record both complete: the delete transaction takes no sync record, and the
+    /// sync retries after the delete commits and recreates the role.
+    #[sqlx::test]
+    async fn role_delete_and_member_sync_do_not_deadlock(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&ident, "Group 1")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let first = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        )
+        .await
+        .unwrap();
+        let deleted_role_id = first.roles[0].role_id;
+
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            deleted_role_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // Alice's re-sync locks her sync record, then waits on the locked role row.
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        // Only then does the delete statement run, while the sync holds her record.
+        let delete = async {
+            wait_for_lock_waiter(&pool).await;
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+                .await
+                .unwrap();
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, delete);
+
+        let synced = synced.expect("the sync retries after the delete commits");
+        assert_eq!(synced.roles.len(), 1);
+        assert_ne!(synced.roles[0].role_id, deleted_role_id);
+        assert_eq!(synced.provider_sync_times.len(), 1);
+    }
+
+    /// Returns once a session of this test's database waits on a lock.
+    async fn wait_for_lock_waiter(pool: &sqlx::PgPool) {
+        let waiting = async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if waiting > 0 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("a session waits on a lock");
     }
 
     // ── user→role assignment writes (management API) ───────────────────────

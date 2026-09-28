@@ -35,27 +35,27 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
-        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
-        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
-        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
-        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
-        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
-        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError,
-        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
-        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        DeleteRoleError, DeleteTagDefinitionError, DropGenericTableError, DropTabularError,
+        EffectiveTagCandidate, EnsureWarehouseSpecMutableError, GenericTableCreation,
+        GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
+        GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
+        ListCatalogRoleMembersPage, ListGenericTablesError, ListGrantsStoreError,
+        ListNamespacesQuery, ListRoleMembersResult, ListRolesError, ListRolesPage,
+        ListRolesResponse, ListTabularsError, ListTagAttachmentsError, ListTagAttachmentsResponse,
+        ListTagDefinitionsError, ListTagDefinitionsResponse, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
+        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
+        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
         TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
         Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
         UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
@@ -91,7 +91,10 @@ use super::{
         repair_namespace_path_casing, update_namespace_properties,
     },
     pagination::to_token_precision,
-    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
+    role::{
+        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_and_count_grants,
+        update_role,
+    },
     tabular::table::load_tables,
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
@@ -410,6 +413,14 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
         delete_roles(project_id, filter, &mut **transaction).await
+    }
+
+    async fn lock_role_and_count_grants_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, DeleteRoleError> {
+        lock_role_and_count_grants(project_id, role_id, transaction).await
     }
 
     async fn search_role_impl(
@@ -799,6 +810,21 @@ impl CatalogStore for super::PostgresBackend {
         super::role_assignment::affected_users_for_membership_edges(
             &member_uuids,
             &mut **transaction,
+        )
+        .await
+    }
+
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError> {
+        super::role_assignment::expire_role_assignment_syncs(
+            project_id,
+            provider_id,
+            user_ids,
+            &catalog_state.write_pool(),
         )
         .await
     }

@@ -42,7 +42,7 @@ use lakekeeper::{
     service::{
         ApplyGrantsStoreError, CatalogBackendError, DatabaseIntegrityError, GenericTableId,
         GrantLockTimeout, GrantTargetNotFound, GrantUserNotFound, InvalidPaginationToken,
-        ListGrantsStoreError, NamespaceId, ProjectId, RevokeSubtreeGrantsStoreError,
+        ListGrantsStoreError, NamespaceId, ProjectId, RevokeSubtreeGrantsStoreError, RoleId,
         SubtreeGrantReadTimeout, TableId, TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
@@ -948,6 +948,29 @@ pub(crate) async fn delete_grants_for_user(
     .map_err(map_write_error)?;
 
     Ok(rows_into_specs(rows)?)
+}
+
+/// Count the grants held by `role_id`, in the caller's transaction.
+///
+/// `role_id` is set only on role grants (`grant_principal_shape`), so filtering on it
+/// alone lets the count use `grant_role_idx`.
+pub(crate) async fn count_grants_for_role(
+    role_id: RoleId,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<u64, CatalogBackendError> {
+    let count = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) AS "count!"
+        FROM grant_assignment
+        WHERE role_id = $1
+        "#,
+        *role_id,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    Ok(u64::try_from(count).unwrap_or_default())
 }
 
 /// List direct grants matching `filter`, keyset-paginated on
