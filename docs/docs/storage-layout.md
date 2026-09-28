@@ -4,7 +4,7 @@ description: "Control how Lakekeeper lays out namespace and table directories un
 
 # Storage Layout
 
-The storage layout controls how namespace and tabular directories are structured under the warehouse base location. It is configured via the `storage-layout` field inside the `storage-profile` when creating or updating a warehouse. The layout applies to all new tabulars created in the warehouse; existing tabular locations are not changed.
+The storage layout controls how namespace and tabular directories are structured under the warehouse base location. It is configured via the `storage-layout` field inside the `storage-profile` when creating or updating a warehouse. The layout applies to new namespaces and to new tabulars in namespaces without a persisted `location`; a new tabular in a namespace with a `location` property is placed under that location (see [Namespace Location Property](#namespace-location-property)). Existing tabular locations are not changed.
 
 ## Layout Types
 
@@ -30,7 +30,7 @@ The storage layout controls how namespace and tabular directories are structured
 
 ## Default
 
-The default layout is **flat**: tabulars are placed directly under the warehouse base location with no namespace directories, using a `{uuid}` segment.
+The default layout is **flat**: tabulars are placed directly under the warehouse base location with no namespace directories, using a `{uuid}` segment. This applies where Lakekeeper computes the location from the current layout; in a namespace with a persisted `location`, new tabulars use that location.
 
 For a tabular `orders` in any namespace the path is:
 

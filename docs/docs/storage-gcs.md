@@ -51,7 +51,7 @@ Create the key in the Google Cloud Console and pass it when creating the Warehou
       "auth_uri": "https://accounts.google.com/o/oauth2/auth",
       "token_uri": "https://oauth2.googleapis.com/token",
       "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%40example-project-1234.iam.gserviceaccount.com",
       "universe_domain": "googleapis.com"
     }
   }
@@ -89,13 +89,13 @@ Then create the Warehouse with:
     {
         "origin": ["https://lakekeeper.example.com"],
         "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
-        "responseHeader": ["*"],
+        "responseHeader": ["Authorization", "Content-Type", "Range", "ETag", "Content-Range"],
         "maxAgeSeconds": 3600
     }
 ]
 ```
 
-Apply it with `gcloud storage buckets update gs://<bucket> --cors-file=cors.json`.
+GCS returns `responseHeader` as the allowed request headers of a preflight, and browsers never let a `*` there cover `Authorization`, so the headers are listed explicitly. Apply the policy with `gcloud storage buckets update gs://<bucket> --cors-file=cors.json`.
 
 ## Updating the Storage Profile
 

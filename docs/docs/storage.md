@@ -24,7 +24,7 @@ A system identity is the identity the Lakekeeper process runs as, such as an ins
 
 ## Locations
 
-Table and view locations must use the scheme of the Warehouse's storage, which most query engines expect. Lakekeeper assigns it to tables created without a location; a location the client provides must already use it.
+Table and view locations must use the scheme of the Warehouse's storage, which most query engines expect. Lakekeeper assigns it to tables created without a location. A location the client provides must use it, or one of the alternative schemes below when `allow-alternative-protocols` is enabled.
 
 | Storage | Scheme | With `allow-alternative-protocols` |
 |---|---|---|
