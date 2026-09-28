@@ -17,6 +17,8 @@
 //!   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
 //!   field and every value with its doc comment. No derives are added and `AuditPart` is not
 //!   implemented: such an enum often already serializes differently for an API.
+//!   Outside Lakekeeper only `keys_of = "context"` is accepted: the other objects take their
+//!   keys from a Lakekeeper enum, so a vocabulary declared elsewhere could not be emitted.
 //! - **A key vocabulary** (`#[audit_part(keys_of = "entity")]`): its variant names are the
 //!   *keys* of one object, here an `entity`. Same expansion, except that `as_wire` yields a
 //!   `WireKey<Emitter>`, which converts into no value type — so a key cannot be passed where a
@@ -93,6 +95,21 @@ impl Parse for Args {
                     ));
                 }
             }
+        }
+        // An action or entity key reaches the wire only through a Lakekeeper enum, so one
+        // declared elsewhere could never be emitted.
+        if let Some(object) = args.keys_of.as_deref()
+            && matches!(object, "action" | "entity")
+            && std::env::var("CARGO_PKG_NAME").as_deref() != Ok("lakekeeper")
+        {
+            return Err(Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "`keys_of = \"{object}\"` is Lakekeeper's own, and a vocabulary declared \
+                     here could never be emitted. Only `keys_of = \"context\"` is open to \
+                     another emitter, through `push_extra_context`."
+                ),
+            ));
         }
         if args.field.is_some() && args.keys_of.is_some() {
             return Err(input.error(
@@ -737,6 +754,15 @@ mod tests {
         assert!(rejection(r#"shape = "operation""#, "enum E { A }").contains("for structs"));
         // `shape` stands alone.
         assert!(rejection(r#"shape = "operation", context"#, "struct S;").contains("stands alone"));
+        // `keys_of` for an object whose keys come from a Lakekeeper enum: allowed here,
+        // because these tests run as the `lakekeeper-audit-macros` crate and the rule only
+        // fires elsewhere. What it must not do is reject Lakekeeper's own declarations, and
+        // the audit tests in `lakekeeper` cover that by compiling them.
+        assert!(rejection(r#"keys_of = "action""#, "enum K { A }").contains("Lakekeeper's own"));
+        assert!(
+            rejection(r#"keys_of = "entity""#, "enum K { A }").contains("could never be emitted")
+        );
+        assert!(expand_str(r#"keys_of = "context""#, "enum K { A }").is_ok());
         // Unknown arguments name the ones that exist.
         assert!(rejection("nonsense", "struct S;").contains("unknown argument"));
         // A union has no describable shape.
