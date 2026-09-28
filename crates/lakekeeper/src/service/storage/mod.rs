@@ -2296,6 +2296,10 @@ mod tests {
                     "Unauthorized",
                     "abfss://filesystem@account.dfs.core.windows.net/test_prefix/ns/t".to_string(),
                 )
+                .with_context(
+                    "HTTP Error Message: Authentication Failed with Access token validation \
+                     failed.",
+                )
                 .with_http_status(401),
             ))
         };

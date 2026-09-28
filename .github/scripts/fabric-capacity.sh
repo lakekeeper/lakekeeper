@@ -6,9 +6,10 @@
 #        CAPACITY_API_VERSION  Microsoft.Fabric API version
 #
 # `resume` returns once the capacity reports Active, since OneLake rejects
-# requests before that. `suspend` only acts on an Active capacity, so calling
-# it more than once is harmless. Both expect an `az` session that may read,
-# resume and suspend the capacity.
+# requests before that. `suspend` waits out transitional states such as
+# Resuming, suspends an Active capacity and leaves a Paused one alone, so
+# calling it more than once is harmless. Both expect an `az` session that may
+# read, resume and suspend the capacity.
 set -euo pipefail
 
 : "${CAP:?CAP must be set to the capacity resource id}"
@@ -28,7 +29,9 @@ case "${1:-}" in
   resume)
     state=""
     for _ in $(seq 1 60); do
-      state=$(capacity_state)
+      # A failed read, e.g. a transient ARM error, is retried like a
+      # transitional state.
+      state=$(capacity_state) || state="unreadable"
       case "${state}" in
         Active)
           echo "capacity is Active"
@@ -49,12 +52,30 @@ case "${1:-}" in
     exit 1
     ;;
   suspend)
-    state=$(capacity_state)
-    echo "capacity state: ${state}"
-    if [ "${state}" = "Active" ]; then
-      capacity_action suspend
-      echo "suspend submitted"
-    fi
+    state=""
+    for _ in $(seq 1 60); do
+      state=$(capacity_state)
+      case "${state}" in
+        Paused)
+          echo "capacity is Paused"
+          exit 0
+          ;;
+        Active)
+          if capacity_action suspend; then
+            echo "suspend submitted"
+            exit 0
+          fi
+          echo "suspend request refused, re-checking"
+          ;;
+        *)
+          # E.g. Resuming after a cancelled resume, which ends Active.
+          echo "capacity state: ${state}"
+          ;;
+      esac
+      sleep 10
+    done
+    echo "capacity reached neither Active nor Paused within 10 minutes (last state: ${state})" >&2
+    exit 1
     ;;
   *)
     echo "usage: $0 resume|suspend" >&2

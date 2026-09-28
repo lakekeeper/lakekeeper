@@ -601,12 +601,17 @@ impl OneLakeProfile {
     /// is one: `OneLake` collapses `%XX` escapes, so the signature never
     /// matches. Otherwise the usual cause is the Fabric setting
     /// `Authenticate with OneLake user-delegated SAS tokens` being off.
-    /// What `OneLake` answered moves to the error's details.
+    /// What `OneLake` answered moves to the error's details. Other answers
+    /// pass through unchanged.
     pub(crate) fn explain_vended_access_failure(&self, error: ValidationError) -> ValidationError {
         let ValidationError::IoOperationFailed(io_error) = &error else {
             return error;
         };
-        if io_error.http_status() != Some(401) {
+        let token_validation_failed = io_error
+            .context()
+            .iter()
+            .any(|context| context.contains("Access token validation failed"));
+        if io_error.http_status() != Some(401) || !token_validation_failed {
             return error;
         }
         let location = io_error.location();
@@ -1248,22 +1253,33 @@ mod tests {
     const VENDED_PROBE_LOCATION: &str = "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@onelake.dfs.fabric.microsoft.com/9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04/Files/my_warehouse/vended-test/metadata/test";
     const VENDED_PROBE_PERCENT_LOCATION: &str = "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@onelake.dfs.fabric.microsoft.com/9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04/Files/my%20warehouse/vended-test/metadata/test";
 
+    const ACCESS_TOKEN_VALIDATION_FAILED: &str =
+        "Authentication Failed with Access token validation failed.";
+
     /// The error the vended read/write probe at `location` produces when
-    /// `OneLake` answers `status`.
-    fn vended_probe_failure(location: &str, status: Option<u16>) -> ValidationError {
+    /// `OneLake` answers `status` with `http_message`.
+    fn vended_probe_error(
+        location: &str,
+        status: Option<u16>,
+        http_message: &str,
+    ) -> ValidationError {
         let mut io_error = lakekeeper_io::IOError::new(
             lakekeeper_io::ErrorKind::PermissionDenied,
             "Unauthorized - server returned error status which will not be retried",
             location.to_string(),
         )
-        .with_context(
-            "HTTP Error Message: Authentication Failed with Access token validation failed.",
-        )
+        .with_context(format!("HTTP Error Message: {http_message}"))
         .with_context("Failed to create ADLS file.");
         if let Some(status) = status {
             io_error = io_error.with_http_status(status);
         }
         ValidationError::IoOperationFailed(Box::new(io_error))
+    }
+
+    /// The error the vended read/write probe at `location` produces when
+    /// `OneLake` answers `status` with `Access token validation failed`.
+    fn vended_probe_failure(location: &str, status: Option<u16>) -> ValidationError {
+        vended_probe_error(location, status, ACCESS_TOKEN_VALIDATION_FAILED)
     }
 
     #[test]
@@ -1291,8 +1307,7 @@ mod tests {
             model.stack,
             vec![
                 format!("OneLake answered HTTP 401 at `{VENDED_PROBE_LOCATION}`"),
-                "HTTP Error Message: Authentication Failed with Access token validation failed."
-                    .to_string(),
+                format!("HTTP Error Message: {ACCESS_TOKEN_VALIDATION_FAILED}"),
                 "Failed to create ADLS file.".to_string(),
             ]
         );
@@ -1338,5 +1353,18 @@ mod tests {
                 "{status:?}: {explained:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_keeps_401_with_another_message() {
+        let explained = sample_profile().explain_vended_access_failure(vended_probe_error(
+            VENDED_PROBE_LOCATION,
+            Some(401),
+            "Some other authentication failure.",
+        ));
+        assert!(
+            matches!(explained, ValidationError::IoOperationFailed(_)),
+            "{explained:?}"
+        );
     }
 }
