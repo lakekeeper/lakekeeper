@@ -3887,6 +3887,9 @@ pub mod tests {
         api_role_providers: ApiRoleProviders,
         /// Error type the `create_role` hook fails with, as a 409. `None` lets it pass.
         create_role_rejection: Option<&'static str>,
+        /// Report an empty grant store of its own from [`Authorizer::grants`], as
+        /// OpenFGA does. `false` keeps grants in the catalog.
+        own_grant_store: bool,
         /// Awaited by every catalog object check. See [`Self::with_check_hook`].
         check_hook: Option<CheckHook>,
     }
@@ -3898,6 +3901,30 @@ pub mod tests {
     impl std::fmt::Debug for CheckHook {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("CheckHook")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ManagesGrants for HidingAuthorizer {
+        async fn apply_grants(
+            &self,
+            _metadata: &RequestMetadata,
+            _writes: &[GrantSpec],
+            _deletes: &[GrantSpec],
+        ) -> std::result::Result<AppliedGrants, ApplyGrantsError> {
+            Ok(AppliedGrants::default())
+        }
+
+        async fn list_grants(
+            &self,
+            _metadata: &RequestMetadata,
+            _filter: GrantFilter,
+            _pagination: PaginationQuery,
+        ) -> std::result::Result<ListGrantsResultPage, ListGrantsError> {
+            Ok(ListGrantsResultPage {
+                grants: Vec::new(),
+                next_page_token: None,
+            })
         }
     }
 
@@ -3920,6 +3947,7 @@ pub mod tests {
                 managed_role_providers: HashSet::new(),
                 api_role_providers: ApiRoleProviders::AnyUnmanaged,
                 create_role_rejection: None,
+                own_grant_store: false,
                 check_hook: None,
             }
         }
@@ -3946,6 +3974,14 @@ pub mod tests {
         #[must_use]
         pub fn with_create_role_rejection(mut self, error_type: &'static str) -> Self {
             self.create_role_rejection = Some(error_type);
+            self
+        }
+
+        /// Act as the source of truth for grants, with a store that holds none, so a
+        /// test can exercise the paths an authorizer like OpenFGA takes.
+        #[must_use]
+        pub fn with_own_grant_store(mut self) -> Self {
+            self.own_grant_store = true;
             self
         }
 
@@ -4096,6 +4132,10 @@ pub mod tests {
 
         fn api_role_providers(&self) -> ApiRoleProviders {
             self.api_role_providers
+        }
+
+        fn grants(&self) -> Option<&dyn ManagesGrants> {
+            self.own_grant_store.then_some(self as &dyn ManagesGrants)
         }
 
         fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {

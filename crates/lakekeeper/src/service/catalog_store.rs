@@ -826,10 +826,6 @@ where
     /// project. Mirrors [`Self::list_roles_impl`] so the same filter type
     /// drives both reads and writes. Returns the IDs of deleted rows.
     ///
-    /// Deleting a role also drops the role-provider sync record of each direct
-    /// assignee for that role's provider, so a provider re-syncs the user once the
-    /// caller has evicted the user's role-assignments cache entry.
-    ///
     /// The implementation must refuse to run when `project_id` is `None`
     /// **and** every filter is `None` — that combination would erase every
     /// role row across every project.
@@ -1190,6 +1186,15 @@ where
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    /// Delete the role-provider sync records of `user_ids` for `provider_id` in
+    /// `project_id`, so the provider re-syncs those users on their next request.
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //

@@ -1654,6 +1654,116 @@ async fn test_managed_role_refuses_edits_allows_delete(pool: PgPool) {
     );
 }
 
+/// Deleting a provider-managed role expires its members' sync records for that
+/// provider, so the provider re-syncs them on their next request.
+#[sqlx::test]
+async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
+    use lakekeeper::{
+        api::management::v1::user::UserLastUpdatedWith,
+        service::{
+            CatalogRoleAssignmentOps as _, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
+            RoleIdent, UserId, authz::tests::HidingAuthorizer,
+        },
+    };
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let alice = std::sync::Arc::new(UserId::new_unchecked("oidc", "alice"));
+    let ident = std::sync::Arc::new(RoleIdent::new_unchecked("corporate-ldap", "contractors"));
+    let synced = PostgresBackend::sync_user_role_assignments(
+        CatalogUserRoleAssignmentUser {
+            user_id: &alice,
+            name: Some("Alice"),
+            email: None,
+            user_type: None,
+            updated_with: UserLastUpdatedWith::RoleProvider,
+        },
+        project_id,
+        &provider,
+        &[CatalogRoleForAssignment {
+            ident: &ident,
+            name: Some("Contractors"),
+            description: None,
+        }],
+        ctx.v1_state.catalog.clone(),
+        &ctx.v1_state.events,
+    )
+    .await
+    .unwrap();
+    assert_eq!(synced.provider_sync_times.len(), 1);
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        synced.roles[0].role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap();
+
+    let after =
+        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    assert!(after.roles.is_empty());
+    assert!(
+        after.provider_sync_times.is_empty(),
+        "the member's sync record is gone: {:?}",
+        after.provider_sync_times
+    );
+}
+
+/// Under an authorizer with its own grant store, rows in the catalog's grant table
+/// confer nothing, so they need no `force`; the delete removes them with the role.
+#[sqlx::test]
+async fn test_delete_role_ignores_catalog_grants_under_own_grant_store(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_own_grant_store())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let role_id = seed_role(&ctx, project_id, &make_provider(), "leftover", "leftover").await;
+    PostgresBackend::apply_grants(
+        &[GrantSpec {
+            principal: UserOrRoleId::Role(role_id),
+            resource: GrantResource::Warehouse(warehouse_resp.warehouse_id),
+            privilege: "get_metadata".to_string(),
+        }],
+        &[],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .expect("catalog grant rows do not hold up the delete");
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM grant_assignment")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
 // ==================== Provider namespaces the API may manage ====================
 
 type TestCtx<A> = lakekeeper::api::ApiContext<

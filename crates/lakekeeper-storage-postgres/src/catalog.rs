@@ -814,6 +814,21 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError> {
+        super::role_assignment::expire_role_assignment_syncs(
+            project_id,
+            provider_id,
+            user_ids,
+            &catalog_state.write_pool(),
+        )
+        .await
+    }
+
     async fn list_direct_role_members_page(
         project_id: &ProjectId,
         role_id: RoleId,

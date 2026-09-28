@@ -1154,6 +1154,36 @@ pub(crate) async fn affected_users_for_membership_edges<
         .map_err(CatalogBackendError::new_unexpected)
 }
 
+// ─── expire_role_assignment_syncs ─────────────────────────────────────────────
+
+/// Delete the sync records of `user_ids` for `provider_id` in `project_id`, so the
+/// provider re-syncs those users on their next request.
+pub(crate) async fn expire_role_assignment_syncs<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    user_ids: &[UserId],
+    connection: E,
+) -> Result<(), CatalogBackendError> {
+    let user_ids: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
+    sqlx::query!(
+        r#"
+        DELETE FROM role_assignment_sync
+        WHERE project_id = $1 AND provider_id = $2 AND user_id = ANY($3::TEXT[])
+        "#,
+        project_id.as_str(),
+        provider_id.as_str(),
+        &user_ids,
+    )
+    .execute(connection)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    Ok(())
+}
+
 // ─── list_role_memberships ────────────────────────────────────────────────────
 
 pub(crate) async fn list_role_memberships<
@@ -2255,71 +2285,52 @@ mod tests {
         );
     }
 
-    /// Deleting a provider role drops the sync record of each of its assignees for
-    /// that provider, so the next request re-syncs them. A user of the same provider
-    /// without the role keeps theirs.
+    /// Expiring sync records removes the named users' records for that provider
+    /// only: their records for other providers, other users' records, and every
+    /// assignment stay.
     #[sqlx::test]
-    async fn deleting_a_provider_role_expires_its_assignees_sync(pool: sqlx::PgPool) {
+    async fn expiring_syncs_removes_only_the_named_users_provider_records(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let provider = RoleProviderId::new_unchecked("ldap");
-        let deleted_ident = Arc::new(RoleIdent::new_unchecked("ldap", "contractors"));
-        let kept_ident = Arc::new(RoleIdent::new_unchecked("ldap", "staff"));
+        let other_provider = RoleProviderId::new_unchecked("okta");
+        let staff = Arc::new(RoleIdent::new_unchecked("ldap", "staff"));
+        let engineering = Arc::new(RoleIdent::new_unchecked("okta", "engineering"));
         let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
 
         let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
-        let alice = PostgresBackend::sync_user_role_assignments(
-            make_user(&alice_id, "Alice"),
-            &project_id,
-            &provider,
-            &[
-                make_role(&deleted_ident, "Contractors"),
-                make_role(&kept_ident, "Staff"),
-            ],
-            state.clone(),
-            &dispatcher,
-        )
-        .await
-        .unwrap();
         let bob_id = Arc::new(UserId::new_unchecked("oidc", "bob"));
-        PostgresBackend::sync_user_role_assignments(
-            make_user(&bob_id, "Bob"),
+        for (user_id, name, provider_id, ident, role_name) in [
+            (&alice_id, "Alice", &provider, &staff, "Staff"),
+            (
+                &alice_id,
+                "Alice",
+                &other_provider,
+                &engineering,
+                "Engineering",
+            ),
+            (&bob_id, "Bob", &provider, &staff, "Staff"),
+        ] {
+            PostgresBackend::sync_user_role_assignments(
+                make_user(user_id, name),
+                &project_id,
+                provider_id,
+                &[make_role(ident, role_name)],
+                state.clone(),
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        }
+
+        PostgresBackend::expire_role_assignment_syncs_impl(
             &project_id,
             &provider,
-            &[make_role(&kept_ident, "Staff")],
+            &[(*alice_id).clone()],
             state.clone(),
-            &dispatcher,
         )
         .await
         .unwrap();
-        // Alice's record for another provider is outside the deleted role's scope.
-        let other_provider = RoleProviderId::new_unchecked("okta");
-        let other_ident = Arc::new(RoleIdent::new_unchecked("okta", "engineering"));
-        PostgresBackend::sync_user_role_assignments(
-            make_user(&alice_id, "Alice"),
-            &project_id,
-            &other_provider,
-            &[make_role(&other_ident, "Engineering")],
-            state.clone(),
-            &dispatcher,
-        )
-        .await
-        .unwrap();
-        let deleted_role_id = alice
-            .roles
-            .iter()
-            .find(|r| *r.role_ident == *deleted_ident)
-            .unwrap()
-            .role_id;
-
-        let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut t = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
-        PostgresBackend::delete_role(&arc_project, deleted_role_id, t.transaction())
-            .await
-            .unwrap();
-        t.commit().await.unwrap();
 
         let alice_after = list_role_assignments_for_user(&alice_id, &pool)
             .await
@@ -2329,21 +2340,17 @@ mod tests {
             .iter()
             .map(|s| s.provider_id.clone())
             .collect();
-        assert_eq!(
-            alice_providers,
-            vec![other_provider],
-            "only the deleted role's provider record is gone"
-        );
-        assert_eq!(alice_after.roles.len(), 2, "the other roles stay assigned");
+        assert_eq!(alice_providers, vec![other_provider]);
+        assert_eq!(alice_after.roles.len(), 2, "assignments stay");
         let bob_after = list_role_assignments_for_user(&bob_id, &pool)
             .await
             .unwrap();
         assert_eq!(bob_after.provider_sync_times.len(), 1);
     }
 
-    /// A member's sync that already holds its sync record when a role delete runs
-    /// completes without a deadlock: the delete leaves the locked record to that sync,
-    /// which retries after the delete commits and recreates the role.
+    /// A role delete and a re-sync of one of its members that already holds its sync
+    /// record both complete: the delete transaction takes no sync record, and the
+    /// sync retries after the delete commits and recreates the role.
     #[sqlx::test]
     async fn role_delete_and_member_sync_do_not_deadlock(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

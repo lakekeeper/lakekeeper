@@ -77,7 +77,7 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 
 ### Roles managed in Lakekeeper
 
-Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role made through the API can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`.
+Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`.
 
 A user holds every role they are assigned to and every role those are nested in, at any depth, so both ways of naming a role match its indirect members too:
 

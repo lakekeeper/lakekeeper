@@ -958,8 +958,10 @@ async fn check_rebind_role<A: Authorizer, C: CatalogStore>(
 /// Delete the role authorized by [`authorize_role_action`]. See [`apply_create_role`]
 /// for the ordering contract this must be called under.
 ///
-/// The role's grants go with it through the foreign-key cascade. Without `force` a
-/// role that holds grants is refused, so none are revoked by accident.
+/// Grants the catalog stores go with the role through the foreign-key cascade; an
+/// authorizer with its own grant store removes them in its `delete_role` hook.
+/// Without `force` a role holding catalog-stored grants is refused, so none are
+/// revoked by accident.
 async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
@@ -970,7 +972,7 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
 ) -> Result<(), AuthZError> {
     let role_id = role.id;
 
-    let mut t = C::Transaction::begin_write(catalog_state)
+    let mut t = C::Transaction::begin_write(catalog_state.clone())
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // Lock first: until commit no sync can add an assignee this delete would miss
@@ -996,6 +998,31 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+
+    // Post-commit: expire the members' sync records for the role's provider, so the
+    // provider re-syncs them on their next request. A fresh record would otherwise
+    // keep serving their stored roles, now missing this one, until it ages out. It
+    // runs outside the delete transaction, so it holds no lock a concurrent sync or
+    // user delete waits on; if it fails, the records age out as usual. A provider
+    // role has no member roles, so `affected_users` are exactly its assignees.
+    let provider_id = role.ident.provider_id();
+    if !provider_id.is_lakekeeper() && !provider_id.is_system() && !affected_users.is_empty() {
+        C::expire_role_assignment_syncs_impl(
+            project_id,
+            provider_id,
+            &affected_users,
+            catalog_state,
+        )
+        .await
+        .inspect_err(|e| {
+            tracing::warn!(
+                %role_id,
+                error = %e,
+                "Failed to expire role-provider sync records after deleting a role"
+            );
+        })
+        .ok();
+    }
 
     // Post-commit: best-effort authz cleanup. `create_role`'s `require_no_relations`
     // guard blocks reuse of the id, so a leftover edge can't grant access.
@@ -1048,7 +1075,7 @@ async fn apply_update_role<C: CatalogStore>(
     Ok(role)
 }
 
-/// Rebind the source system of the role authorized by [`check_role_action`]. See
+/// Rebind the source system of the role authorized by [`check_rebind_role`]. See
 /// [`apply_create_role`] for the ordering contract this must be called under.
 async fn apply_update_role_source_system<C: CatalogStore>(
     catalog_state: C::State,
@@ -1056,9 +1083,8 @@ async fn apply_update_role_source_system<C: CatalogStore>(
     role: &ArcRole,
     request: UpdateRoleSourceSystemRequest,
 ) -> Result<ArcRole, AuthZError> {
-    // The role's *current* owner was guarded in `check_role_action`: a role owned
-    // by a configured role provider, or by the catalog, is not rebindable. (Rebinding
-    // *into* a managed/`system` namespace is rejected on the request in the handler.)
+    // `check_rebind_role` has checked both the role's current namespace and the
+    // requested one against the namespaces the API may manage.
     let role_id = role.id;
 
     let mut t = C::Transaction::begin_write(catalog_state)

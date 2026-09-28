@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM role\n        WHERE ($1 OR project_id = $2)\n            AND ($3 OR id = ANY($4::UUID[]))\n            AND ($5 OR source_id = ANY($6::TEXT[]))\n            AND ($7 OR provider_id = ANY($8::TEXT[]))\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "role",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "Bool",
+        "UuidArray",
+        "Bool",
+        "TextArray",
+        "Bool",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9ebf2179dff9e7fd24d5b44ebf84335720bcd1d9cb73e89daa376b06616c6fd3"
+}
