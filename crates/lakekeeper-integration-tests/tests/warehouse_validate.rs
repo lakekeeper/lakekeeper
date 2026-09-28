@@ -73,6 +73,11 @@ fn assert_report_is_exhaustive(response: &ValidateWarehouseResponse) {
                 "skipped check {} carries no reason",
                 check.name
             ),
+            ValidationCheckStatus::Warning => assert!(
+                check.error.is_some(),
+                "warning check {} carries no error",
+                check.name
+            ),
             ValidationCheckStatus::Passed => assert!(check.error.is_none()),
         }
     }

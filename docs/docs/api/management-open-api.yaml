@@ -15239,7 +15239,7 @@ components:
             - 'null'
           description: |-
             URN of the STACKIT credentials group to assume when vending credentials,
-            e.g. `urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3`.
+            e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`.
 
             Copy it verbatim from the credentials group; it is not derivable.
             Required when `sts-enabled` is true, optional otherwise — but validated
@@ -15251,12 +15251,15 @@ components:
           format: uri
           description: |-
             Endpoint override. Normally omitted — the endpoint is derived from
-            `region`.
+            `region` and `storage-service`. Takes precedence over `storage-service`
+            when set.
 
             Set this only for a STACKIT endpoint outside the public naming scheme,
             which STACKIT hands out per customer. Such an endpoint is a distinct
-            storage tenant, not another route to the same bucket, so it is immutable
-            once the warehouse exists.
+            storage tenant, not another route to the same bucket, so the resolved
+            endpoint is immutable once the warehouse exists. An update may switch
+            between `endpoint` and `storage-service` if both resolve to the same
+            endpoint.
         key-prefix:
           type:
             - string
@@ -15280,19 +15283,39 @@ components:
             - type: 'null'
             - $ref: '#/components/schemas/StorageLayout'
               description: Storage layout for namespace and tabular paths.
+        storage-service:
+          $ref: '#/components/schemas/StackitStorageService'
+          description: |-
+            STACKIT storage service that holds the bucket. Defaults to
+            `object-storage`. Ignored when `endpoint` is set.
+
+            Each service is a distinct storage tenant, so the resolved endpoint is
+            immutable once the warehouse exists. An update may switch between
+            `storage-service` and `endpoint` if both resolve to the same endpoint.
         sts-enabled:
           type: boolean
           description: |-
             Vend temporary downscoped credentials via STS. Defaults to enabled.
 
-            Requires `credentials-group-urn`, and requires the credentials group to
-            carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
-            to remote signing on storage that predates `StorageGRID` 12.0.
+            Requires `credentials-group-urn`, and a trust policy on that group
+            allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
+            STACKIT storage without STS.
         sts-token-validity-seconds:
           type: integer
           format: int64
           description: Validity of vended credentials in seconds. Defaults to 3600.
           minimum: 0
+    StackitStorageService:
+      type: string
+      description: |-
+        STACKIT storage service that holds a bucket.
+
+        - `object-storage`: STACKIT Object Storage, `object.storage.<region>.onstackit.cloud`.
+        - `data-platform`: STACKIT data platform storage,
+          `dataplatform.storage.<region>.onstackit.cloud`. Available in `eu01` only.
+      enum:
+        - object-storage
+        - data-platform
     StorageCredential:
       oneOf:
         - allOf:
@@ -16978,11 +17001,14 @@ components:
           items:
             $ref: '#/components/schemas/ValidationCheck'
           description: |-
-            Every check that was considered, in execution order — passed, failed and
-            skipped alike, so the caller can see what was and was not covered.
+            Every check that was considered, in execution order — passed, failed,
+            warning and skipped alike, so the caller can see what was and was not
+            covered.
         valid:
           type: boolean
-          description: True when no check failed. Skipped checks do not make a configuration invalid.
+          description: |-
+            True when no check failed. Skipped and warning checks do not make a
+            configuration invalid.
     ValidationCheck:
       type: object
       required:
@@ -17000,7 +17026,7 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/ErrorModel'
-              description: What went wrong. Only set for `failed`.
+              description: What went wrong. Only set for `failed` and `warning`.
         name:
           $ref: '#/components/schemas/ValidationCheckName'
         reason:
@@ -17040,19 +17066,22 @@ components:
         - vended-credentials-read-write
         - vended-credentials-scope-enforced
         - cleanup
+        - cors-origin-allowed
+        - bucket-access-restricted
     ValidationCheckStatus:
       type: string
       description: |-
         The outcome of a single check.
 
-        `passed` and `failed` are verdicts about the configuration. `skipped` is not
-        a verdict: the check did not apply, or a prerequisite failed, and `reason`
-        says which. Skipped checks never make a configuration invalid, so a report
+        `passed`, `failed` and `warning` are verdicts about the configuration; only
+        `failed` makes it invalid. `skipped` is not a verdict: the check did not
+        apply, or a prerequisite failed, and `reason` says which. Skipped checks never make a configuration invalid, so a report
         can be `valid` with nothing actually verified — read the individual checks.
       enum:
         - passed
         - failed
         - skipped
+        - warning
     ViewAction:
       type: string
       enum:

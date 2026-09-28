@@ -68,7 +68,7 @@ use crate::{
     server::{
         self,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
-        tabular::list_entities,
+        tabular::{authorize_entities, fetch_entities},
     },
     service::{
         AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
@@ -88,7 +88,7 @@ use crate::{
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
-            context::{ResolvedNamespace, ResolvedTable},
+            context::{ResolvedNamespace, ResolvedTable, authz_to_error_no_audit},
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
@@ -243,23 +243,27 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }));
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let can_list_everything = authorizer
+            .is_allowed_namespace_action(
+                event_ctx.request_metadata(),
+                None,
+                &warehouse,
+                &namespace.parents,
+                &namespace.namespace,
+                CatalogNamespaceAction::ListEverything,
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_inner();
         let (table_infos, table_uuids, next_page_token) =
             server::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
-                list_entities!(
-                    Table,
-                    list_tables,
-                    warehouse,
-                    namespace,
-                    authorizer,
-                    event_ctx
-                ),
-                &mut t,
+                state.v1_state.catalog,
+                fetch_entities!(list_tables, namespace, can_list_everything),
+                authorize_entities!(Table, warehouse, authorizer, event_ctx),
             )
             .await?;
-        t.commit().await?;
         let mut identifiers = Vec::with_capacity(table_infos.len());
         let mut protection_status = Vec::with_capacity(table_infos.len());
         for table_info in table_infos {
@@ -2204,12 +2208,27 @@ fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
                 validate_table_properties(updates.keys())?;
             }
             TableUpdate::RemoveProperties { removals } => {
-                validate_table_properties(removals)?;
+                // Removing a data path moves writes back into the table location, so
+                // a table that already carries one can always shed it.
+                validate_table_properties(removals.iter().filter(|p| !is_data_path_property(p)))?;
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Properties that direct an engine to write data files outside the table
+/// location, where they could land in another tabular's location. The last two
+/// are deprecated spellings of `write.data.path` that engines still honor.
+const DATA_PATH_PROPERTIES: [&str; 3] = [
+    "write.data.path",
+    "write.object-storage.path",
+    "write.folder-storage.path",
+];
+
+fn is_data_path_property(prop: &str) -> bool {
+    DATA_PATH_PROPERTIES.iter().any(|p| prop.starts_with(p))
 }
 
 pub(crate) fn delete_after_commit_enabled(properties: &HashMap<String, String>) -> bool {
@@ -2234,7 +2253,7 @@ where
                 PROPERTY_METADATA_COMPRESSION_CODEC,
             ]
             .contains(&prop.as_str()))
-            || prop.starts_with("write.data.path"))
+            || is_data_path_property(prop))
             && !prop.starts_with("write.metadata.metrics.")
         {
             return Err(ErrorModel::conflict(
@@ -2460,6 +2479,38 @@ mod unit_tests {
     fn test_mixed_case_properties() {
         let properties = ["a".to_string(), "B".to_string()];
         assert!(validate_table_properties(properties.iter()).is_ok());
+    }
+
+    #[test]
+    fn test_deny_data_path_properties() {
+        for prop in DATA_PATH_PROPERTIES {
+            let err = validate_table_properties([prop.to_string()].iter())
+                .expect_err(&format!("{prop} was accepted"));
+            assert_eq!(err.error.r#type, "FailedToSetProperties", "{prop}: {err:?}");
+
+            let err = validate_table_updates(&[TableUpdate::SetProperties {
+                updates: HashMap::from([(prop.to_string(), "s3://elsewhere".to_string())]),
+            }])
+            .expect_err(&format!("setting {prop} was accepted"));
+            assert_eq!(err.error.r#type, "FailedToSetProperties", "{prop}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn test_allow_removing_data_path_properties() {
+        let removals = DATA_PATH_PROPERTIES.map(ToString::to_string).to_vec();
+        validate_table_updates(&[TableUpdate::RemoveProperties { removals }])
+            .expect("removing a data path must be allowed");
+
+        // Other unsupported properties stay refused on removal.
+        let err = validate_table_updates(&[TableUpdate::RemoveProperties {
+            removals: vec![
+                "write.data.path".to_string(),
+                "write.metadata.path".to_string(),
+            ],
+        }])
+        .expect_err("removing write.metadata.path was accepted");
+        assert_eq!(err.error.r#type, "FailedToSetProperties", "{err:?}");
     }
 
     #[test]

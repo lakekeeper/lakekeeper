@@ -119,6 +119,8 @@ pub enum PrivilegeSource {
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
+    /// When the request reached Lakekeeper's middleware.
+    received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
     token_roles: Option<TokenRoles>,
@@ -322,6 +324,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id,
             project_id: None,
             authentication: None,
@@ -388,6 +391,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_unauthenticated() -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id: Uuid::now_v7(),
             project_id: None,
             authentication: None,
@@ -570,6 +574,20 @@ impl RequestMetadata {
             .ok_or(ProjectIdMissing)
     }
 
+    /// When the request reached Lakekeeper's middleware. Time limits that must
+    /// fit inside `LAKEKEEPER__MAX_REQUEST_TIME` count from here.
+    #[must_use]
+    pub fn received_at(&self) -> tokio::time::Instant {
+        self.received_at
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_received_at(mut self, received_at: tokio::time::Instant) -> Self {
+        self.received_at = received_at;
+        self
+    }
+
     /// Get the host that the request was made to.
     ///
     /// Contains the value of `CONFIG.base_uri` if configered, else the
@@ -669,6 +687,7 @@ pub struct RequestMetadataTestBuilder {
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id: b.request_id,
             authentication: b.authentication,
             base_url: b.base_url,
@@ -757,6 +776,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     };
 
     request.extensions_mut().insert(RequestMetadata {
+        received_at: tokio::time::Instant::now(),
         request_id,
         authentication: None,
         token_roles: None,

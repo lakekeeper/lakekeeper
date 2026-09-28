@@ -56,7 +56,9 @@ use crate::{
         },
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::validation::{ReportBuilder, SKIPPED_PREREQUISITE, ValidationReport, elapsed_ms},
+        storage::validation::{
+            ReportBuilder, SKIPPED_PREREQUISITE, STORAGE_CHECKS, ValidationReport, elapsed_ms,
+        },
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
@@ -378,10 +380,12 @@ pub struct UpdateWarehouseCredentialRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ValidateWarehouseResponse {
-    /// True when no check failed. Skipped checks do not make a configuration invalid.
+    /// True when no check failed. Skipped and warning checks do not make a
+    /// configuration invalid.
     pub valid: bool,
-    /// Every check that was considered, in execution order — passed, failed and
-    /// skipped alike, so the caller can see what was and was not covered.
+    /// Every check that was considered, in execution order — passed, failed,
+    /// warning and skipped alike, so the caller can see what was and was not
+    /// covered.
     pub checks: Vec<ValidationCheck>,
 }
 
@@ -1877,6 +1881,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        // Validated before the transaction opens: probing storage can take most
+        // of the request time limit, and a write connection and the warehouse's
+        // row lock must not be held across it.
+        Box::pin(warehouse.storage_profile.validate_access(
+            new_storage_credential.as_ref(),
+            None,
+            event_ctx.request_metadata(),
+        ))
+        .await?;
+
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1889,13 +1903,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let old_secret_id = warehouse.storage_secret_id;
-
-        Box::pin(warehouse.storage_profile.validate_access(
-            new_storage_credential.as_ref(),
-            None,
-            event_ctx.request_metadata(),
-        ))
-        .await?;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(
@@ -2080,14 +2087,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
         let request_metadata = event_ctx.request_metadata().clone();
-        let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, ids, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
             pagination_query.page_size,
             pagination_query.page_token,
+            catalog.clone(),
             |page_size, page_token, t| {
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                let warehouse = warehouse.clone();
                 async move {
                     let query = PaginationQuery {
                         page_size: Some(page_size),
@@ -2106,18 +2110,31 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     let (ids, items, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         page.into_iter_with_page_tokens().multiunzip();
 
-                    let authz_decisions = if can_list_everything {
-                        vec![true; ids.len()]
+                    let namespaces = if can_list_everything {
+                        None
                     } else {
-                        let namespaces = C::get_namespaces_by_id(
-                            warehouse_id,
-                            &items
-                                .iter()
-                                .map(ViewOrTableDeletionInfo::namespace_id)
-                                .collect_vec(),
-                            t.transaction(),
+                        Some(
+                            C::get_namespaces_by_id(
+                                warehouse_id,
+                                &items
+                                    .iter()
+                                    .map(ViewOrTableDeletionInfo::namespace_id)
+                                    .collect_vec(),
+                                t.transaction(),
+                            )
+                            .await?,
                         )
-                        .await?;
+                    };
+                    Ok((ids, items, tokens, namespaces))
+                }
+                .boxed()
+            },
+            |page_size, (ids, items, tokens, namespaces)| {
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
+                async move {
+                    let authz_decisions = if let Some(namespaces) = namespaces {
                         let actions = items
                             .iter()
                             .map(|t| {
@@ -2144,6 +2161,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             .await
                             .map_err(authz_to_error_no_audit)?
                             .into_allowed()
+                    } else {
+                        vec![true; ids.len()]
                     };
 
                     let (next_idents, next_uuids, next_page_tokens, mask): (
@@ -2172,7 +2191,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 }
                 .boxed()
             },
-            &mut t,
         )
         .await?;
 
@@ -2200,8 +2218,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 })
             })
             .collect::<Vec<_>>();
-
-        t.commit().await?;
 
         Ok(ListDeletedTabularsResponse {
             tabulars: Arc::new(tabulars),
@@ -2398,17 +2414,10 @@ async fn ensure_no_storage_overlap<C: CatalogStore>(
 /// Keeps the report shape stable when the probes never ran, so a client can always
 /// tell which probes exist and why they are missing an outcome.
 fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
-    [
-        ValidationCheckName::StorageClientInitialized,
-        ValidationCheckName::LakekeeperReadWrite,
-        ValidationCheckName::VendedCredentialsIssued,
-        ValidationCheckName::VendedCredentialsReadWrite,
-        ValidationCheckName::VendedCredentialsScopeEnforced,
-        ValidationCheckName::Cleanup,
-    ]
-    .into_iter()
-    .map(|name| ValidationCheck::skipped(name, reason))
-    .collect()
+    STORAGE_CHECKS
+        .into_iter()
+        .map(|name| ValidationCheck::skipped(name, reason))
+        .collect()
 }
 
 /// Check that the name is well-formed and not already taken in the project.
@@ -2806,6 +2815,8 @@ mod test {
                     ValidationCheckName::VendedCredentialsReadWrite,
                     ValidationCheckName::VendedCredentialsScopeEnforced,
                     ValidationCheckName::Cleanup,
+                    ValidationCheckName::CorsOriginAllowed,
+                    ValidationCheckName::BucketAccessRestricted,
                 ]
             );
             assert!(
