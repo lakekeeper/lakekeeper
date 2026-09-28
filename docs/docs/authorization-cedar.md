@@ -77,7 +77,7 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 
 ### Roles managed in Lakekeeper
 
-Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`.
+Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`. With `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES=true` the API creates no roles and answers `400 CreateRolesNotSupported`: declare every role in your entities file instead — see [External Entity Management](#external-entity-management).
 
 A user holds every role they are assigned to and every role those are nested in, at any depth, so both ways of naming a role match its indirect members too:
 
@@ -92,6 +92,7 @@ principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"
 Things to know:
 
 - Name a role by its `source_id`. The role's display name is not available to Cedar, and a role created with a `source-id` of its own cannot be named by its id.
+- A `source_id` names a role only together with its `provider_id`: `analysts` in `lakekeeper` and `analysts` in `ldap` are different roles. Wherever a policy reads a `source_id` — `resource.source_id` on a role action, or `context.requested_source_id` — check the matching `provider_id` too.
 - The `project_roles` form without a project is safe for project, warehouse, namespace, table and view actions: a request about a resource must name that resource's project, so the roles it sees are that project's roles. For server-level and user-management actions the caller chooses the project, so name one project's role or add `resource in principal.request_project` — see [Role scope](#role-scope-one-project-per-request).
 - Changing a role's `source_id` through the source-system endpoint changes its name in Cedar: policies naming the old `source_id` stop matching it.
 - `global_role_ids` does not include these roles, and resource property tags (`role:` / `role-full:`) cannot reference them.
@@ -1131,6 +1132,9 @@ The following Action Groups are available: `ProjectDescribeActions` (read-only),
 | `UpdateRole`                               | `update`                | Modify role properties          |
 | `ReadRole`                                 | `read`                  | View role details               |
 | `ReadRoleMetadata`                         | `read_metadata`         | View role metadata              |
+| `ManageRoleAssignments`                    | `manage_role_assignments` | Add or remove the role's members (users or roles) |
+| `ReadRoleAssignments`                      | `read_role_assignments` | List the role's members, parents and assignments |
+| `UpdateRoleSourceSystem`                   | `update_source_system`  | Rebind the role to a different provider and source id |
 | `IntrospectRoleAuthorization` | —                       | Check access permissions on the role for other users |
 
 The following Action Groups are available: `RoleActions` (all role operations)
@@ -1231,7 +1235,8 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 |-------------------------------------------|----------------------------------|
 | `CreateProject`                           | `project_name?: String`, `project_id?: String` |
 | `CreateWarehouse`                         | `warehouse_name?: String`        |
-| `CreateRole`                              | `role_name?: String`             |
+| `CreateRole`                              | `role_name?: String`, `requested_provider_id?: String`, `requested_source_id?: String` |
+| `UpdateRoleSourceSystem`                  | `requested_provider_id?: String`, `requested_source_id?: String` |
 | `CreateNamespaceInWarehouse`              | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateNamespaceInNamespace` | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateTable`                             | `table_name?: String`, `table_id?: String`, `initial_table_properties: ResourceProperties` |

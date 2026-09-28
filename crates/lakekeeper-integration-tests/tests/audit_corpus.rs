@@ -314,7 +314,8 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
 
     // A role create that succeeds, then one the provider guard refuses after the
     // authorizer allowed the action: that refusal is the request's one denial, a
-    // project-entity record with a `name` context and an identity-guard error.
+    // project-entity record with `name`, `requested_provider_id` and
+    // `requested_source_id` context and an identity-guard error.
     let project_id = warehouse_response.project_id.clone();
     let role_request =
         |provider: Option<&str>| lakekeeper::api::management::v1::role::CreateRoleRequest {

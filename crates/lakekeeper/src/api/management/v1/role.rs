@@ -494,6 +494,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             project_id.clone(),
             Arc::new(CatalogProjectAction::CreateRole {
                 name: Some(request.name.clone()),
+                source_system: request
+                    .provider_id
+                    .clone()
+                    .zip(request.source_id.clone())
+                    .map(|(provider_id, source_id)| RoleSourceSystem {
+                        provider_id,
+                        source_id,
+                    }),
             }),
         );
         let catalog_state = context.v1_state.catalog;

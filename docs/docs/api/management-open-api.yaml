@@ -11126,6 +11126,14 @@ components:
             - string
             - 'null'
           description: Name of the role to create.
+        source_system:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/RoleSourceSystem'
+              description: |-
+                External identity (provider + source id) the request binds the new role
+                to. Absent when the request names none, in which case the role is created
+                in the `lakekeeper` provider with a generated source id.
     LakekeeperProjectActionCreateTag:
       type: object
       description: Create a new governance tag definition in this project.
@@ -14548,6 +14556,21 @@ components:
       enum:
         - assignee
         - ownership
+    RoleSourceSystem:
+      type: object
+      description: |-
+        The external identity (source system) a role is bound to: a provider and the
+        role's identifier within that provider, always given together.
+      required:
+        - provider_id
+        - source_id
+      properties:
+        provider_id:
+          type: string
+          description: Provider that owns the role (e.g. `oidc`, `ldap`).
+        source_id:
+          type: string
+          description: Identifier of the role within the provider.
     RootLevelGrants:
       type: string
       description: |-

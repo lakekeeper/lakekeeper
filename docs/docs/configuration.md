@@ -880,7 +880,7 @@ Each LDAP provider uses a two-layer cache to avoid a network round-trip to the L
 1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
 2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
 
-If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts LDAP, writes the fresh assignments back to both the database and the in-memory cache, and returns the result. If LDAP is temporarily unreachable, the stale database record is served instead and an audit warning is emitted — the request is never failed solely due to an LDAP outage.
+If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts LDAP, writes the fresh assignments back to both the database and the in-memory cache, and returns the result. If LDAP is temporarily unreachable, the stale database record is served instead and an audit warning is emitted. A user with no database record for the provider in the request's project — a user LDAP has not been asked about yet, or a member of a role from it that was just [deleted](./authorization.md) — gets errors until LDAP is reachable again.
 
 | Variable                             | Default | Description                 |
 |--------------------------------------|---------|-----------------------------|

@@ -486,6 +486,11 @@ pub enum CatalogProjectAction {
         /// Name of the role to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// External identity (provider + source id) the request binds the new role
+        /// to. Absent when the request names none, in which case the role is created
+        /// in the `lakekeeper` provider with a generated source id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_system: Option<RoleSourceSystem>,
     },
     ListRoles,
     SearchRoles,
@@ -513,7 +518,10 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock:
         CatalogProjectAction::GetMetadata,
         CatalogProjectAction::ListWarehouses,
         CatalogProjectAction::IncludeInList,
-        CatalogProjectAction::CreateRole { name: None },
+        CatalogProjectAction::CreateRole {
+            name: None,
+            source_system: None,
+        },
         CatalogProjectAction::ListRoles,
         CatalogProjectAction::SearchRoles,
         CatalogProjectAction::GetEndpointStatistics,
@@ -540,10 +548,19 @@ impl CatalogAction for CatalogProjectAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
-            Self::CreateWarehouse { name: Some(n) }
-            | Self::CreateRole { name: Some(n) }
-            | Self::CreateTag { name: Some(n) } => {
+            Self::CreateWarehouse { name: Some(n) } | Self::CreateTag { name: Some(n) } => {
                 b = b.context_string(ActionContextKey::Name, n.clone());
+            }
+            Self::CreateRole {
+                name,
+                source_system,
+            } => {
+                if let Some(n) = name {
+                    b = b.context_string(ActionContextKey::Name, n.clone());
+                }
+                if let Some(source_system) = source_system {
+                    b = b.context_pairs(source_system.requested_context());
+                }
             }
             // Actions that contribute no audit context. Listed explicitly rather than
             // matched with `_`, so that adding an action forces a decision about what
@@ -555,7 +572,6 @@ impl CatalogAction for CatalogProjectAction {
             | Self::GetMetadata { .. }
             | Self::ListWarehouses { .. }
             | Self::IncludeInList { .. }
-            | Self::CreateRole { .. }
             | Self::ListRoles { .. }
             | Self::SearchRoles { .. }
             | Self::GetEndpointStatistics { .. }
@@ -570,11 +586,12 @@ impl CatalogAction for CatalogProjectAction {
     }
 }
 
-/// The external identity (source system) a role is bound to: a `(provider_id,
-/// source_id)` pair. An external identity is always both parts together, so this
-/// type makes a partial binding unrepresentable. Used as the rebind destination
-/// in [`CatalogRoleAction::UpdateSourceSystem`].
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Both parts in one type make a partial binding unrepresentable. Used as the
+// requested identity in `CatalogProjectAction::CreateRole` and as the rebind
+// destination in `CatalogRoleAction::UpdateSourceSystem`.
+/// The external identity (source system) a role is bound to: a provider and the
+/// role's identifier within that provider, always given together.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub struct RoleSourceSystem {
@@ -584,6 +601,24 @@ pub struct RoleSourceSystem {
     /// Identifier of the role within the provider.
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub source_id: RoleSourceId,
+}
+
+impl RoleSourceSystem {
+    /// The action context this identity contributes as a client-requested value:
+    /// `requested_provider_id` and `requested_source_id`.
+    #[must_use]
+    pub fn requested_context(&self) -> [(ActionContextKey, ContextValue); 2] {
+        [
+            (
+                ActionContextKey::RequestedProviderId,
+                ContextValue::String(self.provider_id.to_string()),
+            ),
+            (
+                ActionContextKey::RequestedSourceId,
+                ContextValue::String(self.source_id.to_string()),
+            ),
+        ]
+    }
 }
 
 /// The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
@@ -678,14 +713,7 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string(
-                ActionContextKey::RequestedProviderId,
-                target.provider_id.to_string(),
-            );
-            b = b.context_string(
-                ActionContextKey::RequestedSourceId,
-                target.source_id.to_string(),
-            );
+            b = b.context_pairs(target.requested_context());
         }
         b.build()
     }
@@ -3797,9 +3825,24 @@ pub mod tests {
         // CreateRole with name
         let action = CatalogProjectAction::CreateRole {
             name: Some("admin".to_string()),
+            source_system: None,
         };
         let log = action.as_log_str();
         assert!(log.contains("name=admin"), "got: {log}");
+        assert!(!log.contains("requested_provider_id"), "got: {log}");
+
+        // CreateRole with name and a requested source system
+        let action = CatalogProjectAction::CreateRole {
+            name: Some("admin".to_string()),
+            source_system: Some(RoleSourceSystem {
+                provider_id: "ldap".parse().unwrap(),
+                source_id: "admins".parse().unwrap(),
+            }),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=admin"), "got: {log}");
+        assert!(log.contains("requested_provider_id=ldap"), "got: {log}");
+        assert!(log.contains("requested_source_id=admins"), "got: {log}");
 
         // CreateNamespace in warehouse with name
         let action = CatalogWarehouseAction::CreateNamespace {
