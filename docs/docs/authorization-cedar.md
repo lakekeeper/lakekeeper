@@ -268,7 +268,7 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 Every Warehouse, Namespace, Table, View and GenericTable entity carries a `lowercase_tags` attribute of type `ResourceTags`. This is a Cedar entity with one tag per governance tag in effect on the object, each holding a `TagValue` record:
 
-```
+```cedar
 type TagValue = {
     value:     String,       // the value in effect, as applied; "" for a marker tag
     values:    Set<String>,  // every value this tag has on the object or above it
