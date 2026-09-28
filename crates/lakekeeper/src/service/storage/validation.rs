@@ -92,6 +92,13 @@ pub enum ValidationCheckName {
     /// objects from a browser, as the in-browser query console (LoQE) does.
     /// Reported as `warning` when it does not: the warehouse works without it.
     CorsOriginAllowed,
+    /// The STACKIT bucket policy keeps out the project's other credentials
+    /// groups, which otherwise reach every bucket of the project. Passes when
+    /// `Deny` statements, which spare only named credentials groups in their
+    /// `NotPrincipal`, deny every action on the bucket and on the warehouse's
+    /// objects without a `Condition`. Reported as `warning` when the policy is
+    /// missing, leaves access open, or cannot be read. Skipped for other storage.
+    BucketAccessRestricted,
 }
 
 /// The outcome of a single check.
@@ -193,12 +200,23 @@ impl ValidationCheck {
 /// Make an error safe to embed in a `200 OK` report body.
 ///
 /// Errors normally reach clients through `IcebergErrorResponse::into_response`,
-/// which for 5xx strips the stack, substitutes a correlation id and logs the
-/// detail. A check error is serialized directly instead, so it has to do the
+/// which logs the detail and adds a correlation id, and for 5xx also strips
+/// the stack. A check error is serialized directly instead, so it has to do the
 /// same here — otherwise internal detail ships to the caller and nothing is
 /// logged for support to correlate against.
-fn sanitize_embedded_error(name: ValidationCheckName, error: ErrorModel) -> ErrorModel {
+fn sanitize_embedded_error(name: ValidationCheckName, mut error: ErrorModel) -> ErrorModel {
     if error.code < 500 {
+        // Kept like a 4xx response: the stack stays, and the id ties the check
+        // to the logged detail, including the error's source.
+        if !error.skip_log {
+            tracing::info!(
+                event_source = "validation_check",
+                check = %name,
+                error = ?error,
+                "Validation check reported an error"
+            );
+        }
+        error.stack.push(format!("Error ID: {}", error.error_id));
         return error;
     }
 
@@ -243,8 +261,8 @@ impl ValidationReport {
         }
     }
 
-    /// Redact and log any 5xx check error, making the report safe to serialize
-    /// into a `200 OK` body.
+    /// Log every check error under a correlation id and redact 5xx ones,
+    /// making the report safe to serialize into a `200 OK` body.
     ///
     /// Applied at the response boundary rather than at construction, so the
     /// mutating create/update paths keep the full error for
@@ -375,7 +393,7 @@ pub(crate) fn elapsed_ms(started: Instant) -> u64 {
 /// Every check [`StorageProfile::validate_access_report`] reports, in report order.
 ///
 /// [`StorageProfile::validate_access_report`]: super::StorageProfile::validate_access_report
-pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 7] = [
+pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 8] = [
     ValidationCheckName::StorageClientInitialized,
     ValidationCheckName::LakekeeperReadWrite,
     ValidationCheckName::VendedCredentialsIssued,
@@ -383,6 +401,7 @@ pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 7] = [
     ValidationCheckName::VendedCredentialsScopeEnforced,
     ValidationCheckName::Cleanup,
     ValidationCheckName::CorsOriginAllowed,
+    ValidationCheckName::BucketAccessRestricted,
 ];
 
 /// Reason recorded when the server has storage validation switched off.
@@ -679,9 +698,10 @@ mod tests {
     }
 
     #[test]
-    fn client_errors_pass_through_sanitizing_untouched() {
+    fn client_errors_keep_their_stack_and_get_a_correlation_id() {
         let mut bad_request = ErrorModel::bad_request("bad bucket", "InvalidBucket", None);
         bad_request.stack = vec!["useful context for the caller".to_string()];
+        let expected_id = bad_request.error_id;
 
         let report = ValidationReport::new(vec![ValidationCheck::failed(
             ValidationCheckName::ProfileWellFormed,
@@ -691,9 +711,13 @@ mod tests {
         .sanitized_for_response();
 
         let error = report.checks[0].error.as_ref().expect("error preserved");
+        assert_eq!(error.message, "bad bucket");
         assert_eq!(
             error.stack,
-            vec!["useful context for the caller".to_string()]
+            vec![
+                "useful context for the caller".to_string(),
+                format!("Error ID: {expected_id}")
+            ]
         );
     }
 
