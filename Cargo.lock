@@ -3846,6 +3846,7 @@ dependencies = [
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "axum",
  "axum-extra",
  "axum-prometheus",
