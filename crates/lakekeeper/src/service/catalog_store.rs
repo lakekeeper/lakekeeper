@@ -835,6 +835,16 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
+    /// Lock the role row until the transaction ends and return the number of grants
+    /// the role holds. While the lock is held no assignment, membership edge or grant
+    /// naming this role can be added, so the count stays exact until commit.
+    /// `RoleIdNotFoundInProject` if the role is not in `project_id`.
+    async fn lock_role_and_count_grants_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, DeleteRoleError>;
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -1058,6 +1068,29 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
+    /// The direct tags on each of `targets`, with the definition's name. Each row echoes the
+    /// `targets` entry it belongs to.
+    ///
+    /// The batched form of [`list_tags_for_target_impl`](Self::list_tags_for_target_impl):
+    /// one round trip for a whole containment chain instead of one per object.
+    ///
+    /// Direct tags only: no ancestors are walked and no children expanded. For inherited
+    /// tags, also name each object's ancestors, and fold the rows with
+    /// [`resolve_effective_tags_from_chain`], one object at a time. An ancestor left out
+    /// silently costs that object the tags it would inherit.
+    ///
+    /// A tabular carries only its own tags; its columns are separate targets.
+    ///
+    /// Unpaginated and unordered, with no cap: the row count is the sum over `targets` of
+    /// the definitions on each, and definitions are customer data. The caller bounds the
+    /// batch. Repeating a target is harmless. Naming one tabular under two kinds is not: the
+    /// later entry takes all its rows. A target that does not exist gives no rows rather
+    /// than an error, and a soft-deleted tabular keeps its tags.
+    async fn list_tags_on_targets_impl(
+        targets: &[TagTarget],
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
     /// All direct column tags on `tabular_id` (every column with a tag), each paired
     /// with its definition's name; the column is carried as the field-id in each
     /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.
@@ -1176,6 +1209,15 @@ where
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    /// Delete the role-provider sync records of `user_ids` for `provider_id` in
+    /// `project_id`, so the provider re-syncs those users on their next request.
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //

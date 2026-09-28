@@ -314,8 +314,8 @@ Which context fields appear depends on the action. A field is omitted rather tha
 | `source`                | Array  | accepting a moved namespace       | The namespace path the entity is being moved from        |
 | `destination`           | Array  | move actions                      | The namespace path the entity is being moved to          |
 | `update-kinds`          | Array  | commits                           | The kinds of update the commit contains                 |
-| `requested_provider_id` | String | source-system updates             | The role provider the client named                      |
-| `requested_source_id`   | String | source-system updates             | The source identifier the client named                  |
+| `requested_provider_id` | String | role creation, source-system updates | The role provider the client named                   |
+| `requested_source_id`   | String | role creation, source-system updates | The source identifier the client named               |
 
 New context fields may be added at any minor version, so consumers must not assume this list is closed. Note also that the values are client-*requested* inputs: an authorization event records the attempt, so a `table_id` here is what the caller asked for, not necessarily what was created.
 

@@ -1,0 +1,159 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.tag_id, t.tag_definition_id,\n            t.warehouse_id, t.namespace_id, t.tabular_id, t.field_id,\n            t.value, t.source AS \"source: TagSource\",\n            t.created_at, t.updated_at,\n            -- Looked up per row, not joined: a join lets the planner hash or merge every\n            -- project's definitions, measured ~20 ms against 0.04 ms for a table load.\n            -- `!`: the foreign key guarantees the definition exists.\n            (SELECT td.name FROM tag_definition td\n             WHERE td.tag_definition_id = t.tag_definition_id) AS \"name!\"\n        FROM tag t\n        WHERE (t.warehouse_id = ANY($1) AND t.namespace_id IS NULL\n               AND t.tabular_id IS NULL AND t.field_id IS NULL)\n           OR (t.warehouse_id = ANY($2) AND t.namespace_id = ANY($3)\n               AND t.tabular_id IS NULL AND t.field_id IS NULL)\n           -- field_id IS NULL keeps a table's column tags out of the table's own rows.\n           -- The match below would drop them anyway, so this is selectivity, not\n           -- correctness -- unlike in `list_tags_for_target`, which has no post-filter.\n           OR (t.warehouse_id = ANY($4) AND t.tabular_id = ANY($5)\n               AND t.namespace_id IS NULL AND t.field_id IS NULL)\n           OR (t.warehouse_id = ANY($6) AND t.tabular_id = ANY($7)\n               AND t.namespace_id IS NULL AND t.field_id = ANY($8))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "field_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "field_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "source: TagSource",
+        "type_info": {
+          "Custom": {
+            "name": "tag_source",
+            "kind": {
+              "Enum": [
+                "manual"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "63bc5a4806bd48b6ca4c9901131d4fe205f9ec335d08715576e070fe8baf51d2"
+}

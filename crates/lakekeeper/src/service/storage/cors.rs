@@ -19,7 +19,8 @@ use super::{
     validation::{ProbeDeadlines, ValidationCheck, ValidationCheckName, elapsed_ms},
 };
 
-pub(crate) const PROBED_METHODS: [&str; 5] = ["GET", "HEAD", "PUT", "POST", "DELETE"];
+/// The methods LoQE uses on storage it reads and writes.
+pub(crate) const READ_WRITE_METHODS: &[&str] = &["GET", "HEAD", "PUT", "POST", "DELETE"];
 
 /// `scheme://host[:port]` of `base_url`, as a browser sends it in `Origin`.
 pub(crate) fn origin_of(base_url: &str) -> Option<String> {
@@ -153,22 +154,54 @@ pub(crate) fn finding_lines(findings: &[(&str, Mismatch)]) -> Vec<String> {
 
 const PROBE_KEY: &str = ".lakekeeper-cors-probe";
 
-pub(crate) const S3_REQUEST_HEADERS: &[&str] = &[
-    "authorization",
-    "content-type",
-    "range",
-    "x-amz-content-sha256",
-    "x-amz-date",
-    "x-amz-security-token",
-];
-pub(crate) const GCS_REQUEST_HEADERS: &[&str] = &["authorization", "content-type", "range"];
+/// What LoQE sends to one kind of storage, and what to change when a preflight
+/// refuses it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BrowserAccess {
+    pub(crate) methods: &'static [&'static str],
+    pub(crate) request_headers: &'static [&'static str],
+    pub(crate) fix_hint: &'static str,
+}
+
+const READ_WRITE_HINT: &str = "Browser-based access from the Lakekeeper UI (LoQE) needs a CORS \
+    policy allowing GET, HEAD, PUT, POST and DELETE from this origin, all request headers, \
+    and exposing ETag and Content-Range. See the storage documentation, section \"CORS\".";
+
+pub(crate) const S3_ACCESS: BrowserAccess = BrowserAccess {
+    methods: READ_WRITE_METHODS,
+    request_headers: &[
+        "authorization",
+        "content-type",
+        "range",
+        "x-amz-content-sha256",
+        "x-amz-date",
+        "x-amz-security-token",
+    ],
+    fix_hint: READ_WRITE_HINT,
+};
+
+pub(crate) const GCS_ACCESS: BrowserAccess = BrowserAccess {
+    methods: READ_WRITE_METHODS,
+    request_headers: &["authorization", "content-type", "range"],
+    fix_hint: READ_WRITE_HINT,
+};
+
+/// LoQE reads ADLS and does not write it. The SAS token travels in the query
+/// string, so `Range` is the only request header.
+pub(crate) const ADLS_ACCESS: BrowserAccess = BrowserAccess {
+    methods: &["GET", "HEAD"],
+    request_headers: &["range"],
+    fix_hint: "Browser-based reads from the Lakekeeper UI (LoQE) need CORS rules on the storage \
+        account's Blob service, which also apply to its Data Lake endpoint, allowing GET and HEAD \
+        from this origin and all request headers. See the storage documentation, section \"CORS\".",
+};
 
 /// Where to send the preflight, or why there is nothing to probe.
 #[derive(Debug)]
 pub(crate) enum ProbeTarget {
     Http {
         url: Url,
-        request_headers: &'static [&'static str],
+        access: &'static BrowserAccess,
     },
     Unsupported(&'static str),
 }
@@ -199,11 +232,25 @@ pub(crate) fn probe_target(profile: &StorageProfile) -> Result<ProbeTarget, Stri
             );
             Ok(ProbeTarget::Http {
                 url,
-                request_headers: GCS_REQUEST_HEADERS,
+                access: &GCS_ACCESS,
             })
         }
-        StorageProfile::Adls(_) | StorageProfile::OneLake(_) => Ok(ProbeTarget::Unsupported(
-            "LoQE does not support ADLS storage.",
+        StorageProfile::Adls(adls) => {
+            // LoQE reads `abfss://` locations on the Data Lake endpoint they name,
+            // where Azure applies the Blob service's CORS rules.
+            let host = base.host_str().ok_or("ADLS location has no host")?;
+            let mut url = Url::parse(&format!("https://{host}")).map_err(|e| e.to_string())?;
+            push_path(
+                &mut url,
+                std::iter::once(adls.filesystem.as_str()).chain(key.iter().copied()),
+            );
+            Ok(ProbeTarget::Http {
+                url,
+                access: &ADLS_ACCESS,
+            })
+        }
+        StorageProfile::OneLake(_) => Ok(ProbeTarget::Unsupported(
+            "LoQE does not support OneLake storage.",
         )),
         #[cfg(feature = "test-utils")]
         StorageProfile::Memory(_) => Ok(ProbeTarget::Unsupported(
@@ -236,7 +283,7 @@ fn s3_target(s3: &S3Profile, key: &[&str]) -> Result<ProbeTarget, String> {
     }
     Ok(ProbeTarget::Http {
         url,
-        request_headers: S3_REQUEST_HEADERS,
+        access: &S3_ACCESS,
     })
 }
 
@@ -270,10 +317,6 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("Failed to build CORS probe HTTP client")
 });
 
-const FIX_HINT: &str = "Browser-based access from the Lakekeeper UI (LoQE) needs a CORS \
-    policy allowing GET, HEAD, PUT, POST and DELETE from this origin, all request headers, \
-    and exposing ETag and Content-Range. See the storage documentation, section \"CORS\".";
-
 /// The `cors-origin-allowed` check for `profile`, probed with the origin of `base_url`.
 pub(crate) async fn cors_check(
     profile: &StorageProfile,
@@ -281,11 +324,19 @@ pub(crate) async fn cors_check(
     deadlines: ProbeDeadlines,
 ) -> ValidationCheck {
     let name = ValidationCheckName::CorsOriginAllowed;
+    // DuckDB cannot use remote signing, so LoQE reads storage only with vended
+    // credentials; without them the storage's CORS policy never comes into play.
+    if !profile.credential_vending_enabled() {
+        return ValidationCheck::skipped(
+            name,
+            "LoQE reads storage only with vended credentials, which this storage profile does \
+             not issue.",
+        );
+    }
     match probe_target(profile) {
-        Ok(ProbeTarget::Http {
-            url,
-            request_headers,
-        }) => cors_check_at(&url, request_headers, base_url, deadlines).await,
+        Ok(ProbeTarget::Http { url, access }) => {
+            cors_check_at(&url, access, base_url, deadlines).await
+        }
         Ok(ProbeTarget::Unsupported(reason)) => ValidationCheck::skipped(name, reason),
         Err(e) => ValidationCheck::skipped(name, format!("No URL to probe: {e}")),
     }
@@ -294,7 +345,7 @@ pub(crate) async fn cors_check(
 /// The `cors-origin-allowed` check against `url`.
 async fn cors_check_at(
     url: &Url,
-    request_headers: &[&str],
+    access: &BrowserAccess,
     base_url: &str,
     deadlines: ProbeDeadlines,
 ) -> ValidationCheck {
@@ -308,21 +359,20 @@ async fn cors_check_at(
     let started = Instant::now();
     let result = deadlines
         .probe(async {
-            probe_url(url, &origin, request_headers)
-                .await
-                .map_err(|findings| {
-                    let methods: Vec<&str> = findings.iter().map(|(m, _)| *m).collect();
-                    let mut error = ErrorModel::precondition_failed(
-                        format!(
-                            "CORS does not allow origin `{origin}` for `{}`. {FIX_HINT}",
-                            methods.join("`, `")
-                        ),
-                        "CorsOriginNotAllowed",
-                        None,
-                    );
-                    error.stack = finding_lines(&findings);
-                    error
-                })
+            probe_url(url, &origin, access).await.map_err(|findings| {
+                let methods: Vec<&str> = findings.iter().map(|(m, _)| *m).collect();
+                let mut error = ErrorModel::precondition_failed(
+                    format!(
+                        "CORS does not allow origin `{origin}` for `{}`. {}",
+                        methods.join("`, `"),
+                        access.fix_hint
+                    ),
+                    "CorsOriginNotAllowed",
+                    None,
+                );
+                error.stack = finding_lines(&findings);
+                error
+            })
         })
         .await;
     match result {
@@ -331,20 +381,20 @@ async fn cors_check_at(
     }
 }
 
-/// Preflight every probed method at `url`.
+/// Preflight every method of `access` at `url`.
 ///
 /// # Errors
 /// Every method a browser would refuse, with what its preflight answered.
 async fn probe_url(
     url: &Url,
     origin: &str,
-    request_headers: &[&str],
+    access: &BrowserAccess,
 ) -> Result<(), Vec<(&'static str, Mismatch)>> {
-    let requested = request_headers.join(", ");
-    let results = futures::future::join_all(PROBED_METHODS.iter().map(|method| {
+    let requested = access.request_headers.join(", ");
+    let results = futures::future::join_all(access.methods.iter().map(|method| {
         let requested = &requested;
         async move {
-            preflight(url, origin, method, requested, request_headers)
+            preflight(url, origin, method, requested, access.request_headers)
                 .await
                 .map_err(|mismatch| (*method, mismatch))
         }
@@ -438,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn a_permissive_server_passes_every_method() {
         let url = serve(Router::new().route("/{*path}", options(echo_cors))).await;
-        probe_url(&url, "http://localhost:8181", S3_REQUEST_HEADERS)
+        probe_url(&url, "http://localhost:8181", &S3_ACCESS)
             .await
             .unwrap();
     }
@@ -446,11 +496,11 @@ mod tests {
     #[tokio::test]
     async fn a_server_without_cors_names_every_method() {
         let url = serve(Router::new().route("/{*path}", options(|| async { "" }))).await;
-        let findings = probe_url(&url, "http://localhost:8181", S3_REQUEST_HEADERS)
+        let findings = probe_url(&url, "http://localhost:8181", &S3_ACCESS)
             .await
             .unwrap_err();
         let methods: Vec<&str> = findings.iter().map(|(m, _)| *m).collect();
-        assert_eq!(methods, PROBED_METHODS);
+        assert_eq!(methods, READ_WRITE_METHODS);
         assert!(
             findings
                 .iter()
@@ -463,7 +513,7 @@ mod tests {
         let url = serve(Router::new().route("/{*path}", options(|| async { "" }))).await;
         let check = cors_check_at(
             &url,
-            S3_REQUEST_HEADERS,
+            &S3_ACCESS,
             "http://localhost:8181",
             ProbeDeadlines::from_request_limit(
                 tokio::time::Instant::now(),
@@ -511,7 +561,7 @@ mod tests {
             .bucket("my-wh".to_string())
             .region("local".to_string())
             .flavor(S3Flavor::S3Compat)
-            .sts_enabled(false)
+            .sts_enabled(true)
             .build();
         profile.endpoint = Some(endpoint.parse().unwrap());
         profile.path_style_access = Some(true);
@@ -523,7 +573,7 @@ mod tests {
         assert_eq!(preflights.load(Ordering::SeqCst), 0);
 
         let report = profile.validate_access_report(None, None, &request).await;
-        assert_eq!(preflights.load(Ordering::SeqCst), PROBED_METHODS.len());
+        assert_eq!(preflights.load(Ordering::SeqCst), S3_ACCESS.methods.len());
         assert!(
             report
                 .checks
@@ -546,6 +596,116 @@ mod tests {
         .await;
         assert_eq!(check.status, ValidationCheckStatus::Skipped);
         assert!(check.reason.is_some());
+    }
+
+    fn deadlines() -> ProbeDeadlines {
+        ProbeDeadlines::from_request_limit(
+            tokio::time::Instant::now(),
+            std::time::Duration::from_secs(30),
+        )
+    }
+
+    fn profile(json: serde_json::Value) -> StorageProfile {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_profile_without_vended_credentials_is_skipped() {
+        // LoQE cannot use remote signing, so without vended credentials it never
+        // reads the storage and its CORS policy does not matter.
+        let url = serve(Router::new().route("/{*path}", options(|| async { "" }))).await;
+        let s3 = profile(serde_json::json!({
+            "type": "s3", "bucket": "my-wh", "region": "local", "flavor": "s3-compat",
+            "endpoint": format!("http://{}", url.authority()), "path-style-access": true,
+            "sts-enabled": false, "remote-signing-enabled": true,
+        }));
+        let adls = profile(serde_json::json!({
+            "type": "adls", "account-name": "myaccount", "filesystem": "my-wh",
+            "sas-enabled": false,
+        }));
+        for profile in [s3, adls] {
+            let check = cors_check(&profile, "http://localhost:8181", deadlines()).await;
+            assert_eq!(check.status, ValidationCheckStatus::Skipped, "{check:?}");
+            assert!(
+                check
+                    .reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("vended credentials"),
+                "{check:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adls_is_probed_on_the_host_its_locations_name() {
+        // LoQE reads `abfss://` locations on the Data Lake endpoint they name;
+        // Azure applies the Blob service's CORS rules there.
+        let adls = |host: Option<&str>| {
+            profile(serde_json::json!({
+                "type": "adls", "account-name": "myaccount", "filesystem": "my-wh",
+                "key-prefix": "pre/fix", "host": host,
+            }))
+        };
+        assert_eq!(
+            url_of(&adls(None)),
+            "https://myaccount.dfs.core.windows.net/my-wh/pre/fix/.lakekeeper-cors-probe"
+        );
+        assert_eq!(
+            url_of(&adls(Some("dfs.core.chinacloudapi.cn"))),
+            "https://myaccount.dfs.core.chinacloudapi.cn/my-wh/pre/fix/.lakekeeper-cors-probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn onelake_is_skipped_because_loqe_does_not_read_it() {
+        let onelake = profile(serde_json::json!({
+            "type": "onelake",
+            "workspace-id": "11111111-1111-4111-8111-111111111111",
+            "lakehouse-id": "22222222-2222-4222-8222-222222222222",
+            "directory-rel-path": "my_warehouse",
+        }));
+        let check = cors_check(&onelake, "http://localhost:8181", deadlines()).await;
+        assert_eq!(check.status, ValidationCheckStatus::Skipped);
+        assert_eq!(
+            check.reason.as_deref(),
+            Some("LoQE does not support OneLake storage.")
+        );
+    }
+
+    #[tokio::test]
+    async fn adls_is_probed_for_reads_only() {
+        // LoQE only reads ADLS, so write methods need no CORS rule.
+        use std::sync::{Arc, Mutex};
+
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let seen = methods.clone();
+        let url = serve(Router::new().route(
+            "/{*path}",
+            options(move |headers: HeaderMap| {
+                let method = headers
+                    .get("access-control-request-method")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                seen.lock().unwrap().push(method);
+                async { "" }
+            }),
+        ))
+        .await;
+        let check = cors_check_at(&url, &ADLS_ACCESS, "http://localhost:8181", deadlines()).await;
+        let mut methods = methods.lock().unwrap().clone();
+        methods.sort();
+        assert_eq!(methods, ["GET", "HEAD"]);
+        let error = check.error.unwrap();
+        assert!(
+            error.message.starts_with(
+                "CORS does not allow origin `http://localhost:8181` for `GET`, `HEAD`."
+            ),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Blob service"), "{}", error.message);
     }
 
     use crate::service::storage::{
@@ -625,10 +785,7 @@ mod tests {
             sts_enabled: false,
             storage_layout: None,
         };
-        let ProbeTarget::Http {
-            url,
-            request_headers,
-        } = probe_target(&StorageProfile::Gcs(p)).unwrap()
+        let ProbeTarget::Http { url, access } = probe_target(&StorageProfile::Gcs(p)).unwrap()
         else {
             panic!("expected an HTTP target")
         };
@@ -636,7 +793,7 @@ mod tests {
             url.as_str(),
             "https://storage.googleapis.com/my-wh/pre/.lakekeeper-cors-probe"
         );
-        assert_eq!(request_headers, GCS_REQUEST_HEADERS);
+        assert_eq!(access, &GCS_ACCESS);
     }
 
     fn ok(origin: &str, methods: &str, headers: &str) -> PreflightResponse {
