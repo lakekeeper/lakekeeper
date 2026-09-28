@@ -1154,8 +1154,9 @@ pub(crate) async fn drop_namespace(
 
     // Foreign-key triggers fire after the whole statement, when the tabulars and view defaults
     // removed here are gone, so no non-cascading key on `namespace` still finds rows, whatever
-    // order Postgres fires the triggers in. Postgres runs unreferenced CTEs after the main
-    // DELETE, so namespace rows are locked before tabulars, as with the cascade alone.
+    // order Postgres fires the triggers in. The order of the CTEs and the main DELETE is not
+    // guaranteed and only affects lock order: Postgres currently runs unreferenced CTEs after
+    // the main DELETE, locking namespace rows before tabulars, as with the cascade alone.
     // Deleting the tabulars in an earlier statement, or referencing a CTE from the main
     // DELETE, reverses that order against `move_namespace`.
     // A view elsewhere then loads with an empty default namespace, as when its default
