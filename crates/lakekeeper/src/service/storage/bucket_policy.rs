@@ -27,8 +27,8 @@ use super::{
 use crate::service::storage::ValidationError;
 
 const FIX_HINT: &str = "Set a bucket policy with a `Deny` statement whose `NotPrincipal` lists \
-    Lakekeeper's credentials group and an admin group. See the storage documentation, section \
-    \"Restricting bucket access\".";
+    Lakekeeper's credentials group and an admin group. See the STACKIT storage documentation, \
+    section \"Restricting Bucket Access\".";
 
 /// At most this many values of a policy field are quoted in a finding.
 const QUOTED_VALUES: usize = 5;
