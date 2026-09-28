@@ -318,9 +318,6 @@ unless {
 };
 ```
 
-!!! note "Custom schemas"
-    If you replace the schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, it must declare `lowercase_tags` on these five entities, and `ResourceTags` and `TagValue` exactly as the shipped schema does. Lakekeeper refuses to start otherwise.
-
 ## User Identity Derivations
 
 User derivations let you extract parts of a user's identity (`source_id` or `provider_id`) using regex named capture groups, and expose them as Cedar tags on a `UserDerivedAttributes` sub-entity. This enables policies that match users to resources based on identity patterns — for example, granting a user full access to namespaces that match their username.
