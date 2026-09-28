@@ -4,7 +4,7 @@ description: "Configure Lakekeeper Warehouses on Azure Data Lake Storage Gen2: p
 
 # Azure Data Lake Storage Gen2
 
-The `adls` storage profile backs Warehouses with an Azure Data Lake Storage Gen2 storage account. Table locations use `abfss://`. Lakekeeper vends SAS tokens to clients; ADLS has no remote signing, and [LoQE](engines.md#loqe) does not support ADLS.
+The `adls` storage profile backs Warehouses with an Azure Data Lake Storage Gen2 storage account. Table locations use `abfss://`. Lakekeeper vends SAS tokens to clients; ADLS has no remote signing. [LoQE](engines.md#loqe) reads ADLS but does not write it.
 
 ## Configuration Parameters
 
@@ -95,6 +95,18 @@ Grant the managed identity access to the storage account and container, for exam
   }
 }
 ```
+
+## CORS
+
+[LoQE](engines.md#loqe) needs a [CORS policy](storage.md#cors) on the storage account to read from the browser. Azure applies the Blob service's CORS rules to the Data Lake endpoint too, so set them there: in the Azure portal, open the storage account, select "Settings" → "Resource sharing (CORS)", and add a rule on the **Blob service** tab:
+
+| Field | Value |
+|---|---|
+| Allowed origins | The origin where your Lakekeeper instance is hosted, e.g. `https://lakekeeper.example.com` |
+| Allowed methods | `GET`, `HEAD` |
+| Allowed headers | `*` |
+| Exposed headers | `*` |
+| Max age | `3600` |
 
 ## Updating the Storage Profile
 

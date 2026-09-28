@@ -1819,6 +1819,10 @@ mod validate_access_report_tests {
     #[tokio::test]
     async fn unreachable_storage_is_a_cors_warning_not_a_failure() {
         let (mut profile, credential) = unreachable_s3_profile();
+        // LoQE, and so the CORS check, needs vended credentials.
+        if let StorageProfile::S3(s3) = &mut profile {
+            s3.sts_enabled = true;
+        }
         profile
             .normalize(Some(&credential))
             .expect("profile is well-formed");

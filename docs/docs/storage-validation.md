@@ -72,7 +72,7 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
 | `vended-credentials-read-write` | Downscoped credentials work below the table location |
 | `vended-credentials-scope-enforced` | Downscoped credentials are refused write access *outside* the table location |
 | `cleanup` | Everything written during validation was removed again |
-| `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does. Reported as `warning` when it does not. Skipped for ADLS and OneLake |
+| `cors-origin-allowed` | The storage's CORS policy lets the Lakekeeper origin read and write from a browser, as [LoQE](engines.md#loqe) does; for ADLS, which LoQE only reads, read access is checked. Reported as `warning` when it does not. Skipped for OneLake, and for storage profiles that vend no credentials, since LoQE reads storage only with vended credentials |
 | `bucket-access-restricted` | The STACKIT bucket policy keeps out the project's other credentials groups, see [Restricting Bucket Access](storage-stackit.md#restricting-bucket-access). Reported as `warning` when the policy is missing, leaves access open, or cannot be read. Skipped for other storage |
 
 ## Check Statuses
