@@ -281,19 +281,6 @@ impl StorageProfile {
         }
     }
 
-    /// Returns `true` for storage backends that have real directory entities
-    /// (e.g. ADLS, `OneLake`). Object stores like S3 and GCS use key prefixes
-    /// instead, so empty "directories" disappear automatically.
-    #[must_use]
-    pub fn is_hierarchical(&self) -> bool {
-        match self {
-            StorageProfile::Adls(_) | StorageProfile::OneLake(_) => true,
-            StorageProfile::S3(_) | StorageProfile::Stackit(_) | StorageProfile::Gcs(_) => false,
-            #[cfg(feature = "test-utils")]
-            StorageProfile::Memory(_) => false,
-        }
-    }
-
     /// Update this profile with the other profile.
     /// Fails if this is an incompatible update, such as changing the location.
     ///
@@ -2429,6 +2416,31 @@ mod tests {
         assert!(
             is_empty(&io, &table_location).await.unwrap(),
             "Location should be empty after delete"
+        );
+
+        // A directory emptied by a delete is removed where directories are real entities.
+        let mut directory = base_location.clone();
+        directory.without_trailing_slash().push("emptied");
+        let marker = directory.cloning_push("marker");
+        io.write(marker.as_str(), bytes::Bytes::from_static(b"marker"))
+            .await
+            .unwrap();
+        io.delete(marker.as_str()).await.unwrap();
+        let expected = if matches!(
+            profile,
+            StorageProfile::Adls(_) | StorageProfile::OneLake(_)
+        ) {
+            lakekeeper_io::RemoveEmptyDirectoryOutcome::Removed
+        } else {
+            lakekeeper_io::RemoveEmptyDirectoryOutcome::Unsupported
+        };
+        assert_eq!(
+            io.remove_empty_directory(directory.as_str()).await.unwrap(),
+            expected
+        );
+        assert!(
+            is_empty(&io, &table_location).await.unwrap(),
+            "Location should be empty after removing the emptied directory"
         );
     }
 

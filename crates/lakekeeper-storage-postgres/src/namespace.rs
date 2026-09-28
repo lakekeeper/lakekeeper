@@ -1064,15 +1064,20 @@ pub(crate) async fn drop_namespace(
 ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
     let info = sqlx::query!(r#"
         WITH namespace_info AS (
-            SELECT namespace_name, namespace_id, protected
+            SELECT namespace_name, namespace_id, protected, namespace_properties->>'location' AS location
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_id = $2
         ),
         child_namespaces AS (
-            SELECT n.protected, n.namespace_id, n.namespace_name
+            SELECT n.protected, n.namespace_id, n.namespace_name, n.namespace_properties->>'location' AS location
             FROM namespace n
             INNER JOIN namespace_info ni ON n.namespace_name[1:array_length(ni.namespace_name, 1)] = ni.namespace_name
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
+        ),
+        dropped_namespace_locations AS (
+            SELECT namespace_id, location FROM namespace_info WHERE location IS NOT NULL
+            UNION ALL
+            SELECT namespace_id, location FROM child_namespaces WHERE location IS NOT NULL
         ),
         tabulars AS (
             SELECT ta.tabular_id, ta.name as table_name, COALESCE(ni.namespace_name, cn.namespace_name) as namespace_name, fs_location, fs_protocol, ta.typ, ta.protected, deleted_at
@@ -1100,18 +1105,8 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
-            ARRAY(
-                SELECT n.namespace_id FROM namespace n
-                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
-                AND n.namespace_properties->>'location' IS NOT NULL
-                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
-            ) AS "dropped_ns_ids!: Vec<Uuid>",
-            ARRAY(
-                SELECT n.namespace_properties->>'location' FROM namespace n
-                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
-                AND n.namespace_properties->>'location' IS NOT NULL
-                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
-            ) AS "dropped_ns_locations!: Vec<String>"
+            ARRAY(SELECT namespace_id FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_ids!: Vec<Uuid>",
+            ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -1241,7 +1236,7 @@ pub(crate) async fn drop_namespace(
                 Ok(location) => Some((NamespaceId::from(ns_id), location)),
                 Err(e) => {
                     tracing::warn!(
-                        "Failed to parse namespace location '{loc}' for cleanup, skipping: {e}"
+                        "Failed to parse location '{loc}' of dropped namespace {ns_id}, skipping its cleanup: {e}"
                     );
                     None
                 }
@@ -2200,6 +2195,51 @@ pub mod tests {
         transaction.commit().await.unwrap();
 
         assert_eq!(ns.len(), 0);
+    }
+
+    #[sqlx::test]
+    async fn test_drop_namespace_returns_locations_of_dropped_namespaces(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let location = |path: &str| format!("s3://bucket/wh/{path}");
+        let create = async |path: &[&str], location: Option<String>| {
+            let properties = location.map(|l| HashMap::from([("location".to_string(), l)]));
+            let namespace = NamespaceIdent::from_strs(path).unwrap();
+            initialize_namespace(state.clone(), warehouse_id, &namespace, properties)
+                .await
+                .namespace_id()
+        };
+        let parent = create(&["p"], Some(location("p"))).await;
+        let child = create(&["p", "c"], Some(location("p/c"))).await;
+        create(&["p", "no-location"], None).await;
+        create(&["sibling"], Some(location("sibling"))).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let drop_info = drop_namespace(
+            warehouse_id,
+            parent,
+            NamespaceDropFlags {
+                force: false,
+                purge: true,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let locations = drop_info
+            .namespace_locations
+            .into_iter()
+            .map(|(id, location)| (location.to_string(), id))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            locations,
+            [(location("p"), parent), (location("p/c"), child)].into()
+        );
     }
 
     #[sqlx::test]

@@ -5,12 +5,12 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
-use lakekeeper_io::Location;
+use lakekeeper_io::{LakekeeperStorage as _, Location, RemoveEmptyDirectoryOutcome};
 
 mod create;
 mod list;
 
-use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
+use super::{CatalogServer, UnfilteredPage, maybe_get_secret, require_warehouse_id};
 use crate::{
     CONFIG,
     api::{
@@ -627,17 +627,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             drop_info.namespace_locations
         };
 
-        // Best-effort cleanup of namespace storage folders (only on purge)
+        event_ctx.emit_namespace_dropped_async();
+
         if flags.purge {
-            try_cleanup_namespace_locations(
+            // A third of the request budget, so a slow backend cannot time out a committed drop.
+            let budget = CONFIG.max_request_time / 3;
+            let cleanup = try_cleanup_namespace_locations(
                 &warehouse,
                 &state.v1_state.secrets,
-                &namespace_locations,
-            )
-            .await;
+                namespace_locations,
+            );
+            if tokio::time::timeout(budget, cleanup).await.is_err() {
+                tracing::warn!(
+                    "Removing empty namespace directories in warehouse {warehouse_id} exceeded {budget:?}; the remaining directories are kept"
+                );
+            }
         }
 
-        event_ctx.emit_namespace_dropped_async();
         Ok(())
     }
 
@@ -937,49 +943,17 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     }
 }
 
-/// Best-effort cleanup of namespace storage folders after a namespace drop.
+/// Best-effort removal of empty namespace directories after a namespace drop.
 ///
-/// Only runs on hierarchical storage backends (ADLS, `OneLake`) where empty
-/// directory entities persist after all objects are deleted. Object stores
-/// (S3, GCS) have no real directories, so this is a no-op for them.
-///
-/// For each namespace location, checks if the folder is empty on storage
-/// and removes it if so. Only acts on locations strictly below the warehouse
-/// base (via [`Location::is_sublocation_of`]) to prevent accidental deletion
-/// of the warehouse root (on flat layouts the persisted namespace location
-/// equals the warehouse base).
-///
-/// # Limitations
-/// - Only removes folders already empty at drop time. Table-data purge is
-///   asynchronous, so dropping a namespace soon after its tables (and any
-///   recursive drop that still contains live tables) will find the folder
-///   non-empty and skip it. In practice it cleans up namespaces whose data
-///   was purged earlier.
-/// - Single attempt with no retry — a skipped folder is not revisited.
-/// - Errors are logged and swallowed — storage cleanup must not fail the drop.
+/// Removal is atomic per directory and skips non-empty ones, so a directory whose table data is
+/// still being purged is kept and not revisited. Errors are logged and never fail the drop.
 async fn try_cleanup_namespace_locations<S: SecretStore>(
     warehouse: &ResolvedWarehouse,
     secret_store: &S,
-    namespace_locations: &[(NamespaceId, Location)],
+    namespace_locations: Vec<(NamespaceId, Location)>,
 ) {
-    if namespace_locations.is_empty() {
-        return;
-    }
-
-    // Only clean up on hierarchical storages (ADLS, OneLake) where empty
-    // directory entities persist. Object stores (S3, GCS) have no real
-    // directories — prefixes vanish automatically when all keys are gone.
-    if !warehouse.storage_profile.is_hierarchical() {
-        tracing::debug!(
-            "Skipping namespace folder cleanup for non-hierarchical storage in warehouse {}",
-            warehouse.warehouse_id
-        );
-        return;
-    }
-
-    // Get the warehouse base location so we never delete it.
     let base = match warehouse.storage_profile.base_location() {
-        Ok(b) => b,
+        Ok(base) => base,
         Err(e) => {
             tracing::warn!(
                 "Failed to get base location for namespace cleanup in warehouse {}: {e}",
@@ -988,8 +962,12 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
             return;
         }
     };
+    let candidates = namespace_cleanup_candidates(&base, namespace_locations);
+    if candidates.is_empty() {
+        return;
+    }
 
-    let secret = match super::maybe_get_secret(warehouse.storage_secret_id, secret_store).await {
+    let secret = match maybe_get_secret(warehouse.storage_secret_id, secret_store).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -999,9 +977,7 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
             return;
         }
     };
-    let secret_ref = secret.as_deref();
-
-    let file_io = match warehouse.storage_profile.file_io(secret_ref).await {
+    let file_io = match warehouse.storage_profile.file_io(secret.as_deref()).await {
         Ok(io) => io,
         Err(e) => {
             tracing::warn!(
@@ -1012,41 +988,48 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
         }
     };
 
-    for (ns_id, location) in namespace_locations {
-        // Guard: never delete the warehouse base itself or locations outside it.
-        // On flat/default layouts the persisted location equals the base, and on
-        // layout switches the snapshot may no longer match the current layout.
-        if *location == base || !location.is_sublocation_of(&base) {
-            tracing::debug!(
-                "Skipping cleanup for namespace {ns_id}: location {location} is at or outside warehouse base"
-            );
-            continue;
-        }
-
-        match crate::service::storage::is_empty(&file_io, location).await {
-            Ok(true) => {
-                if let Err(e) = super::io::remove_all(&file_io, location).await {
-                    tracing::warn!(
-                        "Failed to remove empty namespace folder for namespace {ns_id} at {location}: {e}"
-                    );
-                } else {
-                    tracing::info!(
-                        "Cleaned up empty namespace folder for namespace {ns_id} at {location}"
-                    );
-                }
+    for (ns_id, location) in candidates {
+        match file_io.remove_empty_directory(location.as_str()).await {
+            Ok(RemoveEmptyDirectoryOutcome::Removed) => {
+                tracing::info!("Removed empty directory of namespace {ns_id} at {location}");
             }
-            Ok(false) => {
-                tracing::debug!(
-                    "Namespace folder for {ns_id} at {location} is not empty, skipping cleanup"
-                );
+            Ok(RemoveEmptyDirectoryOutcome::Unsupported) => return,
+            Ok(outcome) => {
+                tracing::debug!("Kept directory of namespace {ns_id} at {location}: {outcome}");
             }
             Err(e) => {
                 tracing::warn!(
-                    "Failed to check if namespace folder for {ns_id} at {location} is empty: {e}"
+                    "Failed to remove empty directory of namespace {ns_id} at {location}: {e}"
                 );
             }
         }
     }
+}
+
+/// Locations strictly below `base`, deepest first so a parent is checked after its children.
+///
+/// On flat layouts a namespace location equals `base`, so nothing is returned.
+fn namespace_cleanup_candidates(
+    base: &Location,
+    mut namespace_locations: Vec<(NamespaceId, Location)>,
+) -> Vec<(NamespaceId, Location)> {
+    namespace_locations.retain(|(_, location)| is_strictly_below(location, base));
+    namespace_locations.sort_by_key(|(_, location)| {
+        std::cmp::Reverse(location.as_str().trim_end_matches('/').len())
+    });
+    namespace_locations
+}
+
+/// Whether `location` lies strictly below `base`, comparing both with exactly one trailing slash,
+/// the form storage backends resolve them to.
+fn is_strictly_below(location: &Location, base: &Location) -> bool {
+    let normalize = |location: &Location| {
+        let mut location = location.clone();
+        location.without_trailing_slash().with_trailing_slash();
+        location
+    };
+    let (location, base) = (normalize(location), normalize(base));
+    location != base && location.is_sublocation_of(&base)
 }
 
 pub(crate) fn uppercase_first_letter(s: &str) -> String {
@@ -1322,6 +1305,73 @@ mod tests {
                 ("key2".to_string(), "value12".to_string()),
                 ("key5".to_string(), "value5".to_string()),
             ])
+        );
+    }
+
+    #[test]
+    fn test_is_strictly_below_ignores_trailing_slashes() {
+        let loc = |s: &str| s.parse::<Location>().unwrap();
+        for base in [
+            "abfss://fs@acc.dfs.core.windows.net/wh",
+            "abfss://fs@acc.dfs.core.windows.net/wh/",
+        ] {
+            let base = loc(base);
+            for (location, expected) in [
+                ("abfss://fs@acc.dfs.core.windows.net/wh", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh//", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/ns", true),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/ns//", true),
+                ("abfss://fs@acc.dfs.core.windows.net/wh-other/ns", false),
+                ("abfss://fs@acc.dfs.core.windows.net/other", false),
+                ("abfss://other@acc.dfs.core.windows.net/wh/ns", false),
+                ("wasbs://fs@acc.blob.core.windows.net/wh/ns", false),
+            ] {
+                assert_eq!(
+                    is_strictly_below(&loc(location), &base),
+                    expected,
+                    "{location} below {base}"
+                );
+            }
+        }
+
+        let root = loc("abfss://fs@acc.dfs.core.windows.net/");
+        assert!(!is_strictly_below(&root, &root));
+        assert!(!is_strictly_below(
+            &loc("abfss://fs@acc.dfs.core.windows.net//"),
+            &root
+        ));
+        assert!(is_strictly_below(
+            &loc("abfss://fs@acc.dfs.core.windows.net/ns"),
+            &root
+        ));
+    }
+
+    #[test]
+    fn test_namespace_cleanup_candidates_skip_base_and_go_deepest_first() {
+        let loc = |s: &str| s.parse::<Location>().unwrap();
+        let base = loc("abfss://fs@acc.dfs.core.windows.net/wh/");
+        let [flat, parent, child, grandchild, outside] =
+            std::array::from_fn(|_| NamespaceId::new_random());
+        let candidates = namespace_cleanup_candidates(
+            &base,
+            vec![
+                (flat, loc("abfss://fs@acc.dfs.core.windows.net/wh")),
+                (parent, loc("abfss://fs@acc.dfs.core.windows.net/wh/p")),
+                (
+                    grandchild,
+                    loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c/g"),
+                ),
+                (
+                    outside,
+                    loc("abfss://fs@acc.dfs.core.windows.net/elsewhere/x"),
+                ),
+                (child, loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c/")),
+            ],
+        );
+        assert_eq!(
+            candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![grandchild, child, parent]
         );
     }
 

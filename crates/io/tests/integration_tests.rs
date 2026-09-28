@@ -4,7 +4,8 @@ use std::{future::Future, sync::LazyLock};
 use bytes::Bytes;
 use futures::StreamExt;
 use lakekeeper_io::{
-    ErrorKind, LakekeeperStorage, ReadError, StorageBackend, execute_with_parallelism,
+    ErrorKind, LakekeeperStorage, ReadError, RemoveEmptyDirectoryOutcome, StorageBackend,
+    execute_with_parallelism,
 };
 use tokio::{
     runtime::Runtime,
@@ -305,6 +306,10 @@ test_all_storages!(
 test_all_storages!(
     test_remove_all_deletes_directory,
     test_remove_all_deletes_directory_impl
+);
+test_all_storages!(
+    test_remove_empty_directory,
+    test_remove_empty_directory_impl
 );
 test_all_storages!(
     test_batch_delete_many_items_some_nonexistant,
@@ -1344,6 +1349,78 @@ async fn test_list_non_existent_directory_impl(
         "Listing non-existent directory should return no items"
     );
 
+    Ok(())
+}
+
+async fn test_remove_empty_directory_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    #[cfg(feature = "storage-adls")]
+    let hierarchical = matches!(storage, StorageBackend::Adls(_));
+    #[cfg(not(feature = "storage-adls"))]
+    let hierarchical = false;
+
+    let parent_dir = config.test_dir_path("remove-empty-dir-test");
+    let empty_dir = format!("{parent_dir}empty/");
+    let non_empty_dir = format!("{parent_dir}non-empty/");
+    let nested_file = format!("{non_empty_dir}nested/file.txt");
+    let plain_file = format!("{parent_dir}plain-file");
+
+    // Deleting the only file leaves its directory behind on hierarchical storage.
+    let marker = format!("{empty_dir}marker.txt");
+    storage.write(&marker, Bytes::from("marker")).await?;
+    storage.delete(&marker).await?;
+    storage.write(&nested_file, Bytes::from("nested")).await?;
+    storage.write(&plain_file, Bytes::from("plain")).await?;
+
+    if hierarchical {
+        assert_eq!(
+            storage.remove_empty_directory(&empty_dir).await?,
+            RemoveEmptyDirectoryOutcome::Removed
+        );
+        let mut entries = Vec::new();
+        let mut list_stream = storage.list(&parent_dir, None).await?;
+        while let Some(result) = list_stream.next().await {
+            entries.extend(result?.into_iter().map(|f| f.location().to_string()));
+        }
+        assert!(
+            !entries.iter().any(|l| l.starts_with(&empty_dir)),
+            "Empty directory should be removed, found: {entries:?}"
+        );
+
+        for (path, expected) in [
+            (empty_dir.as_str(), RemoveEmptyDirectoryOutcome::NotFound),
+            (
+                non_empty_dir.as_str(),
+                RemoveEmptyDirectoryOutcome::NotEmpty,
+            ),
+            (
+                non_empty_dir.trim_end_matches('/'),
+                RemoveEmptyDirectoryOutcome::NotEmpty,
+            ),
+            (plain_file.as_str(), RemoveEmptyDirectoryOutcome::NotFound),
+        ] {
+            assert_eq!(
+                storage.remove_empty_directory(path).await?,
+                expected,
+                "{path}"
+            );
+        }
+    } else {
+        for path in [&empty_dir, &non_empty_dir, &plain_file] {
+            assert_eq!(
+                storage.remove_empty_directory(path).await?,
+                RemoveEmptyDirectoryOutcome::Unsupported,
+                "{path}"
+            );
+        }
+    }
+
+    assert_eq!(storage.read(&nested_file).await?, Bytes::from("nested"));
+    assert_eq!(storage.read(&plain_file).await?, Bytes::from("plain"));
+
+    storage.remove_all(&config.base_path).await?;
     Ok(())
 }
 

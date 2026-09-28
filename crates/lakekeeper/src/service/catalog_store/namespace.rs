@@ -343,7 +343,7 @@ pub struct NamespaceDropInfo {
     // table-id, location, table-ident
     pub child_tables: Vec<(TabularId, Location, TableIdent)>,
     pub open_tasks: Vec<TaskId>,
-    // namespace-id, location — for storage cleanup after drop
+    /// Locations of the dropped namespace and its dropped children, in no particular order.
     pub namespace_locations: Vec<(NamespaceId, Location)>,
 }
 
