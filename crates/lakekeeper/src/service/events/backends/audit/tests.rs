@@ -999,11 +999,10 @@ fn emit_admission_rejection(
 
 /// An authoritative denial, for a caller acting through an assumed role.
 ///
-/// The assumed-role actor is the point: admission is the only operational record
-/// that renders the request's resolved actor (through
-/// `RequestMetadata::audit_actor`) rather than the bare principal, so this is
-/// the one fixture pinning the three-field actor shape on an operational
-/// record. Every other operational fixture uses `AuditPrincipal` and cannot.
+/// The assumed-role actor is the point: admission is the only operational record built from
+/// the request's resolved actor, through `ActorRecord::from_request`, so it is the one
+/// fixture pinning the three-field actor shape on an operational record. The others build
+/// their actor from a bare principal and carry two fields.
 #[test]
 fn fixture_admission_forbidden() {
     let user_id = UserId::try_from("oidc~alice").expect("valid test user id");
