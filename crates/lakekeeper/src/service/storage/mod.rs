@@ -967,8 +967,14 @@ impl StorageProfile {
         // Run both validations in parallel
         let read_write_validation = async {
             let started = Instant::now();
+            // Explained before `probe` converts the error, which drops the
+            // storage's HTTP status.
             let result = deadlines
-                .probe(self.validate_read_write_lakekeeper(&sts_storage, &sub_location))
+                .probe(async {
+                    self.validate_read_write_lakekeeper(&sts_storage, &sub_location)
+                        .await
+                        .map_err(|e| self.explain_vended_access_failure(e))
+                })
                 .await;
             (elapsed_ms(started), result)
         };
@@ -1005,6 +1011,15 @@ impl StorageProfile {
             no_write_result,
         );
         checks.build().checks
+    }
+
+    /// Advice for a failed read/write probe with vended credentials, where the
+    /// storage's answer has a known cause on this storage type.
+    fn explain_vended_access_failure(&self, error: ValidationError) -> ValidationError {
+        match self {
+            StorageProfile::OneLake(profile) => profile.explain_vended_access_failure(error),
+            _ => error,
+        }
     }
 
     /// Issue downscoped credentials for `sub_location` and build a storage client from them.
@@ -2272,6 +2287,59 @@ mod tests {
                 "sublocation={sublocation}",
             );
         }
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_explains_only_onelake() {
+        use az::{EndpointMode, OneLakeProfile, TopLevelFolder};
+        use uuid::Uuid;
+        let unauthorized = || {
+            ValidationError::IoOperationFailed(Box::new(
+                lakekeeper_io::IOError::new(
+                    lakekeeper_io::ErrorKind::PermissionDenied,
+                    "Unauthorized",
+                    "abfss://filesystem@account.dfs.core.windows.net/test_prefix/ns/t".to_string(),
+                )
+                .with_context(
+                    "HTTP Error Message: Authentication Failed with Access token validation \
+                     failed.",
+                )
+                .with_http_status(401),
+            ))
+        };
+        let onelake = StorageProfile::OneLake(OneLakeProfile {
+            workspace_id: Uuid::from_u128(1),
+            lakehouse_id: Uuid::from_u128(2),
+            directory_rel_path: Some("test_prefix".to_string()),
+            top_level_folder: TopLevelFolder::default(),
+            endpoint_mode: EndpointMode::Default,
+            sas_token_validity_seconds: None,
+            sas_enabled: true,
+            authority_host: None,
+            storage_layout: None,
+        });
+        let adls = StorageProfile::Adls(GenericAdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("test_prefix".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        });
+
+        let explained = onelake.explain_vended_access_failure(unauthorized());
+        assert!(
+            matches!(explained, ValidationError::TableConfig(_)),
+            "{explained:?}"
+        );
+        let passed_through = adls.explain_vended_access_failure(unauthorized());
+        assert!(
+            matches!(passed_through, ValidationError::IoOperationFailed(_)),
+            "{passed_through:?}"
+        );
     }
 
     mod azure_integration_tests {

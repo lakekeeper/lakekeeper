@@ -1675,6 +1675,64 @@ mod tests {
         );
     }
 
+    /// Pins the non-cascading foreign keys whose rows a cascade also removes.
+    ///
+    /// Deleting a row fires its foreign-key triggers in name order, and each name
+    /// ends in the trigger's OID. Rows a cascade deletes fire their own triggers only
+    /// after every trigger of the rows before them. A non-cascading key whose rows a
+    /// cascade from `root` deletes no earlier than the rows they reference can act
+    /// while its rows are still there, and deleting `root` fails, depending on OIDs
+    /// or every time.
+    ///
+    /// Every key listed here needs its rows removed by the statement that deletes
+    /// `root`, or before it, as `drop_namespace` does.
+    #[sqlx::test(migrations = false)]
+    async fn test_non_cascading_keys_reached_by_a_cascade_are_pinned(pool: PgPool) {
+        migrate_core_only(&pool)
+            .await
+            .expect("core migrations must succeed");
+
+        let reached: Vec<(String, String)> = sqlx::query_as(
+            "WITH RECURSIVE fk AS ( \
+                 SELECT conname, conrelid AS child, confrelid AS parent, confdeltype \
+                 FROM   pg_constraint \
+                 WHERE  contype = 'f' AND connamespace = current_schema()::regnamespace \
+             ), reach(root, tbl, depth, path) AS ( \
+                 SELECT DISTINCT parent, parent, 0, ARRAY[parent] FROM fk \
+                 UNION ALL \
+                 SELECT r.root, fk.child, r.depth + 1, r.path || fk.child \
+                 FROM   reach r JOIN fk ON fk.parent = r.tbl AND fk.confdeltype = 'c' \
+                 WHERE  fk.child <> ALL (r.path) \
+             ) \
+             SELECT DISTINCT q.root::regclass::text, b.conname::text \
+             FROM   fk b \
+             JOIN   reach q ON q.tbl = b.parent \
+             JOIN   reach c ON c.root = q.root AND c.tbl = b.child \
+             WHERE  b.confdeltype <> 'c' AND c.depth > q.depth \
+             ORDER  BY 1, 2",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reached,
+            vec![
+                (
+                    "namespace".to_string(),
+                    "tabular_warehouse_id_namespace_id_namespace_name_fkey".to_string()
+                ),
+                (
+                    "namespace".to_string(),
+                    "view_version_default_namespace_id_fkey".to_string()
+                ),
+            ],
+            "(root, key) pairs where a non-cascading key's rows are also removed by a \
+             cascade from root. A new pair can make deleting root fail; remove its rows \
+             in the statement that deletes root, as drop_namespace does for namespace"
+        );
+    }
+
     /// Pins the definition of the index behind `list_tabulars`.
     ///
     /// The index is partial, so Postgres may only use it if it can prove the

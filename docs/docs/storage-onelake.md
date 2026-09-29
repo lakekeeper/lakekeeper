@@ -121,4 +121,4 @@ Most fields are immutable on `update-storage-profile` because changing them woul
 
 ## Troubleshooting
 
-With only the Fabric setting "Use short-lived user-delegated SAS tokens" enabled, creating the warehouse fails storage validation at the `vended-credentials-read-write` step with a 401 `Authentication Failed with Access token validation failed`. Enable "Authenticate with OneLake user-delegated SAS tokens" as described in [Credentials](#credentials).
+With only the Fabric setting "Use short-lived user-delegated SAS tokens" enabled, creating the warehouse fails storage validation at the `vended-credentials-read-write` step with the error type `OneLakeSasRejected`. The `vended-credentials-read-write` check's stack holds what OneLake answered, a 401 `Authentication Failed with Access token validation failed`. Enable "Authenticate with OneLake user-delegated SAS tokens" as described in [Credentials](#credentials).

@@ -623,8 +623,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &project_id,
             &request,
         )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        .await?;
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
@@ -1585,8 +1584,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
 /// Create the tag definition. The caller must have emitted the authorization
 /// event before calling this: authorization already succeeded, so a failure here
-/// is a write failure and must be mapped with `authz_to_error_no_audit` rather
-/// than logged as a second — mislabeled — authorization outcome.
+/// is a write failure and is returned as is, with no second authorization
+/// outcome.
 ///
 /// Also returns the grants the definition was born with, for the caller to announce once
 /// the transaction has committed.
@@ -1596,7 +1595,7 @@ async fn apply_create_tag_definition<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     project_id: &ArcProjectId,
     request: &CreateTagDefinitionRequest,
-) -> Result<(Arc<crate::service::TagDefinition>, Vec<GrantSpec>), AuthZError> {
+) -> Result<(Arc<crate::service::TagDefinition>, Vec<GrantSpec>)> {
     let description = request.description.as_deref().filter(|d| !d.is_empty());
     let tag_definition_id = TagDefinitionId::new_random();
     let allowed_values: Vec<&str> = request
@@ -1627,12 +1626,11 @@ async fn apply_create_tag_definition<A: Authorizer, C: CatalogStore>(
         .map_err(CreateTagDefinitionError::from)?;
     let tag_definition =
         C::create_tag_definition(project_id, catalog_request, t.transaction()).await?;
+    // An error from the authorizer's hook keeps its own status and rolls the
+    // definition back.
     authorizer
         .create_tag(request_metadata, tag_definition_id, project_id.clone())
-        .await
-        .map_err::<CreateTagDefinitionError, _>(|e| {
-            CatalogBackendError::new_unexpected(e.error).into()
-        })?;
+        .await?;
     // Kept typed rather than folded into a backend error: a missing user row is the
     // caller's 400 and a lock conflict their retriable 409, not "the catalog is down".
     let bootstrap_grants = write_bootstrap_grants::<C, A>(

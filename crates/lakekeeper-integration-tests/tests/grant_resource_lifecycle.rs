@@ -22,7 +22,7 @@ use lakekeeper::{
             ApiServer, DeleteWarehouseQuery,
             grant::{GrantResourceResponse, ListGrantsQuery, Service as _},
             project::{CreateProjectRequest, Service as _},
-            role::{CreateRoleRequest, Service as _},
+            role::{CreateRoleRequest, DeleteRoleQuery, Service as _},
             tag::{CreateTagDefinitionRequest, Service as _},
             user::{UserLastUpdatedWith, UserType},
             warehouse::{Service as _, TabularDeleteProfile, UndropTabularsRequest},
@@ -228,9 +228,33 @@ async fn deleting_a_role_takes_its_grants_with_it(pool: PgPool) {
     )
     .await;
 
-    Server::delete_role(f.ctx.clone(), f.metadata.clone(), role_id)
-        .await
-        .unwrap();
+    // Without `force` a role holding grants is refused, and nothing is revoked.
+    let err = Server::delete_role(
+        f.ctx.clone(),
+        f.metadata.clone(),
+        role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "RoleHasGrants");
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT.as_u16());
+    assert_eq!(
+        remaining_grants(&f.ctx).await,
+        rows(&[
+            ("warehouse", "get_metadata"),
+            ("warehouse", "list_namespaces")
+        ])
+    );
+
+    Server::delete_role(
+        f.ctx.clone(),
+        f.metadata.clone(),
+        role_id,
+        DeleteRoleQuery::builder().force().build(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         remaining_grants(&f.ctx).await,
