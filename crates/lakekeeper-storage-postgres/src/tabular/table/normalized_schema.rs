@@ -27,6 +27,10 @@ pub enum SchemaNormError {
     },
     #[error("schema assembly failed: {detail}")]
     Assembly { detail: String },
+    #[error(
+        "type `unknown` field '{name}' (field_id={field_id}) must be optional per the Iceberg v3 spec"
+    )]
+    RequiredUnknownField { field_id: i32, name: String },
 }
 
 // ─── IcebergTypeKind ─────────────────────────────────────────────────────────
@@ -168,6 +172,13 @@ fn flatten_field(
     out: &mut Vec<FlatField>,
 ) -> Result<(), SchemaNormError> {
     let (type_kind, type_params) = type_kind_and_params(&field.field_type);
+    // Iceberg v3: an `unknown`-typed column is always null, so it must be optional.
+    if type_kind == IcebergTypeKind::Unknown && field.required {
+        return Err(SchemaNormError::RequiredUnknownField {
+            field_id: field.id,
+            name: field.name.clone(),
+        });
+    }
     let initial_default = match &field.initial_default {
         None => None,
         Some(lit) => {
@@ -843,7 +854,7 @@ mod tests {
             NestedField::required(14, "f_uuid", Type::Primitive(PrimitiveType::Uuid)).into(),
             NestedField::required(15, "f_fixed", Type::Primitive(PrimitiveType::Fixed(16))).into(),
             NestedField::required(16, "f_binary", Type::Primitive(PrimitiveType::Binary)).into(),
-            NestedField::required(25, "f_unknown", Type::Primitive(PrimitiveType::Unknown)).into(),
+            NestedField::optional(25, "f_unknown", Type::Primitive(PrimitiveType::Unknown)).into(),
             NestedField::required(17, "f_variant", Type::Variant(VariantType)).into(),
             NestedField::required(
                 18,
@@ -1018,6 +1029,30 @@ mod tests {
                 SchemaNormError::NonNullDefaultUnsupported { field_id: 1, .. }
             ),
             "expected NonNullDefaultUnsupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_required_unknown_field_rejected() {
+        // Iceberg v3 requires `unknown`-typed columns to be optional; flatten must reject a
+        // required one rather than persist an invalid schema.
+        let field = NestedField::required(7, "u", Type::Primitive(PrimitiveType::Unknown));
+        let Ok(schema) = Schema::builder()
+            .with_schema_id(1)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+        else {
+            // If the iceberg-rust builder already rejects a required Unknown, enforcement is
+            // upstream and there's nothing for flatten to catch.
+            return;
+        };
+        let err = flatten_schema(&schema).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SchemaNormError::RequiredUnknownField { field_id: 7, .. }
+            ),
+            "expected RequiredUnknownField, got {err:?}"
         );
     }
 
