@@ -202,6 +202,21 @@ impl ObjectStore for ObjectStoreBridge {
     ) -> object_store::Result<GetResult> {
         let path = self.absolute(location);
 
+        // LakekeeperStorage has no ETag/version/conditional-read support, so a
+        // precondition or versioned read can't be honored. Reject rather than
+        // silently return the current object (mirrors `put_opts`).
+        if options.if_match.is_some()
+            || options.if_none_match.is_some()
+            || options.if_modified_since.is_some()
+            || options.if_unmodified_since.is_some()
+            || options.version.is_some()
+        {
+            return Err(object_store::Error::NotImplemented {
+                operation: "get_opts with preconditions or version".to_string(),
+                implementer: STORE.to_string(),
+            });
+        }
+
         // HEAD: metadata only, no body.
         if options.head {
             let info = self
@@ -411,18 +426,13 @@ impl ObjectStore for ObjectStoreBridge {
         let from_path = self.absolute(from);
         let to_path = self.absolute(to);
 
-        // `Create` mode is best-effort: LakekeeperStorage has no atomic create, so
-        // this exists-check is racy (same limitation object_store documents for S3).
-        if options.mode == CopyMode::Create
-            && self
-                .lakekeeper_io
-                .exists(&to_path)
-                .await
-                .map_err(|e| read_err_to_os(to.as_ref(), e))?
-        {
-            return Err(object_store::Error::AlreadyExists {
-                path: to.to_string(),
-                source: "destination already exists".into(),
+        // `Create` mode requires an atomic create-if-absent, which LakekeeperStorage
+        // can't provide (an exists-check would be racy). Reject rather than offer a
+        // non-atomic approximation that could clobber a concurrent write.
+        if options.mode == CopyMode::Create {
+            return Err(object_store::Error::NotImplemented {
+                operation: "copy_opts with CopyMode::Create".to_string(),
+                implementer: STORE.to_string(),
             });
         }
 
@@ -779,10 +789,11 @@ mod tests {
             b"payload"
         );
 
-        // copy_if_not_exists must fail when the destination already exists.
+        // copy_if_not_exists uses CopyMode::Create, which requires an atomic
+        // create-if-absent we can't provide, so it is rejected as NotImplemented.
         let err = store.copy_if_not_exists(&from, &to).await.unwrap_err();
         assert!(
-            matches!(err, object_store::Error::AlreadyExists { .. }),
+            matches!(err, object_store::Error::NotImplemented { .. }),
             "{err:?}"
         );
     }
