@@ -618,6 +618,7 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
             PrimitiveType::Fixed(length)
         }
         "binary" => PrimitiveType::Binary,
+        "unknown" => PrimitiveType::Unknown,
         other => {
             return Err(SchemaNormError::Assembly {
                 detail: format!(
@@ -842,6 +843,7 @@ mod tests {
             NestedField::required(14, "f_uuid", Type::Primitive(PrimitiveType::Uuid)).into(),
             NestedField::required(15, "f_fixed", Type::Primitive(PrimitiveType::Fixed(16))).into(),
             NestedField::required(16, "f_binary", Type::Primitive(PrimitiveType::Binary)).into(),
+            NestedField::required(25, "f_unknown", Type::Primitive(PrimitiveType::Unknown)).into(),
             NestedField::required(17, "f_variant", Type::Variant(VariantType)).into(),
             NestedField::required(
                 18,
