@@ -100,7 +100,8 @@ use super::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
         get_tag_definition, get_tag_definition_by_name, list_column_tags_for_tabular,
         list_effective_tag_candidates, list_tag_attachments, list_tag_definitions,
-        list_tags_for_target, remove_tag, remove_tag_for_target, update_tag_definition,
+        list_tags_for_target, list_tags_on_targets, remove_tag, remove_tag_for_target,
+        update_tag_definition,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -627,6 +628,13 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError> {
         list_tags_for_target(target, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tags_on_targets_impl(
+        targets: &[TagTarget],
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        list_tags_on_targets(targets, &catalog_state.read_pool()).await
     }
 
     async fn list_column_tags_for_tabular_impl(

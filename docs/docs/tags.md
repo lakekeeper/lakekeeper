@@ -110,6 +110,8 @@ GET /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags?effective=true
 - **Columns are direct-only** — a column's effective tags are exactly its own; it does not inherit its table's tags.
 - Each returned tag carries an **`inherited-from`** field naming the ancestor it came from; it is absent for the object's own (direct) tags.
 
+Under Cedar, policies read these effective tags directly; see [Tag-Based Access Control](authorization-cedar.md#tag-based-access-control).
+
 Effective tags are gated only on your access to the **queried object**: an inherited tag is part of that object's effective governance, so anyone who can read the object's tags sees them, values included. Granting someone tag-read access to a sub-object therefore also exposes the tags it inherits from above.
 
 ## Finding where a tag is used
