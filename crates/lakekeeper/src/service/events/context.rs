@@ -220,7 +220,7 @@ impl std::fmt::Display for ActionContextKey {
 // Marker trait to indicate resolution state
 pub trait ResolutionState: Clone + Send + Sync {}
 
-/// A single key-value descriptor for an entity (e.g. "warehouse-id" = "abc-123")
+/// A single key-value descriptor for an entity: `warehouse_id` = `abc-123`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptorField {
     pub key: EntityField,
@@ -236,7 +236,8 @@ impl EntityDescriptorField {
     }
 }
 
-/// All fields describing one logical entity (e.g. one table: warehouse-id + namespace + name)
+/// All fields describing one logical entity — for a table, `warehouse_id`, `namespace`
+/// and `name`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptor {
     pub fields: Vec<EntityDescriptorField>,
@@ -1526,7 +1527,11 @@ where
 /// is empty (shouldn't happen for real events) we still emit a single entry
 /// describing whatever is available, since downstream consumers expect at
 /// least one row.
-fn synthesise_authorizations(
+///
+/// Crate-visible so the audit fixtures pair their entries the way this does, and a fixture
+/// cannot describe a record whose per-decision entries name an action or an entity its own
+/// lists do not carry.
+pub(crate) fn synthesise_authorizations(
     entities: &EventEntities,
     actions: &[ActionDescriptor],
     for_principal: Option<&UserOrRoleId>,

@@ -43,6 +43,18 @@
         "table": "sales.orders"
       },
       "allowed": true
+    },
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
+      },
+      "allowed": true
     }
   ],
   "decision": "allowed"

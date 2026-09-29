@@ -44,6 +44,22 @@
         "table": "sales.orders"
       },
       "allowed": true
+    },
+    {
+      "action": {
+        "action_name": "update_properties",
+        "name": "orders",
+        "removed_properties": [
+          "stale.key"
+        ]
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true
     }
   ],
   "decision": "allowed"

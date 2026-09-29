@@ -337,7 +337,7 @@ pub mod contract {
     /// Whether a reason means the request was evaluated and refused, as opposed to never
     /// having reached a verdict.
     ///
-    /// Exhaustive rather than a list of literals: a bare `&["ActionForbidden", ...]` stops
+    /// Exhaustive rather than a list of literals: a bare `&["action_forbidden", ...]` stops
     /// matching the moment a variant is renamed, which retires the rule below in silence.
     #[deny(clippy::wildcard_enum_match_arm)]
     const fn is_definitive(reason: &AuthorizationFailureReason) -> bool {

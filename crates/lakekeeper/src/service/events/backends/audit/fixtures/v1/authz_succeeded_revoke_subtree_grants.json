@@ -45,13 +45,30 @@
   "authorizations": [
     {
       "action": {
-        "action_name": "read_data"
+        "action_name": "revoke_subtree_grants",
+        "dry_run": "false",
+        "resource_types": [
+          "table",
+          "view"
+        ],
+        "root_level": "excluded",
+        "principal": "user:oidc~alice",
+        "privilege_scope": "only",
+        "narrowed_privileges": [
+          "describe",
+          "select"
+        ],
+        "allow_partial": "true",
+        "privileges": [
+          "describe",
+          "select"
+        ],
+        "created_before": "2026-01-01T00:00:00+00:00"
       },
       "entity": {
-        "entity_type": "table",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "table_id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "entity_type": "warehouse",
+        "project_id": "00000000-0000-0000-0000-000000000000",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
       },
       "allowed": true
     }
