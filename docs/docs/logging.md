@@ -78,7 +78,7 @@ Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` str
 
 **MAJOR** is bumped when an existing field is renamed, retyped, or structurally moved — including a scalar becoming an object, an object becoming an array, or a key changing case or separator. Every major bump is called out in the release notes.
 
-**Values are open, and they are open more widely than keys.** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `decision`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, the `determined_by` factor kinds and their `effect`, and the kinds inside an action's `update-kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
+**Values are open:** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `decision`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, the `determined_by` factor kinds and their `effect`, and the kinds inside an action's `update-kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
 
 In the [schema](audit/schema.md) a closed-value field points at the definition listing its values, so a validator can check it. Treat a value the list does not carry as a record newer than your copy of the schema, not as a failure.
 
@@ -158,6 +158,8 @@ Under the default binary configuration `span` is suppressed and `filename` / `li
 
 One of them is worth a word. The `target` **key** belongs to the subscriber, but the **value** on an audit record is chosen by Lakekeeper and fixed at `lakekeeper::audit`, which is what makes `RUST_LOG` filtering possible. Use it to decide what gets emitted; use `event_source` to decide what to do with what arrives.
 
+**Match on full paths, and do not flatten the record to leaf names.** A key is named for its position: the same name at two paths identifies two different things, and flattening merges them into one field where the later value wins. Some of these differ in type as well as meaning, so a consumer that survives the merge still reads `null` where it expected a value.
+
 #### Authorization Events
 
 Emitted for every authz check. Always contain `actions`, `entities`, `actor` and `decision`.
@@ -196,8 +198,8 @@ Lakekeeper records the header rather than a parsed client name, so a consumer ca
 
 **What counts as a denial.** A request can be refused by the authorizer, or by a rule the authorizer has no say over. The two are recorded differently, and the dividing line is whether the refusal is a *deliberate decision about this action on this resource*:
 
-* **Deliberate refusals are denials.** A catalog-managed (`system`) or provider-managed role that cannot be modified, a reserved tag definition, a warehouse whose spec is locked — these are recorded as `decision: "denied"` with `failure_reason: ActionForbidden`, exactly like a missing permission, and not as a bare error with no authorization record. That some of them can never be satisfied by *any* caller does not change this: `ActionForbidden` says the action was not permitted, not that a grant was missing. How many records a request produces depends on where the rule is decidable: the role and tag-definition guards are decided alongside the authorizer's own check, so such a request produces exactly one verdict, while the warehouse spec-lock can only be decided after the authorization event has been emitted, so it adds a `"denied"` record after the `"allowed"` one — see the note on counting denials below.
-* **Write failures are not denials.** A duplicate name, a tag definition still in use, a backend error — these happen *after* authorization has already succeeded. They leave the `"allowed"` record standing and are not logged a second time as an authorization outcome. Reconcile them against the operational event for the change, which will be absent.
+- **Deliberate refusals are denials.** A catalog-managed (`system`) or provider-managed role that cannot be modified, a reserved tag definition, a warehouse whose spec is locked — these are recorded as `decision: "denied"` with `failure_reason: ActionForbidden`, exactly like a missing permission, and not as a bare error with no authorization record. That some of them can never be satisfied by *any* caller does not change this: `ActionForbidden` says the action was not permitted, not that a grant was missing. How many records a request produces depends on where the rule is decidable: the role and tag-definition guards are decided alongside the authorizer's own check, so such a request produces exactly one verdict, while the warehouse spec-lock can only be decided after the authorization event has been emitted, so it adds a `"denied"` record after the `"allowed"` one — see the note on counting denials below.
+- **Write failures are not denials.** A duplicate name, a tag definition still in use, a backend error — these happen *after* authorization has already succeeded. They leave the `"allowed"` record standing and are not logged a second time as an authorization outcome. Reconcile them against the operational event for the change, which will be absent.
 
 A write failure never appears as a denial. But `decision` alone is not a refusal filter: `"denied"` is stamped on *every* authorization-failed record, including the ones where no verdict was reached — a catalog or authorizer outage during the check surfaces as `decision: "denied"` with a `5xx`. To select actual refusals, filter on the reason as well:
 
@@ -206,7 +208,7 @@ select(.decision == "denied" and .failure_reason as $r
        | $r == "ActionForbidden" or $r == "ResourceNotFound" or $r == "CannotSeeResource")
 ```
 
-equivalently, `authorizations[].allowed == false`. Note also that a single request can produce both an `"allowed"` and a `"denied"` record when a rule can only be decided partway through the request, after the authorization event has already been emitted — the warehouse spec-lock guard does this — so count denials per request, not per record.
+Equivalently, `authorizations[].allowed == false`. Note also that a single request can produce both an `"allowed"` and a `"denied"` record when a rule can only be decided partway through the request, after the authorization event has already been emitted — the warehouse spec-lock guard does this — so count denials per request, not per record.
 
 **Actor Types:**
 
@@ -231,6 +233,8 @@ equivalently, `authorizations[].allowed == false`. Note also that a single reque
 | `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed-role`. |
 
 **Principal references.** Where a principal is named as a *target* rather than as the caller — `authorizations[].for-principal`, and `context.principal` on grant events — it is a single-key object: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`.
+
+**`principal` is the sharpest case of the path rule above.** `actor.principal` is a string naming who acted, `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`), and `actions[].principal` is a string naming who a subtree-grant request reaches (`"every"`, `"user:oidc~alice"`, `"role:<uuid>"`). A query on the bare name answers a different question depending on which record it meets; one written against `principal.user` returns nothing where the value is a string.
 
 **Context fields** {#audit-context-fields}
 
