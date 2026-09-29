@@ -193,7 +193,10 @@ impl iceberg::io::FileWrite for IcebergFileWrite {
     }
 
     async fn close(&mut self) -> iceberg::Result<FileMetadata> {
-        self.inner.close().await.map_err(Into::<iceberg::Error>::into)?;
+        self.inner
+            .close()
+            .await
+            .map_err(Into::<iceberg::Error>::into)?;
         Ok(FileMetadata {
             size: self.bytes_written,
         })
