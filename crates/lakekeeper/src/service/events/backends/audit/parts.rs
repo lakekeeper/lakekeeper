@@ -125,7 +125,7 @@ pub struct AssumedRoleRecord {
     pub(crate) source_id: String,
 }
 
-/// A principal named as a target: `for-principal` on a decision entry, `principal` on a grant
+/// A principal named as a target: `for_principal` on a decision entry, `principal` on a grant
 /// record. `{"user": …}` or `{"role": …}`.
 #[audit_part]
 #[serde(untagged)]
@@ -175,7 +175,7 @@ pub struct DecisionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<String>,
     /// The principal whose permission was evaluated, when it is not the request's actor.
-    #[serde(rename = "for-principal", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) for_principal: Option<SubjectRecord>,
     /// The action evaluated.
     pub(crate) action: ActionRecord,

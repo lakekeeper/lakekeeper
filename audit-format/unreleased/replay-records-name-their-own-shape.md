@@ -2,14 +2,12 @@
 level: major
 ---
 
-Replay records no longer carry `operation: "idempotent_replay"` and
-`outcome: "replayed"`. They carry `record_type: "replay"` instead, and those two
-values are gone from the vocabularies of `operation` and `outcome`.
+**Replay records carry `record_type: "replay"`.** They no longer carry
+`operation: "idempotent_replay"` or `outcome: "replayed"`, and those two values are gone
+from the `operation` and `outcome` vocabularies.
 
-Nothing is lost: both fields were constants on every replay record and existed only so
-the record could be recognised. They were markers, not data.
+Both were constants borrowed from the operational family, so a query selecting records
+that have an `operation` also matched every replay.
 
-They were also markers borrowed from the operational family, which meant a query
-selecting records that have an `operation` also matched every replay. Select replays
-with `record_type == "replay"`, and use `operation` for records that genuinely
-describe something the system did.
+**What to do:** select replays with `record_type == "replay"`. Read `operation` only for
+records that describe something the system did.

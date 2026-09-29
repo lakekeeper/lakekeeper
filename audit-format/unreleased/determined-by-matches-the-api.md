@@ -2,8 +2,8 @@
 level: major
 ---
 
-The entries of `determined_by`, inside each `authorizations[]` entry, are now written
-the same way the management API writes them when it answers a permission check.
+**The entries of `determined_by`, inside each `authorizations[]` entry, are written the
+way the management API writes them when it answers a permission check.**
 
 ```
 before  {"Policy": {"policy_id": "p-42", "effect": {"Forbid": []}, "source": "cedar"}}
@@ -13,11 +13,8 @@ before  {"SystemAuthority": {"source": "break-glass", "reason": "lockout recover
 after   {"type": "system-authority", "source": "break-glass", "reason": "lockout recovery"}
 ```
 
-Three things change together. The kind of factor moves from the object's single key
-into a `type` field, and its spelling changes with it: `Policy` becomes `policy` and
-`SystemAuthority` becomes `system-authority`. Field names inside become kebab-case,
-so `policy_id` becomes `policy-id`. And `effect`, which wrapped its own value in an
-object, becomes that value as a lowercase string: `permit` or `forbid`.
+The factor kind moves into a `type` field, the field names inside are kebab-case, and
+`effect` is a plain string: `permit` or `forbid`.
 
-One parser now reads both the audit log and the API response. Both shapes are described
-in full in the published audit log schema.
+**What to do:** read `type` to tell the kinds apart. The same code now parses these
+entries and a `/check` response; both shapes are in the published schema.

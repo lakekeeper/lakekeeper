@@ -381,7 +381,7 @@ fn fixture_drop_action() -> ActionDescriptor {
         .build()
 }
 
-/// A warehouse entity carrying `project-id`, which real requests emit and the other
+/// A warehouse entity carrying `project_id`, which real requests emit and the other
 /// fixtures do not.
 fn fixture_warehouse_entity() -> EntityDescriptor {
     EntityDescriptor::new(EntityType::Warehouse)
@@ -392,7 +392,7 @@ fn fixture_warehouse_entity() -> EntityDescriptor {
         .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
 }
 
-/// The simplest per-decision entry: no id, no `for-principal`, no
+/// The simplest per-decision entry: no id, no `for_principal`, no
 /// `determined_by`. Pins which fields are omitted rather than emitted as null.
 fn fixture_plain_authorization() -> Authorization {
     Authorization {
@@ -615,7 +615,7 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
                 fixture_namespace_entity(),
             ])),
             actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
-            extra_context: fixture_context(&[("invoked-by", "maintenance-task")]),
+            extra_context: fixture_context(&[("invoked_by", "maintenance-task")]),
             authorizations: Arc::new(vec![
                 fixture_plain_authorization(),
                 fixture_detailed_authorization(),
@@ -663,7 +663,7 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
 }
 
 /// Action context and entity fields that real traffic emits but the other fixtures
-/// do not: `name`, `table_id`, `force`, `purge`, and `project-id`.
+/// do not: `name`, `table_id`, `force`, `purge`, and `project_id`.
 ///
 /// The documentation test walks the fixtures, so its reach is exactly the fixtures' reach.
 /// A field carried by no fixture is a field nothing checks the documentation for.
@@ -774,7 +774,7 @@ fn fixture_authz_failed_with_context() {
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
             error: fixture_error(),
-            extra_context: fixture_context(&[("self-read", "false")]),
+            extra_context: fixture_context(&[("self_read", "false")]),
             authorizations: Arc::new(vec![fixture_denied_authorization()]),
         })
     });
@@ -1478,20 +1478,20 @@ fn contract_rejects_a_failure_reason_on_a_record_that_was_not_denied() {
     );
 }
 
-/// The definitive-denial rule reads the variant from the object's key, so a re-encoding
-/// would retire it silently. It must trip instead.
+/// The definitive-denial rule reads the variant from the string, so a re-encoding would
+/// retire it silently. It must trip instead.
 #[test]
 fn contract_rejects_a_re_encoded_failure_reason() {
     let found = violations_after("authz_failed_single", |r| {
         r.insert(
             "failure_reason".into(),
-            serde_json::json!({ "ActionForbidden": [] }),
+            serde_json::json!({ "action_forbidden": [] }),
         );
     });
     assert_eq!(
         found,
         vec![
-            "`failure_reason` is `{\"ActionForbidden\":[]}`, not a string. The \
+            "`failure_reason` is `{\"action_forbidden\":[]}`, not a string. The \
              definitive-denial rule reads the variant from that string, so a re-encoding \
              disables it: teach that rule the new encoding, then update this one"
         ]
@@ -1657,7 +1657,7 @@ fn a_replay_records_the_actor_action_and_target_but_no_decision() {
     );
     assert_eq!(
         event
-            .pointer("/entities/0/warehouse-id")
+            .pointer("/entities/0/warehouse_id")
             .and_then(serde_json::Value::as_str),
         Some(warehouse_id.to_string().as_str()),
     );
@@ -2062,7 +2062,7 @@ fn maximal_authorization() -> AuthorizationRecord {
         actions: Arc::new(vec![fixture_read_action()]),
         failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
         error: fixture_error(),
-        extra_context: fixture_context(&[("self-read", "true")]),
+        extra_context: fixture_context(&[("self_read", "true")]),
         authorizations: Arc::new(vec![fixture_detailed_authorization()]),
     });
     AuthorizationRecord {

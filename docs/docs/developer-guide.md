@@ -110,7 +110,7 @@ This is why a release ships `4.0` rather than `4.4`. The baseline is raised by t
 #### Terms
 
 - **Audit type** — a Rust type that reaches the audit log, marked `#[audit_part]`. The attribute makes it serialisable, describes it as JSON Schema from its doc comments, and registers it with the emitter of its crate. Everything that reaches a record is one of these: a record part, an operation context, a value vocabulary or a key vocabulary.
-- **Field** — a name in the record: `action_name`, `entity_type`, `warehouse-id`. Adding one changes the record's shape.
+- **Field** — a name in the record: `action_name`, `entity_type`, `warehouse_id`. Adding one changes the record's shape.
 - **Value** — the string a field holds: `get_metadata` in `action_name`, `table` in `entity_type`. Every value comes from a **value vocabulary**, an enum marked `#[audit_part(field = "…")]` whose variant names are the values of that field. Adding one leaves the shape identical, which is why consumers are told to tolerate values they do not recognise.
 - **Key vocabulary** — an enum marked `#[audit_part(keys_of = "…")]` whose variant names are the *keys* of an object: `EntityField` inside an entity, `ActionContextKey` inside an action, `HandlerContextKey` for `push_extra_context`. Adding one adds a field, so it is a `minor` change, not a free one. The two forms are separate types on the way out — a key yields a `WireKey` and a value a `WireStr`, and neither converts into the other — so a key cannot be emitted where a value belongs, or the other way round.
 - **Shape** — which fields exist, their JSON types, their nesting, and the singular/plural arity switch.
@@ -145,6 +145,8 @@ The schema pins every declared field and value, fixtures pin the emitted bytes o
 - **A whole new vocabulary**: put `#[audit_part(field = "...")]` on the enum for a set of values, or `#[audit_part(keys_of = "...")]` for a set of object keys. That is the entire registration. A doc comment on a variant becomes that name's description in the schema, which is the only place a consumer can read what the name means.
 - **A field**: add it to the part or context struct with a doc comment, or add a variant to the key vocabulary that governs it.
 - **A new kind of operation record, from any crate**: an operations enum, an outcomes enum and a context struct, each with the attribute, then `OperationRecord::new(..).context(..).emit()`.
+
+**Every name is `lower_snake_case`.** That is the whole convention: one or more runs of `[a-z0-9]` joined by single underscores, starting with a letter. It covers a record's own fields, every key, and every value of a closed set, and it is the spelling every other Lakekeeper log line already uses. A vocabulary declares `#[audit(rename_all = "snake_case")]` and needs no per-variant rename; a test rejects a name spelled any other way. The check is on by default, so a vocabulary cannot go unchecked by being forgotten. A value set spelled somewhere else adds `external_values` — `#[audit_part(field = "update_kinds", external_values)]` — and is then skipped; name the vocabulary it follows in the doc comment. Three do: `entity_type`, `resource_type` and `update_kinds`.
 
 Never build a wire name from a bare string. `WireStr::new` and `WireKey::new` exist for the attribute's expansion to call and nothing else, and a test fails on any other caller. A name that reaches the wire outside a vocabulary is in no schema, so renaming it later breaks every consumer while the format check reports nothing.
 

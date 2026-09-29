@@ -99,7 +99,7 @@ const _: () = assert!(
 /// The `actor_type` value on every audit record.
 #[audit_part(field = "actor_type")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
-#[strum(serialize_all = "kebab-case")]
+#[strum(serialize_all = "snake_case")]
 pub enum ActorType {
     Anonymous,
     Principal,
@@ -169,6 +169,9 @@ pub enum AuditOutcome {
 // names `::lakekeeper`, and this crate already depends on that one. Registered here instead,
 // from the same `VariantNames` the attribute would have read, so a renamed variant still
 // fails the format check rather than reaching consumers unannounced.
+//
+// The values are the Iceberg REST specification's own table-update action names, so they are
+// external: they keep that spelling rather than this log's.
 #[cfg(debug_assertions)]
 const UPDATE_KIND_TEXTS: &[&str] =
     <iceberg_ext::catalog::TableUpdateKind as strum::VariantNames>::VARIANTS;
@@ -190,6 +193,7 @@ crate::__private::inventory::submit! {
         emitter_type: || core::any::type_name::<crate::Lakekeeper>(),
         emitter_format: <crate::Lakekeeper as AuditEmitter>::FORMAT,
         defining_crate: env!("CARGO_PKG_NAME"),
+        external_values: true,
         schema_name: None,
         schema: None,
     }

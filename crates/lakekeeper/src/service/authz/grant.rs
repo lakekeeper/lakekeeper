@@ -50,11 +50,11 @@ use crate::{
 /// this doc comment is published verbatim in the `OpenAPI` description, where an
 /// intra-doc link would render as a raw Rust module path.
 ///
-/// This is the vocabulary the API speaks. A store is free to persist a coarser one —
-/// tables, views and generic tables are one kind to a catalog that already records
-/// which of the three an id refers to — so this deliberately carries no storage
-/// mapping.
-#[crate::audit::audit_part(field = "resource_type")]
+/// This is the vocabulary the API speaks, which is why its values reach the audit log
+/// marked `external_values`. A store is free to persist a coarser one — tables, views and
+/// generic tables are one kind to a catalog that already records which of the three an id
+/// refers to — so this deliberately carries no storage mapping.
+#[crate::audit::audit_part(field = "resource_type", external_values)]
 #[derive(
     Debug,
     Clone,
