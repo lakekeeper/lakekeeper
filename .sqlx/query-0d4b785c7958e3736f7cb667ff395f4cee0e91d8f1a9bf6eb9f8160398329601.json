@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE task SET status = 'running'\n            WHERE task_id = (\n                SELECT task_id FROM task\n                WHERE queue_name = $1 AND status = 'scheduled' AND scheduled_for <= now()\n                ORDER BY task_id\n                LIMIT 1\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0d4b785c7958e3736f7cb667ff395f4cee0e91d8f1a9bf6eb9f8160398329601"
+}
