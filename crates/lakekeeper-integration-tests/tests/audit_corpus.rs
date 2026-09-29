@@ -20,7 +20,7 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
 //! the plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for-principal`/`determined_by`, which need a batch-style check;
+//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! the operational family, which grant changes emit; and a real authorizer with an
 //! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
 //! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
@@ -279,8 +279,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // Property updates carry `updated-properties` and `removed-properties`, the two
-    // hyphenated action context fields.
+    // Property updates carry `updated_properties` and `removed_properties`.
     let _ = CatalogServer::update_namespace_properties(
         namespace_params.clone(),
         iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest {

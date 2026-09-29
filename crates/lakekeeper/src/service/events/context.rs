@@ -46,7 +46,7 @@ use crate::{
 /// that require every field to be documented, and `#[audit_part]` derives every wire name
 /// from the variant, so a new variant cannot reach the wire unnamed.
 #[audit_part(keys_of = "entity")]
-#[audit(rename_all = "kebab-case")]
+#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
     ServerId,
@@ -96,7 +96,7 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// audit schema; another emitter declares its own enum with `#[audit_part(keys_of =
 /// "context")]`. No key may spell the name of a core field of any shape.
 #[audit_part(keys_of = "context")]
-#[audit(rename_all = "kebab-case")]
+#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum HandlerContextKey {
     /// Whether the user creation was the caller provisioning itself.
@@ -104,10 +104,8 @@ pub enum HandlerContextKey {
     /// Which operation invoked this one, when a handler acts on behalf of another.
     InvokedBy,
     /// The task queue an operation addressed.
-    #[audit(rename = "queue_name")]
     QueueName,
     /// The id of the entity a task operation addressed.
-    #[audit(rename = "entity_id")]
     EntityId,
     /// Whether a grant read asked about the caller's own grants.
     SelfRead,
@@ -134,7 +132,10 @@ pub enum FallbackAction {
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
 /// that require every field to be documented, and `#[audit_part]` derives every wire name
 /// from the variant, so a new variant cannot reach the wire unnamed.
-#[audit_part(field = "entity_type")]
+///
+/// The values are the management API's: it spells the same resource kinds in its own
+/// `ResourceType`, hyphens and all, so they are marked `external_values`.
+#[audit_part(field = "entity_type", external_values)]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityType {
@@ -173,11 +174,10 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 /// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
 /// unnamed.
 #[audit_part(keys_of = "action")]
-#[audit(rename_all = "kebab-case")]
+#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
     AllowPartial,
-    #[audit(rename = "base_location")]
     BaseLocation,
     CreatedBefore,
     Deletes,
@@ -185,32 +185,23 @@ pub enum ActionContextKey {
     DryRun,
     Force,
     Format,
-    #[audit(rename = "generic_table_id")]
     GenericTableId,
     Name,
-    #[audit(rename = "narrowed_privileges")]
     NarrowedPrivileges,
     Principal,
     Principals,
-    #[audit(rename = "privilege_scope")]
     PrivilegeScope,
     Privileges,
-    #[audit(rename = "project_id")]
     ProjectId,
     Properties,
     Purge,
     Recursive,
     RemovedProperties,
-    #[audit(rename = "requested_provider_id")]
     RequestedProviderId,
-    #[audit(rename = "requested_source_id")]
     RequestedSourceId,
-    #[audit(rename = "resource_types")]
     ResourceTypes,
-    #[audit(rename = "root_level")]
     RootLevel,
     Source,
-    #[audit(rename = "table_id")]
     TableId,
     TargetRefs,
     UpdateKinds,

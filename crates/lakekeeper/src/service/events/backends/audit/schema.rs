@@ -466,27 +466,35 @@ pub fn assert_crate_schema_committed(defining_crate: &str, manifest_dir: &str) {
     );
 }
 
-/// The fields whose values Lakekeeper and its in-repository crates spell `lower_snake_case`.
-const SNAKE_CASE_FIELDS: &[&str] = &[
-    "action_name",
-    "decision",
-    "operation",
-    "outcome",
-    "privilege_scope",
-    "privilege_source",
-    "root_level",
-];
-
-/// Assert that the wire values `defining_crate` declares are house style: usable by a
-/// consumer at all, and `lower_snake_case` on the fields that are spelled that way.
+/// Whether `name` is one or more runs of `[a-z0-9]` joined by single underscores, starting
+/// with a letter.
 ///
-/// Renaming a value shows up as a schema difference and the format check calls it a breaking
-/// change. Adding one does not, because an addition breaks no consumer, so a new value spelled
+/// Checking the characters alone would accept a leading, trailing or doubled underscore.
+fn is_lower_snake_case(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name.split('_').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Assert that the wire names `defining_crate` declares are house style: usable by a consumer
+/// at all, and `lower_snake_case` unless the declaring type is marked `external_values`.
+///
+/// Every key is held to the rule, and so is every value, because a record spells its names
+/// the way the rest of the log does. A value vocabulary spelled somewhere else is marked and
+/// skipped. The default is to check, so a vocabulary cannot go unchecked by being left off a
+/// list.
+///
+/// Renaming a name shows up as a schema difference and the format check calls it a breaking
+/// change. Adding one does not, because an addition breaks no consumer, so a new name spelled
 /// the wrong way would reach a release unremarked. This is the check for that.
 ///
 /// # Panics
 ///
-/// If a value is empty, carries whitespace, or breaks the case style of its field.
+/// If a name is empty, carries whitespace, or is not `lower_snake_case` without being marked.
 pub fn assert_wire_values_are_house_style(defining_crate: &str) {
     Registration::require_registry();
     let mut malformed = Vec::new();
@@ -494,38 +502,35 @@ pub fn assert_wire_values_are_house_style(defining_crate: &str) {
         let Some(field) = reg.kind.wire_place() else {
             continue;
         };
+        if reg.external_values {
+            continue;
+        }
         let owner = short_type_name((reg.type_name)());
+        let what = if matches!(reg.kind, Kind::Keys { .. }) {
+            "key"
+        } else {
+            "value"
+        };
         for value in reg.kind.names().iter().map(|name| name.text) {
             if value.is_empty() || value.chars().any(char::is_whitespace) {
                 malformed.push(format!("{field}: {owner} -> {value:?} is unusable"));
-                continue;
-            }
-            if !SNAKE_CASE_FIELDS.contains(&field) {
-                continue;
-            }
-            // Every run between underscores is a non-empty run of lowercase alphanumerics,
-            // and the value starts with a letter. Checking the characters alone would accept
-            // a leading, trailing or doubled underscore.
-            let segments_ok = value.split('_').all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            });
-            if !(segments_ok && value.starts_with(|c: char| c.is_ascii_lowercase())) {
+            } else if !is_lower_snake_case(value) {
                 malformed.push(format!(
-                    "{field}: {owner} -> {value} is not lower_snake_case"
+                    "{field}: {owner} -> {what} `{value}` is not lower_snake_case"
                 ));
             }
         }
     }
     assert!(
         malformed.is_empty(),
-        "these wire values are not house style:\n  {}\n\n\
-         A value is one or more runs of `[a-z0-9]` joined by single underscores, starting with \
-         a letter. An enum that lost its case style, gained a different one, or carries a \
-         hand-written rename that does not follow it lands here. Fix the spelling now: once \
-         released, changing it renames a value consumers match on.",
+        "these wire names are not house style:\n  {}\n\n\
+         A name is one or more runs of `[a-z0-9]` joined by single underscores, starting with \
+         a letter, which is how every line in this log spells a name. An enum that lost its \
+         case style, gained a different one, or carries a hand-written rename that does not \
+         follow it lands here. Fix the spelling now: once released, changing it renames \
+         something consumers match on. If these values are spelled somewhere else — another \
+         product publishes them, or they mirror a vocabulary that does — add `external_values` \
+         to the enum's `#[audit_part(...)]` and name that vocabulary in its doc comment.",
         malformed.join("\n  ")
     );
 }

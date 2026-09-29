@@ -26,6 +26,12 @@
 //!   The distinction is not cosmetic: a new value on
 //!   a field changes no format, while a new key is a new field, which is a minor version.
 //!
+//! A value vocabulary whose values are spelled somewhere else — another product publishes
+//! them, or they mirror a vocabulary that does — adds `external_values`, and is then exempt
+//! from the `lower_snake_case` rule every other name is held to. Say which vocabulary in the
+//! enum's doc comment. Without the marker the values are checked, so one cannot end up
+//! unchecked by being forgotten.
+//!
 //! Wire names of a vocabulary enum follow, in this order of precedence, `#[audit(rename_all =
 //! "...")]`, `#[strum(serialize_all = "...")]`, `#[serde(rename_all = "...")]`, else the
 //! variant name verbatim; per variant, `#[audit(rename = "...")]`, `#[strum(to_string =
@@ -69,6 +75,9 @@ struct Args {
     /// `shape = "authorization"`: this struct is a whole record, and that is the
     /// `record_type` value naming it.
     shape: Option<String>,
+    /// `external_values`: these values are spelled somewhere else — another product
+    /// publishes them, or they mirror a vocabulary that does — so the case check skips them.
+    external_values: bool,
 }
 
 impl Parse for Args {
@@ -78,6 +87,7 @@ impl Parse for Args {
         for meta in metas {
             match &meta {
                 Meta::Path(p) if p.is_ident("context") => args.context = true,
+                Meta::Path(p) if p.is_ident("external_values") => args.external_values = true,
                 Meta::NameValue(nv) if nv.path.is_ident("shape") => {
                     args.shape = Some(lit_str(&nv.value, "shape")?);
                 }
@@ -91,7 +101,8 @@ impl Parse for Args {
                     return Err(Error::new_spanned(
                         other,
                         "unknown argument: expected `field = \"<wire field>\"`, \
-                         `keys_of = \"<object>\"`, `context` or `shape = \"<record_type>\"`",
+                         `keys_of = \"<object>\"`, `context`, `shape = \"<record_type>\"` \
+                         or `external_values`",
                     ));
                 }
             }
@@ -109,6 +120,14 @@ impl Parse for Args {
                      here could never be emitted. Only `keys_of = \"context\"` is open to \
                      another emitter, through `push_extra_context`."
                 ),
+            ));
+        }
+        if args.external_values && args.field.is_none() {
+            return Err(Error::new(
+                proc_macro2::Span::call_site(),
+                "`external_values` says the values of a field are spelled elsewhere, so it \
+                 belongs on `field = \"<wire field>\"`. Every key and every value this log \
+                 names itself is `lower_snake_case`.",
             ));
         }
         if args.field.is_some() && args.keys_of.is_some() {
@@ -153,8 +172,9 @@ pub fn audit_part(args: TokenStream, item: TokenStream) -> TokenStream {
 /// What a vocabulary enum's variant names become on the wire.
 #[derive(Clone, Copy)]
 enum Vocabulary<'a> {
-    /// The values of the wire field of this name.
-    Values(&'a str),
+    /// The values of the wire field of this name. `external` when they are spelled somewhere
+    /// else, which exempts them from the case check.
+    Values { field: &'a str, external: bool },
     /// The keys of the object of this name.
     Keys(&'a str),
 }
@@ -162,7 +182,10 @@ enum Vocabulary<'a> {
 fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
     reject_type_generics(input)?;
     let vocabulary = match (&args.field, &args.keys_of) {
-        (Some(field), _) => Some(Vocabulary::Values(field)),
+        (Some(field), _) => Some(Vocabulary::Values {
+            field,
+            external: args.external_values,
+        }),
         (_, Some(object)) => Some(Vocabulary::Keys(object)),
         (None, None) => None,
     };
@@ -240,6 +263,7 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
                 emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
                 emitter_format: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::FORMAT,
                 defining_crate: env!("CARGO_PKG_NAME"),
+                external_values: false,
                 schema_name: ::core::option::Option::Some(|| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::schema_name()),
                 schema: ::core::option::Option::Some(|generator| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::json_schema(generator)),
             }
@@ -258,12 +282,13 @@ fn expand_vocabulary(
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
     let rule = rename_all_rule(&input.attrs)?;
+    let external_values = matches!(vocabulary, Vocabulary::Values { external: true, .. });
 
     // Keys and values reach the wire as different types on purpose. A `WireKey` converts into
     // no value type, so an enum declared as keys cannot be written where a field's value is
     // expected, and a value enum cannot become an object key.
     let (wire_ty, kind_of, conversions) = match vocabulary {
-        Vocabulary::Values(field) => (
+        Vocabulary::Values { field, .. } => (
             quote!(::lakekeeper::audit::WireStr<crate::audit_emitter::Emitter>),
             quote!(::lakekeeper::audit::Kind::Values { field: #field, names: &WIRE }),
             quote! {
@@ -296,7 +321,7 @@ fn expand_vocabulary(
         ),
     };
     let (as_wire_doc, as_str_doc, variants_doc, names_doc) = match vocabulary {
-        Vocabulary::Values(_) => (
+        Vocabulary::Values { .. } => (
             "The value as it reaches the wire, tied to this crate's emitter.",
             "The value as it reaches the wire, as a plain string.",
             "Every value this enum can put on the wire.",
@@ -381,6 +406,7 @@ fn expand_vocabulary(
                 emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
                 emitter_format: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::FORMAT,
                 defining_crate: env!("CARGO_PKG_NAME"),
+                external_values: #external_values,
                 schema_name: ::core::option::Option::None,
                 schema: ::core::option::Option::None,
             }

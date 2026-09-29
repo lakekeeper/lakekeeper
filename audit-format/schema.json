@@ -9,12 +9,12 @@
     "ActionContextKey": {
       "type": "string",
       "enum": [
-        "allow-partial",
+        "allow_partial",
         "base_location",
-        "created-before",
+        "created_before",
         "deletes",
         "destination",
-        "dry-run",
+        "dry_run",
         "force",
         "format",
         "generic_table_id",
@@ -28,16 +28,16 @@
         "properties",
         "purge",
         "recursive",
-        "removed-properties",
+        "removed_properties",
         "requested_provider_id",
         "requested_source_id",
         "resource_types",
         "root_level",
         "source",
         "table_id",
-        "target-refs",
-        "update-kinds",
-        "updated-properties",
+        "target_refs",
+        "update_kinds",
+        "updated_properties",
         "writes"
       ],
       "x-audit-kind": "keys",
@@ -90,8 +90,8 @@
       "type": "string",
       "enum": [
         "anonymous",
-        "assumed-role",
-        "lakekeeper-internal",
+        "assumed_role",
+        "lakekeeper_internal",
         "principal"
       ],
       "x-audit-kind": "enum",
@@ -226,23 +226,23 @@
     "AuthorizationFailureReason": {
       "type": "string",
       "enum": [
-        "ActionForbidden",
-        "CannotSeeResource",
-        "InternalAuthorizationError",
-        "InternalCatalogError",
-        "InvalidRequestData",
-        "ResourceNotFound"
+        "action_forbidden",
+        "cannot_see_resource",
+        "internal_authorization_error",
+        "internal_catalog_error",
+        "invalid_request_data",
+        "resource_not_found"
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "failure_reason",
       "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason",
       "x-audit-descriptions": {
-        "ActionForbidden": "Action is not allowed for the user",
-        "CannotSeeResource": "Resource exists but user lacks permission to see it",
-        "InternalAuthorizationError": "Authorization backend service is unavailable",
-        "InternalCatalogError": "An internal Catalog error occurred before authorization check could be completed",
-        "InvalidRequestData": "Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)",
-        "ResourceNotFound": "Resource does not exist"
+        "action_forbidden": "Action is not allowed for the user",
+        "cannot_see_resource": "Resource exists but user lacks permission to see it",
+        "internal_authorization_error": "Authorization backend service is unavailable",
+        "internal_catalog_error": "An internal Catalog error occurred before authorization check could be completed",
+        "invalid_request_data": "Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)",
+        "resource_not_found": "Resource does not exist"
       }
     },
     "AuthorizationRecord": {
@@ -634,7 +634,7 @@
           "type": "string",
           "description": "The client's id for this check in a batch, or its index. Absent for single checks."
         },
-        "for-principal": {
+        "for_principal": {
           "description": "The principal whose permission was evaluated, when it is not the request's actor.",
           "$ref": "#/$defs/SubjectRecord"
         },
@@ -747,24 +747,24 @@
     "EntityField": {
       "type": "string",
       "enum": [
-        "generic-table",
-        "generic-table-id",
+        "generic_table",
+        "generic_table_id",
         "namespace",
-        "namespace-id",
-        "project-id",
-        "role-id",
-        "role-provider-id",
-        "role-source-id",
-        "server-id",
+        "namespace_id",
+        "project_id",
+        "role_id",
+        "role_provider_id",
+        "role_source_id",
+        "server_id",
         "table",
-        "table-id",
-        "table-location",
-        "tag-definition-id",
-        "task-id",
-        "user-id",
+        "table_id",
+        "table_location",
+        "tag_definition_id",
+        "task_id",
+        "user_id",
         "view",
-        "view-id",
-        "warehouse-id"
+        "view_id",
+        "warehouse_id"
       ],
       "x-audit-kind": "keys",
       "x-audit-keys-of": "entity",
@@ -941,20 +941,20 @@
       "type": "string",
       "enum": [
         "entity_id",
-        "invoked-by",
+        "invoked_by",
         "queue_name",
-        "self-provisioning",
-        "self-read"
+        "self_provisioning",
+        "self_read"
       ],
       "x-audit-kind": "keys",
       "x-audit-keys-of": "context",
       "x-audit-type": "lakekeeper::service::events::context::HandlerContextKey",
       "x-audit-descriptions": {
         "entity_id": "The id of the entity a task operation addressed.",
-        "invoked-by": "Which operation invoked this one, when a handler acts on behalf of another.",
+        "invoked_by": "Which operation invoked this one, when a handler acts on behalf of another.",
         "queue_name": "The task queue an operation addressed.",
-        "self-provisioning": "Whether the user creation was the caller provisioning itself.",
-        "self-read": "Whether a grant read asked about the caller's own grants."
+        "self_provisioning": "Whether the user creation was the caller provisioning itself.",
+        "self_read": "Whether a grant read asked about the caller's own grants."
       }
     },
     "InstanceAdminAction": {
@@ -1339,7 +1339,7 @@
           "description": "A role."
         }
       ],
-      "description": "A principal named as a target: `for-principal` on a decision entry, `principal` on a grant\nrecord. `{\"user\": …}` or `{\"role\": …}`.",
+      "description": "A principal named as a target: `for_principal` on a decision entry, `principal` on a grant\nrecord. `{\"user\": …}` or `{\"role\": …}`.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::SubjectRecord"
     },

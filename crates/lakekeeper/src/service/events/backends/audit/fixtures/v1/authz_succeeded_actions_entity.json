@@ -13,7 +13,7 @@
     {
       "action_name": "update_properties",
       "name": "orders",
-      "removed-properties": [
+      "removed_properties": [
         "stale.key"
       ]
     }
@@ -21,8 +21,8 @@
   "entities": [
     {
       "entity_type": "table",
-      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-      "table-id": "019684ff-0000-7000-8000-000000000002",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
       "table": "sales.orders"
     }
   ],
@@ -39,8 +39,8 @@
       },
       "entity": {
         "entity_type": "table",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
         "table": "sales.orders"
       },
       "allowed": true

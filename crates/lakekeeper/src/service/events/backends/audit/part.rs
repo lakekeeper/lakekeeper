@@ -147,6 +147,9 @@ pub struct Registration {
     pub emitter_format: &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
+    /// Whether this vocabulary's values are spelled somewhere else. When they are, the case
+    /// check leaves them alone; everything this log names itself is `lower_snake_case`.
+    pub external_values: bool,
     /// The type's schema name. `None` for a vocabulary, whose schema is its list of names.
     pub schema_name: Option<fn() -> Cow<'static, str>>,
     /// The type's JSON Schema. `None` for a vocabulary.
@@ -493,7 +496,7 @@ mod tests {
 
     /// A key vocabulary declared the way any crate declares one.
     #[audit_part(keys_of = "probe")]
-    #[audit(rename_all = "kebab-case")]
+    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ProbeKey {
         /// The only key.
@@ -535,10 +538,10 @@ mod tests {
     #[test]
     fn a_key_vocabulary_yields_a_key_type_that_no_value_field_accepts() {
         let key: WireKey<Lakekeeper> = ProbeKey::FirstKey.as_wire();
-        assert_eq!(key.text(), "first-key");
-        assert_eq!(ProbeKey::FirstKey.as_str(), "first-key");
-        assert_eq!(ProbeKey::WIRE_NAMES, ["first-key"]);
-        assert_eq!(key.to_string(), "first-key");
+        assert_eq!(key.text(), "first_key");
+        assert_eq!(ProbeKey::FirstKey.as_str(), "first_key");
+        assert_eq!(ProbeKey::WIRE_NAMES, ["first_key"]);
+        assert_eq!(key.to_string(), "first_key");
         // The guarantee is in what is missing: `WireKey` implements neither `Serialize` nor
         // `Into<AnyWireStr>`, so a key cannot be written into a field that holds a value.
         // That is enforced by the compiler; nothing here can assert it at run time.
@@ -573,7 +576,7 @@ mod tests {
         assert_eq!(
             key.kind.names(),
             [WireName {
-                text: "first-key",
+                text: "first_key",
                 doc: "The only key."
             }]
         );

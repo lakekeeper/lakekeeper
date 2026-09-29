@@ -2,20 +2,19 @@
 level: major
 ---
 
-`action` and `entity` are gone from the top level of authorization and replay records.
-They are replaced by `actions` and `entities`, which are always arrays and always
-present, however many elements they hold.
+**Top-level `action` and `entity` are gone from authorization and replay records.**
+`actions` and `entities` replace them, always arrays and always present, whatever the
+element count.
 
-Previously the field *name* changed with the element count: exactly one action was
-written as `action` holding an object, and any other number — none, or several — as
-`actions` holding an array. A query written against one spelling silently returned
-nothing for the other.
+```
+before  "action": {…}         or  "actions": [{…}, {…}]
+after   "actions": [{…}]
 
-Every key inside those objects moved with them, which is where most of the work is:
-`.entity.warehouse-id` becomes `.entities[0].warehouse-id`, `.action.action_name`
-becomes `.actions[0].action_name`. Most real queries address the inner keys rather
-than the container. Where a record can carry more than one, iterate rather than
-taking the first.
+before  .entity.namespace         .action.action_name
+after   .entities[0].namespace    .actions[0].action_name
+```
 
-The per-decision entries inside `authorizations[]` are unchanged: each still carries a
-singular `action` and `entity`, because each entry describes exactly one of each.
+**What to do:** repoint every query that goes through the container. Iterate rather than
+taking the first element, since a record can carry more than one. The per-decision entries
+inside `authorizations[]` need no change: each still carries a singular `action` and
+`entity`.

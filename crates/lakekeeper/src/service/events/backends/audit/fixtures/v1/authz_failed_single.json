@@ -14,8 +14,8 @@
   "entities": [
     {
       "entity_type": "table",
-      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-      "table-id": "019684ff-0000-7000-8000-000000000002",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
       "table": "sales.orders"
     }
   ],
@@ -28,7 +28,7 @@
   "authorizations": [
     {
       "id": "check-0",
-      "for-principal": {
+      "for_principal": {
         "user": "oidc~bob"
       },
       "action": {
@@ -36,8 +36,8 @@
       },
       "entity": {
         "entity_type": "namespace",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "namespace-id": "019684ff-0000-7000-8000-000000000003",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
         "namespace": "sales"
       },
       "allowed": false,
@@ -53,7 +53,7 @@
     }
   ],
   "decision": "denied",
-  "failure_reason": "ActionForbidden",
+  "failure_reason": "action_forbidden",
   "error": {
     "type": "NotAuthorized",
     "code": 403,

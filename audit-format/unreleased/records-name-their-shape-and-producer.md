@@ -2,22 +2,22 @@
 level: minor
 ---
 
-Every audit record now carries two new top-level fields.
+**Every audit record carries two new top-level fields, `record_type` and `emitter`.**
 
-`record_type` names the record's shape. It is one of `authorization`, `replay` or
-`operation`, and it is always present. Before it existed the three shapes could only
-be told apart by which fields were missing.
+`record_type` names the record's shape: `authorization`, `replay` or `operation`. Always
+present.
 
-`emitter` is an object with `name` and `format`, naming the product that produced the
-record and the version of what that product contributes. Every record Lakekeeper
-itself emits carries `{"name": "lakekeeper", "format": "1.0"}`; a distribution that
-adds its own audit records, such as Lakekeeper+, stamps its own name and its own
-version there.
+`emitter` names the product that wrote the record and the version of what that product
+contributes: `{"name": "lakekeeper", "format": "1.0"}`. A distribution that adds records
+of its own, such as Lakekeeper+, stamps its own name and version.
 
-Two versions therefore appear on every record, and they answer different questions.
-`audit_format` governs the record's overall shape — which top-level fields exist and
-how they nest. `emitter.format` governs what the named product contributes: its
-`operation` and `outcome` values, and the contents of its `context`. For Lakekeeper's
-own records the two happen to be equal, because one project governs both. That is a
-property of this one emitter and not of the format: match on the one whose scope you
-mean.
+Two versions now appear on every record:
+
+- `audit_format` — the record's overall shape: which top-level fields exist and how they nest
+- `emitter.format` — what the named product contributes: its `operation` and `outcome`
+  values, and the contents of its `context`
+
+They are equal on Lakekeeper's own records. Do not rely on that.
+
+**What to do:** route on `record_type` rather than on which fields are absent, and match
+on whichever of the two versions covers the scope you mean.
