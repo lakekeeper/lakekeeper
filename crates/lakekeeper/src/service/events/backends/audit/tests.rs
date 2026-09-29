@@ -6,6 +6,7 @@ use iceberg::{NamespaceIdent, TableIdent};
 use super::{contract::contract_fields, *};
 use crate::{
     WarehouseId,
+    api::management::v1::grant::{RevokeSubtreeGrants, RevokeSubtreeGrantsRequest},
     audit::AnyWireStr,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
@@ -16,15 +17,15 @@ use crate::{
         authz::{
             ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogProjectAction,
             CatalogTableAction, DeterminingFactor, GrantResource, PolicyEffect, RoleSourceSystem,
-            UserOrRoleId,
+            SubtreeGrantScope, UserOrRoleId,
         },
         events::{
             Authorization,
             context::{
-                ActionContextKey, EntityDescriptor, EntityType, EventEntities,
-                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
-                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
-                UserProvidedEntity as _, UserProvidedTable,
+                APIEventActions as _, ActionContextKey, EntityDescriptor, EntityType,
+                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
+                FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
+                FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
             },
         },
         idempotency::IdempotencyKey,
@@ -159,6 +160,7 @@ const FIXTURE_REQUEST_ID: &str = "019684ff-0000-7000-8000-000000000005";
 const FIXTURE_ERROR_ID: &str = "019684ff-0000-7000-8000-000000000006";
 const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
 const FIXTURE_IDEMPOTENCY_KEY: &str = "019684ff-0000-7000-8000-000000000004";
+const FIXTURE_CREATED_BEFORE: &str = "2026-01-01T00:00:00Z";
 
 /// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
 /// derived from [`AUDIT_FORMAT`].
@@ -381,6 +383,36 @@ fn fixture_drop_action() -> ActionDescriptor {
         .build()
 }
 
+/// A subtree revoke, built by the handler's own `event_actions()` so this fixture and the
+/// running code cannot describe the action differently.
+///
+/// Narrowed on every axis a request can narrow: a named principal, two resource kinds, two
+/// privileges, the root's own grants left out, partial removal allowed, and a cutoff. The
+/// unnarrowed request carries the same keys with their widest values.
+fn fixture_revoke_subtree_grants_action() -> ActionDescriptor {
+    let scope: SubtreeGrantScope = serde_json::from_value(serde_json::json!({
+        "resource_types": ["table", "view"],
+        "root_level": "excluded",
+        "privileges": {"only": {"names": ["describe", "select"]}},
+        "principal": {"one": {"user": "oidc~alice"}},
+        "dry_run": false,
+    }))
+    .expect("a valid subtree grant scope");
+    let request: RevokeSubtreeGrantsRequest = serde_json::from_value(serde_json::json!({
+        "principal": {"user": "oidc~alice"},
+        "privilege": ["select", "describe"],
+        "resource-type": ["table", "view"],
+        "include-root-level": false,
+        "allow-partial": true,
+        "created-before": FIXTURE_CREATED_BEFORE,
+    }))
+    .expect("a valid revoke request body");
+
+    let mut actions = RevokeSubtreeGrants::of(&request, &scope).event_actions();
+    assert_eq!(actions.len(), 1, "a revoke emits exactly one action");
+    actions.remove(0)
+}
+
 /// A warehouse entity carrying `project_id`, which real requests emit and the other
 /// fixtures do not.
 fn fixture_warehouse_entity() -> EntityDescriptor {
@@ -478,6 +510,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_context",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
+    "authz_succeeded_revoke_subtree_grants",
     "grant_created",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
@@ -681,6 +714,31 @@ fn fixture_authz_succeeded_rich_action_context() {
 
     assert_matches_fixture(
         "authz_succeeded_rich_action_context",
+        &contract_fields(record),
+    );
+}
+
+/// The action with the widest context Lakekeeper emits: nine keys, six of them the scope
+/// the authorizer is asked with.
+///
+/// Nothing else puts `root_level` or `privilege_scope` on the wire, so without this fixture
+/// those two closed value sets are declared in the schema and demonstrated nowhere. It is
+/// also the only record showing the six scope keys together, which is what a consumer needs
+/// to reconstruct the filter a revoke ran with.
+#[test]
+fn fixture_authz_succeeded_revoke_subtree_grants() {
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::one(fixture_warehouse_entity())),
+            actions: Arc::new(vec![fixture_revoke_subtree_grants_action()]),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![fixture_plain_authorization()]),
+        })
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_revoke_subtree_grants",
         &contract_fields(record),
     );
 }

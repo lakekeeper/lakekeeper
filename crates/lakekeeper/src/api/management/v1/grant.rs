@@ -1794,7 +1794,11 @@ pub struct RevokeSubtreeGrants {
 }
 
 impl RevokeSubtreeGrants {
-    fn of(request: &RevokeSubtreeGrantsRequest, scope: &SubtreeGrantScope) -> Self {
+    /// The event action for a revoke, from the request and the scope its gate is asked with.
+    ///
+    /// Crate-visible so the audit fixture for this action is produced by the same code the
+    /// handler runs, rather than by a second assembly that can drift from it.
+    pub(crate) fn of(request: &RevokeSubtreeGrantsRequest, scope: &SubtreeGrantScope) -> Self {
         let mut privileges = request.privilege.clone();
         privileges.sort_unstable();
         privileges.dedup();
