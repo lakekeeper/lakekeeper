@@ -10,7 +10,10 @@ use crate::{
         iceberg::v1::{ListTablesQuery, NamespaceParameters},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tabular::list_entities},
+    server::{
+        require_warehouse_id,
+        tabular::{authorize_entities, fetch_entities},
+    },
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, Transaction,
@@ -20,7 +23,7 @@ use crate::{
         },
         events::{
             APIEventContext,
-            context::{ResolvedNamespace, UserProvidedNamespace},
+            context::{ResolvedNamespace, UserProvidedNamespace, authz_to_error_no_audit},
         },
     },
 };
@@ -66,19 +69,27 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     }));
 
     // ------------------- BUSINESS LOGIC -------------------
-    let mut t: <C as CatalogStore>::Transaction =
-        C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let can_list_everything = authorizer
+        .is_allowed_namespace_action(
+            event_ctx.request_metadata(),
+            None,
+            &warehouse,
+            &namespace.parents,
+            &namespace.namespace,
+            CatalogNamespaceAction::ListEverything,
+        )
+        .await
+        .map_err(authz_to_error_no_audit)?
+        .into_inner();
     let (view_infos, view_uuids, next_page_token) =
         crate::server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
-            list_entities!(
-                View, list_views, warehouse, namespace, authorizer, event_ctx
-            ),
-            &mut t,
+            state.v1_state.catalog,
+            fetch_entities!(list_views, namespace, can_list_everything),
+            authorize_entities!(View, warehouse, authorizer, event_ctx),
         )
         .await?;
-    t.commit().await?;
 
     let mut identifiers = Vec::with_capacity(view_infos.len());
     let mut protection_status = Vec::with_capacity(view_infos.len());

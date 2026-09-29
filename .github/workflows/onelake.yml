@@ -3,6 +3,10 @@ name: onelake tests
 # OneLake (Microsoft Fabric) lives on an F2 capacity that is suspended when
 # idle, so this suite resumes the capacity, runs, and suspends it again. It
 # runs nightly instead of per-PR: the capacity bills per hour while active.
+#
+# The capacity is active only while tests run. The image and the Rust tests
+# are built first, then a single job with both on its runner resumes the
+# capacity, so neither the builds nor waiting for a runner is billed.
 
 on:
   schedule:
@@ -22,6 +26,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.94.1
   CAPACITY_API_VERSION: "2023-11-01"
+  NEXTEST_ARCHIVE: onelake-tests.tar.zst
 
 jobs:
   docker:
@@ -32,51 +37,9 @@ jobs:
       dockerfile: "docker/full-debug.Dockerfile"
       image_name: "lakekeeper-local"
 
-  # Waits for the image so the capacity only bills once the suites can use it;
-  # the build takes around 25 minutes, longer when runners are contended.
-  resume:
-    name: resume capacity
-    needs: docker
+  rust-build:
+    name: build rust onelake tests
     runs-on: ubuntu-24.04
-    environment: onelake-integration
-    permissions:
-      contents: read
-      id-token: write # Needed for OIDC federation to Entra
-    steps:
-      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
-        with:
-          client-id: ${{ vars.ONELAKE_CAPACITY_CLIENT_ID }}
-          tenant-id: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
-          subscription-id: ${{ vars.ONELAKE_CAPACITY_SUBSCRIPTION_ID }}
-
-      # Resume is asynchronous and OneLake rejects requests until the capacity
-      # reports Active, so poll rather than sleeping a fixed amount.
-      - name: Resume and wait for Active
-        env:
-          CAP: ${{ vars.ONELAKE_CAPACITY_RESOURCE_ID }}
-        run: |
-          set -euo pipefail
-          state=$(az resource show --api-version "${CAPACITY_API_VERSION}" --ids "${CAP}" --query properties.state -o tsv)
-          echo "capacity state: ${state}"
-          if [ "${state}" != "Active" ]; then
-            az resource invoke-action --action resume --api-version "${CAPACITY_API_VERSION}" --ids "${CAP}"
-          fi
-          for _ in $(seq 1 60); do
-            state=$(az resource show --api-version "${CAPACITY_API_VERSION}" --ids "${CAP}" --query properties.state -o tsv)
-            if [ "${state}" = "Active" ]; then
-              echo "capacity is Active"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "capacity did not reach Active within 10 minutes (last state: ${state})" >&2
-          exit 1
-
-  rust:
-    name: rust onelake tests
-    needs: resume
-    runs-on: ubuntu-24.04
-    environment: onelake-integration
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -98,33 +61,47 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # The live tests are `#[ignore]`, and the default nextest profile filters
-      # the module out entirely, so opt into both. The `ci` profile carries
-      # `default-filter = all()`.
-      - name: Test
+      - name: Archive tests
         run: |
-          cargo nextest run --profile ci --all-features --run-ignored=all \
-            -p lakekeeper --lib -E 'test(::onelake_integration_tests::)'
+          cargo nextest archive --all-features -p lakekeeper --lib \
+            --archive-file "${NEXTEST_ARCHIVE}"
         env:
           SQLX_OFFLINE: "true"
-          LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID }}
-          LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID }}
-          LAKEKEEPER_TEST__ONELAKE_REGION: ${{ vars.LAKEKEEPER_TEST__ONELAKE_REGION }}
-          LAKEKEEPER_TEST__ONELAKE_CLIENT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_CLIENT_ID }}
-          LAKEKEEPER_TEST__ONELAKE_TENANT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
-          LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET: ${{ secrets.LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET }}
+          # Keeps panic locations while shrinking the uploaded test binary.
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
-  spark:
-    name: spark_onelake-1.10.1
-    needs: [resume, docker]
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: onelake-tests
+          path: ${{ env.NEXTEST_ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 1
+
+  live-tests:
+    name: onelake live tests
+    needs: [docker, rust-build]
     runs-on: ubuntu-24.04
     environment: onelake-integration
+    permissions:
+      contents: read
+      id-token: write # Needed for OIDC federation to Entra
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      CAP: ${{ vars.ONELAKE_CAPACITY_RESOURCE_ID }}
+      LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID }}
+      LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID }}
+      LAKEKEEPER_TEST__ONELAKE_REGION: ${{ vars.LAKEKEEPER_TEST__ONELAKE_REGION }}
+      LAKEKEEPER_TEST__ONELAKE_CLIENT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_CLIENT_ID }}
+      LAKEKEEPER_TEST__ONELAKE_TENANT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      - name: Setup cargo nextest
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-nextest
 
       # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
       # shared CI runners, which otherwise surface as image-pull connect
@@ -145,7 +122,35 @@ jobs:
       - name: Restore Docker image
         run: docker load -i artifacts/lakekeeper-local-amd64.tar
 
+      - name: Restore Rust tests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: onelake-tests
+
+      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.ONELAKE_CAPACITY_CLIENT_ID }}
+          tenant-id: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
+          subscription-id: ${{ vars.ONELAKE_CAPACITY_SUBSCRIPTION_ID }}
+
+      # Billing starts here: everything the suites need is on this runner.
+      - name: Resume capacity
+        id: resume
+        run: .github/scripts/fabric-capacity.sh resume
+
+      # The live tests are `#[ignore]`, and the default nextest profile filters
+      # the module out entirely, so opt into both. The `ci` profile carries
+      # `default-filter = all()`.
+      - name: Test rust
+        run: |
+          cargo nextest run --archive-file "${NEXTEST_ARCHIVE}" --workspace-remap . \
+            --profile ci --run-ignored=all -E 'test(::onelake_integration_tests::)'
+        env:
+          LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET: ${{ secrets.LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET }}
+
+      # Runs after a Rust failure too, while the capacity is up anyway.
       - name: Test spark_onelake-1.10.1
+        if: ${{ !cancelled() && steps.resume.outcome == 'success' }}
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
           max_attempts: 2
@@ -153,41 +158,49 @@ jobs:
           command: cd tests && bash run.sh spark_onelake-1.10.1
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
-          LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID }}
-          LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID }}
-          LAKEKEEPER_TEST__ONELAKE_REGION: ${{ vars.LAKEKEEPER_TEST__ONELAKE_REGION }}
-          LAKEKEEPER_TEST__ONELAKE_CLIENT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_CLIENT_ID }}
-          LAKEKEEPER_TEST__ONELAKE_TENANT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
           LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET: ${{ secrets.LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET }}
           LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE: default,regional
 
+      # A fresh token: the first may have expired during the suites.
+      - name: Log in to Azure for suspend
+        if: always()
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.ONELAKE_CAPACITY_CLIENT_ID }}
+          tenant-id: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
+          subscription-id: ${{ vars.ONELAKE_CAPACITY_SUBSCRIPTION_ID }}
+
+      # Runs when the tests fail or are cancelled too: an active capacity bills
+      # by the hour.
+      - name: Suspend capacity
+        if: always()
+        run: .github/scripts/fabric-capacity.sh suspend
+
+  # Backstop for a live-tests job that ended before its own suspend step, such
+  # as a lost runner. A no-op once the capacity is paused. The daily automation
+  # runbook covers the case where this job never runs either.
   suspend:
     name: suspend capacity
-    needs: [resume, rust, spark]
+    needs: live-tests
     if: always()
     runs-on: ubuntu-24.04
     environment: onelake-integration
     permissions:
       contents: read
       id-token: write # Needed for OIDC federation to Entra
+    env:
+      CAP: ${{ vars.ONELAKE_CAPACITY_RESOURCE_ID }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ vars.ONELAKE_CAPACITY_CLIENT_ID }}
           tenant-id: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
           subscription-id: ${{ vars.ONELAKE_CAPACITY_SUBSCRIPTION_ID }}
 
-      # Runs even when the tests fail or are cancelled: an active capacity
-      # bills by the hour. The daily automation runbook is the backstop for
-      # the case where this job itself never runs.
       - name: Suspend
-        env:
-          CAP: ${{ vars.ONELAKE_CAPACITY_RESOURCE_ID }}
-        run: |
-          set -euo pipefail
-          state=$(az resource show --api-version "${CAPACITY_API_VERSION}" --ids "${CAP}" --query properties.state -o tsv)
-          echo "capacity state: ${state}"
-          if [ "${state}" = "Active" ]; then
-            az resource invoke-action --action suspend --api-version "${CAPACITY_API_VERSION}" --ids "${CAP}"
-            echo "suspend submitted"
-          fi
+        run: .github/scripts/fabric-capacity.sh suspend

@@ -23,7 +23,15 @@ nav:
           - Apache Flink (Java): generic-tables-flink.md
     - User Guide:
           - bootstrap.md
-          - storage.md
+          - Storage:
+                - Overview: storage.md
+                - S3: storage-s3.md
+                - STACKIT: storage-stackit.md
+                - Azure Data Lake Storage: storage-adls.md
+                - OneLake: storage-onelake.md
+                - Google Cloud Storage: storage-gcs.md
+                - Storage Layout: storage-layout.md
+                - Validation: storage-validation.md
           - authentication.md
           - Authorization:
                 - Overview: authorization.md

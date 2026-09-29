@@ -1,0 +1,151 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            ga.grant_id AS \"grant_id!\",\n            ga.principal_type AS \"principal_type!: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege AS \"privilege!\",\n            ga.resource_type AS \"resource_type!: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Not joined: the caller's resource list already carries every kind.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at AS \"created_at!\"\n        -- One arm per resource kind, so each picks its own index and neither a principal\n        -- holding many grants nor an object granted to many principals is read in full.\n        -- In one WHERE the planner drove every kind from the resource side (65 ms for a\n        -- table load when its project had 20k grants), and its generic plan, which a\n        -- connection switches to after five calls, from the principal side (8 ms for an\n        -- ingestion account). Postgres pushes the principal filter into each arm.\n        FROM (\n            SELECT * FROM grant_assignment\n            WHERE $3 AND resource_type = 'server'::grant_resource_type\n            UNION ALL\n            SELECT * FROM grant_assignment\n            WHERE resource_type = 'project'::grant_resource_type AND project_id = ANY($4)\n            UNION ALL\n            SELECT * FROM grant_assignment\n            WHERE resource_type = 'warehouse'::grant_resource_type AND warehouse_id = ANY($5)\n            UNION ALL\n            SELECT * FROM grant_assignment\n            WHERE resource_type = 'namespace'::grant_resource_type\n              AND warehouse_id = ANY($6) AND namespace_id = ANY($7)\n            UNION ALL\n            SELECT * FROM grant_assignment\n            WHERE resource_type = 'tabular'::grant_resource_type\n              AND warehouse_id = ANY($8) AND tabular_id = ANY($9)\n            UNION ALL\n            SELECT * FROM grant_assignment\n            WHERE resource_type = 'tag'::grant_resource_type AND tag_definition_id = ANY($10)\n        ) ga\n        -- The unused principal column is held null; see select_grants_on_resource.\n        WHERE (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1)\n               AND ga.role_id IS NULL)\n           OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)\n               AND ga.user_id IS NULL)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "Bool",
+        "TextArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "07e4e4c72014e2bdc544448ac339a3607a798f962d3e8a3821e173b8a36c677a"
+}

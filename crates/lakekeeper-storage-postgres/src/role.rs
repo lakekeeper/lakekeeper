@@ -6,9 +6,9 @@ use lakekeeper::{
     api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CreateRoleError,
-        ListRolesError, ListRolesResponse, OnRoleConflict, ProjectIdNotFoundError, Result, Role,
-        RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleSourceIdConflict,
-        RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
+        DeleteRoleError, ListRolesError, ListRolesResponse, OnRoleConflict, ProjectIdNotFoundError,
+        Result, Role, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists,
+        RoleSourceIdConflict, RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
     },
 };
 use uuid::Uuid;
@@ -386,6 +386,36 @@ pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postg
         roles,
         next_page_token,
     })
+}
+
+/// Lock the role row for the rest of the transaction and count its grants.
+///
+/// `FOR UPDATE` conflicts with the `KEY SHARE` lock a foreign-key check takes, so a
+/// sync inserting an assignment or a grant for this role waits until the transaction
+/// ends. The count runs as a separate statement after the lock: under READ COMMITTED
+/// it then sees every grant committed while the lock was awaited.
+pub(crate) async fn lock_role_and_count_grants(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<u64, DeleteRoleError> {
+    let locked = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM "role"
+        WHERE id = $1 AND project_id = $2
+        FOR UPDATE
+        "#,
+        *role_id,
+        project_id.as_str(),
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    if locked.is_none() {
+        return Err(RoleIdNotFoundInProject::new(role_id, Arc::new(project_id.clone())).into());
+    }
+    Ok(crate::grant::count_grants_for_role(role_id, transaction).await?)
 }
 
 /// Delete role rows matching `filter`, optionally scoped to a single
