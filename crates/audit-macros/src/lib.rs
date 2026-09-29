@@ -131,7 +131,8 @@ impl Parse for Args {
             ));
         }
         if args.field.is_some() && args.keys_of.is_some() {
-            return Err(input.error(
+            return Err(Error::new(
+                proc_macro2::Span::call_site(),
                 "an enum names either the values of a field or the keys of an object, not both",
             ));
         }

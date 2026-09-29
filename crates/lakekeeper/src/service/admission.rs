@@ -883,7 +883,7 @@ mod tests {
             .iter()
             .find(|l| l["operation"] == "admission_decided")
             .unwrap_or_else(|| panic!("no admission_decided record in {lines:#?}"));
-        assert_eq!(record["actor"]["actor_type"], "assumed-role");
+        assert_eq!(record["actor"]["actor_type"], "assumed_role");
         assert_eq!(record["actor"]["principal"], user_id.to_string());
         assert_eq!(
             record["actor"]["assumed_role"]["role_id"],

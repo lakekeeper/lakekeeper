@@ -3573,9 +3573,9 @@ pub mod tests {
             .map(|(k, v)| (k.as_str(), v.to_string()))
             .collect();
         // Ordering is deterministic: refs sort lexically, kinds sort by variant.
-        assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
+        assert_eq!(context.get("target_refs"), Some(&"[dev, main]".to_string()));
         assert_eq!(
-            context.get("update-kinds"),
+            context.get("update_kinds"),
             Some(&"[add-schema, set-snapshot-ref]".to_string())
         );
     }

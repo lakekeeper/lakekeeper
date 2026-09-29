@@ -29,13 +29,14 @@
   "authorizations": [
     {
       "action": {
-        "action_name": "read_data"
+        "action_name": "create_role",
+        "name": "analysts",
+        "requested_provider_id": "ldap",
+        "requested_source_id": "analysts"
       },
       "entity": {
-        "entity_type": "table",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "table_id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "entity_type": "project",
+        "project_id": "00000000-0000-0000-0000-000000000000"
       },
       "allowed": true
     }

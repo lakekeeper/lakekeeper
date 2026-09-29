@@ -34,10 +34,10 @@
         "action_name": "read_data"
       },
       "entity": {
-        "entity_type": "table",
+        "entity_type": "namespace",
         "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "table_id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
       },
       "allowed": false
     }

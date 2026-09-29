@@ -3979,7 +3979,7 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         assert!(
-            context.contains(&("dry-run".to_string(), "true".to_string())),
+            context.contains(&("dry_run".to_string(), "true".to_string())),
             "the flag reaches the authorizer and the audit record: {context:?}"
         );
     }

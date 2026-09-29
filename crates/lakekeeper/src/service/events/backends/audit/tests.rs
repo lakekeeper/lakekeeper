@@ -26,6 +26,7 @@ use crate::{
                 EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
                 FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
                 FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
+                synthesise_authorizations,
             },
         },
         idempotency::IdempotencyKey,
@@ -424,41 +425,69 @@ fn fixture_warehouse_entity() -> EntityDescriptor {
         .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
 }
 
-/// The simplest per-decision entry: no id, no `for_principal`, no
-/// `determined_by`. Pins which fields are omitted rather than emitted as null.
-fn fixture_plain_authorization() -> Authorization {
+/// A succeeded event whose per-decision entries are the ones the handler synthesises for a
+/// call site that supplies none: one per (entity, action) pair.
+///
+/// Built here rather than by hand so a fixture's `authorizations[]` always names actions and
+/// entities its own lists carry. An entry naming anything else describes a record the
+/// emitter cannot produce, which makes the fixture misleading as a worked example.
+fn fixture_succeeded_event(
+    request_metadata: RequestMetadata,
+    entities: EventEntities,
+    actions: Vec<ActionDescriptor>,
+    extra_context: Arc<std::collections::HashMap<String, String>>,
+) -> AuthorizationSucceededEvent {
+    let entities = Arc::new(entities);
+    let actions = Arc::new(actions);
+    let authorizations = Arc::new(synthesise_authorizations(
+        &entities,
+        &actions,
+        None,
+        Some(true),
+    ));
+    AuthorizationSucceededEvent {
+        request_metadata: Arc::new(request_metadata),
+        entities,
+        actions,
+        extra_context,
+        authorizations,
+    }
+}
+
+/// The simplest per-decision entry: no id, no `for_principal`, no `determined_by`. Pins
+/// which fields are omitted rather than emitted as null.
+///
+/// Takes the pair it describes, so a fixture supplying its own list still draws them from
+/// its own `actions` and `entities`. A definitive denial must carry `allowed: false` — a
+/// denied record carrying `true` describes a shape the emitter cannot produce.
+fn fixture_decision(
+    action: ActionDescriptor,
+    entity: EntityDescriptor,
+    allowed: bool,
+) -> Authorization {
     Authorization {
         id: None,
         for_principal: None,
-        action: fixture_read_action(),
-        entity: fixture_table_entity(),
-        allowed: Some(true),
+        action,
+        entity,
+        allowed: Some(allowed),
         determined_by: Vec::new(),
     }
 }
 
-/// A minimal entry for a denied decision. `CannotSeeResource`, `ResourceNotFound`
-/// and `ActionForbidden` are definitive denials, so the per-decision `allowed` must
-/// be `false` — a denied record carrying `allowed: true` describes a shape the
-/// emitter cannot produce.
-fn fixture_denied_authorization() -> Authorization {
-    Authorization {
-        allowed: Some(false),
-        ..fixture_plain_authorization()
-    }
-}
-
-/// A fully-populated entry, so the fixtures pin the optional fields in their
-/// present form as well as their absent one, and both `DeterminingFactor`
-/// variants including its own `None` fields.
-fn fixture_detailed_authorization() -> Authorization {
+/// A fully-populated entry, so the fixtures pin the optional fields in their present form as
+/// well as their absent one, and `DeterminingFactor` including its own `None` fields.
+///
+/// This is the batch-check shape: a client that names its own checks gets an `id` back per
+/// entry, and a policy authorizer reports what decided each one.
+fn fixture_detailed_decision(action: ActionDescriptor, entity: EntityDescriptor) -> Authorization {
     Authorization {
         id: Some("check-0".to_string()),
         for_principal: Some(UserOrRoleId::User(
             crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id"),
         )),
-        action: fixture_read_action(),
-        entity: fixture_namespace_entity(),
+        action,
+        entity,
         allowed: Some(false),
         determined_by: vec![DeterminingFactor::Policy {
             policy_id: "policy-42".to_string(),
@@ -623,13 +652,12 @@ fn the_fixture_directory_matches_the_declared_set() {
 #[test]
 fn fixture_authz_succeeded_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(RequestMetadataTestBuilder::builder().build()),
-            entities: Arc::new(EventEntities::one(fixture_table_entity())),
-            actions: Arc::new(vec![fixture_read_action()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            RequestMetadataTestBuilder::builder().build(),
+            EventEntities::one(fixture_table_entity()),
+            vec![fixture_read_action()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture("authz_succeeded_single", &contract_fields(record));
@@ -650,8 +678,11 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
             actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
             extra_context: fixture_context(&[("invoked_by", "maintenance-task")]),
             authorizations: Arc::new(vec![
-                fixture_plain_authorization(),
-                fixture_detailed_authorization(),
+                fixture_decision(fixture_read_action(), fixture_table_entity(), true),
+                fixture_detailed_decision(
+                    fixture_action_with_context(),
+                    fixture_namespace_entity(),
+                ),
             ]),
         })
     });
@@ -664,16 +695,12 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
 #[test]
 fn fixture_authz_succeeded_single_action_plural_entities() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::many([
-                fixture_table_entity(),
-                fixture_namespace_entity(),
-            ])),
-            actions: Arc::new(vec![fixture_read_action()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::many([fixture_table_entity(), fixture_namespace_entity()]),
+            vec![fixture_read_action()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture("authz_succeeded_action_entities", &contract_fields(record));
@@ -683,13 +710,12 @@ fn fixture_authz_succeeded_single_action_plural_entities() {
 #[test]
 fn fixture_authz_succeeded_plural_actions_single_entity() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::one(fixture_table_entity())),
-            actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_table_entity()),
+            vec![fixture_read_action(), fixture_action_with_context()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture("authz_succeeded_actions_entity", &contract_fields(record));
@@ -703,13 +729,12 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
 #[test]
 fn fixture_authz_succeeded_rich_action_context() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::one(fixture_warehouse_entity())),
-            actions: Arc::new(vec![fixture_create_table_action(), fixture_drop_action()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            vec![fixture_create_table_action(), fixture_drop_action()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture(
@@ -728,13 +753,12 @@ fn fixture_authz_succeeded_rich_action_context() {
 #[test]
 fn fixture_authz_succeeded_revoke_subtree_grants() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::one(fixture_warehouse_entity())),
-            actions: Arc::new(vec![fixture_revoke_subtree_grants_action()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            vec![fixture_revoke_subtree_grants_action()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture(
@@ -757,13 +781,12 @@ fn fixture_authz_succeeded_with_idempotency_key() {
     );
 
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(request_metadata),
-            entities: Arc::new(EventEntities::one(fixture_table_entity())),
-            actions: Arc::new(vec![fixture_read_action()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            request_metadata,
+            EventEntities::one(fixture_table_entity()),
+            vec![fixture_read_action()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture("authz_succeeded_idempotency_key", &contract_fields(record));
@@ -782,18 +805,15 @@ fn fixture_authz_succeeded_create_role_source_system() {
         }),
     };
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
-            request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::one(
-                EntityDescriptor::new(EntityType::Project).field(
-                    FIELD_NAME_PROJECT_ID,
-                    &"00000000-0000-0000-0000-000000000000",
-                ),
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(EntityDescriptor::new(EntityType::Project).field(
+                FIELD_NAME_PROJECT_ID,
+                &"00000000-0000-0000-0000-000000000000",
             )),
-            actions: Arc::new(vec![action.action_descriptor()]),
-            extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_plain_authorization()]),
-        })
+            vec![action.action_descriptor()],
+            fixture_context(&[]),
+        ))
     });
 
     assert_matches_fixture(
@@ -814,7 +834,10 @@ fn fixture_authz_failed_single_action_single_entity() {
             failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
             error: fixture_error(),
             extra_context: fixture_context(&[]),
-            authorizations: Arc::new(vec![fixture_detailed_authorization()]),
+            authorizations: Arc::new(vec![fixture_detailed_decision(
+                fixture_read_action(),
+                fixture_table_entity(),
+            )]),
         })
     });
 
@@ -833,7 +856,11 @@ fn fixture_authz_failed_with_context() {
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
             error: fixture_error(),
             extra_context: fixture_context(&[("self_read", "false")]),
-            authorizations: Arc::new(vec![fixture_denied_authorization()]),
+            authorizations: Arc::new(vec![fixture_decision(
+                fixture_read_action(),
+                fixture_namespace_entity(),
+                false,
+            )]),
         })
     });
 
@@ -1277,6 +1304,58 @@ fn every_committed_fixture_satisfies_the_format_contract() {
     for name in FIXTURE_NAMES {
         super::contract::assert_satisfies(&read_fixture(name), &format!("fixture {name}"));
     }
+}
+
+/// Every per-decision entry in a fixture names an action and an entity that the same record
+/// lists at the top level.
+///
+/// The handler synthesises `authorizations[]` from those two lists, so a record naming
+/// anything else is one it cannot produce. A fixture is the worked example a consumer reads
+/// before writing a parser, and one describing an impossible record teaches the wrong shape.
+#[test]
+fn every_fixture_decides_only_on_what_it_lists() {
+    let mut wrong = Vec::new();
+    for name in FIXTURE_NAMES {
+        let record = read_fixture(name);
+        let Some(entries) = record
+            .get("authorizations")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let listed = |field: &str| -> Vec<serde_json::Value> {
+            record
+                .get(field)
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let (actions, entities) = (listed("actions"), listed("entities"));
+        for (index, entry) in entries.iter().enumerate() {
+            for (field, list, listed) in [
+                ("action", "actions", &actions),
+                ("entity", "entities", &entities),
+            ] {
+                let Some(value) = entry.get(field) else {
+                    continue;
+                };
+                if !listed.contains(value) {
+                    wrong.push(format!(
+                        "fixture {name}: authorizations[{index}].{field} is {value}, which is \
+                         not in the record's `{list}`"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these fixtures decide on something they do not list:\n  {}\n\n\
+         Build the entries with `fixture_succeeded_event`, which pairs them the way the \
+         handler does, or pass the fixture's own action and entity to `fixture_decision` / \
+         `fixture_detailed_decision`.",
+        wrong.join("\n  ")
+    );
 }
 
 /// A request that sent no `User-Agent` must be distinguishable from one
@@ -2121,7 +2200,10 @@ fn maximal_authorization() -> AuthorizationRecord {
         failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
         error: fixture_error(),
         extra_context: fixture_context(&[("self_read", "true")]),
-        authorizations: Arc::new(vec![fixture_detailed_authorization()]),
+        authorizations: Arc::new(vec![fixture_detailed_decision(
+            fixture_read_action(),
+            fixture_table_entity(),
+        )]),
     });
     AuthorizationRecord {
         record_type: assembled.record_type,

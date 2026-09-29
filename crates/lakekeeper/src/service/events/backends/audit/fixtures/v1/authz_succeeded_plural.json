@@ -60,7 +60,11 @@
         "user": "oidc~bob"
       },
       "action": {
-        "action_name": "read_data"
+        "action_name": "update_properties",
+        "name": "orders",
+        "removed_properties": [
+          "stale.key"
+        ]
       },
       "entity": {
         "entity_type": "namespace",
