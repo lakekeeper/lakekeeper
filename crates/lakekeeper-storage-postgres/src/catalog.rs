@@ -50,7 +50,8 @@ use lakekeeper::{
         SetWarehouseRollbackCompactionPolicyError, SetWarehouseStatusError,
         StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
         SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
+        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, TaskQueueStats,
+        TaskQueueStatsRequest, Transaction,
         UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
         UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
         ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
@@ -92,9 +93,9 @@ use crate::{
     },
     tasks::{
         cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
-        get_task_details, get_task_queue_config, list_tasks, pick_task, queue_task_batch,
-        record_failure, record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
-        set_task_queue_config,
+        get_task_details, get_task_queue_config, get_task_queue_stats, list_tasks, pick_task,
+        queue_task_batch, record_failure, record_success, request_tasks_stop, reschedule_tasks_for,
+        resolve_tasks, set_task_queue_config,
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
@@ -973,6 +974,13 @@ impl CatalogStore for super::PostgresBackend {
             default_max_time_since_last_heartbeat,
         )
         .await
+    }
+
+    async fn get_task_queue_stats_impl(
+        requests: &[TaskQueueStatsRequest],
+        state: Self::State,
+    ) -> Result<Vec<TaskQueueStats>> {
+        get_task_queue_stats(requests, &state.read_pool()).await
     }
 
     async fn resolve_tasks_impl(

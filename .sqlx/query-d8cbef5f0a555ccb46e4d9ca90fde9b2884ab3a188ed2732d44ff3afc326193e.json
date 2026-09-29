@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            q.queue_name AS \"queue_name!\",\n            q.sum_field AS \"sum_field\",\n            COUNT(t.task_id) FILTER (\n                WHERE t.status = 'scheduled' AND t.scheduled_for <= now()\n            ) AS \"scheduled_due!\",\n            COUNT(t.task_id) FILTER (WHERE t.status = 'scheduled') AS \"scheduled_total!\",\n            COUNT(t.task_id) FILTER (\n                WHERE t.status IN ('running', 'should-stop')\n            ) AS \"running!\",\n            MIN(t.scheduled_for) FILTER (\n                WHERE t.status = 'scheduled' AND t.scheduled_for <= now()\n            ) AS \"oldest_due_scheduled_for\",\n            COALESCE(SUM(\n                CASE\n                    WHEN q.sum_field IS NOT NULL\n                        AND t.status = 'scheduled' AND t.scheduled_for <= now()\n                        AND jsonb_typeof(t.task_data -> q.sum_field) = 'number'\n                    THEN (t.task_data ->> q.sum_field)::float8\n                    ELSE 0\n                END\n            ), 0) AS \"payload_field_sum!\"\n        FROM UNNEST($1::text[], $2::text[]) AS q(queue_name, sum_field)\n        LEFT JOIN task t ON t.queue_name = q.queue_name\n        GROUP BY q.queue_name, q.sum_field\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "queue_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum_field",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "scheduled_due!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "scheduled_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "running!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "oldest_due_scheduled_for",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "payload_field_sum!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d8cbef5f0a555ccb46e4d9ca90fde9b2884ab3a188ed2732d44ff3afc326193e"
+}

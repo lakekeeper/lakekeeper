@@ -9,7 +9,7 @@ use lakekeeper::{
         tasks::TaskStatus,
     },
     service::{
-        ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
+        ArcProjectId, DatabaseIntegrityError, TableId, TaskQueueStats, TaskQueueStatsRequest, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
@@ -301,6 +301,91 @@ pub(crate) async fn queue_task_batch(
             .collect_vec()
     })
     .map_err(|e| e.into_error_model("failed queueing tasks"))?)
+}
+
+/// Aggregate per-queue statistics in one query (VAK-669 §5.3): due/total scheduled
+/// counts, running count, the oldest due-scheduled timestamp, and an optional sum of a
+/// numeric `task_data` field over due-scheduled tasks. Global across warehouses.
+///
+/// One `LEFT JOIN` over `UNNEST` so every requested queue yields exactly one row (even
+/// with zero tasks). The summed field name is a bind **value** (`->` with a text
+/// parameter), never interpolated SQL, and `jsonb_typeof(... ) = 'number'` guards a
+/// malformed payload from erroring the whole scrape.
+pub(crate) async fn get_task_queue_stats(
+    requests: &[TaskQueueStatsRequest],
+    pool: &PgPool,
+) -> Result<Vec<TaskQueueStats>, IcebergErrorResponse> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let queue_names: Vec<String> = requests
+        .iter()
+        .map(|r| r.queue_name.as_str().to_string())
+        .collect();
+    let sum_fields: Vec<Option<String>> = requests
+        .iter()
+        .map(|r| r.sum_payload_field.clone())
+        .collect();
+    // Group by (queue_name, sum_field) — both `UNNEST` columns — so a queue that appears
+    // in several requests (with different summed fields) is one group *per request row*
+    // rather than a single merged group that would double-count the joined tasks.
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            q.queue_name AS "queue_name!",
+            q.sum_field AS "sum_field",
+            COUNT(t.task_id) FILTER (
+                WHERE t.status = 'scheduled' AND t.scheduled_for <= now()
+            ) AS "scheduled_due!",
+            COUNT(t.task_id) FILTER (WHERE t.status = 'scheduled') AS "scheduled_total!",
+            COUNT(t.task_id) FILTER (
+                WHERE t.status IN ('running', 'should-stop')
+            ) AS "running!",
+            MIN(t.scheduled_for) FILTER (
+                WHERE t.status = 'scheduled' AND t.scheduled_for <= now()
+            ) AS "oldest_due_scheduled_for",
+            COALESCE(SUM(
+                CASE
+                    WHEN q.sum_field IS NOT NULL
+                        AND t.status = 'scheduled' AND t.scheduled_for <= now()
+                        AND jsonb_typeof(t.task_data -> q.sum_field) = 'number'
+                    THEN (t.task_data ->> q.sum_field)::float8
+                    ELSE 0
+                END
+            ), 0) AS "payload_field_sum!"
+        FROM UNNEST($1::text[], $2::text[]) AS q(queue_name, sum_field)
+        LEFT JOIN task t ON t.queue_name = q.queue_name
+        GROUP BY q.queue_name, q.sum_field
+        "#,
+        &queue_names,
+        &sum_fields as &[Option<String>],
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.into_error_model("failed to aggregate task queue stats"))?;
+
+    // Index by (queue_name, sum_field) so each request maps to exactly its own group.
+    let by_key: std::collections::HashMap<(String, Option<String>), _> = rows
+        .into_iter()
+        .map(|r| ((r.queue_name.clone(), r.sum_field.clone()), r))
+        .collect();
+    Ok(requests
+        .iter()
+        .map(|req| {
+            let row = by_key.get(&(req.queue_name.as_str().to_string(), req.sum_payload_field.clone()));
+            TaskQueueStats {
+                queue_name: req.queue_name.clone(),
+                scheduled_due: row.map_or(0, |r| r.scheduled_due),
+                scheduled_total: row.map_or(0, |r| r.scheduled_total),
+                running: row.map_or(0, |r| r.running),
+                oldest_due_scheduled_for: row.and_then(|r| r.oldest_due_scheduled_for),
+                payload_field_sum: req
+                    .sum_payload_field
+                    .as_ref()
+                    .map(|_| row.map_or(0.0, |r| r.payload_field_sum)),
+            }
+        })
+        .collect())
 }
 
 /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
@@ -1409,6 +1494,133 @@ mod test {
         .unwrap();
 
         assert_ne!(id, id3);
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_counts_sums_and_running(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let empty_tq = generate_tq_name();
+
+        let entity = |warehouse_id: WarehouseId| {
+            let entity_id = WarehouseTaskEntityId::Table {
+                table_id: Uuid::now_v7().into(),
+            };
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            }
+        };
+        let payload = |v: f64| Some(serde_json::json!({ "offered-pod-seconds": v }));
+
+        // Two due-scheduled tasks (10.0 each) and one future-scheduled (100.0, never due).
+        for _ in 0..2 {
+            queue_task(&mut conn, &tq, None, project_id.clone(), None, payload(10.0), entity(warehouse_id))
+                .await
+                .unwrap();
+        }
+        let future = Utc::now() + chrono::Duration::hours(1);
+        queue_task(&mut conn, &tq, None, project_id.clone(), Some(future), payload(100.0), entity(warehouse_id))
+            .await
+            .unwrap();
+
+        let requests = || {
+            vec![
+                TaskQueueStatsRequest {
+                    queue_name: tq.clone(),
+                    sum_payload_field: Some("offered-pod-seconds".to_string()),
+                },
+                // Same queue but no field requested → sum must be None.
+                TaskQueueStatsRequest {
+                    queue_name: tq.clone(),
+                    sum_payload_field: None,
+                },
+                // A queue with no tasks → still returned (LEFT JOIN), zeros, Some(0.0) sum.
+                TaskQueueStatsRequest {
+                    queue_name: empty_tq.clone(),
+                    sum_payload_field: Some("offered-pod-seconds".to_string()),
+                },
+            ]
+        };
+
+        // Before anything runs: both due tasks counted, future excluded from `due`.
+        let stats = get_task_queue_stats(&requests(), &pool).await.unwrap();
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].scheduled_due, 2);
+        assert_eq!(stats[0].scheduled_total, 3);
+        assert_eq!(stats[0].running, 0);
+        assert!(stats[0].oldest_due_scheduled_for.is_some());
+        assert_eq!(stats[0].payload_field_sum, Some(20.0));
+        // No field requested → sum is None regardless of the tasks' payloads.
+        assert_eq!(stats[1].payload_field_sum, None);
+        assert_eq!(stats[1].scheduled_due, 2);
+        // Empty queue: a zero row is still returned (LEFT JOIN), sum Some(0.0).
+        assert_eq!(stats[2].queue_name, empty_tq);
+        assert_eq!(stats[2].scheduled_due, 0);
+        assert_eq!(stats[2].scheduled_total, 0);
+        assert_eq!(stats[2].running, 0);
+        assert_eq!(stats[2].oldest_due_scheduled_for, None);
+        assert_eq!(stats[2].payload_field_sum, Some(0.0));
+
+        // Move exactly one due task to `running`; its 10.0 leaves the due-sum at 10.0
+        // regardless of which identical-value task was moved.
+        sqlx::query!(
+            r#"
+            UPDATE task SET status = 'running'
+            WHERE task_id = (
+                SELECT task_id FROM task
+                WHERE queue_name = $1 AND status = 'scheduled' AND scheduled_for <= now()
+                ORDER BY task_id
+                LIMIT 1
+            )
+            "#,
+            tq.as_str(),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let stats = get_task_queue_stats(&requests(), &pool).await.unwrap();
+        assert_eq!(stats[0].scheduled_due, 1);
+        assert_eq!(stats[0].scheduled_total, 2);
+        assert_eq!(stats[0].running, 1);
+        assert_eq!(stats[0].payload_field_sum, Some(10.0));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_ignores_non_numeric_payload(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        // A due task whose field is a string, not a number — must contribute 0, not error.
+        queue_task(
+            &mut conn,
+            &tq,
+            None,
+            project_id.clone(),
+            None,
+            Some(serde_json::json!({ "offered-pod-seconds": "not-a-number" })),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = vec![TaskQueueStatsRequest {
+            queue_name: tq.clone(),
+            sum_payload_field: Some("offered-pod-seconds".to_string()),
+        }];
+        let stats = get_task_queue_stats(&requests, &pool).await.unwrap();
+        assert_eq!(stats[0].scheduled_due, 1);
+        assert_eq!(stats[0].payload_field_sum, Some(0.0));
     }
 
     #[sqlx::test]
