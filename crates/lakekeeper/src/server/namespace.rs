@@ -5,12 +5,12 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
-use lakekeeper_io::Location;
+use lakekeeper_io::{LakekeeperStorage as _, Location, RemoveEmptyDirectoryOutcome};
 
 mod create;
 mod list;
 
-use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
+use super::{CatalogServer, UnfilteredPage, maybe_get_secret, require_warehouse_id};
 use crate::{
     CONFIG,
     api::{
@@ -582,7 +582,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        if flags.recursive {
+        let namespace_locations = if flags.recursive {
             // recursive drop commits its own transaction
             try_recursive_drop::<_, C>(
                 flags,
@@ -593,9 +593,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 idempotency_key.as_ref(),
             )
-            .await?;
+            .await?
         } else {
-            C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            let drop_info =
+                C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
             if let Some(ref key) = idempotency_key
                 && !C::try_insert_idempotency_key(
                     warehouse_id,
@@ -624,9 +625,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
                 })
                 .ok();
-        }
+            drop_info.namespace_locations
+        };
 
         event_ctx.emit_namespace_dropped_async();
+
+        if flags.purge {
+            // A third of the request budget, so a slow backend cannot time out a committed drop.
+            let budget = CONFIG.max_request_time / 3;
+            let cleanup = try_cleanup_namespace_locations(
+                &warehouse,
+                &state.v1_state.secrets,
+                namespace_locations,
+            );
+            if tokio::time::timeout(budget, cleanup).await.is_err() {
+                tracing::warn!(
+                    "Removing empty namespace directories in warehouse {warehouse_id} exceeded {budget:?}; the remaining directories are kept"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -769,7 +787,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
     idempotency_key: Option<&IdempotencyKey>,
-) -> Result<()> {
+) -> Result<Vec<(NamespaceId, Location)>> {
     if matches!(
         warehouse.tabular_delete_profile,
         TabularDeleteProfile::Hard {}
@@ -915,7 +933,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 .ok();
         }
 
-        Ok(())
+        Ok(drop_info.namespace_locations)
     } else {
         Err(ErrorModel::bad_request(
             "Cannot recursively delete namespace with soft-deletion without force flag",
@@ -924,6 +942,95 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         )
         .into())
     }
+}
+
+/// Best-effort removal of empty namespace directories after a namespace drop.
+///
+/// Removal is atomic per directory and skips non-empty ones, so a directory whose table data is
+/// still being purged is kept and not revisited. Errors are logged and never fail the drop.
+async fn try_cleanup_namespace_locations<S: SecretStore>(
+    warehouse: &ResolvedWarehouse,
+    secret_store: &S,
+    namespace_locations: Vec<(NamespaceId, Location)>,
+) {
+    let base = match warehouse.storage_profile.base_location() {
+        Ok(base) => base,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to get base location for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+    let candidates = namespace_cleanup_candidates(&base, namespace_locations);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let secret = match maybe_get_secret(warehouse.storage_secret_id, secret_store).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to get storage secret for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+    let file_io = match warehouse.storage_profile.file_io(secret.as_deref()).await {
+        Ok(io) => io,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize IO for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+
+    for (ns_id, location) in candidates {
+        match file_io.remove_empty_directory(location.as_str()).await {
+            Ok(RemoveEmptyDirectoryOutcome::Removed) => {
+                tracing::info!("Removed empty directory of namespace {ns_id} at {location}");
+            }
+            Ok(RemoveEmptyDirectoryOutcome::Unsupported) => return,
+            Ok(outcome) => {
+                tracing::debug!("Kept directory of namespace {ns_id} at {location}: {outcome}");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to remove empty directory of namespace {ns_id} at {location}: {e}"
+                );
+            }
+        }
+    }
+}
+
+/// Locations strictly below `base`, deepest first so a parent is checked after its children.
+///
+/// On flat layouts a namespace location equals `base`, so nothing is returned.
+fn namespace_cleanup_candidates(
+    base: &Location,
+    mut namespace_locations: Vec<(NamespaceId, Location)>,
+) -> Vec<(NamespaceId, Location)> {
+    namespace_locations.retain(|(_, location)| is_strictly_below(location, base));
+    namespace_locations.sort_by_key(|(_, location)| {
+        std::cmp::Reverse(location.as_str().trim_end_matches('/').len())
+    });
+    namespace_locations
+}
+
+/// Whether `location` lies strictly below `base`, comparing both with exactly one trailing slash,
+/// the form storage backends resolve them to.
+fn is_strictly_below(location: &Location, base: &Location) -> bool {
+    let normalize = |location: &Location| {
+        let mut location = location.clone();
+        location.without_trailing_slash().with_trailing_slash();
+        location
+    };
+    let (location, base) = (normalize(location), normalize(base));
+    location != base && location.is_sublocation_of(&base)
 }
 
 pub(crate) fn uppercase_first_letter(s: &str) -> String {
@@ -1199,6 +1306,73 @@ mod tests {
                 ("key2".to_string(), "value12".to_string()),
                 ("key5".to_string(), "value5".to_string()),
             ])
+        );
+    }
+
+    #[test]
+    fn test_is_strictly_below_ignores_trailing_slashes() {
+        let loc = |s: &str| s.parse::<Location>().unwrap();
+        for base in [
+            "abfss://fs@acc.dfs.core.windows.net/wh",
+            "abfss://fs@acc.dfs.core.windows.net/wh/",
+        ] {
+            let base = loc(base);
+            for (location, expected) in [
+                ("abfss://fs@acc.dfs.core.windows.net/wh", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh//", false),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/ns", true),
+                ("abfss://fs@acc.dfs.core.windows.net/wh/ns//", true),
+                ("abfss://fs@acc.dfs.core.windows.net/wh-other/ns", false),
+                ("abfss://fs@acc.dfs.core.windows.net/other", false),
+                ("abfss://other@acc.dfs.core.windows.net/wh/ns", false),
+                ("wasbs://fs@acc.blob.core.windows.net/wh/ns", false),
+            ] {
+                assert_eq!(
+                    is_strictly_below(&loc(location), &base),
+                    expected,
+                    "{location} below {base}"
+                );
+            }
+        }
+
+        let root = loc("abfss://fs@acc.dfs.core.windows.net/");
+        assert!(!is_strictly_below(&root, &root));
+        assert!(!is_strictly_below(
+            &loc("abfss://fs@acc.dfs.core.windows.net//"),
+            &root
+        ));
+        assert!(is_strictly_below(
+            &loc("abfss://fs@acc.dfs.core.windows.net/ns"),
+            &root
+        ));
+    }
+
+    #[test]
+    fn test_namespace_cleanup_candidates_skip_base_and_go_deepest_first() {
+        let loc = |s: &str| s.parse::<Location>().unwrap();
+        let base = loc("abfss://fs@acc.dfs.core.windows.net/wh/");
+        let [flat, parent, child, grandchild, outside] =
+            std::array::from_fn(|_| NamespaceId::new_random());
+        let candidates = namespace_cleanup_candidates(
+            &base,
+            vec![
+                (flat, loc("abfss://fs@acc.dfs.core.windows.net/wh")),
+                (parent, loc("abfss://fs@acc.dfs.core.windows.net/wh/p")),
+                (
+                    grandchild,
+                    loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c/g"),
+                ),
+                (
+                    outside,
+                    loc("abfss://fs@acc.dfs.core.windows.net/elsewhere/x"),
+                ),
+                (child, loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c/")),
+            ],
+        );
+        assert_eq!(
+            candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![grandchild, child, parent]
         );
     }
 

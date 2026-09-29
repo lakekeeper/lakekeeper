@@ -2537,6 +2537,31 @@ mod tests {
             is_empty(&io, &table_location).await.unwrap(),
             "Location should be empty after delete"
         );
+
+        // A directory emptied by a delete is removed where directories are real entities.
+        let mut directory = base_location.clone();
+        directory.without_trailing_slash().push("emptied");
+        let marker = directory.cloning_push("marker");
+        io.write(marker.as_str(), bytes::Bytes::from_static(b"marker"))
+            .await
+            .unwrap();
+        io.delete(marker.as_str()).await.unwrap();
+        let expected = if matches!(
+            profile,
+            StorageProfile::Adls(_) | StorageProfile::OneLake(_)
+        ) {
+            lakekeeper_io::RemoveEmptyDirectoryOutcome::Removed
+        } else {
+            lakekeeper_io::RemoveEmptyDirectoryOutcome::Unsupported
+        };
+        assert_eq!(
+            io.remove_empty_directory(directory.as_str()).await.unwrap(),
+            expected
+        );
+        assert!(
+            is_empty(&io, &table_location).await.unwrap(),
+            "Location should be empty after removing the emptied directory"
+        );
     }
 
     #[allow(clippy::too_many_lines)]
