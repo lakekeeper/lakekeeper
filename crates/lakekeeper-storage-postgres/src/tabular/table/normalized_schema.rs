@@ -52,6 +52,7 @@ pub enum IcebergTypeKind {
     Uuid,
     Fixed,
     Binary,
+    Unknown,
     Variant,
     Struct,
     List,
@@ -70,7 +71,7 @@ impl IcebergTypeKind {
     /// Exhaustive (no wildcard) so a future kind forces a decision here, like `type_kind_and_params`.
     fn permits_non_null_default(self) -> bool {
         match self {
-            IcebergTypeKind::Variant => false,
+            IcebergTypeKind::Variant | IcebergTypeKind::Unknown => false,
             IcebergTypeKind::Boolean
             | IcebergTypeKind::Int
             | IcebergTypeKind::Long
@@ -269,6 +270,7 @@ fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
                 Some(serde_json::json!({ "length": length })),
             ),
             PrimitiveType::Binary => (IcebergTypeKind::Binary, None),
+            PrimitiveType::Unknown => (IcebergTypeKind::Unknown, None),
         },
         Type::Struct(_) => (IcebergTypeKind::Struct, None),
         Type::List(_) => (IcebergTypeKind::List, None),
