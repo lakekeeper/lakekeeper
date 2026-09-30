@@ -346,19 +346,26 @@ pub(crate) async fn get_task_queue_stats(
     if requests.is_empty() {
         return Ok(Vec::new());
     }
-    // One row per distinct physical name across all requests, carrying that queue's
-    // heartbeat timeout and the field to sum. Deduplicated so a name repeated within or
-    // across requests is queried once and can't fan a task out into multiple counted rows.
+    // One row per distinct `(name, heartbeat, sum_field)` triple across all requests. The
+    // triple — not the name alone — is the key, because two requests can name the same
+    // queue with a different heartbeat or summed field; deduping on name alone would let
+    // the first request's timeout/field silently decide the other's row. Deduping the full
+    // triple still collapses a name repeated within a request (e.g. an alias equal to the
+    // canonical name), which can't multiply counts.
     let mut match_names: Vec<String> = Vec::new();
     let mut heartbeats: Vec<PgInterval> = Vec::new();
     let mut sum_fields: Vec<Option<String>> = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut req_heartbeat_micros: Vec<i64> = Vec::with_capacity(requests.len());
+    let mut seen: std::collections::HashSet<(&str, i64, Option<&str>)> =
+        std::collections::HashSet::new();
     for req in requests {
         let heartbeat = duration_to_interval(req.max_time_since_last_heartbeat)?;
+        req_heartbeat_micros.push(heartbeat.microseconds);
+        let sum_field = req.sum_payload_field.as_deref();
         for name in std::iter::once(req.queue_name.as_str())
             .chain(req.legacy_queue_names.iter().map(|n| n.as_str()))
         {
-            if seen.insert(name) {
+            if seen.insert((name, heartbeat.microseconds, sum_field)) {
                 match_names.push(name.to_string());
                 heartbeats.push(heartbeat);
                 sum_fields.push(req.sum_payload_field.clone());
@@ -366,12 +373,15 @@ pub(crate) async fn get_task_queue_stats(
         }
     }
 
-    // `heartbeat`/`sum_field` are used only inside aggregates, so they need no GROUP BY;
-    // the join to the tiny per-name map supplies each queue's timeout and summed field.
+    // Group by the physical queue name plus the heartbeat and summed field it was
+    // requested with, so a name requested two ways yields one row per way. The fold keys
+    // on the same triple to route each row back to the request that asked for it.
     let rows = sqlx::query!(
         r#"
         SELECT
             t.queue_name AS "queue_name!",
+            m.heartbeat AS "heartbeat!",
+            m.sum_field,
             COUNT(*) FILTER (
                 WHERE (t.status = 'scheduled' AND t.scheduled_for <= now())
                    OR (t.status IN ('running', 'should-stop') AND t.scheduled_for <= now()
@@ -401,7 +411,7 @@ pub(crate) async fn get_task_queue_stats(
         JOIN UNNEST($1::text[], $2::interval[], $3::text[]) AS m(match_name, heartbeat, sum_field)
             ON t.queue_name = m.match_name
         WHERE t.queue_name = ANY($1)
-        GROUP BY t.queue_name
+        GROUP BY t.queue_name, m.heartbeat, m.sum_field
         "#,
         &match_names,
         &heartbeats,
@@ -412,13 +422,26 @@ pub(crate) async fn get_task_queue_stats(
     .map_err(|e| e.into_error_model("failed to aggregate task queue stats"))?;
 
     // Fold each logical queue's per-name rows back into one result: sum the counts, take
-    // the oldest of the oldest-due timestamps. Names are deduped again here so an alias
-    // equal to the canonical name doesn't add the same row twice.
-    let by_name: std::collections::HashMap<&str, _> =
-        rows.iter().map(|r| (r.queue_name.as_str(), r)).collect();
+    // the oldest of the oldest-due timestamps. Rows are keyed by the same
+    // `(name, heartbeat, sum_field)` triple used to build the query, so a request only
+    // picks up rows computed with its own timeout and summed field.
+    let by_key: std::collections::HashMap<(&str, i64, Option<&str>), _> = rows
+        .iter()
+        .map(|r| {
+            (
+                (
+                    r.queue_name.as_str(),
+                    r.heartbeat.microseconds,
+                    r.sum_field.as_deref(),
+                ),
+                r,
+            )
+        })
+        .collect();
     Ok(requests
         .iter()
-        .map(|req| {
+        .zip(&req_heartbeat_micros)
+        .map(|(req, &heartbeat_micros)| {
             let mut stats = TaskQueueStats {
                 queue_name: req.queue_name.clone(),
                 scheduled_due: 0,
@@ -427,6 +450,7 @@ pub(crate) async fn get_task_queue_stats(
                 oldest_due_scheduled_for: None,
                 payload_field_sum: req.sum_payload_field.as_ref().map(|_| 0.0),
             };
+            let sum_field = req.sum_payload_field.as_deref();
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for name in std::iter::once(req.queue_name.as_str())
                 .chain(req.legacy_queue_names.iter().map(|n| n.as_str()))
@@ -434,7 +458,7 @@ pub(crate) async fn get_task_queue_stats(
                 if !seen.insert(name) {
                     continue;
                 }
-                let Some(row) = by_name.get(name) else {
+                let Some(row) = by_key.get(&(name, heartbeat_micros, sum_field)) else {
                     continue;
                 };
                 stats.scheduled_due += row.scheduled_due;
@@ -1881,6 +1905,59 @@ mod test {
         assert_eq!(stats[0].scheduled_due, 1);
         assert_eq!(stats[0].scheduled_total, 1);
         assert_eq!(stats[0].payload_field_sum, Some(3.0));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_same_queue_distinct_sum_fields(pool: PgPool) {
+        // Two requests for the same queue in one batch, differing only in the summed field.
+        // Each must get a sum computed with ITS OWN field, regardless of order — deduping
+        // on the name alone would let the first request's field decide the other's row.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            &tq,
+            None,
+            project_id.clone(),
+            None,
+            Some(serde_json::json!({ "offered-pod-seconds": 8.0 })),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap();
+
+        // The field-less request comes first — the order a name-only dedup mishandles.
+        let stats = get_task_queue_stats(
+            &[
+                TaskQueueStatsRequest {
+                    queue_name: tq.clone(),
+                    legacy_queue_names: vec![],
+                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
+                    sum_payload_field: None,
+                },
+                TaskQueueStatsRequest {
+                    queue_name: tq.clone(),
+                    legacy_queue_names: vec![],
+                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
+                    sum_payload_field: Some("offered-pod-seconds".to_string()),
+                },
+            ],
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats[0].scheduled_due, 1);
+        assert_eq!(stats[0].payload_field_sum, None);
+        assert_eq!(stats[1].scheduled_due, 1);
+        assert_eq!(stats[1].payload_field_sum, Some(8.0));
     }
 
     #[sqlx::test]
