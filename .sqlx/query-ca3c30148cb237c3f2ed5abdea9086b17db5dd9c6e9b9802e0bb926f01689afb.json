@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE task\n            SET status = 'running', last_heartbeat_at = now() - interval '10 minutes'\n            WHERE queue_name = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ca3c30148cb237c3f2ed5abdea9086b17db5dd9c6e9b9802e0bb926f01689afb"
+}
