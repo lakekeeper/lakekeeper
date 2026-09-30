@@ -284,6 +284,22 @@ pub async fn new_full_router<
     })
 }
 
+/// Build a minimal router that exposes only `/health`.
+///
+/// Used by headless worker deployments (`LAKEKEEPER__SERVE_HTTP_API=false`)
+/// that run background task-queue workers without the catalog API. The endpoint
+/// gives liveness/readiness probes something to hit; it is unauthenticated,
+/// exactly like `/health` on the full router.
+pub fn new_health_router(service_health_provider: ServiceHealthProvider) -> Router {
+    Router::new().route(
+        "/health",
+        get(|| async move {
+            let health = service_health_provider.collect_health().await;
+            health_response(health)
+        }),
+    )
+}
+
 fn health_response(health: HealthState) -> axum::response::Response {
     let status = match health.health {
         HealthStatus::Healthy => StatusCode::OK,

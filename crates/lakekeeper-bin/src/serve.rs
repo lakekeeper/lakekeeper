@@ -7,7 +7,7 @@ use lakekeeper::{
     service::{
         CatalogStore, SecretStore,
         authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
-        authz::{AllowAllAuthorizer, Authorizer},
+        authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
         events::EventDispatcher,
     },
@@ -57,31 +57,42 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
     }
 }
 
-/// Run the process as a headless maintenance worker: no HTTP API and no
-/// authorizer/authenticator backend. Task-queue workers, metrics and health
-/// checks still run. Selected by `serve_default` when
-/// `LAKEKEEPER__SERVE_HTTP_API=false`.
+/// Run the process as a headless maintenance worker: task-queue workers,
+/// metrics and health checks run, but the catalog HTTP API is not served.
+/// Selected by `serve_default` when `LAKEKEEPER__SERVE_HTTP_API=false`. The
+/// library `serve` binds only `/health` in this mode.
 ///
-/// A worker serves no requests and acts under the internal (authz-bypassed)
-/// actor, so it constructs `AllowAll` directly — no OpenFGA dial — and passes no
-/// authenticator. The library `serve` skips binding the API via
-/// `CONFIG.serve_http_api`.
+/// A worker uses the same authorizer as a full server: maintenance tasks delete
+/// authorization state (e.g. the tabular expiration queue removes the relations
+/// of expired tables/views/generic tables), so it must dial the configured
+/// backend rather than short-circuit with `AllowAll`, which would silently leak
+/// those relations. It passes no authenticator — it serves no authenticated
+/// requests.
 pub(crate) async fn serve_worker(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
     let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
         .await?
         .server_id();
     let events = EventDispatcher::new(vec![]);
-    serve_inner::<PostgresBackend, _, _, AuthenticatorEnum>(
-        bind_addr,
-        secrets,
-        catalog,
-        AllowAllAuthorizer { server_id },
-        None,
-        vec![stats],
-        events,
-    )
-    .await
+    let authorizer = AuthorizerEnum::init_from_env(server_id).await?;
+    let stats = vec![stats];
+
+    match authorizer {
+        AuthorizerEnum::AllowAll(authz) => {
+            tracing::info!("Using AllowAll authorizer");
+            serve_inner::<PostgresBackend, _, _, AuthenticatorEnum>(
+                bind_addr, secrets, catalog, authz, None, stats, events,
+            )
+            .await
+        }
+        AuthorizerEnum::OpenFGA(authz) => {
+            tracing::info!("Using OpenFGA authorizer");
+            serve_inner::<PostgresBackend, _, _, AuthenticatorEnum>(
+                bind_addr, secrets, catalog, *authz, None, stats, events,
+            )
+            .await
+        }
+    }
 }
 
 async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
