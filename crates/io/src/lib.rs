@@ -263,6 +263,21 @@ impl FileInfo {
     }
 }
 
+/// The result of [`LakekeeperStorage::read`]: the object's bytes plus the
+/// [`FileInfo`] the backend surfaced while fetching them.
+///
+/// Backends already obtain the object metadata during a read (all of them issue
+/// a `head` to size the request), so returning it here lets callers get the
+/// bytes and the metadata (`last_modified`, `size`) in one round-trip instead of
+/// a separate [`LakekeeperStorage::metadata`] call.
+#[derive(Debug, Clone)]
+pub struct ObjectRead {
+    /// The object's bytes.
+    pub bytes: Bytes,
+    /// Metadata surfaced while reading the object.
+    pub info: FileInfo,
+}
+
 /// Streaming file writer.
 ///
 /// Always call `close().await` for deterministic finalization and cleanup.
@@ -327,11 +342,15 @@ where
     ))]
     async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
 
-    /// Read a file from the specified path, possibly in chunks
+    /// Read a file from the specified path, possibly in chunks.
+    ///
+    /// Returns the bytes together with the [`FileInfo`] the backend surfaced
+    /// while reading, so callers avoid a separate [`LakekeeperStorage::metadata`]
+    /// round-trip when they need both.
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError>;
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError>;
 
     /// Read a file from the specified path with a single request.
     ///
@@ -476,7 +495,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.read(path).await,
@@ -616,7 +635,7 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).writer(path).await
                 }
 
-                async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+                async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
                     (**self).read(path).await
                 }
 
