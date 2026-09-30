@@ -1376,6 +1376,11 @@ where
         state: Self::State,
     ) -> Result<Option<Task>>;
 
+    async fn get_task_queue_stats_impl(
+        requests: &[TaskQueueStatsRequest],
+        state: Self::State,
+    ) -> Result<Vec<TaskQueueStats>>;
+
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,
         task_ids: &[TaskId],

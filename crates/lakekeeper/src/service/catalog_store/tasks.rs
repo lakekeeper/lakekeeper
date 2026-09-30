@@ -64,6 +64,51 @@ pub struct TaskList {
     pub next_page_token: Option<String>,
 }
 
+/// Request for [`CatalogTaskOps::get_task_queue_stats`]: one logical queue plus an
+/// optional numeric `task_data` field to sum over its due-scheduled tasks. Kept generic
+/// (no queue-specific knowledge) so callers such as the autoscaling gauge can aggregate
+/// an arbitrary payload field (e.g. a per-task work estimate) at scrape time.
+#[derive(Debug, Clone)]
+pub struct TaskQueueStatsRequest {
+    pub queue_name: TaskQueueName,
+    /// Pre-rename aliases of `queue_name`. Tasks enqueued before a rename still carry
+    /// the old name and are still runnable, so stats aggregate over `queue_name` plus
+    /// these — matching how [`CatalogTaskOps::pick_new_task`] and
+    /// [`CatalogTaskOps::cancel_scheduled_tasks`] resolve a logical queue. Omitting a
+    /// legacy name would under-report the backlog and mislead an autoscaler.
+    pub legacy_queue_names: Vec<TaskQueueName>,
+    /// How long a picked-up task may go without a heartbeat before the worker treats it
+    /// as abandoned and re-picks it. A `running`/`should-stop` task past this threshold is
+    /// counted as due (it needs a worker again), matching `pick_new_task`'s reclaim
+    /// predicate — otherwise a crashed worker's task would show as `running` with an empty
+    /// due backlog and an autoscaler would never start a replacement.
+    pub max_time_since_last_heartbeat: chrono::Duration,
+    /// A top-level `task_data` JSONB field whose numeric values are summed over due tasks.
+    /// `None` leaves [`TaskQueueStats::payload_field_sum`] `None`.
+    pub sum_payload_field: Option<String>,
+}
+
+/// Aggregate counts for one task queue, materialized in a single query. Due (runnable)
+/// work is a scheduled task past its `scheduled_for`, plus any running/should-stop task
+/// whose heartbeat has expired — the same set `pick_new_task` can claim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskQueueStats {
+    pub queue_name: TaskQueueName,
+    /// The runnable backlog: scheduled tasks whose `scheduled_for` is due now, plus
+    /// running/should-stop tasks whose heartbeat expired (abandoned attempts a worker
+    /// will re-pick). A crashed worker's task therefore stays visible as due.
+    pub scheduled_due: i64,
+    /// All scheduled tasks (due or future).
+    pub scheduled_total: i64,
+    /// Tasks currently `running` or `should-stop`.
+    pub running: i64,
+    /// `scheduled_for` of the oldest due-scheduled task, for backlog-age metrics.
+    pub oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
+    /// Sum of the requested `sum_payload_field` over due-scheduled tasks. `None` when
+    /// no field was requested; `Some(0.0)` when requested but no rows contribute.
+    pub payload_field_sum: Option<f64>,
+}
+
 #[derive(Debug)]
 pub struct TaskDetails {
     pub task: TaskInfo,
@@ -166,6 +211,18 @@ where
             state,
         )
         .await
+    }
+
+    /// Aggregate per-queue statistics (counts, oldest-due age, and an optional
+    /// payload-field sum) in a single read. Runs on the read pool with no transaction —
+    /// the figures are a point-in-time snapshot, not a claim on any row (unlike
+    /// [`Self::pick_new_task`], which mutates and locks the row it picks). Global across
+    /// warehouses/projects — the caller filters by queue only.
+    async fn get_task_queue_stats(
+        requests: &[TaskQueueStatsRequest],
+        state: Self::State,
+    ) -> Result<Vec<TaskQueueStats>> {
+        Self::get_task_queue_stats_impl(requests, state).await
     }
 
     async fn record_task_success(
