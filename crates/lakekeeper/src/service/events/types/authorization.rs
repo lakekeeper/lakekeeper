@@ -57,41 +57,6 @@ pub struct AuthorizationError {
     pub error_id: String,
 }
 
-impl valuable::Valuable for AuthorizationError {
-    fn as_value(&self) -> valuable::Value<'_> {
-        valuable::Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn valuable::Visit) {
-        visit.visit_entry(
-            valuable::Value::String("type"),
-            valuable::Value::String(&self.r#type),
-        );
-        visit.visit_entry(
-            valuable::Value::String("code"),
-            valuable::Value::U16(self.code),
-        );
-        visit.visit_entry(
-            valuable::Value::String("message"),
-            valuable::Value::String(&self.message),
-        );
-        if !self.stack.is_empty() {
-            visit.visit_entry(valuable::Value::String("stack"), self.stack.as_value());
-        }
-        visit.visit_entry(
-            valuable::Value::String("error_id"),
-            valuable::Value::String(&self.error_id),
-        );
-    }
-}
-
-impl valuable::Mappable for AuthorizationError {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = if self.stack.is_empty() { 4 } else { 5 };
-        (len, Some(len))
-    }
-}
-
 impl AuthorizationError {
     #[must_use]
     pub fn clone_from_error_model(error_model: &ErrorModel) -> Self {
@@ -169,15 +134,7 @@ pub struct AuthorizationSucceededEvent {
 /// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
 #[crate::audit::audit_part(field = "failure_reason")]
 #[audit(rename_all = "snake_case")]
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    valuable::Valuable,
-    strum_macros::VariantArray,
-    strum_macros::VariantNames,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, strum_macros::VariantArray, strum_macros::VariantNames)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user
     ActionForbidden,

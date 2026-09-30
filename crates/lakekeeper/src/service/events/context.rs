@@ -94,7 +94,8 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 ///
 /// Values are strings the handler chooses. A key declared here is declared in Lakekeeper's
 /// audit schema; another emitter declares its own enum with `#[audit_part(keys_of =
-/// "context")]`. No key may spell the name of a core field of any shape.
+/// "context")]`. One key of the map means one thing: a second vocabulary declaring the same
+/// key would put two meanings at one path, and a test rejects that.
 #[audit_part(keys_of = "context")]
 #[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]

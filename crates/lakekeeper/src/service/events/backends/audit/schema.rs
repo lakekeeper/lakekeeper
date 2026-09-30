@@ -466,6 +466,58 @@ pub fn assert_crate_schema_committed(defining_crate: &str, manifest_dir: &str) {
     );
 }
 
+/// Assert that no two vocabularies keying the same object declare the same key.
+///
+/// The `context` map of an authorization record is one flat object, and `keys_of =
+/// "context"` is the one vocabulary form open to an emitter outside this repository. So two
+/// products can reach the same key of the same object. One key, one meaning: a second
+/// declaration is a second meaning at one path in one record, and whichever handler writes
+/// last decides which of them a consumer sees.
+///
+/// Reads the whole registry rather than one crate's, so it sees every vocabulary linked into
+/// the binary that runs it. Run from an emitting crate's own tests it therefore compares that
+/// crate's keys against Lakekeeper's, which is the pairing that can clash.
+///
+/// A name reused at a *different* path is not this. `actor.principal` and `context.principal`
+/// are two fields named for where they sit, which is why the reference tells a consumer to
+/// address fields by path.
+///
+/// # Panics
+///
+/// If one object has the same key from two vocabularies.
+pub fn assert_no_object_declares_a_key_twice() {
+    Registration::require_registry();
+    let mut owners: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
+    for reg in registrations(|_| true) {
+        let Kind::Keys { object, .. } = reg.kind else {
+            continue;
+        };
+        let owner = short_type_name((reg.type_name)());
+        for key in reg.kind.names().iter().map(|name| name.text) {
+            owners.entry((object, key)).or_default().push(owner.clone());
+        }
+    }
+    let clashes: Vec<String> = owners
+        .iter()
+        .filter(|(_, declared_by)| declared_by.len() > 1)
+        .map(|((object, key), declared_by)| {
+            format!(
+                "{object}: `{key}` is declared by {}",
+                declared_by.join(" and ")
+            )
+        })
+        .collect();
+    assert!(
+        clashes.is_empty(),
+        "these keys are declared twice for one object:\n  {}\n\n\
+         A key names one thing. Two vocabularies declaring it for the same object put two \
+         meanings at one path in one record, and the handler that writes last decides which \
+         one a consumer sees. Rename one of them, or have the second use the first rather \
+         than declaring its own.",
+        clashes.join("\n  ")
+    );
+}
+
 /// Whether `name` is one or more runs of `[a-z0-9]` joined by single underscores, starting
 /// with a letter.
 ///

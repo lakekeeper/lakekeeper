@@ -23,29 +23,6 @@ use crate::{
     request_metadata::PrivilegeSource,
 };
 
-/// Every top-level field name a record of any shape can carry. The context-key rule reads
-/// this: no key of a `context` map may spell one of these, whatever its separator.
-pub const TOP_LEVEL_FIELDS: &[&str] = &[
-    "event_source",
-    "audit_format",
-    "record_type",
-    "emitter",
-    "actions",
-    "entities",
-    "actor",
-    "privilege_source",
-    "user_agent",
-    "break_glass",
-    "failure_reason",
-    "error",
-    "context",
-    "authorizations",
-    "idempotency_key",
-    "decision",
-    "operation",
-    "outcome",
-];
-
 /// The `tracing` target of every audit record: a fixed name, not this module's path.
 ///
 /// It is the handle operators filter on, so it cannot move when the code is reorganised. It
