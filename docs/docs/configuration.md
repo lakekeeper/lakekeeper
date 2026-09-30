@@ -536,13 +536,19 @@ _Metrics_: The Role cache exposes Prometheus metrics for monitoring:
 
 **User Assignments Cache**
 
-Caches the set of roles assigned to each user (`UserId → role assignments`). This is the hot-path cache checked on every authorization request and is also the in-memory layer used by the LDAP role provider's two-layer caching scheme. The TTL must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` to bound the window in which a deleted role can still appear in assignment results.
+Caches the set of roles assigned to each user (`UserId → role assignments`). Only authorizers that resolve role assignments from Lakekeeper's own role store read this cache, such as [Cedar](./authorization-cedar.md)<span class="lkp"></span>, which checks it on every authorization request. It is also the in-memory layer of the cached role providers (LDAP, Entra ID, Okta)<span class="lkp"></span>. The OpenFGA backend keeps role membership in its own tuples, so under OpenFGA this cache is never populated and these settings have no effect. The TTL must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` to bound the window in which a deleted role can still appear in assignment results; a larger value stops Lakekeeper at startup.
 
 | Configuration Key                                                    | Type    | Default | Description |
 |----------------------------------------------------------------------|---------|---------|-----|
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED`           | boolean | `true`  | Enable/disable user-assignments caching. Default: `true` |
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
-| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`; a larger value stops Lakekeeper at startup. Default: `120` (2 minutes) |
+
+Adding a user to a role or removing them, adding or removing a member role, deleting a role, rebinding a role's source system, and a role provider sync update the affected users' entries on the worker that handled the change. Other workers keep serving their entries until they expire, so the change reaches them within the TTL plus read-replica lag.
+
+A **removed** assignment therefore keeps applying on other workers for up to the TTL. Even on the worker that handled the change, a read that starts just after the clear can still be served by a lagging read replica and cache what the replica saw. If that window is too wide for a multi-worker deployment, lower this TTL and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`. To read from the database every time, set `ENABLED=false`; a TTL of `0` leaves the cache enabled with every entry already expired.
+
+To remove a user's access on every worker at once, add a Cedar `forbid` policy for them, which applies on every worker within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the workers, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every worker after read-replica lag.
 
 _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
@@ -576,11 +582,11 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 |--------------------------------------------------------------------|---------|---------|-----|
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-ancestors caching. Default: `true` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
 Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
 
-The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL if the window is too wide, or set `ENABLED=false` to read from the database every time.
+The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL together with `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` if the window is too wide, or set `ENABLED=false` to read from the database every time.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 
