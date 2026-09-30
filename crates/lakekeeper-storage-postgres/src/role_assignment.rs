@@ -515,11 +515,12 @@ pub(crate) async fn list_role_assignments_for_user<
         if let (Some(role_id), Some(source_id), Some(provider_id_r), Some(project_id_r)) =
             (row.role_id, row.source_id, row.provider_id, row.project_id)
         {
-            roles.push(AssignedRole {
-                role_id: RoleId::new(role_id),
-                role_ident: Arc::new(RoleIdent::from_db_unchecked(provider_id_r, source_id)),
-                project_id: Arc::new(ProjectId::from_db_unchecked(project_id_r)),
-            });
+            roles.push(assigned_role(
+                role_id,
+                provider_id_r,
+                source_id,
+                project_id_r,
+            ));
         }
 
         if let (Some(sp), Some(prov), Some(sat)) =
@@ -538,6 +539,50 @@ pub(crate) async fn list_role_assignments_for_user<
         roles,
         provider_sync_times,
     })
+}
+
+/// One role row as the per-user reads return it.
+fn assigned_role(
+    role_id: Uuid,
+    provider_id: String,
+    source_id: String,
+    project_id: String,
+) -> AssignedRole {
+    AssignedRole {
+        role_id: RoleId::new(role_id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(provider_id, source_id)),
+        project_id: Arc::new(ProjectId::from_db_unchecked(project_id)),
+    }
+}
+
+/// The roles `user_id` is assigned to directly, in every project, each with its project.
+/// No nesting parents and no sync metadata: the base rows of
+/// [`list_role_assignments_for_user`]'s closure.
+pub(crate) async fn list_direct_role_assignments_for_user<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    user_id: &UserId,
+    connection: E,
+) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT r.id AS "role_id!", r.source_id AS "source_id!", r.provider_id AS "provider_id!", r.project_id AS "project_id!"
+        FROM role_assignment ra
+        JOIN "role" r ON r.id = ra.role_id
+        WHERE ra.user_id = $1
+        "#,
+        user_id.to_string(),
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| assigned_role(row.role_id, row.provider_id, row.source_id, row.project_id))
+        .collect())
 }
 
 // ─── list_role_ancestors ─────────────────────────────────────────────────────
@@ -6024,5 +6069,55 @@ mod tests {
             HashSet::from([child, parent]),
             "after the edge, U transitively gains `parent`"
         );
+    }
+
+    /// Direct assignments only: a role the user reaches through nesting is absent, and
+    /// each row carries its project.
+    #[sqlx::test]
+    async fn direct_role_assignments_leave_out_nesting_parents(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user = UserId::new_unchecked("oidc", "test-user-direct-rows");
+        provision_user(&state, &user, "Test User Direct Rows").await;
+
+        // Project P: the user holds `member` directly; `member` is nested in `parent`.
+        let p = make_project(&state).await;
+        let p_arc: ArcProjectId = Arc::new(p.clone());
+        let member = create_managed_role(&state, &p, "member").await;
+        let parent = create_managed_role(&state, &p, "parent").await;
+        // Project Q: the user holds `other` directly.
+        let q = make_project(&state).await;
+        let q_arc: ArcProjectId = Arc::new(q.clone());
+        let other = create_managed_role(&state, &q, "other").await;
+
+        for (project, role) in [(&p_arc, member), (&q_arc, other)] {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            add_user_role_assignments(project, role, std::slice::from_ref(&user), t.transaction())
+                .await
+                .unwrap();
+            t.commit().await.unwrap();
+        }
+        PostgresBackend::add_role_members_and_invalidate(&p_arc, parent, &[member], state.clone())
+            .await
+            .unwrap();
+
+        let mut direct: Vec<(String, RoleId)> =
+            list_direct_role_assignments_for_user(&user, &state.read_pool())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| (row.project_id.to_string(), row.role_id))
+                .collect();
+        direct.sort_by_key(|(project, _)| project.clone());
+        let mut expected = vec![(p.to_string(), member), (q.to_string(), other)];
+        expected.sort_by_key(|(project, _)| project.clone());
+        assert_eq!(direct, expected);
+
+        // The closure read still reports the parent.
+        let closure = list_role_assignments_for_user(&user, &state.read_pool())
+            .await
+            .unwrap();
+        assert!(closure.roles.iter().any(|row| row.role_id == parent));
     }
 }

@@ -109,11 +109,9 @@ pub struct UserProviderSyncInfo {
 #[derive(Debug, Clone)]
 pub struct ListUserRoleAssignmentsResult {
     pub roles: Vec<AssignedRole>,
-    /// One [`UserProviderSyncInfo`] entry per `(project_id, provider_id)` pair
-    /// for which the user currently has at least one assignment row.  Pairs
-    /// whose assignments have all been removed are not included even if a sync
-    /// was previously recorded for them.  Empty when the user has no
-    /// externally-managed assignments.
+    /// One [`UserProviderSyncInfo`] entry per `(project_id, provider_id)` pair the user
+    /// has been synced for, including pairs whose sync assigned no role. Empty when the
+    /// user has never been synced.
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
 }
 
@@ -1516,6 +1514,16 @@ where
                 .collect())
         })
         .await
+    }
+
+    /// The roles `user_id` is assigned to directly, in every project, each with its
+    /// project. No nesting parents, and read from the database on every call: a caller
+    /// that rebuilds the closure itself adds the parents with [`Self::list_role_ancestors`].
+    async fn list_direct_role_assignments_for_user(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+        Self::list_direct_role_assignments_for_user_impl(user_id, catalog_state).await
     }
 
     /// Return all members of the given role, together with the last sync

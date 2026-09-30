@@ -92,8 +92,8 @@ use super::{
     },
     pagination::to_token_precision,
     role::{
-        create_roles, delete_roles, list_roles, list_roles_by_idents, lock_role_and_count_grants,
-        update_role,
+        create_roles, delete_roles, list_roles, list_roles_by_idents_in_projects,
+        lock_role_and_count_grants, update_role,
     },
     tabular::table::load_tables,
     tag::{
@@ -432,12 +432,12 @@ impl CatalogStore for super::PostgresBackend {
         search_role(project_id, search_term, &catalog_state.read_pool()).await
     }
 
-    async fn list_roles_by_idents_impl(
-        project_id: &ProjectId,
+    async fn list_roles_by_idents_in_projects_impl(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError> {
-        list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
+        list_roles_by_idents_in_projects(project_ids, idents, &catalog_state.read_pool()).await
     }
 
     // ---------------- Grants ----------------
@@ -734,6 +734,17 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
         super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
+    }
+
+    async fn list_direct_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+        super::role_assignment::list_direct_role_assignments_for_user(
+            user_id,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 
     async fn list_role_assignments_for_role_by_ident_impl(

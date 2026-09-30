@@ -36,8 +36,12 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
 
 use crate::{
-    request_metadata::{RequestMetadata, TokenRoles},
-    service::events::backends::audit::{AuditOperation, AuditOutcome},
+    XXHashSet,
+    request_metadata::RequestMetadata,
+    service::{
+        RoleIdent,
+        events::backends::audit::{AuditOperation, AuditOutcome},
+    },
 };
 
 /// Histogram of each gate's evaluation time, labelled by `gate` and `outcome`.
@@ -270,7 +274,7 @@ pub struct Admission {
     /// [`RequestMetadata::admission_roles`] by the auth middleware, kept
     /// separate from token-claim roles so the provenance stays explicit.
     /// `None` when the gate resolves no roles.
-    pub resolved_roles: Option<TokenRoles>,
+    pub resolved_roles: Option<XXHashSet<Arc<RoleIdent>>>,
 }
 
 impl Admission {
@@ -280,9 +284,10 @@ impl Admission {
         Self::default()
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. The roles hold
+    /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self {
             resolved_roles: Some(roles),
         }
@@ -316,9 +321,10 @@ impl GateDecision {
         Self::Admitted(Admission::admit())
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. The roles hold
+    /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self::Admitted(Admission::with_roles(roles))
     }
 
@@ -429,7 +435,7 @@ impl AdmissionGates {
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
     pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-        let mut resolved_roles: Option<TokenRoles> = None;
+        let mut resolved_roles: Option<XXHashSet<Arc<RoleIdent>>> = None;
         for gate in &self.gates {
             let start = Instant::now();
             let result = gate.admit(ctx).await;
@@ -440,7 +446,7 @@ impl AdmissionGates {
                         // Common case is a single role-resolving gate: just move
                         // the set in. Extra gates union in place (no cloning).
                         match resolved_roles.as_mut() {
-                            Some(acc) => acc.merge(roles),
+                            Some(acc) => acc.extend(roles),
                             None => resolved_roles = Some(roles),
                         }
                     }
@@ -545,15 +551,13 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
-    use crate::service::{ProjectId, RoleIdent};
 
-    /// Build a project-scoped role set from role source-id names.
-    fn token_roles(names: &[&str]) -> TokenRoles {
-        let roles = names
+    /// Build a role set from role source-id names.
+    fn role_set(names: &[&str]) -> XXHashSet<Arc<RoleIdent>> {
+        names
             .iter()
             .map(|n| Arc::new(RoleIdent::new_unchecked("test", *n)))
-            .collect();
-        TokenRoles::new(Arc::new(ProjectId::new_random()), roles)
+            .collect()
     }
 
     #[derive(Debug)]
@@ -564,7 +568,7 @@ mod tests {
             "roles"
         }
         async fn admit(&self, _: AdmissionContext<'_>) -> Result<GateDecision, AdmissionRejection> {
-            Ok(GateDecision::with_roles(token_roles(self.0)))
+            Ok(GateDecision::with_roles(role_set(self.0)))
         }
     }
 
@@ -1094,7 +1098,7 @@ mod tests {
             .await
             .expect("RolesGate admits");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 2);
+        assert_eq!(roles.len(), 2);
     }
 
     #[test]
@@ -1132,6 +1136,6 @@ mod tests {
         .await
         .expect("all gates admit");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 3);
+        assert_eq!(roles.len(), 3);
     }
 }

@@ -851,10 +851,10 @@ where
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
 
-    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
-    /// the provided idents. Ordering is unspecified. No pagination.
-    async fn list_roles_by_idents_impl(
-        project_id: &ProjectId,
+    /// Every role in one of `project_ids` whose `(provider_id, source_id)` is exactly one
+    /// of `idents`. No pagination. Each role carries its own project.
+    async fn list_roles_by_idents_in_projects_impl(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
@@ -978,6 +978,9 @@ where
     /// same tabular twice with different kinds gets an unspecified one of them echoed.
     /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
     /// soft-deleted tabulars are included.
+    ///
+    /// Each returned grant's `principal` is the principal that holds it, so one read for
+    /// several principals can be split by grantee afterwards.
     async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
         resources: &[GrantResource],
@@ -1154,6 +1157,13 @@ where
         role_ids: &[RoleId],
         catalog_state: Self::State,
     ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
+
+    /// The roles `user_id` is assigned to directly, in every project, each with its
+    /// project. No nesting parents.
+    async fn list_direct_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,

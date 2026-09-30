@@ -136,8 +136,9 @@ pub struct RequestMetadata {
     /// Roles resolved by a post-authentication admission gate (see
     /// [`AdmissionGate`](crate::service::admission::AdmissionGate)) — e.g. from
     /// an external entitlement service. Kept separate from `token_roles` so the
-    /// provenance (token claim vs externally resolved) stays explicit.
-    admission_roles: Option<TokenRoles>,
+    /// provenance (token claim vs externally resolved) stays explicit. They hold in
+    /// every project.
+    admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
@@ -175,13 +176,6 @@ impl TokenRoles {
     #[must_use]
     pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
         &self.roles
-    }
-
-    /// Union `other`'s roles into this set, consuming it (no cloning). Keeps
-    /// `self`'s project id; callers resolve roles for the request's single
-    /// project, so the ids normally match, and if they differ the first wins.
-    pub(crate) fn merge(&mut self, other: TokenRoles) {
-        self.roles.extend(other.roles);
     }
 }
 
@@ -288,8 +282,8 @@ impl RequestMetadata {
     /// by the auth middleware after the gates run; kept separate from
     /// [`set_token_roles`](Self::set_token_roles) to preserve provenance.
     #[cfg_attr(not(feature = "router"), allow(dead_code))]
-    pub(crate) fn set_admission_roles(&mut self, admission_roles: TokenRoles) -> &mut Self {
-        self.admission_roles = Some(admission_roles);
+    pub(crate) fn set_admission_roles(&mut self, roles: XXHashSet<Arc<RoleIdent>>) -> &mut Self {
+        self.admission_roles = Some(roles);
         self
     }
 
@@ -302,9 +296,10 @@ impl RequestMetadata {
         self
     }
 
-    /// Roles resolved by a post-authentication admission gate, if any.
+    /// Roles resolved by a post-authentication admission gate, if any. They hold in
+    /// every project.
     #[must_use]
-    pub fn admission_roles(&self) -> Option<&TokenRoles> {
+    pub fn admission_roles(&self) -> Option<&XXHashSet<Arc<RoleIdent>>> {
         self.admission_roles.as_ref()
     }
 
@@ -698,7 +693,7 @@ pub struct RequestMetadataTestBuilder {
     /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests
     /// construct a request that carries them.
     #[builder(default, setter(strip_option))]
-    pub admission_roles: Option<TokenRoles>,
+    pub admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     /// The `User-Agent` header the caller sent, as captured by the request
     /// middleware. Lets tests exercise the audit log's `user_agent` field.
     #[builder(default, setter(strip_option))]

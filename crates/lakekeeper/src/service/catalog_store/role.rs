@@ -1014,15 +1014,15 @@ where
         Self::search_role_impl(project_id, search_term, catalog_state).await
     }
 
-    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of the
-    /// provided idents. No pagination — returns all matches at once.
-    async fn list_roles_by_idents(
-        project_id: &ProjectId,
+    /// Every role in one of `project_ids` whose `(provider_id, source_id)` matches one of
+    /// the provided idents exactly, with the project each lives in. No pagination.
+    async fn list_roles_by_idents_in_projects(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Arc<Role>>, CatalogBackendError> {
         Ok(
-            Self::list_roles_by_idents_impl(project_id, idents, catalog_state)
+            Self::list_roles_by_idents_in_projects_impl(project_ids, idents, catalog_state)
                 .await?
                 .into_iter()
                 .map(Arc::new)
@@ -1056,8 +1056,8 @@ where
         let role_id =
             role_ident_to_id_get_or_load(arc_project_id.clone(), arc_ident.clone(), async move {
                 Ok::<_, GetRoleByIdentError>(
-                    Self::list_roles_by_idents_impl(
-                        &loader_project,
+                    Self::list_roles_by_idents_in_projects_impl(
+                        &[&*loader_project],
                         &[&*loader_ident],
                         loader_state,
                     )
@@ -1084,12 +1084,16 @@ where
 
         // Rare: evicted between prime and read (or wrong-project mapping). Re-load by
         // ident rather than return a spurious not-found for a role that exists.
-        let role = Self::list_roles_by_idents_impl(&arc_project_id, &[&*arc_ident], catalog_state)
-            .await?
-            .into_iter()
-            .next()
-            .map(Arc::new)
-            .ok_or_else(|| RoleIdentNotFoundInProject::new(arc_ident, arc_project_id))?;
+        let role = Self::list_roles_by_idents_in_projects_impl(
+            &[&*arc_project_id],
+            &[&*arc_ident],
+            catalog_state,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .map(Arc::new)
+        .ok_or_else(|| RoleIdentNotFoundInProject::new(arc_ident, arc_project_id))?;
         role_cache_insert(role.clone()).await;
         Ok(role)
     }
@@ -1207,8 +1211,12 @@ where
         match cache_policy {
             CachePolicy::Use => Self::get_role_by_ident(project_id, ident, catalog_state).await,
             CachePolicy::Skip => {
-                let roles =
-                    Self::list_roles_by_idents_impl(&project_id, &[&ident], catalog_state).await?;
+                let roles = Self::list_roles_by_idents_in_projects_impl(
+                    &[&*project_id],
+                    &[&*ident],
+                    catalog_state,
+                )
+                .await?;
                 let role = roles
                     .into_iter()
                     .next()
@@ -1224,8 +1232,12 @@ where
                 {
                     return Ok(role);
                 }
-                let roles =
-                    Self::list_roles_by_idents_impl(&project_id, &[&ident], catalog_state).await?;
+                let roles = Self::list_roles_by_idents_in_projects_impl(
+                    &[&*project_id],
+                    &[&*ident],
+                    catalog_state,
+                )
+                .await?;
                 let role = roles
                     .into_iter()
                     .next()
