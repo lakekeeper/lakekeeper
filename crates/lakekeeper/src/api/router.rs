@@ -226,13 +226,7 @@ pub async fn new_full_router<
             .layer(maybe_auth_layer),
     )
     // Add health later so that it is not authenticated
-    .route(
-        "/health",
-        get(|| async move {
-            let health = service_health_provider.collect_health().await;
-            health_response(health)
-        }),
-    );
+    .route("/health", health_route(service_health_provider));
 
     let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
     let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
@@ -282,6 +276,27 @@ pub async fn new_full_router<
     } else {
         router
     })
+}
+
+/// The unauthenticated `/health` handler, shared by the full router and the
+/// headless-worker router so their health responses cannot diverge.
+fn health_route<S: Clone + Send + Sync + 'static>(
+    service_health_provider: ServiceHealthProvider,
+) -> axum::routing::MethodRouter<S> {
+    get(|| async move {
+        let health = service_health_provider.collect_health().await;
+        health_response(health)
+    })
+}
+
+/// Build a minimal router that exposes only `/health`.
+///
+/// Used by headless worker deployments (`LAKEKEEPER__SERVE_HTTP_API=false`)
+/// that run background task-queue workers without the catalog API. The endpoint
+/// gives liveness/readiness probes something to hit; it is unauthenticated,
+/// exactly like `/health` on the full router.
+pub fn new_health_router(service_health_provider: ServiceHealthProvider) -> Router {
+    Router::new().route("/health", health_route(service_health_provider))
 }
 
 fn health_response(health: HealthState) -> axum::response::Response {
