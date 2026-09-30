@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
     Serialize,
     Deserialize,
     strum_macros::Display,
+    strum_macros::EnumCount,
+    strum_macros::VariantNames,
     utoipa::ToSchema,
 )]
 #[serde(rename_all = "kebab-case")]

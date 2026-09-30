@@ -28,25 +28,25 @@ Lakekeeper+ builds on the open-source catalog with the capabilities regulated an
 
 <div class="grid cards" markdown>
 
-- :material-file-lock: &nbsp; __Permission-as-code with Cedar__
+- :material-file-lock: &nbsp; **Permission-as-code with Cedar**
 
     ---
 
     Express access policy as versioned, reviewable [Cedar](./docs/nightly/authorization-cedar.md) policies — RBAC, ABAC, and property-based access in one model. Every decision is inspectable, with a per-decision policy trace and audit log, so you can prove *why* access was granted. Built for **regulated industries** where access must be governed, testable, and provable.
 
-- :material-robot: &nbsp; __Autonomous maintenance__
+- :material-robot: &nbsp; **Autonomous maintenance**
 
     ---
 
     Keep query performance high and storage costs low without operating maintenance jobs yourself. [Table maintenance](./docs/nightly/table-maintenance.md) — expiring snapshots and removing orphan files — runs automatically and adaptively, scheduling itself per table based on how fast reclaimable data builds up.
 
-- :material-account-key: &nbsp; __Enterprise identity & governance__
+- :material-account-key: &nbsp; **Enterprise identity & governance**
 
     ---
 
     Resolve roles through [role providers](./docs/nightly/configuration.md#role-provider) — Okta, Microsoft Entra ID, and LDAP; gate access with an external admission check; protect provider-synced roles from drift. Structured audit logs make the catalog auditable end to end.
 
-- :material-lifebuoy: &nbsp; __Enterprise support & LTS__
+- :material-lifebuoy: &nbsp; **Enterprise support & LTS**
 
     ---
 

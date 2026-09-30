@@ -239,29 +239,15 @@ pub(super) fn determine_tabular_location(
     Ok(location)
 }
 
-macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $event_ctx:ident) => {
+/// Reads a page of tabulars, with their namespaces unless `$can_list_everything`.
+macro_rules! fetch_entities {
+    ($list_fn:ident, $namespace_response:ident, $can_list_everything:ident) => {
         |ps, page_token, trx: &mut _| {
-            use ::pastey::paste;
+            use crate::service::{BasicTabularInfo, TabularListFlags};
 
-            #[allow(unused)]
-            use crate::{
-                server::UnfilteredPage,
-                service::{
-                    BasicTabularInfo, TabularListFlags, require_namespace_for_tabular,
-                    authz::ActionOnTable,
-                    authz::ActionOnView,
-                    events::context::authz_to_error_no_audit,
-                },
-            };
-
-            // let namespace = $namespace.clone();
-            let authorizer = $authorizer.clone();
-            let request_metadata = $event_ctx.request_metadata().clone();
             let warehouse_id = $namespace_response.warehouse_id();
             let namespace_id = $namespace_response.namespace_id();
-            let namespace_response = $namespace_response.clone();
-            let resolved_warehouse = $resolved_warehouse.clone();
+            let can_list_everything = $can_list_everything;
 
             async move {
                 let query = crate::api::iceberg::v1::PaginationQuery {
@@ -276,38 +262,58 @@ macro_rules! list_entities {
                     query,
                 )
                 .await?;
-                let can_list_everything = authorizer
-                    .is_allowed_namespace_action(
-                        &request_metadata,
-                        None,
-                        &resolved_warehouse,
-                        &namespace_response.parents,
-                        &namespace_response.namespace,
-                        CatalogNamespaceAction::ListEverything,
-                    )
-                    .await
-                    .map_err(authz_to_error_no_audit)?
-                    .into_inner();
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
 
-                let masks = if can_list_everything {
+                let namespaces = if can_list_everything {
                     // No need to check individual permissions if everything in namespace can
                     // be listed.
-                    vec![true; ids.len()]
+                    None
                 } else {
                     let requested_namespace_ids = idents
                         .iter()
                         .map(|id| BasicTabularInfo::namespace_id(&id.tabular))
                         .collect::<Vec<_>>();
-                    let namespaces = C::get_namespaces_by_id(
-                        warehouse_id,
-                        &requested_namespace_ids,
-                        trx.transaction(),
+                    Some(
+                        C::get_namespaces_by_id(
+                            warehouse_id,
+                            &requested_namespace_ids,
+                            trx.transaction(),
+                        )
+                        .await?,
                     )
-                    .await?;
+                };
+                Ok((ids, idents, tokens, namespaces))
+            }
+            .boxed()
+        }
+    };
+}
 
+/// Authorizes a page read by `fetch_entities!`.
+macro_rules! authorize_entities {
+    ($entity:ident, $resolved_warehouse:ident, $authorizer:ident, $event_ctx:ident) => {
+        |ps, (ids, idents, tokens, namespaces)| {
+            use ::pastey::paste;
+
+            #[allow(unused)]
+            use crate::{
+                server::UnfilteredPage,
+                service::{
+                    require_namespace_for_tabular,
+                    authz::ActionOnTable,
+                    authz::ActionOnView,
+                    events::context::authz_to_error_no_audit,
+                },
+            };
+
+            let authorizer = $authorizer.clone();
+            let request_metadata = $event_ctx.request_metadata().clone();
+            let resolved_warehouse = $resolved_warehouse.clone();
+
+            async move {
+                let masks = if let Some(namespaces) = namespaces {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions_vec>](
                             &request_metadata,
@@ -328,6 +334,8 @@ macro_rules! list_entities {
                         .map_err(authz_to_error_no_audit)?
                         .into_allowed()
                     }
+                } else {
+                    vec![true; ids.len()]
                 };
 
                 let (next_idents, next_uuids, next_page_tokens, mask): (
@@ -355,11 +363,12 @@ macro_rules! list_entities {
     };
 }
 
+pub(crate) use authorize_entities;
+pub(crate) use fetch_entities;
 use http::StatusCode;
 use iceberg::TableIdent;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
 use lakekeeper_io::Location;
-pub(crate) use list_entities;
 
 #[cfg(test)]
 mod tests {

@@ -3,10 +3,12 @@ services:
     # Deliberately NOT pgsty/silo: this suite exercises the pre-CRC32 checksum
     # behaviour that `legacy-md5-behavior` exists for, and only a MinIO build
     # from before the CRC32 default reproduces it. Silo forked after that change,
-    # so it cannot stand in here. Pulled from quay.io because the minio namespace
-    # was removed from Docker Hub; this tag is the last one that still predates
-    # the checksum change.
-    image: quay.io/minio/minio:RELEASE.2024-10-29T16-01-48Z
+    # so it cannot stand in here. MinIO no longer publishes images publicly;
+    # bitnamilegacy carries MinIO RELEASE.2024-10-29T16-01-48Z, the last release
+    # that still predates the checksum change. Its entrypoint needs the binary
+    # named, and it runs as a non-root user that can write only below /bitnami.
+    image: bitnamilegacy/minio:2024.10.29
+    command: ["minio", "server", "--console-address", ":9001", "/bitnami/minio/data"]
 
   spark:
     environment:

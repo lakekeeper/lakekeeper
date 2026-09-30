@@ -35,7 +35,14 @@ use axum_prometheus::metrics;
 use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
 
-use crate::request_metadata::{RequestMetadata, TokenRoles};
+use crate::{
+    XXHashSet,
+    request_metadata::RequestMetadata,
+    service::{
+        RoleIdent,
+        events::backends::audit::{AuditOperation, AuditOutcome},
+    },
+};
 
 /// Histogram of each gate's evaluation time, labelled by `gate` and `outcome`.
 /// Its `_count` series is also the authoritative rejection rate: admission
@@ -115,10 +122,14 @@ impl RejectionKind {
     /// `unavailable` is the fail-closed outcome, kept distinct from `forbidden`
     /// so an outage of an upstream a gate depends on shows up as an outage
     /// rather than as a wave of denials.
-    fn label(self) -> &'static str {
+    ///
+    /// Returns the enum rather than the string so that the value reaches the
+    /// wire-value manifest: a rename then fails `check-audit-format` instead of
+    /// silently breaking every consumer matching on it.
+    fn label(self) -> AuditOutcome {
         match self {
-            Self::Forbidden => "forbidden",
-            Self::Unavailable { .. } => "unavailable",
+            Self::Forbidden => AuditOutcome::Forbidden,
+            Self::Unavailable { .. } => AuditOutcome::Unavailable,
         }
     }
 }
@@ -173,6 +184,19 @@ impl AdmissionRejection {
     #[must_use]
     pub fn denied_by(mut self, rule: impl Into<Cow<'static, str>>) -> Self {
         self.denied_by = Some(rule.into());
+        self
+    }
+
+    /// Pin the `error_id`, which is otherwise a fresh uuid per rejection.
+    ///
+    /// For tests that compare a whole emitted audit record against a committed
+    /// one: the id reaches the record, so a random one per run would make that
+    /// comparison impossible. Never used in production, where the whole point
+    /// of the id is being unique to one rejection.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_error_id(mut self, error_id: Uuid) -> Self {
+        self.error_id = error_id;
         self
     }
 
@@ -250,7 +274,7 @@ pub struct Admission {
     /// [`RequestMetadata::admission_roles`] by the auth middleware, kept
     /// separate from token-claim roles so the provenance stays explicit.
     /// `None` when the gate resolves no roles.
-    pub resolved_roles: Option<TokenRoles>,
+    pub resolved_roles: Option<XXHashSet<Arc<RoleIdent>>>,
 }
 
 impl Admission {
@@ -260,9 +284,10 @@ impl Admission {
         Self::default()
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. The roles hold
+    /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self {
             resolved_roles: Some(roles),
         }
@@ -296,9 +321,10 @@ impl GateDecision {
         Self::Admitted(Admission::admit())
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. The roles hold
+    /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self::Admitted(Admission::with_roles(roles))
     }
 
@@ -409,7 +435,7 @@ impl AdmissionGates {
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
     pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-        let mut resolved_roles: Option<TokenRoles> = None;
+        let mut resolved_roles: Option<XXHashSet<Arc<RoleIdent>>> = None;
         for gate in &self.gates {
             let start = Instant::now();
             let result = gate.admit(ctx).await;
@@ -420,7 +446,7 @@ impl AdmissionGates {
                         // Common case is a single role-resolving gate: just move
                         // the set in. Extra gates union in place (no cloning).
                         match resolved_roles.as_mut() {
-                            Some(acc) => acc.merge(roles),
+                            Some(acc) => acc.extend(roles),
                             None => resolved_roles = Some(roles),
                         }
                     }
@@ -435,9 +461,9 @@ impl AdmissionGates {
                     // without the actor — and, for a fail-closed `503`, repeat
                     // it at ERROR as an internal error this server did not have.
                     crate::audit_operation!(
-                        operation = "admission_decided",
+                        operation = AuditOperation::AdmissionDecided.as_str(),
                         actor = ctx.metadata.audit_actor(),
-                        outcome = rejection.kind.label(),
+                        outcome = rejection.kind.label().as_str(),
                         context = AdmissionRejectedContext {
                             gate: gate.name(),
                             denied_by: rejection.deciding_rule(),
@@ -481,7 +507,7 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
     match result {
         Ok(GateDecision::Admitted(_)) => "admitted",
         Ok(GateDecision::NotApplicable) => "skipped",
-        Err(rejection) => rejection.kind.label(),
+        Err(rejection) => rejection.kind.label().as_str(),
     }
 }
 
@@ -525,15 +551,13 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
-    use crate::service::{ProjectId, RoleIdent};
 
-    /// Build a project-scoped role set from role source-id names.
-    fn token_roles(names: &[&str]) -> TokenRoles {
-        let roles = names
+    /// Build a role set from role source-id names.
+    fn role_set(names: &[&str]) -> XXHashSet<Arc<RoleIdent>> {
+        names
             .iter()
             .map(|n| Arc::new(RoleIdent::new_unchecked("test", *n)))
-            .collect();
-        TokenRoles::new(Arc::new(ProjectId::new_random()), roles)
+            .collect()
     }
 
     #[derive(Debug)]
@@ -544,7 +568,7 @@ mod tests {
             "roles"
         }
         async fn admit(&self, _: AdmissionContext<'_>) -> Result<GateDecision, AdmissionRejection> {
-            Ok(GateDecision::with_roles(token_roles(self.0)))
+            Ok(GateDecision::with_roles(role_set(self.0)))
         }
     }
 
@@ -1074,7 +1098,7 @@ mod tests {
             .await
             .expect("RolesGate admits");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 2);
+        assert_eq!(roles.len(), 2);
     }
 
     #[test]
@@ -1112,6 +1136,6 @@ mod tests {
         .await
         .expect("all gates admit");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 3);
+        assert_eq!(roles.len(), 3);
     }
 }

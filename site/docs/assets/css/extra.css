@@ -174,18 +174,20 @@
   color: var(--lakekeeper-warning-color) !important;
   opacity: 0.85;
 }
-/* Config-reference tables list env-var keys as inline code in the first
-   column. Keep those on one line so a key stays selectable and scannable as a
-   single token; keys too long for the column get an explicit `<br>` at a `__`
-   boundary from the `env_key_wrap.py` hook, which emits raw <code> and so is
-   unaffected by this rule.
+/* Reference tables carry env-var keys and metric names as inline code in the
+   first column. A key or name never breaks mid-token, so it stays selectable
+   and scannable as a single unit. It breaks only where the source marks a
+   boundary: a hard `<br>` at a `__` boundary from the `env_key_wrap.py` hook,
+   or a hand-written `<wbr>` between the words of a metric name.
 
-   Scoped to the first column on purpose. Applying it to every cell also froze
-   the ~200 code spans inside Description cells — one of them 66 characters —
-   which forced the description column past the page width and put the whole
-   table on a horizontal scrollbar. */
+   `white-space: nowrap` would also suppress `<wbr>`, which leaves a 51-character
+   metric name claiming most of the table. The other columns are then starved
+   narrow enough that `overflow-wrap: anywhere` below splits short label names
+   mid-word (`cache_typ` / `e`). Forbidding mid-word breaks gets the same
+   single-token guarantee without silencing the boundaries. */
 .md-typeset table td:first-child code {
-  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 /* The other columns carry long unbreakable tokens — a 119-character example

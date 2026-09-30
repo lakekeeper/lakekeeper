@@ -364,10 +364,10 @@ impl GrantFilter {
 /// can move out between two calls of a revoke loop and keep grants it would otherwise
 /// have lost; one moved in is swept by the next call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantSubtreeRoot {
+pub enum SubtreeGrantRoot {
     /// Every namespace in the warehouse, and every tabular in them. Whether the
     /// warehouse's own grants are in scope is the filter's
-    /// [`include_root_level`](GrantSubtreeFilter::include_root_level).
+    /// [`include_root_level`](SubtreeGrantFilter::include_root_level).
     Warehouse { warehouse_id: WarehouseId },
     /// This namespace, its descendant namespaces, and the tabulars in all of them.
     Namespace {
@@ -376,12 +376,12 @@ pub enum GrantSubtreeRoot {
     },
 }
 
-impl GrantSubtreeRoot {
+impl SubtreeGrantRoot {
     #[must_use]
     pub fn warehouse_id(&self) -> WarehouseId {
         match self {
-            GrantSubtreeRoot::Warehouse { warehouse_id, .. }
-            | GrantSubtreeRoot::Namespace { warehouse_id, .. } => *warehouse_id,
+            SubtreeGrantRoot::Warehouse { warehouse_id, .. }
+            | SubtreeGrantRoot::Namespace { warehouse_id, .. } => *warehouse_id,
         }
     }
 
@@ -389,10 +389,10 @@ impl GrantSubtreeRoot {
     #[must_use]
     pub fn resource(&self) -> GrantResource {
         match *self {
-            GrantSubtreeRoot::Warehouse { warehouse_id, .. } => {
+            SubtreeGrantRoot::Warehouse { warehouse_id, .. } => {
                 GrantResource::Warehouse(warehouse_id)
             }
-            GrantSubtreeRoot::Namespace {
+            SubtreeGrantRoot::Namespace {
                 warehouse_id,
                 namespace_id,
             } => GrantResource::Namespace {
@@ -406,7 +406,7 @@ impl GrantSubtreeRoot {
 /// Which of a subtree's grants an operation matches. Every field narrows; a default
 /// filter matches every grant the root covers, the root's own included.
 #[derive(Debug, Clone)]
-pub struct GrantSubtreeFilter {
+pub struct SubtreeGrantFilter {
     /// Whether grants held on the addressed resource itself are in scope. On by
     /// default: a grant on a container confers access beneath it, so an operation that
     /// skipped the root would leave standing the access it names. `false` keeps the
@@ -438,7 +438,7 @@ pub struct GrantSubtreeFilter {
     pub created_before: Option<DateTime<Utc>>,
 }
 
-impl Default for GrantSubtreeFilter {
+impl Default for SubtreeGrantFilter {
     fn default() -> Self {
         Self {
             include_root_level: true,
@@ -451,7 +451,7 @@ impl Default for GrantSubtreeFilter {
     }
 }
 
-impl GrantSubtreeFilter {
+impl SubtreeGrantFilter {
     /// Whether grants held on namespaces are in scope.
     #[must_use]
     pub fn matches_namespaces(&self) -> bool {
@@ -528,7 +528,7 @@ pub struct GrantRevokeCandidates {
     /// grant inserted below it.
     pub has_more: bool,
     /// The ceiling this batch was read under, to be echoed back on the next call. See
-    /// [`GrantSubtreeFilter::created_before`].
+    /// [`SubtreeGrantFilter::created_before`].
     pub as_of: chrono::DateTime<Utc>,
 }
 

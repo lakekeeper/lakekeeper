@@ -98,7 +98,18 @@ impl OpenFgaEntity for UserOrRole {
 }
 
 /// Role Relations in the `OpenFGA` schema
-#[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    strum_macros::Display,
+    Hash,
+    Eq,
+    PartialEq,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum RoleRelation {
     // -- Hierarchical relations --
@@ -273,7 +284,18 @@ impl ReducedRelation for CatalogRoleAction {
 }
 
 /// Tag (governance tag definition) Relations in the `OpenFGA` schema
-#[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    strum_macros::Display,
+    Hash,
+    Eq,
+    PartialEq,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum TagRelation {
     // -- Hierarchical relations --
@@ -397,7 +419,18 @@ impl ReducedRelation for APITagRelation {
 }
 
 /// Server Relations in the `OpenFGA` schema
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[derive(
+    Copy,
+    Debug,
+    Clone,
+    strum_macros::Display,
+    Hash,
+    Eq,
+    PartialEq,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum ServerRelation {
     // -- Hierarchical relations --
@@ -576,7 +609,18 @@ impl ReducedRelation for OpenFGAServerAction {
     }
 }
 
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[derive(
+    Copy,
+    Debug,
+    Clone,
+    strum_macros::Display,
+    Hash,
+    Eq,
+    PartialEq,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum ProjectRelation {
     // -- Hierarchical relations --
@@ -895,7 +939,18 @@ impl ReducedRelation for OpenFGAProjectAction {
     }
 }
 
-#[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[derive(
+    Copy,
+    Debug,
+    Clone,
+    strum_macros::Display,
+    Hash,
+    Eq,
+    PartialEq,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum WarehouseRelation {
     // -- Hierarchical relations --
@@ -955,7 +1010,14 @@ pub enum WarehouseRelation {
     CanRevokeModify,
     CanRevokeSelect,
 }
-impl WarehouseAction for WarehouseRelation {}
+impl WarehouseAction for WarehouseRelation {
+    fn is_grant_read(&self) -> bool {
+        matches!(
+            self,
+            Self::CanReadAssignments | Self::CanReadSubtreeAssignments
+        )
+    }
+}
 impl CatalogAction for WarehouseRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
@@ -1238,10 +1300,10 @@ impl ReducedRelation for CatalogWarehouseAction {
             // Same permission as `APIWarehouseAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,
-            CatalogWarehouseAction::ReadSubtreeGrants => {
+            CatalogWarehouseAction::ReadSubtreeGrants { .. } => {
                 WarehouseRelation::CanReadSubtreeAssignments
             }
-            CatalogWarehouseAction::RevokeSubtreeGrants => {
+            CatalogWarehouseAction::RevokeSubtreeGrants { .. } => {
                 WarehouseRelation::CanRevokeSubtreeAssignments
             }
         }
@@ -1266,7 +1328,18 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum NamespaceRelation {
     // -- Hierarchical relations --
@@ -1327,7 +1400,14 @@ impl CatalogAction for NamespaceRelation {
         ActionDescriptor::builder().action_name(self.into()).build()
     }
 }
-impl NamespaceAction for NamespaceRelation {}
+impl NamespaceAction for NamespaceRelation {
+    fn is_grant_read(&self) -> bool {
+        matches!(
+            self,
+            Self::CanReadAssignments | Self::CanReadSubtreeAssignments
+        )
+    }
+}
 
 impl From<CatalogNamespaceAction> for NamespaceRelation {
     fn from(action: CatalogNamespaceAction) -> Self {
@@ -1575,10 +1655,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             // Same permission as `APINamespaceAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogNamespaceAction::ReadGrants => NamespaceRelation::CanReadAssignments,
-            CatalogNamespaceAction::ReadSubtreeGrants => {
+            CatalogNamespaceAction::ReadSubtreeGrants { .. } => {
                 NamespaceRelation::CanReadSubtreeAssignments
             }
-            CatalogNamespaceAction::RevokeSubtreeGrants => {
+            CatalogNamespaceAction::RevokeSubtreeGrants { .. } => {
                 NamespaceRelation::CanRevokeSubtreeAssignments
             }
         }
@@ -1602,7 +1682,18 @@ impl ReducedRelation for OpenFGANamespaceAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum TableRelation {
     // -- Hierarchical relations --
@@ -1893,7 +1984,18 @@ impl ReducedRelation for OpenFGATableAction {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    IntoStaticStr,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum ViewRelation {
     // -- Hierarchical relations --
@@ -2183,7 +2285,17 @@ impl ReducedRelation for OpenFGAViewAction {
 // =================== Generic Table Relations ===================
 
 #[derive(
-    Debug, Clone, Copy, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr, EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    Hash,
+    Eq,
+    PartialEq,
+    strum_macros::Display,
+    IntoStaticStr,
+    EnumIter,
+    strum_macros::VariantNames,
+    strum_macros::EnumCount,
 )]
 #[strum(serialize_all = "snake_case")]
 pub enum GenericTableRelation {
@@ -2719,6 +2831,127 @@ pub(crate) mod test {
         assert_eq!(
             ProjectAssignment::TagCreator(u()).relation(),
             APIProjectRelation::TagCreator
+        );
+    }
+}
+
+#[cfg(test)]
+mod audit_wire_values {
+    //! The audit log values this authorizer contributes, committed and checked.
+    //!
+    //! Regenerate after a deliberate change with `just update-audit-fixtures`.
+
+    use lakekeeper::service::events::backends::audit::contract;
+
+    use super::{
+        GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation,
+        TableRelation, TagRelation, ViewRelation, WarehouseRelation,
+    };
+    use crate::api::AssignmentAction;
+
+    /// Reduce a list of relation enums to `(type name, derived wire values, variant count)`.
+    macro_rules! relation_wire_values {
+        ($($ty:ty),+ $(,)?) => {
+            vec![$((
+                stringify!($ty),
+                <$ty as strum::VariantNames>::VARIANTS
+                    .iter()
+                    .map(|v| (*v).to_string())
+                    .collect::<Vec<String>>(),
+                <$ty as strum::EnumCount>::COUNT,
+            )),+]
+        };
+    }
+
+    /// Every enum in this crate whose variant names reach the audit log as an `action_name`.
+    ///
+    /// The relation enums, which get there through `impl CatalogAction`, plus
+    /// [`AssignmentAction`], which the assignment endpoints pass to `ActionDescriptor`
+    /// directly. Written out by hand because Rust cannot enumerate the types implementing a
+    /// trait; the cross-checks are `grep -rn "impl CatalogAction for" crates/authz-openfga`
+    /// and `grep -rn '.action_name(' crates/authz-openfga/src`. Anything missing here emits
+    /// names no test and no bump check ever sees.
+    fn relation_enums() -> Vec<(&'static str, Vec<String>, usize)> {
+        relation_wire_values!(
+            AssignmentAction,
+            GenericTableRelation,
+            NamespaceRelation,
+            ProjectRelation,
+            RoleRelation,
+            ServerRelation,
+            TableRelation,
+            TagRelation,
+            ViewRelation,
+            WarehouseRelation,
+        )
+    }
+
+    fn derived_wire_values() -> serde_json::Value {
+        let owners: std::collections::BTreeMap<String, Vec<String>> = relation_enums()
+            .into_iter()
+            .map(|(owner, mut values, _)| {
+                values.sort();
+                (owner.to_string(), values)
+            })
+            .collect();
+
+        serde_json::json!({ "action_name": owners })
+    }
+
+    #[test]
+    fn the_committed_manifest_matches_the_derived_values() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wire_values.json");
+        contract::assert_wire_values_manifest(
+            &path,
+            "lakekeeper-authz-openfga",
+            &derived_wire_values(),
+        );
+    }
+
+    /// `VariantNames` and `EnumCount` disagree only when a variant carries
+    /// `#[strum(disabled)]`: the name list includes it, the count does not. So an inequality
+    /// means the manifest is about to record a value the wire cannot actually carry — a
+    /// disabled variant has no `IntoStaticStr` arm — and the manifest would then be asserting
+    /// coverage of something that does not exist.
+    #[test]
+    fn every_relation_variant_has_a_derived_name() {
+        for (enum_name, values, count) in relation_enums() {
+            assert_eq!(
+                values.len(),
+                count,
+                "`{enum_name}` derives {} names but counts {count} variants: {values:?}. \
+                 They differ only for a `#[strum(disabled)]` variant, which has no wire name \
+                 — so the manifest would record a value no record can carry.",
+                values.len()
+            );
+        }
+    }
+
+    /// The manifest is built from `VariantNames`, but what a consumer reads is what
+    /// `IntoStaticStr` puts on the wire through `action_descriptor`. Two derives, one
+    /// string — pin them to each other.
+    #[test]
+    fn a_derived_name_is_the_name_that_reaches_the_wire() {
+        use lakekeeper::service::authz::CatalogAction as _;
+
+        let descriptor = RoleRelation::CanAssume.action_descriptor();
+        assert_eq!(descriptor.action_name, "can_assume");
+        assert!(
+            <RoleRelation as strum::VariantNames>::VARIANTS.contains(&descriptor.action_name),
+            "`RoleRelation::CanAssume` reaches the wire as `{}`, which is not among the \
+             derived names the manifest is built from.",
+            descriptor.action_name
+        );
+
+        // The assignment endpoints reach the wire by a different route — a hand-built
+        // `ActionDescriptor` rather than `impl CatalogAction` — so pin that one too.
+        let assignment = AssignmentAction::UpdateTagAssignments;
+        let name: &'static str = assignment.into();
+        assert_eq!(name, "update_tag_assignments");
+        assert!(
+            <AssignmentAction as strum::VariantNames>::VARIANTS.contains(&name),
+            "`AssignmentAction::UpdateTagAssignments` reaches the wire as `{name}`, which is \
+             not among the derived names the manifest is built from."
         );
     }
 }

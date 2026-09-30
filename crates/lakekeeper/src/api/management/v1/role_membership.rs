@@ -75,9 +75,10 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogListRolesByIdFilter,
-        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore, Result, RoleId,
-        RoleMemberKind, RoleMembershipEntry, SecretStore, State, SystemRoleMemberRolesNotSupported,
-        SystemRoleMembershipRequiresInstanceAdmin, UserId, UserMembershipEntry,
+        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore,
+        ManagedRoleImmutable, Result, RoleId, RoleMemberKind, RoleMembershipEntry, SecretStore,
+        State, SystemRoleMemberRolesNotSupported, SystemRoleMembershipRequiresInstanceAdmin,
+        UserId, UserMembershipEntry,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
@@ -370,9 +371,9 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
 }
 
 /// The rule `reject_system_role_membership` refused a write for. Carries the
-/// typed error so the call site can hand it to `emit_late_authz_failure` and have
-/// the denial recorded as an authz-failure audit event, rather than a bare error
-/// response.
+/// typed error so the call site can fold it into the authorization `Result` and
+/// have the denial recorded as an authz-failure audit event, rather than a bare
+/// error response.
 #[derive(Debug)]
 pub enum SystemRoleMembershipViolation {
     RequiresInstanceAdmin(SystemRoleMembershipRequiresInstanceAdmin),
@@ -383,6 +384,19 @@ delegate_authorization_failure_source!(SystemRoleMembershipViolation => {
     RequiresInstanceAdmin,
     MemberRolesNotSupported,
 });
+
+/// Lets the guard be decided inside the authorization `Result` rather than after
+/// the emit, so a refusal records one verdict instead of an "allowed" event
+/// followed by a denial. Maps to the leaf variants, which carry the per-variant
+/// status code (403 for the instance-admin rule, 400 for the role-nesting rule).
+impl From<SystemRoleMembershipViolation> for AuthZError {
+    fn from(violation: SystemRoleMembershipViolation) -> Self {
+        match violation {
+            SystemRoleMembershipViolation::RequiresInstanceAdmin(e) => e.into(),
+            SystemRoleMembershipViolation::MemberRolesNotSupported(e) => e.into(),
+        }
+    }
+}
 
 /// Hard guard on membership writes targeting `system` roles: membership there is
 /// provisioning, not self-service. Writes require an instance admin, and role-type
@@ -817,24 +831,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ManageRoleAssignments,
-            )
-            .await;
-        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
-
-        // A provider-managed role's member list is authoritative from its role
-        // provider and converged by sync; reject manual (un)assignment via the
-        // API so it cannot drift from what the next sync would produce. Ahead of
-        // the authorizer-arm split below, so the rule holds on both backends.
-        reject_provider_owned_membership::<_, ErrorModel>(&authorizer, &role)?;
-
         // Dedup on the typed identifier so a member named twice (the request is
         // already typed, so no string-spelling ambiguity remains) collapses to one
-        // echoed row. Order preserved.
+        // echoed row. Order preserved. Computed before the authorization decision
+        // because the system-role guard below needs it and is part of that decision
+        // — it reads only the request, so it performs no work the guards would not.
         let mut seen = std::collections::HashSet::new();
         let mut subjects: Vec<UserOrRoleId> = Vec::new();
         for member in &request.members {
@@ -843,12 +844,33 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 subjects.push(subject);
             }
         }
-
         let adds_role_member = subjects
             .iter()
             .any(|subject| matches!(subject, UserOrRoleId::Role(_)));
-        reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
-            .map_err(|violation| event_ctx.emit_late_authz_failure(violation))?;
+
+        // Both membership guards are decided here rather than after the emit: they
+        // are pure reads, and the authorizer having allowed the action makes them
+        // the decision that refused it. Feeding them through the one `Result`
+        // records a single verdict per request.
+        let authz_result: Result<_, AuthZError> = async {
+            let role = authorizer
+                .require_role_action(
+                    event_ctx.request_metadata(),
+                    role,
+                    CatalogRoleAction::ManageRoleAssignments,
+                )
+                .await?;
+            // A provider-managed role's member list is authoritative from its role
+            // provider and converged by sync; reject manual (un)assignment via the
+            // API so it cannot drift from what the next sync would produce. Ahead of
+            // the authorizer-arm split below, so the rule holds on both backends.
+            reject_provider_owned_membership::<_, ManagedRoleImmutable>(&authorizer, &role)?;
+            reject_system_role_membership(&role, event_ctx.request_metadata(), adds_role_member)
+                .map_err(AuthZError::from)?;
+            Ok(())
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         match authorizer.role_assignments() {
             None => {
@@ -916,20 +938,24 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             context.v1_state.catalog.clone(),
         )
         .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ManageRoleAssignments,
-            )
-            .await;
-        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
-
-        // A provider-managed role's member list is maintained by provider sync;
-        // reject manual removal via the API so it cannot drift from sync.
-        reject_provider_owned_membership::<_, ErrorModel>(&authorizer, &role)?;
-        reject_system_role_membership(&role, event_ctx.request_metadata(), false)
-            .map_err(|violation| event_ctx.emit_late_authz_failure(violation))?;
+        // Both guards are part of the authorization decision — see `add_role_members`.
+        let authz_result: Result<_, AuthZError> = async {
+            let role = authorizer
+                .require_role_action(
+                    event_ctx.request_metadata(),
+                    role,
+                    CatalogRoleAction::ManageRoleAssignments,
+                )
+                .await?;
+            // A provider-managed role's member list is maintained by provider sync;
+            // reject manual removal via the API so it cannot drift from sync.
+            reject_provider_owned_membership::<_, ManagedRoleImmutable>(&authorizer, &role)?;
+            reject_system_role_membership(&role, event_ctx.request_metadata(), false)
+                .map_err(AuthZError::from)?;
+            Ok(())
+        }
+        .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         let subject = parse_member(member_type, &member_id)?;
         match authorizer.role_assignments() {

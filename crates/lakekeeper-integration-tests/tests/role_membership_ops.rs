@@ -17,10 +17,10 @@ use lakekeeper::{
     service::{
         CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
         RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId, UserUpsertMode,
-        authz::AllowAllAuthorizer,
+        authz::AllowAllAuthorizer, events::EventListener,
     },
 };
-use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
+use lakekeeper_integration_tests::{CapturingAuthzListener, SetupTestCatalog, memory_io_profile};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 
@@ -1404,4 +1404,74 @@ async fn ordinary_role_membership_unaffected(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(page.members.len(), 0);
+}
+
+/// A provider-managed role's member list is the provider's to maintain, so a
+/// membership write against one is refused. That refusal is decided alongside the
+/// authorization check, not after it, so the request records exactly one verdict:
+/// a denial labelled `ActionForbidden`, with no preceding success event.
+///
+/// The member need not exist — the guard fires on the target role, before any
+/// member is resolved.
+#[sqlx::test]
+async fn managed_role_membership_write_audits_as_a_single_denial(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse.project_id;
+
+    // Seeded through the store: the API refuses a managed provider-id on create.
+    let source: RoleSourceId = "ldap-1".parse().unwrap();
+    let create = CatalogCreateRoleRequest::builder()
+        .role_id(RoleId::new_random())
+        .role_name("ldap-role")
+        .source_id(&source)
+        .provider_id(&provider)
+        .build();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let created = PostgresBackend::create_roles(project_id, vec![create], tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let role_id = created[0].id();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let err = ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(project_id),
+        role_id,
+        AddRoleMembersRequest {
+            members: vec![user_member(&UserId::new_unchecked("oidc", "alice"))],
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "ManagedRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "the guard is part of the authorization decision — one denial, no success event"
+    );
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden],
+    );
 }

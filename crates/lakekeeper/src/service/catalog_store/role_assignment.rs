@@ -109,11 +109,9 @@ pub struct UserProviderSyncInfo {
 #[derive(Debug, Clone)]
 pub struct ListUserRoleAssignmentsResult {
     pub roles: Vec<AssignedRole>,
-    /// One [`UserProviderSyncInfo`] entry per `(project_id, provider_id)` pair
-    /// for which the user currently has at least one assignment row.  Pairs
-    /// whose assignments have all been removed are not included even if a sync
-    /// was previously recorded for them.  Empty when the user has no
-    /// externally-managed assignments.
+    /// One [`UserProviderSyncInfo`] entry per `(project_id, provider_id)` pair the user
+    /// has been synced for, including pairs whose sync assigned no role. Empty when the
+    /// user has never been synced.
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
 }
 
@@ -346,6 +344,34 @@ impl From<ReservedRoleProvider> for ErrorModel {
     }
 }
 
+/// A role this sync assigns was deleted while the sync ran: its row was present when
+/// the statement started, but gone by the time the assignment was inserted. Nothing
+/// was written. The standalone `sync_user_role_assignments` retries once, which
+/// recreates the role if the provider still reports it; the variant that runs in
+/// the caller's transaction returns this error for the caller to retry.
+#[derive(thiserror::Error, Debug, PartialEq, Default)]
+#[error("A role was deleted while the role assignments were being synced. Retry the request.")]
+pub struct RoleDeletedDuringSync {
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleDeletedDuringSync);
+impl RoleDeletedDuringSync {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl From<RoleDeletedDuringSync> for ErrorModel {
+    fn from(err: RoleDeletedDuringSync) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleDeletedDuringSync")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 /// Reject an external role-provider sync that targets a reserved provider
 /// (`system` / `lakekeeper`). Backend-independent — enforced here in the
 /// `*Ops` layer so every storage backend and every sync entry point is covered.
@@ -502,7 +528,8 @@ define_transparent_error! {
         RoleNameAlreadyExists,
         DuplicateRoleError,
         RoleProviderMismatchError,
-        ReservedRoleProvider
+        ReservedRoleProvider,
+        RoleDeletedDuringSync
     ]
 }
 
@@ -1084,15 +1111,32 @@ where
                 .into(),
             );
         }
-        let mut t = Self::Transaction::begin_write(catalog_state).await?;
-        let sync_result = Self::sync_user_role_assignments_by_provider_impl(
+        // One retry: a role deleted while the first attempt ran is recreated by the
+        // second, which reads the committed delete.
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let first = Self::sync_user_role_assignments_by_provider_impl(
             &user,
             project_id,
             provider_id,
             roles,
             t.transaction(),
         )
-        .await?;
+        .await;
+        let sync_result = match first {
+            Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) => {
+                t.rollback().await?;
+                t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+                Self::sync_user_role_assignments_by_provider_impl(
+                    &user,
+                    project_id,
+                    provider_id,
+                    roles,
+                    t.transaction(),
+                )
+                .await?
+            }
+            result => result?,
+        };
         t.commit().await?;
 
         let mut list = ListUserRoleAssignmentsResult {
@@ -1470,6 +1514,16 @@ where
                 .collect())
         })
         .await
+    }
+
+    /// The roles `user_id` is assigned to directly, in every project, each with its
+    /// project. No nesting parents, and read from the database on every call: a caller
+    /// that rebuilds the closure itself adds the parents with [`Self::list_role_ancestors`].
+    async fn list_direct_role_assignments_for_user(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+        Self::list_direct_role_assignments_for_user_impl(user_id, catalog_state).await
     }
 
     /// Return all members of the given role, together with the last sync

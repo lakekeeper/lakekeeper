@@ -24,6 +24,7 @@ use crate::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
         },
+        contract_verification::ContractVerification,
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -145,6 +146,13 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Some(Box::new(e)),
         )
     })?;
+
+    state
+        .v1_state
+        .contract_verifiers
+        .check_create_view(&request, &metadata_build_result.metadata)
+        .await?
+        .into_result()?;
 
     let view_info = C::create_view(
         warehouse_id,

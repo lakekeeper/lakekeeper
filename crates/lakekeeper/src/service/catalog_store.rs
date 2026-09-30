@@ -40,8 +40,8 @@ use crate::{
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
-            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
-            ListSubtreeGrantsResultPage, UserOrRoleId,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -835,16 +835,26 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
+    /// Lock the role row until the transaction ends and return the number of grants
+    /// the role holds. While the lock is held no assignment, membership edge or grant
+    /// naming this role can be added, so the count stays exact until commit.
+    /// `RoleIdNotFoundInProject` if the role is not in `project_id`.
+    async fn lock_role_and_count_grants_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, DeleteRoleError>;
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
 
-    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
-    /// the provided idents. Ordering is unspecified. No pagination.
-    async fn list_roles_by_idents_impl(
-        project_id: &ProjectId,
+    /// Every role in one of `project_ids` whose `(provider_id, source_id)` is exactly one
+    /// of `idents`. No pagination. Each role carries its own project.
+    async fn list_roles_by_idents_in_projects_impl(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
@@ -895,8 +905,8 @@ where
     /// No per-row authorization: the caller gates the whole subtree at the root, and one
     /// answer there covers every member of the page.
     async fn list_grants_in_subtree_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError>;
@@ -928,8 +938,8 @@ where
     /// Grants on soft-deleted tabulars are always candidates, whatever `filter` says
     /// about listing them: an undrop restores a table together with its grants.
     async fn select_subtree_grant_candidates_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         limit: usize,
         catalog_state: Self::State,
     ) -> Result<GrantRevokeCandidates, ListGrantsStoreError>;
@@ -939,7 +949,7 @@ where
     /// Idempotent: a candidate already revoked is simply absent from the result, so a
     /// retry reports the delta rather than repeating it.
     async fn revoke_grant_candidates_impl<'a>(
-        root: GrantSubtreeRoot,
+        root: SubtreeGrantRoot,
         candidates: &[GrantCandidate],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError>;
@@ -968,6 +978,9 @@ where
     /// same tabular twice with different kinds gets an unspecified one of them echoed.
     /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
     /// soft-deleted tabulars are included.
+    ///
+    /// Each returned grant's `principal` is the principal that holds it, so one read for
+    /// several principals can be split by grantee afterwards.
     async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
         resources: &[GrantResource],
@@ -1058,6 +1071,29 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
+    /// The direct tags on each of `targets`, with the definition's name. Each row echoes the
+    /// `targets` entry it belongs to.
+    ///
+    /// The batched form of [`list_tags_for_target_impl`](Self::list_tags_for_target_impl):
+    /// one round trip for a whole containment chain instead of one per object.
+    ///
+    /// Direct tags only: no ancestors are walked and no children expanded. For inherited
+    /// tags, also name each object's ancestors, and fold the rows with
+    /// [`resolve_effective_tags_from_chain`], one object at a time. An ancestor left out
+    /// silently costs that object the tags it would inherit.
+    ///
+    /// A tabular carries only its own tags; its columns are separate targets.
+    ///
+    /// Unpaginated and unordered, with no cap: the row count is the sum over `targets` of
+    /// the definitions on each, and definitions are customer data. The caller bounds the
+    /// batch. Repeating a target is harmless. Naming one tabular under two kinds is not: the
+    /// later entry takes all its rows. A target that does not exist gives no rows rather
+    /// than an error, and a soft-deleted tabular keeps its tags.
+    async fn list_tags_on_targets_impl(
+        targets: &[TagTarget],
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
     /// All direct column tags on `tabular_id` (every column with a tag), each paired
     /// with its definition's name; the column is carried as the field-id in each
     /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.
@@ -1122,6 +1158,13 @@ where
         catalog_state: Self::State,
     ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
 
+    /// The roles `user_id` is assigned to directly, in every project, each with its
+    /// project. No nesting parents.
+    async fn list_direct_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError>;
+
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
         role_ident: &RoleIdent,
@@ -1176,6 +1219,15 @@ where
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    /// Delete the role-provider sync records of `user_ids` for `provider_id` in
+    /// `project_id`, so the provider re-syncs those users on their next request.
+    async fn expire_role_assignment_syncs_impl(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //

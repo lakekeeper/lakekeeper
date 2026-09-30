@@ -35,6 +35,7 @@ use crate::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
         },
+        contract_verification::ContractVerification,
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -291,6 +292,13 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         &warehouse.allowed_format_versions,
         warehouse.default_format_version,
     )?;
+
+    state
+        .v1_state
+        .contract_verifiers
+        .check_create_table(&request, &table_metadata)
+        .await?
+        .into_result()?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let (table_info, staged_table_id) = C::create_table(

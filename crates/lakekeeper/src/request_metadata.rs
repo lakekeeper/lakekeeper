@@ -101,7 +101,7 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
     /// Full bypass including data-plane actions.
@@ -128,14 +128,17 @@ impl PrivilegeSource {
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
+    /// When the request reached Lakekeeper's middleware.
+    received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
     token_roles: Option<TokenRoles>,
     /// Roles resolved by a post-authentication admission gate (see
     /// [`AdmissionGate`](crate::service::admission::AdmissionGate)) — e.g. from
     /// an external entitlement service. Kept separate from `token_roles` so the
-    /// provenance (token claim vs externally resolved) stays explicit.
-    admission_roles: Option<TokenRoles>,
+    /// provenance (token claim vs externally resolved) stays explicit. They hold in
+    /// every project.
+    admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
@@ -173,13 +176,6 @@ impl TokenRoles {
     #[must_use]
     pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
         &self.roles
-    }
-
-    /// Union `other`'s roles into this set, consuming it (no cloning). Keeps
-    /// `self`'s project id; callers resolve roles for the request's single
-    /// project, so the ids normally match, and if they differ the first wins.
-    pub(crate) fn merge(&mut self, other: TokenRoles) {
-        self.roles.extend(other.roles);
     }
 }
 
@@ -286,14 +282,24 @@ impl RequestMetadata {
     /// by the auth middleware after the gates run; kept separate from
     /// [`set_token_roles`](Self::set_token_roles) to preserve provenance.
     #[cfg_attr(not(feature = "router"), allow(dead_code))]
-    pub(crate) fn set_admission_roles(&mut self, admission_roles: TokenRoles) -> &mut Self {
-        self.admission_roles = Some(admission_roles);
+    pub(crate) fn set_admission_roles(&mut self, roles: XXHashSet<Arc<RoleIdent>>) -> &mut Self {
+        self.admission_roles = Some(roles);
         self
     }
 
-    /// Roles resolved by a post-authentication admission gate, if any.
+    /// Set the request's project to the project of the warehouse a catalog request
+    /// addresses. Written by the auth middleware, only for a request that sent no
+    /// `x-project-id`, before anything reads the request's project.
+    #[cfg_attr(not(feature = "router"), allow(dead_code))]
+    pub(crate) fn set_warehouse_project_id(&mut self, project_id: ArcProjectId) -> &mut Self {
+        self.project_id = Some(project_id);
+        self
+    }
+
+    /// Roles resolved by a post-authentication admission gate, if any. They hold in
+    /// every project.
     #[must_use]
-    pub fn admission_roles(&self) -> Option<&TokenRoles> {
+    pub fn admission_roles(&self) -> Option<&XXHashSet<Arc<RoleIdent>>> {
         self.admission_roles.as_ref()
     }
 
@@ -331,6 +337,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id,
             project_id: None,
             authentication: None,
@@ -397,6 +404,7 @@ impl RequestMetadata {
     #[must_use]
     pub fn new_unauthenticated() -> Self {
         Self {
+            received_at: tokio::time::Instant::now(),
             request_id: Uuid::now_v7(),
             project_id: None,
             authentication: None,
@@ -588,6 +596,20 @@ impl RequestMetadata {
             .ok_or(ProjectIdMissing)
     }
 
+    /// When the request reached Lakekeeper's middleware. Time limits that must
+    /// fit inside `LAKEKEEPER__MAX_REQUEST_TIME` count from here.
+    #[must_use]
+    pub fn received_at(&self) -> tokio::time::Instant {
+        self.received_at
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_received_at(mut self, received_at: tokio::time::Instant) -> Self {
+        self.received_at = received_at;
+        self
+    }
+
     /// Get the host that the request was made to.
     ///
     /// Contains the value of `CONFIG.base_uri` if configered, else the
@@ -671,18 +693,24 @@ pub struct RequestMetadataTestBuilder {
     /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests
     /// construct a request that carries them.
     #[builder(default, setter(strip_option))]
-    pub admission_roles: Option<TokenRoles>,
+    pub admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     /// The `User-Agent` header the caller sent, as captured by the request
     /// middleware. Lets tests exercise the audit log's `user_agent` field.
     #[builder(default, setter(strip_option))]
     pub user_agent: Option<UserAgent>,
+    /// Fixed request id. Random by default, as in production; set it where a
+    /// test compares a whole emitted record against a committed one, which a
+    /// fresh uuid per run would make impossible.
+    #[builder(default = Uuid::now_v7())]
+    pub request_id: Uuid,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
         Self {
-            request_id: Uuid::now_v7(),
+            received_at: tokio::time::Instant::now(),
+            request_id: b.request_id,
             authentication: b.authentication,
             base_url: b.base_url,
             actor: b.actor.into(),
@@ -698,6 +726,24 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
             break_glass: None,
         }
     }
+}
+
+/// Extract the project id from [`X_PROJECT_ID_HEADER`] (or its deprecated alias
+/// `x-project-ident`), if either was sent with a value that is non-empty after
+/// trimming. `Ok(None)` when neither header was sent, or when the value sent was
+/// empty or whitespace-only after trimming — such a request is treated the same as
+/// one that sent no header at all.
+#[cfg(any(feature = "router", test))]
+fn project_id_from_headers(headers: &HeaderMap) -> Result<Option<ProjectId>, ErrorModel> {
+    headers
+        .get(X_PROJECT_ID_HEADER)
+        .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
+        .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ProjectId::from_str)
+        .transpose()
+        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")))
 }
 
 #[cfg(feature = "router")]
@@ -730,16 +776,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .into_response();
     };
 
-    let project_id = headers
-        .get(X_PROJECT_ID_HEADER)
-        .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
-        .and_then(|hv| hv.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ProjectId::from_str)
-        .transpose()
-        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")));
-    let project_id = match project_id {
+    let project_id = match project_id_from_headers(&headers) {
         Ok(ident) => ident,
         Err(err) => {
             return err.into_response();
@@ -770,6 +807,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     };
 
     request.extensions_mut().insert(RequestMetadata {
+        received_at: tokio::time::Instant::now(),
         request_id,
         authentication: None,
         token_roles: None,
@@ -943,6 +981,23 @@ mod test {
             DEFAULT_PROJECT_ID.clone(),
             "while the preferred project still falls back to the configured default"
         );
+    }
+
+    /// A caller who sends `x-project-id` but leaves it empty or whitespace-only has
+    /// named no project — same as sending no header at all. Feeds
+    /// [`RequestMetadata::requested_project_id`] via `project_id.map(Arc::new)`, so
+    /// `None` here means `requested_project_id()` is `None` too.
+    #[test]
+    fn a_project_id_header_that_is_empty_or_whitespace_only_is_treated_as_absent() {
+        for raw in ["", "   ", "\t \t"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                X_PROJECT_ID_HEADER_NAME,
+                HeaderValue::from_str(raw).unwrap(),
+            );
+            assert_eq!(project_id_from_headers(&headers).unwrap(), None, "{raw:?}");
+        }
+        assert_eq!(project_id_from_headers(&HeaderMap::new()).unwrap(), None);
     }
 
     /// The header is caller-controlled and lands on every audit record, so its

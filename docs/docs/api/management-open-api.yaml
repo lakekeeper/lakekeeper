@@ -2391,7 +2391,10 @@ paths:
       tags:
         - role
       summary: Delete Role
-      description: Permanently removes a role and all its associated permissions.
+      description: |-
+        Permanently removes a role, its member assignments and its grants.
+        Where Lakekeeper stores grants in its database (every built-in authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; otherwise the request fails with `409 RoleHasGrants`. Under OpenFGA the role's grants are removed with it.
+        Roles maintained by a configured role provider can be deleted too. Their members are re-synced from the provider on their next request, and if the provider still reports the group, it recreates the role, without the deleted grants. Other Lakekeeper instances follow once their user assignments cache entry expires.
       operationId: delete_role
       parameters:
         - name: role_id
@@ -2401,6 +2404,15 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: force
+          in: query
+          description: |-
+            Delete the role even if it holds grants. Its grants are revoked with it.
+            Checked where Lakekeeper stores grants in its database; under OpenFGA a role's
+            grants are always removed with it.
+          required: false
+          schema:
+            type: boolean
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
@@ -8778,7 +8790,7 @@ components:
           description: |-
             Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
             Must be provided together with `source-id`. Omit both to let the server
-            assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
+            assign `provider-id = "lakekeeper"` and use the role's `id` as `source-id`.
         source-id:
           type:
             - string
@@ -8977,10 +8989,10 @@ components:
       description: |-
         A single factor that contributed to an authorization decision.
 
-        Discriminated by `type`: `policy` names a policy the authorizer matched,
-        `system-authority` records that a built-in authority tier decided the
-        request. Further kinds may be added, so treat an unrecognised `type` as an
-        opaque factor rather than an error.
+        Discriminated by `type`: `policy` names a policy the authorizer matched, and
+        `system-authority` records that a built-in authority tier decided the request. The
+        schema is a closed `oneOf` over those two, so a further kind is a schema change a
+        generated client has to be rebuilt for rather than one it absorbs on its own.
       discriminator:
         propertyName: type
         mapping:
@@ -10984,6 +10996,16 @@ components:
         those on every descendant namespace and tabular. Strictly stronger than
         `ReadGrants`, which covers this one resource; granted separately because it
         enumerates the subtree.
+
+        `scope` states what the listing covers — the resource kinds it reaches, how far its
+        range extends, the privileges it covers, and the principal it is narrowed to — so a
+        policy can allow a narrow access review and still refuse a full enumeration.
+
+        Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+        revoke only with a scope. An absent scope is the base-capability question that
+        permission introspection asks, so an authorizer may answer the two separately —
+        refusing the base question drops the action from
+        `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
       required:
         - action
       properties:
@@ -10991,12 +11013,18 @@ components:
           type: string
           enum:
             - read_subtree_grants
+        scope:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperNamespaceActionRevokeSubtreeGrants:
       type: object
       description: |-
         Can revoke any grant in the subtree rooted here, asked once at this namespace for
         the whole batch. An authorizer must answer it as authority over everything
         beneath — or refuse the subtree routes.
+
+        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
         - action
       properties:
@@ -11004,6 +11032,10 @@ components:
           type: string
           enum:
             - revoke_subtree_grants
+        scope:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperNamespaceActionSetProtection:
       type: object
       required:
@@ -11094,6 +11126,14 @@ components:
             - string
             - 'null'
           description: Name of the role to create.
+        source_system:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/RoleSourceSystem'
+              description: |-
+                External identity (provider + source id) the request binds the new role
+                to. Absent when the request names none, in which case the role is created
+                in the `lakekeeper` provider with a generated source id.
     LakekeeperProjectActionCreateTag:
       type: object
       description: Create a new governance tag definition in this project.
@@ -12983,6 +13023,16 @@ components:
         Can list and read every grant in the warehouse: the warehouse's own and those on
         every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
         covers this one resource; granted separately because it enumerates the subtree.
+
+        `scope` states what the listing covers — the resource kinds it reaches, how far its
+        range extends, the privileges it covers, and the principal it is narrowed to — so a
+        policy can allow a narrow access review and still refuse a full enumeration.
+
+        Every enforced check carries it: Lakekeeper authorizes a real subtree listing or
+        revoke only with a scope. An absent scope is the base-capability question that
+        permission introspection asks, so an authorizer may answer the two separately —
+        refusing the base question drops the action from
+        `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
       required:
         - action
       properties:
@@ -12990,6 +13040,10 @@ components:
           type: string
           enum:
             - read_subtree_grants
+        scope:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperWarehouseActionRename:
       type: object
       required:
@@ -13005,6 +13059,8 @@ components:
         Can revoke any grant in the warehouse, asked once at the warehouse for the whole
         batch. An authorizer must answer it as authority over everything beneath — or
         refuse the subtree routes.
+
+        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
       required:
         - action
       properties:
@@ -13012,6 +13068,10 @@ components:
           type: string
           enum:
             - revoke_subtree_grants
+        scope:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/SubtreeGrantScope'
     LakekeeperWarehouseActionSetFormatVersionPolicy:
       type: object
       required:
@@ -14181,9 +14241,10 @@ components:
           type: boolean
           description: |-
             Compute and return what this request would revoke, removing nothing. The same
-            read and the same authority checks as the live call; the response's `preview`
-            carries the batch. A dry run is never refused for size — `has-more: true` says
-            the live call needs `allow-partial`, or several calls.
+            read and the same two authority checks as the live call, both told this is a
+            rehearsal — so a policy may allow the preview and gate the revoke itself. The
+            response's `preview` carries the batch. A dry run is never refused for batch size
+            — `has-more: true` says the live call needs `allow-partial`, or several calls.
         include-root-level:
           type: boolean
           description: |-
@@ -14495,6 +14556,29 @@ components:
       enum:
         - assignee
         - ownership
+    RoleSourceSystem:
+      type: object
+      description: |-
+        The external identity (source system) a role is bound to: a provider and the
+        role's identifier within that provider, always given together.
+      required:
+        - provider_id
+        - source_id
+      properties:
+        provider_id:
+          type: string
+          description: Provider that owns the role (e.g. `oidc`, `ldap`).
+        source_id:
+          type: string
+          description: Identifier of the role within the provider.
+    RootLevelGrants:
+      type: string
+      description: |-
+        Whether a subtree grant operation extends to the addressed resource itself, alongside
+        everything below it. Set from the request's `include-root-level`.
+      enum:
+        - included
+        - excluded
     S3AccessKeyCredential:
       type: object
       title: S3CredentialAccessKey
@@ -15015,18 +15099,23 @@ components:
             Role-provider namespaces whose roles are maintained by a configured role
             provider (LDAP/Entra/Okta/token), sorted. Roles whose `provider-id`
             appears here are the provider's to maintain: creating one, or renaming,
-            re-describing, rebinding, or deleting an existing one, is rejected with
-            `ManagedRoleImmutable` so provider sync cannot be clobbered.
+            re-describing or rebinding an existing one, is rejected with
+            `ManagedRoleImmutable` so provider sync cannot be clobbered. Deleting one
+            is allowed; if the provider still reports the group, it creates the role
+            again on its next sync.
 
             This is live server configuration, not a property of the namespace
             string. A provider removed from config drops out of the list, and the
-            roles it left behind become renamable and deletable again so they can be
-            cleaned up.
+            roles it left behind become renamable again.
 
             Empty when no role provider is configured. Two namespaces never appear,
             and a client gating on this list must handle both itself: `lakekeeper`,
-            which is always writable, and the reserved `system`, whose roles reject
-            the same mutations with `SystemRoleImmutable`.
+            which is always writable, and the reserved `system`: its existing roles
+            reject the same mutations and deletion with `SystemRoleImmutable`, and
+            naming it on create or rebind returns `RoleProviderIdReserved`. Some
+            authorizers create and rebind roles only in `lakekeeper`; they refuse a
+            namespace that is neither `lakekeeper`, `system` nor listed here with
+            `RoleProviderNotApiManaged`.
 
             **Membership is gated differently — do not derive it from this list.**
             Adding or removing a role's members requires the `lakekeeper` namespace
@@ -15190,7 +15279,7 @@ components:
             - 'null'
           description: |-
             URN of the STACKIT credentials group to assume when vending credentials,
-            e.g. `urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3`.
+            e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`.
 
             Copy it verbatim from the credentials group; it is not derivable.
             Required when `sts-enabled` is true, optional otherwise — but validated
@@ -15202,12 +15291,15 @@ components:
           format: uri
           description: |-
             Endpoint override. Normally omitted — the endpoint is derived from
-            `region`.
+            `region` and `storage-service`. Takes precedence over `storage-service`
+            when set.
 
             Set this only for a STACKIT endpoint outside the public naming scheme,
             which STACKIT hands out per customer. Such an endpoint is a distinct
-            storage tenant, not another route to the same bucket, so it is immutable
-            once the warehouse exists.
+            storage tenant, not another route to the same bucket, so the resolved
+            endpoint is immutable once the warehouse exists. An update may switch
+            between `endpoint` and `storage-service` if both resolve to the same
+            endpoint.
         key-prefix:
           type:
             - string
@@ -15231,19 +15323,39 @@ components:
             - type: 'null'
             - $ref: '#/components/schemas/StorageLayout'
               description: Storage layout for namespace and tabular paths.
+        storage-service:
+          $ref: '#/components/schemas/StackitStorageService'
+          description: |-
+            STACKIT storage service that holds the bucket. Defaults to
+            `object-storage`. Ignored when `endpoint` is set.
+
+            Each service is a distinct storage tenant, so the resolved endpoint is
+            immutable once the warehouse exists. An update may switch between
+            `storage-service` and `endpoint` if both resolve to the same endpoint.
         sts-enabled:
           type: boolean
           description: |-
             Vend temporary downscoped credentials via STS. Defaults to enabled.
 
-            Requires `credentials-group-urn`, and requires the credentials group to
-            carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
-            to remote signing on storage that predates `StorageGRID` 12.0.
+            Requires `credentials-group-urn`, and a trust policy on that group
+            allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
+            STACKIT storage without STS.
         sts-token-validity-seconds:
           type: integer
           format: int64
           description: Validity of vended credentials in seconds. Defaults to 3600.
           minimum: 0
+    StackitStorageService:
+      type: string
+      description: |-
+        STACKIT storage service that holds a bucket.
+
+        - `object-storage`: STACKIT Object Storage, `object.storage.<region>.onstackit.cloud`.
+        - `data-platform`: STACKIT data platform storage,
+          `dataplatform.storage.<region>.onstackit.cloud`. Available in `eu01` only.
+      enum:
+        - object-storage
+        - data-platform
     StorageCredential:
       oneOf:
         - allOf:
@@ -15693,6 +15805,104 @@ components:
       description: |-
         STACKIT Object Storage. S3 over `NetApp` `StorageGRID`, with a reduced knob
         set and STACKIT's own endpoint derivation and credentials-group STS.
+    SubtreeGrantPrincipal:
+      oneOf:
+        - type: object
+          title: SubtreeGrantPrincipalEvery
+          description: Every principal holding a grant in range.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: Every principal holding a grant in range.
+        - type: object
+          title: SubtreeGrantPrincipalOne
+          description: The single principal the request is narrowed to.
+          required:
+            - one
+          properties:
+            one:
+              $ref: '#/components/schemas/UserOrRole'
+              description: The single principal the request is narrowed to.
+      description: Which principals' grants a subtree operation covers.
+    SubtreeGrantPrivileges:
+      oneOf:
+        - type: object
+          title: SubtreeGrantPrivilegesEvery
+          description: |-
+            Every privilege a matching grant can carry, including privileges this server's
+            authorizer no longer publishes. A request naming none takes this form.
+          required:
+            - every
+          properties:
+            every:
+              type: object
+              description: |-
+                Every privilege a matching grant can carry, including privileges this server's
+                authorizer no longer publishes. A request naming none takes this form.
+        - type: object
+          title: SubtreeGrantPrivilegesOnly
+          description: Only the privileges named here.
+          required:
+            - only
+          properties:
+            only:
+              type: object
+              description: Only the privileges named here.
+              required:
+                - names
+              properties:
+                names:
+                  type: array
+                  items:
+                    type: string
+                  description: |-
+                    Every privilege the request reaches, and never empty. Spelled `names` so the
+                    wire form does not read `privileges.only.privileges`.
+                  minItems: 1
+      description: Which privileges a subtree grant operation covers.
+    SubtreeGrantScope:
+      type: object
+      description: |-
+        The scope of a concrete subtree grant request: what it reaches, how far, and whether
+        the call only rehearses.
+      required:
+        - resource_types
+        - root_level
+        - privileges
+        - principal
+        - dry_run
+      properties:
+        dry_run:
+          type: boolean
+          description: |-
+            Whether the call this check belongs to only reports what it would do. A dry run
+            reads the same grants as the live call and changes nothing, so a policy can allow
+            a rehearsal and still refuse the revoke, which then removes nothing. Both checks a
+            revoke makes carry the same value, so the grant-read check sees the rehearsal too.
+            A listing carries `false`, the value of a call that runs for real.
+        principal:
+          $ref: '#/components/schemas/SubtreeGrantPrincipal'
+          description: Whether the request covers every principal, or one named principal.
+        privileges:
+          $ref: '#/components/schemas/SubtreeGrantPrivileges'
+          description: |-
+            Which privileges the request reaches: every privilege a matching grant can carry,
+            or the named set it is narrowed to. A revoke removes only what this covers, so a
+            policy can leave an administrative privilege standing while clearing the rest.
+        resource_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceType'
+          description: |-
+            Every resource kind whose grants the request reaches. Never empty, and always a
+            subset of the kinds the addressed resource covers: a request naming no kinds
+            carries that full set, so this always states what the operation actually touches.
+          minItems: 1
+        root_level:
+          $ref: '#/components/schemas/RootLevelGrants'
+          description: Whether the request's range extends to the addressed resource itself.
     TableAction:
       type: string
       enum:
@@ -16831,11 +17041,14 @@ components:
           items:
             $ref: '#/components/schemas/ValidationCheck'
           description: |-
-            Every check that was considered, in execution order — passed, failed and
-            skipped alike, so the caller can see what was and was not covered.
+            Every check that was considered, in execution order — passed, failed,
+            warning and skipped alike, so the caller can see what was and was not
+            covered.
         valid:
           type: boolean
-          description: True when no check failed. Skipped checks do not make a configuration invalid.
+          description: |-
+            True when no check failed. Skipped and warning checks do not make a
+            configuration invalid.
     ValidationCheck:
       type: object
       required:
@@ -16853,7 +17066,7 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/ErrorModel'
-              description: What went wrong. Only set for `failed`.
+              description: What went wrong. Only set for `failed` and `warning`.
         name:
           $ref: '#/components/schemas/ValidationCheckName'
         reason:
@@ -16893,19 +17106,22 @@ components:
         - vended-credentials-read-write
         - vended-credentials-scope-enforced
         - cleanup
+        - cors-origin-allowed
+        - bucket-access-restricted
     ValidationCheckStatus:
       type: string
       description: |-
         The outcome of a single check.
 
-        `passed` and `failed` are verdicts about the configuration. `skipped` is not
-        a verdict: the check did not apply, or a prerequisite failed, and `reason`
-        says which. Skipped checks never make a configuration invalid, so a report
+        `passed`, `failed` and `warning` are verdicts about the configuration; only
+        `failed` makes it invalid. `skipped` is not a verdict: the check did not
+        apply, or a prerequisite failed, and `reason` says which. Skipped checks never make a configuration invalid, so a report
         can be `valid` with nothing actually verified — read the individual checks.
       enum:
         - passed
         - failed
         - skipped
+        - warning
     ViewAction:
       type: string
       enum:

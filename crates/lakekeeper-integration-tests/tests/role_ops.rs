@@ -6,18 +6,23 @@ use lakekeeper::{
         management::v1::{
             ApiServer,
             role::{
-                CreateRoleRequest, Service as _, UpdateRoleRequest, UpdateRoleSourceSystemRequest,
+                CreateRoleRequest, DeleteRoleQuery, Service as _, UpdateRoleRequest,
+                UpdateRoleSourceSystemRequest,
             },
         },
     },
     service::{
-        ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
-        CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
-        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
-        authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
+        ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogGrantOps as _,
+        CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
+        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
+        authz::{AllowAllAuthorizer, GrantResource, GrantSpec, UserOrRoleId},
+        events::EventListener,
+        role_cache::ROLE_CACHE,
     },
 };
-use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
+use lakekeeper_integration_tests::{
+    CapturingAuthzListener, SetupTestCatalog, memory_io_profile, random_request_metadata,
+};
 use lakekeeper_storage_postgres::PostgresBackend;
 use sqlx::PgPool;
 
@@ -712,6 +717,7 @@ async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(&warehouse_resp.project_id),
         role_id,
+        DeleteRoleQuery::default(),
     )
     .await
     .unwrap();
@@ -895,7 +901,8 @@ async fn test_list_roles_cache_source_id_filter(pool: PgPool) {
 
 // ==================== System role rejection tests ====================
 
-/// `create_role` rejects requests with `provider_id = "system"`.
+/// `create_role` rejects requests with `provider_id = "system"`, recorded as the
+/// request's one denial.
 #[sqlx::test]
 async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -905,6 +912,11 @@ async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
         .number_of_warehouses(1)
         .build()
         .setup()
+        .await;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
         .await;
 
     let err = ApiServer::create_role(
@@ -923,10 +935,50 @@ async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
 
     assert_eq!(err.error.r#type, "RoleProviderIdReserved");
     assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
+}
+
+/// A caller who may not create roles is refused by the authorizer before the
+/// provider guard runs, so a reserved `provider_id` reveals nothing to them.
+#[sqlx::test]
+async fn test_create_role_authz_denial_precedes_provider_guard(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authorizer = HidingAuthorizer::new();
+    authorizer.block_action("project:CreateRole");
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(authorizer)
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let err = ApiServer::create_role(
+        create_request(
+            &warehouse_resp.project_id,
+            "my-attempted-system-role",
+            Some(("system", "custom-admin")),
+        ),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+    assert_ne!(err.error.r#type, "RoleProviderIdReserved");
+    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
 }
 
 /// Create a system role directly via the catalog layer (bypasses the
-/// `reject_managed_provider` API guard). Used as fixture by tests that need
+/// `reject_role_provider_target` API guard). Used as fixture by tests that need
 /// an existing system row to verify the immutability guards.
 async fn seed_test_system_role(
     ctx: &lakekeeper::api::ApiContext<
@@ -976,6 +1028,7 @@ async fn test_delete_role_rejects_system_role(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(&warehouse_resp.project_id),
         role_id,
+        DeleteRoleQuery::default(),
     )
     .await
     .unwrap_err();
@@ -1293,5 +1346,715 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
             lakekeeper::service::CreateRoleError::RoleSourceIdConflict(_)
         ),
         "expected RoleSourceIdConflict, got: {err:?}"
+    );
+}
+
+// ==================== Audit ordering ====================
+
+/// A write that fails *after* authorization succeeded must still record the
+/// authorization outcome as a success — the write failure is not an
+/// authorization failure.
+///
+/// The second request is identical to the first, so `require_project_action`
+/// passes again while the catalog rejects the duplicate `provider~source_id` —
+/// a write failure reachable only once authorization has already been decided.
+#[sqlx::test]
+async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // Attach after setup so only the two calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let request = || CreateRoleRequest {
+        name: "audit-order-role".to_string(),
+        description: None,
+        project_id: Some((*warehouse_resp.project_id).clone()),
+        provider_id: Some(make_provider()),
+        source_id: Some(make_source_id("src-audit-order")),
+    };
+
+    ApiServer::create_role(request(), ctx.clone(), random_request_metadata())
+        .await
+        .expect("first create succeeds");
+    assert_eq!(
+        listener.settled_counts(1, 0).await,
+        (1, 0),
+        "the successful call must be audited exactly once"
+    );
+
+    let write_error = ApiServer::create_role(request(), ctx.clone(), random_request_metadata())
+        .await
+        .expect_err("re-creating the same role must fail");
+
+    assert_eq!(
+        listener.settled_counts(2, 0).await,
+        (2, 0),
+        "the second authorization attempt must be audited as a success even though \
+         the write that followed it failed: {write_error:?}"
+    );
+}
+
+/// Same contract on the update path: renaming onto an existing name is rejected
+/// by the write, after `require_role_action` has already allowed the update.
+#[sqlx::test]
+async fn test_update_role_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    db_create_role(&ctx, project_id, "taken-name", "src-taken").await;
+    let victim = db_create_role(&ctx, project_id, "renamable", "src-renamable").await;
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        victim.id,
+        UpdateRoleRequest {
+            name: "taken-name".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .expect_err("renaming onto an existing name must fail");
+
+    assert_eq!(
+        listener.settled_counts(1, 0).await,
+        (1, 0),
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+}
+
+/// An identity guard refuses a role the authorizer already allowed the action on.
+/// That refusal *is* the authorization outcome, so it must be audited as a denial
+/// — an `AuthorizationFailedEvent` and no success event — rather than an
+/// "allowed" record for a change that never happened.
+///
+/// Covers all three lifecycle endpoints: the guard lives in `check_role_action`,
+/// which they share, so each must produce the same single verdict. Counts are
+/// cumulative over one listener, so a stray success event from any step fails the
+/// next assertion too.
+///
+/// The two assertion kinds pin different things. The counts pin the *shape* — one
+/// verdict, no stray success — and catch the guard being evaluated after the emit
+/// rather than inside the check. The `failure_reasons` assertion pins the *label*:
+/// routed through the `DeleteRoleError`/`UpdateRoleError` wrappers these report
+/// `InternalCatalogError` ("no verdict was reached"), which is what a deliberate
+/// refusal must not say.
+#[sqlx::test]
+async fn test_system_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    // Every call below is refused, so one seeded role serves all three.
+    let role_id = seed_test_system_role(&ctx, project_id, "test_admin").await;
+
+    // Attach after setup so only the calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let delete_err = ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(delete_err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "delete_role: the refusal is the authorization outcome — one denial, no success event"
+    );
+
+    let update_err = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleRequest {
+            name: "renamed".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(update_err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 2).await,
+        (0, 2),
+        "update_role: same guard, same single-denial verdict"
+    );
+
+    let rebind_err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: make_source_id("rebound"),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(rebind_err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 3).await,
+        (0, 3),
+        "update_role_source_system: same guard, same single-denial verdict"
+    );
+
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 3],
+        "a deliberate refusal is `ActionForbidden`, not an internal-catalog-error non-verdict"
+    );
+}
+
+/// The other arm of the same guard: a role whose provider namespace is owned by a
+/// configured role provider cannot be renamed or rebound, and that refusal is the
+/// authorization outcome — a single denial, labelled `ActionForbidden`. Deleting it
+/// is allowed: the provider recreates the role on its next sync if the group still
+/// exists.
+///
+/// Needs a non-`AllowAll` authorizer because the deny-set comes from
+/// `Authorizer::managed_role_provider_ids`, and needs store-level seeding because
+/// `reject_role_provider_target` refuses a managed provider-id on create, so the API
+/// cannot produce this state.
+#[sqlx::test]
+async fn test_managed_role_refuses_edits_allows_delete(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let role_id = seed_role(&ctx, project_id, &provider, "ldap-1", "ldap-role").await;
+
+    // Attach after setup so only the calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let update_err = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleRequest {
+            name: "renamed".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(update_err.error.r#type, "ManagedRoleImmutable");
+    assert_eq!(
+        listener.settled_counts(0, 1).await,
+        (0, 1),
+        "a provider-managed role is refused as the authorization outcome — one \
+         denial, no success event"
+    );
+
+    let rebind_err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: make_source_id("rebound"),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(rebind_err.error.r#type, "ManagedRoleImmutable");
+    assert_eq!(listener.settled_counts(0, 2).await, (0, 2));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 2],
+    );
+
+    // A provider-managed role holding a grant needs `force`, like any other role.
+    PostgresBackend::apply_grants(
+        &[GrantSpec {
+            principal: UserOrRoleId::Role(role_id),
+            resource: GrantResource::Warehouse(warehouse_resp.warehouse_id),
+            privilege: "get_metadata".to_string(),
+        }],
+        &[],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    let delete_err = ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(delete_err.error.r#type, "RoleHasGrants");
+    assert_eq!(listener.settled_counts(1, 2).await, (1, 2));
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::builder().force().build(),
+    )
+    .await
+    .expect("a provider-managed role can be deleted");
+    assert_eq!(listener.settled_counts(2, 2).await, (2, 2));
+    assert!(
+        PostgresBackend::get_role_by_id(project_id, role_id, ctx.v1_state.catalog.clone())
+            .await
+            .is_err(),
+        "the role row is gone"
+    );
+}
+
+/// Deleting a provider-managed role expires its members' sync records for that
+/// provider, so the provider re-syncs them on their next request.
+#[sqlx::test]
+async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
+    use lakekeeper::{
+        api::management::v1::user::UserLastUpdatedWith,
+        service::{
+            CatalogRoleAssignmentOps as _, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
+            RoleIdent, UserId, authz::tests::HidingAuthorizer,
+        },
+    };
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let alice = std::sync::Arc::new(UserId::new_unchecked("oidc", "alice"));
+    let ident = std::sync::Arc::new(RoleIdent::new_unchecked("corporate-ldap", "contractors"));
+    let synced = PostgresBackend::sync_user_role_assignments(
+        CatalogUserRoleAssignmentUser {
+            user_id: &alice,
+            name: Some("Alice"),
+            email: None,
+            user_type: None,
+            updated_with: UserLastUpdatedWith::RoleProvider,
+        },
+        project_id,
+        &provider,
+        &[CatalogRoleForAssignment {
+            ident: &ident,
+            name: Some("Contractors"),
+            description: None,
+        }],
+        ctx.v1_state.catalog.clone(),
+        &ctx.v1_state.events,
+    )
+    .await
+    .unwrap();
+    assert_eq!(synced.provider_sync_times.len(), 1);
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        synced.roles[0].role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap();
+
+    let after =
+        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    assert!(after.roles.is_empty());
+    assert!(
+        after.provider_sync_times.is_empty(),
+        "the member's sync record is gone: {:?}",
+        after.provider_sync_times
+    );
+}
+
+/// Under an authorizer with its own grant store, rows in the catalog's grant table
+/// confer nothing, so they need no `force`; the delete removes them with the role.
+#[sqlx::test]
+async fn test_delete_role_ignores_catalog_grants_under_own_grant_store(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_own_grant_store())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let role_id = seed_role(&ctx, project_id, &make_provider(), "leftover", "leftover").await;
+    PostgresBackend::apply_grants(
+        &[GrantSpec {
+            principal: UserOrRoleId::Role(role_id),
+            resource: GrantResource::Warehouse(warehouse_resp.warehouse_id),
+            privilege: "get_metadata".to_string(),
+        }],
+        &[],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role_id,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .expect("catalog grant rows do not hold up the delete");
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM grant_assignment")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+// ==================== Provider namespaces the API may manage ====================
+
+type TestCtx<A> = lakekeeper::api::ApiContext<
+    lakekeeper::service::State<A, PostgresBackend, lakekeeper_storage_postgres::SecretsState>,
+>;
+
+/// Create a role in any namespace directly via `PostgresBackend`, as a provider
+/// sync or an older deployment would have left it.
+async fn seed_role<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &TestCtx<A>,
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    source_id: &str,
+    name: &str,
+) -> RoleId {
+    let source_id = make_source_id(source_id);
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let role = PostgresBackend::create_role(
+        project_id,
+        CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name(name)
+            .source_id(&source_id)
+            .provider_id(provider_id)
+            .build(),
+        tx.transaction(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    role.id()
+}
+
+fn create_request(
+    project_id: &ProjectId,
+    name: &str,
+    provider_and_source: Option<(&str, &str)>,
+) -> CreateRoleRequest {
+    CreateRoleRequest {
+        name: name.to_string(),
+        description: None,
+        project_id: Some(project_id.clone()),
+        provider_id: provider_and_source.map(|(p, _)| p.parse().unwrap()),
+        source_id: provider_and_source.map(|(_, s)| make_source_id(s)),
+    }
+}
+
+/// Under `LakekeeperOnly`, create accepts `lakekeeper` roles only, and every
+/// refused provider is recorded as the request's one denial.
+#[sqlx::test]
+async fn test_create_role_lakekeeper_only(pool: PgPool) {
+    use lakekeeper::service::authz::{ApiRoleProviders, tests::HidingAuthorizer};
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(
+            HidingAuthorizer::new()
+                .with_managed_role_providers(["corporate-ldap".parse().unwrap()])
+                .with_api_role_providers(ApiRoleProviders::LakekeeperOnly),
+        )
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let defaulted = ApiServer::create_role(
+        create_request(project_id, "defaulted", None),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(defaulted.provider_id, RoleProviderId::lakekeeper());
+    assert_eq!(defaulted.source_id.as_str(), defaulted.id.to_string());
+
+    let named = ApiServer::create_role(
+        create_request(project_id, "named", Some(("lakekeeper", "analysts"))),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(named.source_id.as_str(), "analysts");
+
+    for (provider, expected) in [
+        ("entra", "RoleProviderNotApiManaged"),
+        ("corporate-ldap", "ManagedRoleImmutable"),
+        ("system", "RoleProviderIdReserved"),
+    ] {
+        let err = ApiServer::create_role(
+            create_request(project_id, provider, Some((provider, "admins"))),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.r#type, expected, "provider `{provider}`");
+        assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+    }
+
+    assert_eq!(listener.settled_counts(2, 3).await, (2, 3));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden; 3],
+    );
+}
+
+/// The default, `AnyUnmanaged`, keeps namespaces no provider owns writable, so
+/// external provisioning can label roles with its own provider id.
+#[sqlx::test]
+async fn test_create_and_rebind_into_unmanaged_namespace_by_default(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    let created = ApiServer::create_role(
+        create_request(project_id, "external", Some(("entra", "group-1"))),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.provider_id.as_str(), "entra");
+
+    let native = ApiServer::create_role(
+        create_request(project_id, "native", None),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let rebound = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        native.id,
+        UpdateRoleSourceSystemRequest {
+            provider_id: "entra".parse().unwrap(),
+            source_id: make_source_id("group-2"),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rebound.provider_id.as_str(), "entra");
+}
+
+/// Under `LakekeeperOnly`, a rebind must start and end in `lakekeeper`. A role left
+/// in another namespace can still be renamed and deleted, so it can be cleaned up.
+#[sqlx::test]
+async fn test_rebind_and_cleanup_lakekeeper_only(pool: PgPool) {
+    use lakekeeper::service::authz::{ApiRoleProviders, tests::HidingAuthorizer};
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(
+            HidingAuthorizer::new().with_api_role_providers(ApiRoleProviders::LakekeeperOnly),
+        )
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let native = seed_role(&ctx, project_id, &make_provider(), "analysts", "analysts").await;
+    let err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        native,
+        UpdateRoleSourceSystemRequest {
+            provider_id: "entra".parse().unwrap(),
+            source_id: make_source_id("admins"),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "RoleProviderNotApiManaged");
+
+    let renamed = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        native,
+        UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: make_source_id("data-analysts"),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(renamed.source_id.as_str(), "data-analysts");
+
+    let orphan_provider: RoleProviderId = "retired-ldap".parse().unwrap();
+    let orphan = seed_role(&ctx, project_id, &orphan_provider, "admins", "old-admins").await;
+    let err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        orphan,
+        UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: make_source_id("admins"),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "RoleProviderNotApiManaged");
+    assert_eq!(listener.settled_counts(1, 2).await, (1, 2));
+
+    ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        orphan,
+        UpdateRoleRequest {
+            name: "retired admins".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .expect("a role in a namespace nothing syncs can be renamed");
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        orphan,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .expect("a role in a namespace nothing syncs can be deleted");
+}
+
+/// An error from the authorizer's `create_role` hook reaches the caller with its
+/// own status, and the role is rolled back. Authorization had already allowed the
+/// request, so it stays the one recorded verdict.
+#[sqlx::test]
+async fn test_create_role_hook_error_passes_through(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_create_role_rejection("TestHookRejected"))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let err = ApiServer::create_role(
+        create_request(project_id, "rejected", None),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "TestHookRejected");
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT.as_u16());
+    assert_eq!(listener.settled_counts(1, 0).await, (1, 0));
+
+    let roles = PostgresBackend::list_roles(
+        project_id.clone(),
+        CatalogListRolesByIdFilter::builder().build(),
+        PaginationQuery::empty(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        roles.roles.iter().all(|r| r.name != "rejected"),
+        "the role is rolled back"
     );
 }

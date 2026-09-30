@@ -1,0 +1,255 @@
+# Governed agent memory and skills.
+#
+# Two agents keep private memory in one catalog, propose skills they cannot
+# approve, and a human reviewer promotes one. Access is decided at Lakekeeper's
+# credential-vending layer under an OpenFGA authorization model, so a denied
+# agent receives no storage credentials and physically cannot read the data.
+#
+# Every notebook runs INSIDE this network (the `workbench` JupyterLab service),
+# so vended credentials — which carry the internal `http://silo:9000` endpoint —
+# resolve, and the device-code login reaches Keycloak.
+#
+#   ./up.sh                 # brings everything up, prints the URLs
+#
+# Host ports are overridable so this can run alongside another stack (or a
+# natively-running Lakekeeper, which takes 8181 and 9000 by default):
+#   LK_PORT=8185 S3_PORT=9010 ./up.sh
+services:
+  # --- Object storage (S3 + STS) --------------------------------------------
+  # Silo is a maintained fork of MinIO. It serves the S3 API and the STS
+  # AssumeRole endpoint from one process, so Lakekeeper can vend short-lived,
+  # prefix-scoped credentials — the mechanism this example hinges on.
+  silo:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    environment:
+      # The MINIO_* names are not a leftover: Silo is a fork and keeps MinIO's
+      # configuration surface, so these are the variables it actually reads.
+      MINIO_ROOT_USER: silo-root-user
+      MINIO_ROOT_PASSWORD: silo-root-password
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    ports:
+      - "${S3_PORT:-9000}:9000"
+      - "${S3_CONSOLE_PORT:-9001}:9001"
+    networks: [agentmem]
+
+  create-bucket:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    depends_on:
+      silo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mc alias set local http://silo:9000 silo-root-user silo-root-password && mc mb --ignore-existing local/agentmem"
+    networks: [agentmem]
+
+  # --- Catalog metadata + authz backing stores ------------------------------
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks: [agentmem]
+
+  openfga-db:
+    image: postgres:17
+    command: postgres -c max_connections=1000
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks: [agentmem]
+
+  openfga-migrate:
+    image: openfga/openfga:v1.12
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+    networks: [agentmem]
+
+  # Authorization is the point of this example, so OpenFGA is not optional here.
+  # With the default `allowall` backend every authenticated principal is permitted
+  # everything and none of the denials below would happen.
+  openfga:
+    image: openfga/openfga:v1.12
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
+      OPENFGA_PLAYGROUND_ENABLED: "false"
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+    networks: [agentmem]
+
+  # --- Identity provider ----------------------------------------------------
+  # peter is a person (device-code login); agent-a and agent-b are service
+  # accounts. That split is deliberate — see the README.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/8080; echo -e 'GET /realms/iceberg/.well-known/openid-configuration HTTP/1.1\\r\\nhost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep jwks_uri <&3"
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 45s
+    ports:
+      - "${KEYCLOAK_PORT:-30080}:8080"
+    networks: [agentmem]
+
+  # --- Lakekeeper -----------------------------------------------------------
+  # Pinned to a release, not `latest-main`: that tag moves, and has resolved to both
+  # 0.13.4 and 0.13.1 on consecutive runs here — so a notebook that worked yesterday
+  # can fail today for reasons nothing in this directory explains. Override with
+  # LAKEKEEPER_IMAGE to try a newer build.
+  migrate:
+    image: ${LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:v0.13.4}
+    pull_policy: always
+    entrypoint: ["/home/nonroot/lakekeeper", "migrate"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: This-is-NOT-Secure!
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__AUTHZ_BACKEND: openfga
+      LAKEKEEPER__OPENFGA__ENDPOINT: http://openfga:8081
+    depends_on:
+      db:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+    restart: "no"
+    networks: [agentmem]
+
+  lakekeeper:
+    image: ${LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:v0.13.4}
+    pull_policy: always
+    command: ["serve"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: This-is-NOT-Secure!
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__AUTHZ_BACKEND: openfga
+      LAKEKEEPER__OPENFGA__ENDPOINT: http://openfga:8081
+      LAKEKEEPER__OPENID_PROVIDER_URI: http://keycloak:8080/realms/iceberg
+      LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS: ${KEYCLOAK_BROWSER_URL:-http://localhost:30080}/realms/iceberg
+      LAKEKEEPER__OPENID_AUDIENCE: lakekeeper
+      LAKEKEEPER__UI__OPENID_CLIENT_ID: lakekeeper
+      LAKEKEEPER__UI__OPENID_PROVIDER_URI: ${KEYCLOAK_BROWSER_URL:-http://localhost:30080}/realms/iceberg
+      # Audit logs are on by default at info. Notebook 02 reads them back out of
+      # this container's stdout — that is the "receipt" for every access.
+      RUST_LOG: info,lakekeeper=debug
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    ports:
+      - "${LK_PORT:-8181}:8181"
+    networks: [agentmem]
+
+  # --- Local models ---------------------------------------------------------
+  # Embeddings (nomic-embed-text, ~275 MB) power recall; the chat model only
+  # writes prose. Both are small on purpose — the governance story does not
+  # depend on model quality, and the graph is deterministic rather than
+  # tool-calling, so a 2 GB model is enough.
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    networks: [agentmem]
+
+  # --- Workbench: JupyterLab where every notebook runs ----------------------
+  workbench:
+    build:
+      context: .
+      dockerfile: Dockerfile.workbench
+    image: agentic-memory-workbench:latest
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    environment:
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/iceberg
+      KEYCLOAK_BROWSER_URL: ${KEYCLOAK_BROWSER_URL:-http://localhost:30080}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://silo:9000}
+      OLLAMA_URL: http://ollama:11434
+      WAREHOUSE_NAME: agentmem
+      # Provider-agnostic: ollama by default (airgapped), or anthropic /
+      # openai-compatible (DeepSeek, vLLM, together) with a key.
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen2.5:3b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # Embeddings are configured separately: chat and embeddings are not always the
+      # same service, and Anthropic serves no embedding endpoint at all.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+    volumes:
+      - ./:/work
+    working_dir: /work
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    command:
+      - jupyter
+      - lab
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --allow-root
+      - --ServerApp.token=
+      - --ServerApp.password=
+      - --ServerApp.root_dir=/work
+      - --ServerApp.default_url=/lab/tree/notebooks
+    networks: [agentmem]
+
+networks:
+  agentmem:
+
+volumes:
+  ollama-models:

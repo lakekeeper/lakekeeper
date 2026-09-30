@@ -13,8 +13,8 @@ use crate::{
     service::{
         CatalogBackendError, DatabaseIntegrityError, InvalidPaginationToken,
         authz::{
-            AppliedGrants, GrantCandidate, GrantFilter, GrantSpec, GrantSubtreeFilter,
-            GrantSubtreeRoot, ListGrantsResultPage, ListSubtreeGrantsResultPage,
+            AppliedGrants, GrantCandidate, GrantFilter, GrantSpec, ListGrantsResultPage,
+            ListSubtreeGrantsResultPage, SubtreeGrantFilter, SubtreeGrantRoot,
         },
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
@@ -136,13 +136,13 @@ impl From<GrantLockTimeout> for ErrorModel {
     "This namespace spans {namespaces} namespaces; subtree grant operations read up to \
      {limit}. Address a namespace further down, or use the warehouse-rooted operation."
 )]
-pub struct GrantSubtreeTooLarge {
+pub struct SubtreeGrantTooLarge {
     namespaces: u64,
     limit: u64,
     stack: Vec<String>,
 }
-impl_error_stack_methods!(GrantSubtreeTooLarge);
-impl GrantSubtreeTooLarge {
+impl_error_stack_methods!(SubtreeGrantTooLarge);
+impl SubtreeGrantTooLarge {
     #[must_use]
     pub fn new(namespaces: u64, limit: u64) -> Self {
         Self {
@@ -152,10 +152,10 @@ impl GrantSubtreeTooLarge {
         }
     }
 }
-impl From<GrantSubtreeTooLarge> for ErrorModel {
-    fn from(err: GrantSubtreeTooLarge) -> Self {
+impl From<SubtreeGrantTooLarge> for ErrorModel {
+    fn from(err: SubtreeGrantTooLarge) -> Self {
         ErrorModel::builder()
-            .r#type("GrantSubtreeTooLarge")
+            .r#type("SubtreeGrantTooLarge")
             .code(StatusCode::BAD_REQUEST.as_u16())
             .message(err.to_string())
             .stack(err.stack)
@@ -165,7 +165,7 @@ impl From<GrantSubtreeTooLarge> for ErrorModel {
 
 /// A subtree read did not finish inside the time the database allows it.
 ///
-/// Distinct from [`GrantSubtreeTooLarge`], which is decided from the namespace count
+/// Distinct from [`SubtreeGrantTooLarge`], which is decided from the namespace count
 /// before the read starts: this is what remains when a subtree spans few namespaces but
 /// holds very many grants, or when the catalog database is under load. Retrying the same
 /// request unchanged reaches the same bound.
@@ -175,25 +175,25 @@ impl From<GrantSubtreeTooLarge> for ErrorModel {
      filter or a root further down; if the subtree is modest, the catalog database may \
      be under load."
 )]
-pub struct GrantSubtreeReadTimeout {
+pub struct SubtreeGrantReadTimeout {
     stack: Vec<String>,
 }
-impl_error_stack_methods!(GrantSubtreeReadTimeout);
-impl GrantSubtreeReadTimeout {
+impl_error_stack_methods!(SubtreeGrantReadTimeout);
+impl SubtreeGrantReadTimeout {
     #[must_use]
     pub fn new() -> Self {
         Self { stack: Vec::new() }
     }
 }
-impl Default for GrantSubtreeReadTimeout {
+impl Default for SubtreeGrantReadTimeout {
     fn default() -> Self {
         Self::new()
     }
 }
-impl From<GrantSubtreeReadTimeout> for ErrorModel {
-    fn from(err: GrantSubtreeReadTimeout) -> Self {
+impl From<SubtreeGrantReadTimeout> for ErrorModel {
+    fn from(err: SubtreeGrantReadTimeout) -> Self {
         ErrorModel::builder()
-            .r#type("GrantSubtreeReadTimeout")
+            .r#type("SubtreeGrantReadTimeout")
             .code(StatusCode::BAD_REQUEST.as_u16())
             .message(err.to_string())
             .stack(err.stack)
@@ -257,8 +257,8 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         InvalidPaginationToken,
-        GrantSubtreeTooLarge,
-        GrantSubtreeReadTimeout,
+        SubtreeGrantTooLarge,
+        SubtreeGrantReadTimeout,
         DatabaseIntegrityError
     ]
 }
@@ -307,8 +307,8 @@ where
 
     /// One page of the direct grants held anywhere under `root`.
     async fn list_grants_in_subtree(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> crate::api::Result<ListSubtreeGrantsResultPage> {
@@ -318,7 +318,7 @@ where
     /// Remove the grants named by `candidates` in their own transaction. See
     /// [`CatalogStore::revoke_grant_candidates_impl`].
     async fn revoke_grant_candidates(
-        root: GrantSubtreeRoot,
+        root: SubtreeGrantRoot,
         candidates: &[GrantCandidate],
         catalog_state: Self::State,
     ) -> crate::api::Result<Vec<GrantSpec>> {

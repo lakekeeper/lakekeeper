@@ -46,7 +46,7 @@ use crate::{
             StoragePermissions, TableConfig,
             cache::{CachedStc, S3_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
-                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
                 ValidationError,
             },
             storage_layout::StorageLayout,
@@ -58,7 +58,14 @@ use crate::{
 /// and the partition that S3-compatible stores expect in policy ARNs.
 const AWS_COMMERCIAL_PARTITION: &str = "aws";
 
-static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build S3 credential HTTP client")
+});
 
 #[derive(
     Hash, Debug, Eq, Clone, PartialEq, Serialize, Deserialize, typed_builder::TypedBuilder,
@@ -1148,14 +1155,13 @@ impl S3Profile {
         };
 
         let v = assume_role_builder.send().await.map_err(|e| {
-            let err_str = format!("{e:?}");
             tracing::warn!(
-                "Failed to assume role via STS with partition `{}`: {err_str}",
+                "Failed to assume role via STS with partition `{}`: {e:?}",
                 self.sts_policy_partition()
             );
-            CredentialsError::ShortTermCredential {
-                source: Some(Box::new(e)),
-                reason: format!("Failed to assume role via STS: {err_str}").to_string(),
+            CredentialsError::StsRejected {
+                rejection: sts_rejection(&e),
+                source: Box::new(e),
             }
         })?;
 
@@ -1937,6 +1943,199 @@ impl TryFrom<S3Credential> for S3Auth {
     }
 }
 
+/// What STS answered to a failed `AssumeRole`, without the raw response.
+fn sts_rejection(
+    error: &aws_sdk_sts::error::SdkError<aws_sdk_sts::operation::assume_role::AssumeRoleError>,
+) -> StsRejection {
+    use aws_sdk_sts::{error::ProvideErrorMetadata as _, operation::RequestId as _};
+
+    let message = error
+        .message()
+        .map(ToString::to_string)
+        .or_else(|| failure_kind(error).map(ToString::to_string));
+    StsRejection {
+        http_status: error.raw_response().map(|r| r.status().as_u16()),
+        code: error.code().map(ToString::to_string),
+        message,
+        request_id: error.request_id().map(ToString::to_string),
+    }
+}
+
+/// A fixed description of a failure that carries no service error. The error
+/// itself stays out: its text can include the raw response.
+fn failure_kind(
+    error: &aws_sdk_sts::error::SdkError<aws_sdk_sts::operation::assume_role::AssumeRoleError>,
+) -> Option<&'static str> {
+    use aws_sdk_sts::error::SdkError;
+
+    match error {
+        SdkError::ServiceError(_) => None,
+        SdkError::TimeoutError(_) => Some("STS did not answer in time"),
+        SdkError::DispatchFailure(failure) if failure.is_timeout() => {
+            Some("STS did not answer in time")
+        }
+        SdkError::DispatchFailure(_) => Some("Could not connect to STS"),
+        SdkError::ResponseError(_) => Some("STS sent an answer that could not be read"),
+        SdkError::ConstructionFailure(_) => Some("The STS request could not be built"),
+        _ => Some("The STS request failed"),
+    }
+}
+
+#[cfg(test)]
+mod sts_rejection_tests {
+    use aws_sdk_sts::{error::ErrorMetadata, operation::assume_role::AssumeRoleError};
+    use aws_smithy_runtime_api::http::{Response, StatusCode};
+    use aws_smithy_types::body::SdkBody;
+
+    use super::*;
+
+    type AssumeRoleSdkError = aws_sdk_sts::error::SdkError<AssumeRoleError>;
+
+    fn service_error(status: u16, code: Option<&str>, message: Option<&str>) -> AssumeRoleSdkError {
+        let mut meta = ErrorMetadata::builder();
+        if let Some(code) = code {
+            meta = meta.code(code);
+        }
+        if let Some(message) = message {
+            meta = meta.message(message);
+        }
+        let mut response = Response::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from("<ErrorResponse><Error>raw body</Error></ErrorResponse>"),
+        );
+        response
+            .headers_mut()
+            .insert("x-amz-request-id", "1234567890123456");
+        AssumeRoleSdkError::service_error(AssumeRoleError::generic(meta.build()), response)
+    }
+
+    #[test]
+    fn a_service_error_keeps_status_code_message_and_request_id() {
+        let rejection = sts_rejection(&service_error(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is not authorized",
+            ),
+        ));
+        assert_eq!(rejection.http_status, Some(403));
+        assert_eq!(rejection.code.as_deref(), Some("AccessDenied"));
+        assert_eq!(rejection.request_id.as_deref(), Some("1234567890123456"));
+        assert_eq!(
+            rejection.summary(),
+            "AccessDenied (HTTP 403): User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is not authorized"
+        );
+    }
+
+    #[test]
+    fn an_unparsable_error_body_keeps_the_status() {
+        // An endpoint without STS answers with an S3 error document the STS
+        // parser cannot read.
+        let rejection = sts_rejection(&service_error(405, None, None));
+        assert_eq!(rejection.http_status, Some(405));
+        assert_eq!(rejection.summary(), "HTTP 405");
+    }
+
+    fn raw_response(status: u16) -> Response {
+        let mut response = Response::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from("<Error>raw body</Error>"),
+        );
+        response
+            .headers_mut()
+            .insert("x-leaky-header", "raw header");
+        response
+    }
+
+    #[test]
+    fn failures_without_a_service_error_are_named_without_the_raw_error() {
+        use aws_smithy_runtime_api::client::result::ConnectorError;
+
+        let cases = [
+            (
+                AssumeRoleSdkError::timeout_error("raw timeout"),
+                "STS did not answer in time",
+            ),
+            (
+                AssumeRoleSdkError::dispatch_failure(ConnectorError::io("raw io".into())),
+                "Could not connect to STS",
+            ),
+            (
+                AssumeRoleSdkError::dispatch_failure(ConnectorError::timeout("raw io".into())),
+                "STS did not answer in time",
+            ),
+            (
+                AssumeRoleSdkError::response_error("raw parse", raw_response(502)),
+                "STS sent an answer that could not be read",
+            ),
+            (
+                AssumeRoleSdkError::construction_failure("raw construction"),
+                "The STS request could not be built",
+            ),
+        ];
+        for (error, expected) in cases {
+            let rejection = sts_rejection(&error);
+            assert_eq!(rejection.message.as_deref(), Some(expected), "{error:?}");
+            assert!(rejection.code.is_none());
+            let summary = rejection.summary();
+            if rejection.http_status.is_none() {
+                assert_eq!(summary, expected);
+            }
+            for raw in ["raw ", "SdkBody", "Headers", "x-leaky-header"] {
+                assert!(!summary.contains(raw), "{summary}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreadable_answer_keeps_its_status() {
+        let rejection = sts_rejection(&AssumeRoleSdkError::response_error(
+            "raw parse",
+            raw_response(405),
+        ));
+        assert_eq!(rejection.http_status, Some(405));
+    }
+
+    #[test]
+    fn an_unreadable_answer_reaches_the_error_model_without_its_raw_response() {
+        let error = AssumeRoleSdkError::response_error("raw parse", raw_response(405));
+        let model = ErrorModel::from(CredentialsError::StsRejected {
+            rejection: sts_rejection(&error),
+            source: Box::new(error),
+        });
+        assert_eq!(
+            model.message,
+            "Failed to create short-term credential: STS request failed: HTTP 405: STS sent an \
+             answer that could not be read"
+        );
+        let shown = format!("{} {:?}", model.message, model.stack);
+        for raw in ["raw ", "SdkBody", "Headers", "x-leaky-header"] {
+            assert!(!shown.contains(raw), "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_error_message_holds_no_raw_response() {
+        let error = CredentialsError::StsRejected {
+            rejection: sts_rejection(&service_error(403, Some("AccessDenied"), Some("denied"))),
+            source: Box::new(std::io::Error::other("sdk error")),
+        };
+        let model = ErrorModel::from(error);
+        assert_eq!(
+            model.message,
+            "Failed to create short-term credential: STS request failed: AccessDenied (HTTP 403): \
+             denied"
+        );
+        assert_eq!(
+            model.stack,
+            vec!["STS request ID: 1234567890123456".to_string()]
+        );
+        for raw in ["ErrorMetadata", "SdkBody", "Headers", "raw body"] {
+            assert!(!model.message.contains(raw), "{}", model.message);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use std::{future::Future, str::FromStr as _, sync::LazyLock};
@@ -2627,6 +2826,38 @@ pub(crate) mod test {
             });
 
             (profile, cred)
+        }
+
+        #[test]
+        fn test_cors_preflight_against_the_test_storage() {
+            use crate::service::storage::validation::{ValidationCheckName, ValidationCheckStatus};
+
+            test_block_on(
+                async {
+                    let (profile, cred) =
+                        storage_profile(&format!("cors-{}", uuid::Uuid::now_v7()));
+                    let profile = StorageProfile::S3(profile);
+                    let report = profile
+                        .validate_access_report(
+                            Some(&StorageCredential::S3(cred)),
+                            None,
+                            &RequestMetadata::new_unauthenticated(),
+                        )
+                        .await;
+                    let check = report
+                        .checks
+                        .iter()
+                        .find(|c| c.name == ValidationCheckName::CorsOriginAllowed)
+                        .expect("report has a CORS check");
+                    // Silo allows every origin by default; other test stores may not.
+                    if std::env::var("LAKEKEEPER_TEST__S3_CORS_ALLOW_ALL").as_deref() == Ok("1") {
+                        assert_eq!(check.status, ValidationCheckStatus::Passed, "{check:?}");
+                    } else {
+                        assert_ne!(check.status, ValidationCheckStatus::Failed, "{check:?}");
+                    }
+                },
+                true,
+            );
         }
 
         #[test]

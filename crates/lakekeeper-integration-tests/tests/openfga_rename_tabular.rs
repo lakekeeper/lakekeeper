@@ -7,7 +7,7 @@
 //! * `server_tables_postgres.rs` / `server_views_rename.rs` drive the same endpoints with
 //!   `AllowAllAuthorizer` / `HidingAuthorizer`, which model no hierarchy at all — a table
 //!   left pointing at the namespace it came from is invisible there.
-//! * `authz/openfga/v4.10/store.fga.yaml` pins the model's inheritance but runs no Rust, so
+//! * `authz/openfga/<latest>/store.fga.yaml` pins the model's inheritance but runs no Rust, so
 //!   it cannot see that the endpoint never re-points the edge.
 //! * `authz-openfga`'s own hook tests exercise the tuple writes directly, without the
 //!   endpoint that has to call them.

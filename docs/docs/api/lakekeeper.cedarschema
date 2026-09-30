@@ -12,7 +12,10 @@ namespace Lakekeeper {
   // ------------------
   //   Server > Project > Warehouse > Namespace > Table
   //                                             > View
+  //                                             > GenericTable
+  //                                             > (nested Namespaces)
   //                    > Role
+  //                    > Tag
   //
   // ENTITY REFERENCE SYNTAX
   // -----------------------
@@ -50,12 +53,18 @@ namespace Lakekeeper {
   //   View       "<warehouse-UUID>/<view-UUID>"
   //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
   //
+  //   GenericTable  "<warehouse-UUID>/<generic-table-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a88faa29bcad"
+  //
+  //   Tag        UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a99f0029acbd"
+  //
   //   User       "<provider_id>~<subject-in-provider>"
   //              "oidc~alice@example.com"
   //              "kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284"
   //
   //   Role       "<project-id>/<provider_id>~<source_id>"
-  //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029acbd"
   //              "my-project/oidc~data-engineers"
   //
   // ============================================================================
@@ -90,8 +99,8 @@ namespace Lakekeeper {
   //
   // Both attributes are populated from the same provider role resolution, which
   // resolves the roles of ONE project: the one the request names, or the
-  // configured default project when it names none. They are empty only when
-  // neither exists.
+  // configured default project when it names none. Both are empty when the
+  // request names no project and no default project is configured.
   //
   // That matters above the project level. A role is defined inside a project, so
   // at a server or user-management action — `CreateProject`, `ListUsers` — these
@@ -141,6 +150,9 @@ namespace Lakekeeper {
     provider_id: String,
     // The ID of this user in its authentication provider
     source_id: String,
+    // The project this request is scoped to (the caller's preferred/effective project).
+    // Absent for requests with no project context (e.g. server-level actions).
+    request_project?: Project,
     // Derived identity attributes, populated from configured regex derivations.
     // Configured via `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
     // Each derivation matches a regex with named capture groups against a source
@@ -164,7 +176,7 @@ namespace Lakekeeper {
 
   // Roles in Lakekeeper are scoped to projects.
   // ID: "<project-id>/<provider_id>~<source_id>"
-  //     e.g. "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //     e.g. "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029acbd"
   //          "my-project/oidc~data-engineers"
   //
   // A role nested in other roles has them as Cedar parents, so `in` means
@@ -192,12 +204,12 @@ namespace Lakekeeper {
   // set; with no grants they are all false. Values are relative to the
   // principal being authorized.
   //
-  // Each level has its own record type below, listing the privileges grantable
-  // there. `inherited_privileges` uses that same vocabulary, so an ancestor
-  // privilege that means nothing here is absent.
+  // Each level has its own record type below. Both records carry exactly the
+  // privileges grantable at that level, so an ancestor privilege outside this
+  // level's vocabulary stays out of `inherited_privileges`.
   //
-  // Two consequences worth knowing before writing a policy against an inherited
-  // field:
+  // Three consequences worth knowing before writing a policy against an
+  // inherited field:
   //   - `create` is grantable from the server down to a namespace but not on a
   //     table, view or generic table, so a warehouse-level `create` grant does
   //     not appear in a table's inherited record. Creating a table is authorized
@@ -205,8 +217,11 @@ namespace Lakekeeper {
   //   - `apply` is grantable only on a tag, and a tag's only ancestor is a
   //     project, so `Tag.inherited_privileges.apply` is always false. Read
   //     `direct_privileges.apply` instead.
+  //   - `manage_policies` is grantable on a project and a warehouse. A project's
+  //     only ancestor is the server, so `Project.inherited_privileges.manage_policies`
+  //     is always false; a warehouse inherits it from its project as usual.
   //
-  // What a privilege confers is decided by the policies you load: these fields
+  // What a privilege allows is decided by the policies you load: these fields
   // are an input to a policy, never a decision on their own.
   // `GET /management/v1/grants/grantable-privileges` describes each name.
   //
@@ -219,9 +234,9 @@ namespace Lakekeeper {
   // what is held there, so `false` there means "not asked" rather than "not held",
   // and a policy cannot tell the two apart.
   //
-  // In a `forbid`, read attributes of `resource` only, for a second reason: a
-  // forbid that reads another entity is skipped when that entity is absent,
-  // which allows access.
+  // In a `forbid`, read attributes of `resource` only. Besides the ambiguity
+  // above, a forbid that reads another entity is skipped when that entity is
+  // missing — and a skipped forbid lets the request through.
 
   // Grantable on the server.
   type ServerPrivileges = {
@@ -243,6 +258,7 @@ namespace Lakekeeper {
     manage: Bool,
     pass_grants: Bool,
     manage_grants: Bool,
+    manage_policies: Bool,
   };
 
   // Grantable on a warehouse.
@@ -254,6 +270,7 @@ namespace Lakekeeper {
     manage: Bool,
     pass_grants: Bool,
     manage_grants: Bool,
+    manage_policies: Bool,
   };
 
   // Grantable on a namespace.
@@ -308,7 +325,7 @@ namespace Lakekeeper {
 
   // A governance-tag definition: a project-scoped vocabulary entry that can be
   // attached to warehouses, namespaces, tables, views, generic tables and columns.
-  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a99f0029gcgd"
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a99f0029acbd"
   entity Tag in [Project] {
     project: Project,
     // Name of the tag definition (e.g. "pii.classification").
@@ -320,7 +337,7 @@ namespace Lakekeeper {
   };
 
   // ---------- Resource Hierarchy ----------
-  // Server > Project > Warehouse > Namespace > Table / View
+  // Server > Project > Warehouse > Namespace > Table / View / GenericTable
 
   // Server is the top-level administrative entity.
   // ID: UUID  e.g. "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
@@ -345,7 +362,11 @@ namespace Lakekeeper {
   entity Warehouse in [Project] {
     name: String,
     project: Project,
+    // Whether the warehouse is switched on. A deactivated warehouse refuses
+    // catalog requests; `ActivateWarehouse` switches it back on.
     is_active: Bool,
+    // Whether this warehouse is protected against deletion. Deleting it needs
+    // the protection cleared first, or `force` set on the request.
     protected: Bool,
     // Whether this warehouse has soft-deletion configured. When true, a `force`
     // drop bypasses the configured grace period and is irreversible immediately;
@@ -366,6 +387,8 @@ namespace Lakekeeper {
     // Segments are separated by '.'.
     // Lakekeeper enforces that no segment contains '.'.
     name: String,
+    // Whether this namespace is protected against deletion. Deleting or moving
+    // it needs the protection cleared first, or `force` set on the request.
     protected: Bool,
     // Current properties of this namespace, reflecting the state before any
     // pending update. For properties being set during an update, see the
@@ -387,6 +410,8 @@ namespace Lakekeeper {
     namespace: Namespace,
     // Name of the table within its namespace.
     name: String,
+    // Whether this table is protected against deletion. Dropping it needs the
+    // protection cleared first, or `force` set on the request.
     protected: Bool,
     // Current properties of this table, reflecting the state before any
     // pending update. For properties being set during an update, see the
@@ -408,6 +433,8 @@ namespace Lakekeeper {
     namespace: Namespace,
     // Name of the view within its namespace.
     name: String,
+    // Whether this view is protected against deletion. Dropping it needs the
+    // protection cleared first, or `force` set on the request.
     protected: Bool,
     // Current properties of this view, reflecting the state before any
     // pending update. For properties being set during an update, see the
@@ -421,7 +448,7 @@ namespace Lakekeeper {
 
   // GenericTable entity for non-Iceberg ("generic") tables.
   // ID: "<warehouse-UUID>/<generic-table-UUID>"
-  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a88faa29gcad"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a88faa29bcad"
   entity GenericTable in [Namespace] {
     project: Project,
     warehouse: Warehouse,
@@ -429,6 +456,8 @@ namespace Lakekeeper {
     namespace: Namespace,
     // Name of the generic table within its namespace.
     name: String,
+    // Whether this generic table is protected against deletion. Dropping it
+    // needs the protection cleared first, or `force` set on the request.
     protected: Bool,
     // Current properties of this generic table.
     properties: ResourceProperties,
@@ -440,11 +469,15 @@ namespace Lakekeeper {
 
   // ---------- Resource Properties ----------
 
-  // ResourceProperties is modeled as a Cedar entity with `tags` to represent
-  // the key-value properties of Namespaces, Tables and Views in a dynamic yet
-  // type-safe way. Tags allow key names that are only known at runtime (e.g.,
-  // user-defined property keys like "owner" or "classification") while still
-  // enforcing a typed value schema (ResourcePropertyValue) for each entry.
+  // The key-value properties of a namespace, table, view or generic table.
+  // Property keys are chosen by whoever writes the object (for example "owner"
+  // or "classification"), so they are not known ahead of time and are held as
+  // Cedar tags rather than as fields. Every value has the shape
+  // `ResourcePropertyValue` below.
+  //
+  // Access in policies. Guard with `hasTag`, because any key may be missing:
+  //   resource.properties.hasTag("owner") &&
+  //   resource.properties.getTag("owner").raw == "data-eng"
   entity ResourceProperties = {} tags ResourcePropertyValue;
 
   // Value type for each entry in ResourceProperties.
@@ -474,29 +507,85 @@ namespace Lakekeeper {
   // ACTION DEFINITIONS
   // ============================================================================
 
+  // ---------- How action groups are named and nested ----------
+  //
+  // Actions are collected into groups so that a policy can name one group
+  // instead of listing every action in it. Group names follow a few patterns:
+  //
+  //   <Level>Actions             everything you can do to an object at that
+  //                              level. The levels are Server, Project, Role,
+  //                              Tag, Warehouse, Namespace, Table, View and
+  //                              GenericTable.
+  //   <Level><Step>Actions       one step of that level's ladder — see below.
+  //   GrantActions               grant administration, at every level.
+  //   <Level>GrantActions        grant administration at one level.
+  //   GrantReadActions           the read-only part of grant administration, at
+  //                              every level.
+  //   CedarPolicyActions         policy administration, at every level.
+  //   <Level>CedarPolicyActions  policy administration at one level.
+  //   CedarPolicyReadActions     the read-only part of policy administration, at
+  //                              every level.
+  //   DataPlaneActions           a flat marker for the actions that hand out data
+  //                              or data-access credentials. It has no ladder and
+  //                              no per-level parts.
+  //
+  // A `<Level>Actions` group covers what may be done to the object. Deciding who
+  // else may act takes a grant-administration or a policy-administration group;
+  // see "Grant Administration Actions" and "Cedar Policy Actions" near the end
+  // of this file.
+  //
+  // Each level has a ladder that runs from the narrowest step to the widest.
+  // Every ladder starts at Describe and ends at Modify:
+  //
+  //   Server, Project, Warehouse, Namespace   Describe < Create < Modify
+  //   Table, View, GenericTable               Describe < Select < Write < Modify
+  //   Tag                                     Describe < Apply < Modify
+  //   Role                                    no ladder — name the actions
+  //
+  // Read the nesting from the policy side rather than from the `in [...]` list.
+  // The declaration
+  //
+  //   action "ProjectDescribeActions" in ["ProjectCreateActions", ...];
+  //
+  // puts describing inside creating. So a policy on the wider group
+  //
+  //   permit (principal, action in Lakekeeper::Action::"ProjectModifyActions", resource)
+  //
+  // also allows every create action and every describe action. Permit the
+  // narrowest group that covers what you mean to allow. A forbid works the same
+  // way: forbidding `ProjectActions` forbids everything below it.
+  //
+  // Each block below names its own ladder in one line and points back here.
+
   // ---------- Server Actions ----------
+  // Actions on the server: Describe < Create < Modify < ServerActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "ServerActions";
   action "ServerDescribeActions" in ["ServerActions", "ServerCreateActions", "ServerModifyActions"];
   action "ServerCreateActions" in ["ServerActions", "ServerModifyActions"];
   action "ServerModifyActions" in ["ServerActions"];
   // Read-only actions on the server itself.
   //
-  //   ReadUserRoleAssignments — list the roles assigned to a user. Everyone can
-  //     always read their own assignments; that is built into the authorizer,
-  //     so you do not need a policy for it.
-  //   EvaluateCedarPolicies — try policies out against the engine without
-  //     saving them. It changes nothing, but it does show how the engine would
-  //     answer. If you would rather not offer that to everyone who can read,
-  //     you can forbid this one action and leave the rest of their access
-  //     untouched.
-  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources,
-         ListServerCedarPolicySources, ListUsers,
-         ReadUserRoleAssignments,
-         EvaluateCedarPolicies in ["ServerDescribeActions"]
+  //   ListUsers — list the users this server knows about.
+  //   ReadUserRoleAssignments — list the roles a user holds. Everyone can always
+  //     read their own assignments. That is enforced by the server, not by this
+  //     schema: you need no policy for it, and a `forbid` on this action does
+  //     not take it away.
+  //
+  // The server's Cedar policies are policy administration; see "Cedar Policy
+  // Actions" below.
+  action ListUsers,
+         ReadUserRoleAssignments in ["ServerDescribeActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Server]
     };
+  // Changing the users this server knows about.
+  //
+  //   ProvisionUsers — create a user record in Lakekeeper, either through the
+  //     API or the first time that user makes an authenticated request.
+  //   UpdateUsers — change what Lakekeeper stores about a user.
+  //   DeleteUsers — remove a user record.
   action UpdateUsers, DeleteUsers, ProvisionUsers in ["ServerModifyActions"]
     appliesTo {
       principal: [User, Role],
@@ -517,10 +606,22 @@ namespace Lakekeeper {
     };
 
   // ---------- Project Actions ----------
+  // Actions on a project: Describe < Create < Modify < ProjectActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "ProjectActions";
   action "ProjectDescribeActions" in ["ProjectActions", "ProjectCreateActions", "ProjectModifyActions"];
   action "ProjectCreateActions" in ["ProjectActions", "ProjectModifyActions"];
   action "ProjectModifyActions" in ["ProjectActions"];
+  // `IncludeProjectInList` is asked once for every project a list request
+  // found, and decides whether that project shows up in the answer. Forbid it
+  // to hide projects from listings while leaving access to them alone; forbid
+  // `ListWarehouses` or another `ListX` action to deny the list request itself.
+  // The same holds for `IncludeWarehouseInList`, `IncludeNamespaceInList`,
+  // `IncludeTableInList`, `IncludeViewInList` and `IncludeGenericTableInList`.
+  //
+  // One exception: when the caller is allowed `ListEverythingInWarehouse` or
+  // `ListEverythingInNamespace`, the per-item check below that point is not
+  // asked at all and everything is listed.
   action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles,
          SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
          GetProjectTasks, ListTags in ["ProjectDescribeActions"]
@@ -575,17 +676,31 @@ namespace Lakekeeper {
     };
 
   // ---------- Role Actions ----------
+  // Actions on a role. Roles have no ladder: `RoleActions` is the only group,
+  // so there is no `RoleDescribeActions` to look for. To let someone read a
+  // role without changing it, name the actions you mean.
   action "RoleActions";
 
-  // Asking what another principal may do on a role is grant administration, not a role
-  // action: a role is not a grant resource, so there is no `RoleGrantActions` to sit in, and
-  // `ReadGrantsActions` is what the one-forbid recipe below covers.
-  action IntrospectRoleAuthorization in ["ReadGrantsActions"]
+  // Asking what another principal may do on a role is grant introspection, not
+  // a role action: it belongs to `GrantReadActions` (there is no
+  // `RoleGrantActions`), so a forbid on `GrantActions` covers it too.
+  action IntrospectRoleAuthorization in ["GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Role]
     };
 
+  // Reading and changing a role itself.
+  //
+  //   AssumeRole — act as this role for the request. The request is then decided
+  //     as if the role made it, so the caller gets everything the role holds,
+  //     including what the roles nested inside it hold. This is the one action
+  //     that changes who the caller is, so permit it narrowly.
+  //   ReadRole — read the role, including who its members are.
+  //   ReadRoleMetadata — read only the role's name and the project it lives in.
+  //     Used when assignments are listed across projects.
+  //   UpdateRole — change the role's name or description.
+  //   DeleteRole — remove the role.
   action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata in ["RoleActions"]
     appliesTo {
       principal: [User, Role],
@@ -620,10 +735,13 @@ namespace Lakekeeper {
   //   ReadTag            — read a tag definition (name, value kind, allowed values).
   //   UpdateTag          — update a tag definition (rename, widen scope, add values).
   //   DeleteTag          — delete a tag definition.
-  //   ApplyTag           — attach this tag to a target (also gated by ManageTags on the target).
-  //   RemoveTag          — detach this tag from a target (also gated by ManageTags on the target).
+  //   ApplyTag           — attach this tag to a target; see the note below.
+  //   RemoveTag          — detach this tag from a target; see the note below.
   //   ReadTagAttachments      — list every target a tag definition is attached to (reverse lookup).
   //   IntrospectTagAuthorization — inspect another principal's access to this tag.
+  //
+  // Actions on a tag definition: Describe < Apply < Modify < TagActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "TagActions";
   action "TagDescribeActions" in ["TagActions", "TagApplyActions", "TagModifyActions"];
   action "TagApplyActions" in ["TagActions", "TagModifyActions"];
@@ -637,8 +755,12 @@ namespace Lakekeeper {
   // so these have their own group. That lets you give someone the right to
   // classify objects without also letting them rename or delete the tag.
   //
-  // Attaching needs two keys: `ApplyTag` here, and `ManageTags` on whatever the
-  // tag is being attached to.
+  // Attaching or detaching needs two permits: `ApplyTag` or `RemoveTag` on the
+  // tag, and the target's own tag action — `ManageWarehouseTags`,
+  // `ManageNamespaceTags`, `ManageTableTags`, `ManageViewTags` or
+  // `ManageGenericTableTags` — on the object the tag goes on. The server
+  // requires both. This schema cannot express the pairing, so permitting only
+  // one of the two is not enough.
   action ApplyTag, RemoveTag in ["TagApplyActions"]
     appliesTo {
       principal: [User, Role],
@@ -654,10 +776,20 @@ namespace Lakekeeper {
     };
 
   // ---------- Warehouse Actions ----------
+  // Actions on a warehouse: Describe < Create < Modify < WarehouseActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "WarehouseActions";
   action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseCreateActions", "WarehouseModifyActions"];
   action "WarehouseCreateActions" in ["WarehouseActions", "WarehouseModifyActions"];
   action "WarehouseModifyActions" in ["WarehouseActions"];
+  //   UseWarehouse — reach the warehouse at all. Every request against the
+  //     warehouse is checked for this first, so forbidding it hides the
+  //     warehouse completely: requests are answered as if it were not there.
+  //   GetConfig — read the Iceberg REST config endpoint that clients call when
+  //     they connect.
+  //   ListEverythingInWarehouse — see everything under the warehouse in
+  //     listings. When this is allowed, everything below the warehouse is listed
+  //     and the per-item `IncludeXInList` check is skipped.
   action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
          IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
          ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
@@ -691,6 +823,11 @@ namespace Lakekeeper {
   // move arrives carrying existing contents and the grants held on them, which
   // this warehouse's grantees can then read. Authorized alongside
   // `CreateNamespaceInWarehouse`, so a policy must allow both to admit a move.
+  //
+  // Like `MoveNamespace`, this action is in no group at all — accepting a
+  // subtree changes what that subtree inherits, so a permit on
+  // `WarehouseCreateActions` does not cover it. Name
+  // `AcceptMovedNamespaceInWarehouse` in the policy.
   action AcceptMovedNamespaceInWarehouse
     appliesTo {
       principal: [User, Role],
@@ -703,6 +840,8 @@ namespace Lakekeeper {
     };
 
   // ---------- Namespace Actions ----------
+  // Actions on a namespace: Describe < Create < Modify < NamespaceActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "NamespaceActions";
   action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceCreateActions", "NamespaceModifyActions"];
   action "NamespaceCreateActions" in ["NamespaceActions", "NamespaceModifyActions"];
@@ -728,11 +867,10 @@ namespace Lakekeeper {
   //
   // Re-parenting changes what the namespace's contents inherit — the destination
   // subtree's grants start applying and the old parent's stop — without a grant
-  // record changing anywhere. That makes a move an act of grant administration as
-  // much as of modification, so it is in neither `NamespaceModifyActions` nor
-  // `GrantActions`: a policy has to name it, and one that wants the pair of rights
-  // together says so as a condition, which a group edge cannot express. Policies
-  // that care about where data may live should read `destination`.
+  // record changing anywhere. A move is therefore an act of grant administration
+  // as much as of modification and belongs to no group: to allow it, a policy
+  // must name `MoveNamespace` explicitly. Policies that care about where data
+  // may live should read `destination`.
   action MoveNamespace
     appliesTo {
       principal: [User, Role],
@@ -741,7 +879,9 @@ namespace Lakekeeper {
         // Full destination path, including the new leaf name. Dotted, as in
         // `Namespace.name`, so `like "prod.*"` matches a destination subtree.
         destination: String,
-        // Whether protection is overridden, as for `DeleteNamespace`.
+        // Whether the namespace is moved even though it is protected against
+        // deletion. The protection itself stays set. `force` on
+        // `DeleteNamespace` means more than this — see there.
         force: Bool,
       }
     };
@@ -763,9 +903,11 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Whether the warehouse-configured soft-deletion is bypassed, i.e.
-        // contained tabulars are hard-deleted immediately instead of being
-        // recoverable for the configured grace period.
+        // Two effects at once. It deletes even though this namespace, a child
+        // namespace, or a table or view inside it is protected against
+        // deletion. And where the warehouse has soft-deletion configured, the
+        // contents are deleted right away instead of staying recoverable for
+        // the configured grace period.
         force: Bool,
         // Whether the underlying data/metadata files are physically purged.
         purge: Bool,
@@ -847,17 +989,25 @@ namespace Lakekeeper {
     };
 
   // ---------- Table Actions ----------
+  // Actions on a table: Describe < Select < Write < Modify < TableActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "TableActions";
   action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableWriteActions", "TableModifyActions"];
   action "TableSelectActions" in ["TableActions", "TableWriteActions", "TableModifyActions"];
   action "TableWriteActions" in ["TableActions", "TableModifyActions"];
   action "TableModifyActions" in ["TableActions"];
+  // An action is in `DataPlaneActions` exactly when it vends data access or
+  // data-access credentials: reading or writing table data, selecting a view.
+  // Metadata writes — commits included — are not data-plane. A single forbid
+  // on this group keeps a principal away from the data itself while leaving
+  // their metadata access untouched.
+  action "DataPlaneActions";
   action GetTableMetadata, IncludeTableInList, GetTableTasks in ["TableDescribeActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
     };
-  action ReadTableData in ["TableSelectActions"]
+  action ReadTableData in ["TableSelectActions", "DataPlaneActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -868,8 +1018,13 @@ namespace Lakekeeper {
   //
   // Committing covers schema changes too — a writer that adds a column is doing
   // its ordinary job. Policies cannot tell the two apart, so if you need to
-  // prevent schema changes specifically, do that in the engine.
-  action WriteTableData in ["TableWriteActions"]
+  // stop schema changes in particular, stop them in the query engine that
+  // sends the commit — this schema cannot express it.
+  //
+  // `WriteTableData` is also in `DataPlaneActions`: it vends data-access
+  // credentials. `CommitTable` is not — a commit is a metadata write and never
+  // hands out data access.
+  action WriteTableData in ["TableWriteActions", "DataPlaneActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -886,9 +1041,11 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table],
       context: {
-        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-        // table is hard-deleted immediately instead of being recoverable for the
-        // configured grace period. Extra destructive — irreversible right away.
+        // Two effects at once. It drops the table even though it is protected
+        // against deletion. And where the warehouse has soft-deletion
+        // configured, the table is deleted right away instead of staying
+        // recoverable for the configured grace period, so there is no undoing
+        // it.
         force: Bool,
         // Whether the underlying data files are physically purged from storage.
         purge: Bool,
@@ -907,6 +1064,8 @@ namespace Lakekeeper {
     };
 
   // ---------- View Actions ----------
+  // Actions on a view: Describe < Select < Write < Modify < ViewActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "ViewActions";
   action "ViewDescribeActions" in ["ViewActions", "ViewSelectActions", "ViewWriteActions", "ViewModifyActions"];
   action "ViewSelectActions" in ["ViewActions", "ViewWriteActions", "ViewModifyActions"];
@@ -917,7 +1076,7 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [View]
     };
-  action SelectView in ["ViewSelectActions"]
+  action SelectView in ["ViewSelectActions", "DataPlaneActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
@@ -933,9 +1092,11 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [View],
       context: {
-        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-        // view is hard-deleted immediately instead of being recoverable for the
-        // configured grace period. Extra destructive — irreversible right away.
+        // Two effects at once. It drops the view even though it is protected
+        // against deletion. And where the warehouse has soft-deletion
+        // configured, the view is deleted right away instead of staying
+        // recoverable for the configured grace period, so there is no undoing
+        // it.
         force: Bool,
         // Whether the underlying metadata files are physically purged from storage.
         purge: Bool,
@@ -957,6 +1118,9 @@ namespace Lakekeeper {
     };
 
   // ---------- Generic Table Actions ----------
+  // Actions on a generic table:
+  // Describe < Select < Write < Modify < GenericTableActions.
+  // See "How action groups are named and nested" above for how to read this.
   action "GenericTableActions";
   action "GenericTableDescribeActions" in ["GenericTableActions", "GenericTableSelectActions", "GenericTableWriteActions", "GenericTableModifyActions"];
   action "GenericTableSelectActions" in ["GenericTableActions", "GenericTableWriteActions", "GenericTableModifyActions"];
@@ -968,15 +1132,16 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [GenericTable]
     };
-  action ReadGenericTableData in ["GenericTableSelectActions"]
+  action ReadGenericTableData in ["GenericTableSelectActions", "DataPlaneActions"]
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]
     };
   // Getting write credentials for the generic table. Kept apart from
   // `GenericTableModifyActions` so a loading job can write data without also
-  // being able to drop, rename or unprotect it.
-  action WriteGenericTableData in ["GenericTableWriteActions"]
+  // being able to drop, rename or unprotect it. Also in `DataPlaneActions`:
+  // it vends data-access credentials.
+  action WriteGenericTableData in ["GenericTableWriteActions", "DataPlaneActions"]
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]
@@ -995,14 +1160,14 @@ namespace Lakekeeper {
   // control who may hand those permissions out.
   //
   //   GrantActions      — every grant-administration action, on every level.
-  //   ReadGrantsActions — the read-only subset, across every level.
+  //   GrantReadActions  — the read-only subset, across every level.
   //   XGrantActions     — reading and managing grants on one level.
   //
   // Each level's grant group belongs to `GrantActions` alone — not to that level's
   // `XActions` umbrella, nor to its `XModifyActions` group. So neither
   // `action in "WarehouseActions"` nor `action in "WarehouseModifyActions"` includes
-  // grant administration; name a grant group or a leaf action. See the note above the
-  // declarations below for why.
+  // grant administration; name a grant group or a single action. The note just
+  // above the `GrantActions` declaration below explains why.
   //
   // To keep grant administration with one team, a single forbid covers every
   // level, and a forbid always wins over a permit:
@@ -1015,10 +1180,13 @@ namespace Lakekeeper {
   //                   several, and `context.privilege` always holds the one
   //                   being decided:
   //
-  //                     when { context.privilege == "select" }
+  //                     when {
+  //                       context.privilege == Lakekeeper::TablePrivilege::"select"
+  //                     }
   //
-  //                   delegates exactly `select`. A permit with no privilege
-  //                   condition covers every privilege.
+  //                   on `ManageTableGrants` delegates exactly `select`. Each
+  //                   resource type has its own privilege type; a permit with
+  //                   no privilege condition covers every privilege.
   //
   //                   `grantee` and `direction` say who would receive the
   //                   privilege and which way it is moving. See the `Grantee`
@@ -1026,12 +1194,15 @@ namespace Lakekeeper {
   //
   //                   The API that lists which privileges you may administer
   //                   here asks "may I grant this?" — direction `"grant"`, no
-  //                   grantee. A policy testing the grantee does not apply to
-  //                   that question, so read the list as a guide; every grant
-  //                   is authorized again as it is applied.
+  //                   grantee. A policy testing the grantee evaluates false
+  //                   against that question, so read the list as a guide: every
+  //                   grant is authorized again as it is applied.
   //   IntrospectXAuthorization — ask what another principal may do on X.
-  //   ReadXGrants   — see who holds grants on X. It also makes X itself visible
-  //                   to you, with no separate read permission needed.
+  //   ReadXGrants   — see who holds grants on X. The server also treats this as
+  //                   making X itself visible to you, with no separate read
+  //                   permission needed. That is enforced by the server, not by
+  //                   this schema, so keep it in mind when you work out who can
+  //                   see what.
   //                   `XGrantActions` covers this alongside ManageXGrants.
   // Who a grant would go to, or be taken away from.
   //
@@ -1064,18 +1235,46 @@ namespace Lakekeeper {
   // out, `"revoke"` when it is being taken away.
   //
   //   when { context.direction == Lakekeeper::GrantDirection::"revoke" }
-  //
-  // Misspell a direction and your policy fails validation, so you hear about
-  // it rather than quietly never matching.
   entity GrantDirection enum ["grant", "revoke"];
 
-  // Grant administration stands outside the per-resource `<X>Actions` groups on purpose.
-  // Those groups mean "everything you can do to this object", and a customer who wrote one
-  // before grants existed did not ask to hand out access as well — group membership is
-  // conferral they cannot take back short of replacing this file. So deciding who else gets
-  // access is opt-in: name `GrantActions`, one of the per-level `<X>GrantActions`, or a leaf.
+  // The privilege a grant question is about, one type per resource type.
+  //
+  // `"unknown"` stands for a name this server does not define. It arrives when
+  // revoking a grant recorded under a different authorizer, or under a
+  // privilege a later release removed, so those rows stay revocable. No
+  // principal holds it.
+  entity ServerPrivilege enum
+    ["describe", "select", "write", "create", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+  entity ProjectPrivilege enum
+    ["describe", "select", "write", "create", "manage", "manage_policies",
+     "pass_grants", "manage_grants", "unknown"];
+  entity WarehousePrivilege enum
+    ["describe", "select", "write", "create", "manage", "manage_policies",
+     "pass_grants", "manage_grants", "unknown"];
+  entity NamespacePrivilege enum
+    ["describe", "select", "write", "create", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+  entity TablePrivilege enum
+    ["describe", "select", "write", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+  entity ViewPrivilege enum
+    ["describe", "select", "write", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+  entity GenericTablePrivilege enum
+    ["describe", "select", "write", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+  entity TagPrivilege enum
+    ["describe", "apply", "manage",
+     "pass_grants", "manage_grants", "unknown"];
+
+  // Grant administration stands outside the per-resource `<X>Actions` groups on
+  // purpose. Those groups mean "everything you can do to this object" — a policy
+  // written against one of them never hands out the right to give others access.
+  // Deciding who else gets access is opt-in: name `GrantActions`, one of the
+  // per-level `<X>GrantActions`, or a leaf action.
   action "GrantActions";
-  action "ReadGrantsActions" in ["GrantActions"];
+  action "GrantReadActions" in ["GrantActions"];
 
   action "ServerGrantActions" in ["GrantActions"];
   action ManageServerGrants in ["ServerGrantActions"]
@@ -1085,7 +1284,7 @@ namespace Lakekeeper {
       context: {
         // The privilege being granted or revoked, one at a time even when the
         // request covers several. See the section comment above.
-        privilege: String,
+        privilege: ServerPrivilege,
         // Who would gain the privilege, or lose it on a revoke. Empty when the
         // question names no grantee.
         grantee: Grantee,
@@ -1093,7 +1292,7 @@ namespace Lakekeeper {
         direction: GrantDirection,
       }
     };
-  action ReadServerGrants, IntrospectServerAuthorization in ["ServerGrantActions", "ReadGrantsActions"]
+  action ReadServerGrants, IntrospectServerAuthorization in ["ServerGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Server]
@@ -1106,12 +1305,12 @@ namespace Lakekeeper {
       resource: [Project],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: ProjectPrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadProjectGrants, IntrospectProjectAuthorization in ["ProjectGrantActions", "ReadGrantsActions"]
+  action ReadProjectGrants, IntrospectProjectAuthorization in ["ProjectGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
@@ -1124,12 +1323,12 @@ namespace Lakekeeper {
       resource: [Warehouse],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: WarehousePrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadWarehouseGrants, IntrospectWarehouseAuthorization in ["WarehouseGrantActions", "ReadGrantsActions"]
+  action ReadWarehouseGrants, IntrospectWarehouseAuthorization in ["WarehouseGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Warehouse]
@@ -1142,12 +1341,12 @@ namespace Lakekeeper {
       resource: [Namespace],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: NamespacePrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadNamespaceGrants, IntrospectNamespaceAuthorization in ["NamespaceGrantActions", "ReadGrantsActions"]
+  action ReadNamespaceGrants, IntrospectNamespaceAuthorization in ["NamespaceGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
@@ -1160,12 +1359,12 @@ namespace Lakekeeper {
       resource: [Table],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: TablePrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadTableGrants, IntrospectTableAuthorization in ["TableGrantActions", "ReadGrantsActions"]
+  action ReadTableGrants, IntrospectTableAuthorization in ["TableGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -1178,12 +1377,12 @@ namespace Lakekeeper {
       resource: [View],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: ViewPrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadViewGrants, IntrospectViewAuthorization in ["ViewGrantActions", "ReadGrantsActions"]
+  action ReadViewGrants, IntrospectViewAuthorization in ["ViewGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
@@ -1196,12 +1395,12 @@ namespace Lakekeeper {
       resource: [GenericTable],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: GenericTablePrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadGenericTableGrants, IntrospectGenericTableAuthorization in ["GenericTableGrantActions", "ReadGrantsActions"]
+  action ReadGenericTableGrants, IntrospectGenericTableAuthorization in ["GenericTableGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]
@@ -1214,14 +1413,127 @@ namespace Lakekeeper {
       resource: [Tag],
       context: {
         // Same three terms as ManageServerGrants; see the section comment.
-        privilege: String,
+        privilege: TagPrivilege,
         grantee: Grantee,
         direction: GrantDirection,
       }
     };
-  action ReadTagGrants, IntrospectTagAuthorization in ["TagGrantActions", "ReadGrantsActions"]
+  action ReadTagGrants, IntrospectTagAuthorization in ["TagGrantActions", "GrantReadActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Tag]
+    };
+  // ---------- Cedar Policy Actions ----------
+  // Cedar policies decide every other action in this schema, so whoever may
+  // rewrite them can decide their own access one request later. Like grant
+  // administration above, these actions stand outside the per-resource
+  // `<X>Actions` groups: reading or writing a scope's policies takes a policy
+  // that names one of the groups below.
+  //
+  //   CedarPolicyActions     — every policy-administration action, every level.
+  //   CedarPolicyReadActions — the read-only subset, across every level.
+  //   XCedarPolicyActions    — reading and writing policies on one level.
+  //
+  // Server-level policies come from the server's own policy sources (files,
+  // Kubernetes ConfigMaps); the API reads them only.
+  //
+  // The `manage_policies` privilege maps to `ProjectCedarPolicyActions` and
+  // `WarehouseCedarPolicyActions`. The server level is reachable from a server
+  // policy alone: name `ServerCedarPolicyActions` or its individual actions.
+  action "CedarPolicyActions";
+  action "CedarPolicyReadActions" in ["CedarPolicyActions"];
+
+  // Reading where the server gets its policies and entities from, and what
+  // those sources currently provide.
+  //
+  //   EvaluateCedarPolicies — try a policy out against the engine without
+  //     saving it. Reserved for a future endpoint.
+  action "ServerCedarPolicyActions" in ["CedarPolicyActions"];
+  action ListServerCedarPolicySources, ListServerCedarEntitySources,
+         ListCedarPoliciesFromServerSources, EvaluateCedarPolicies
+      in ["ServerCedarPolicyActions", "CedarPolicyReadActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+
+  action "ProjectCedarPolicyActions" in ["CedarPolicyActions"];
+  action ListProjectCedarPolicies, GetProjectCedarPolicy
+      in ["ProjectCedarPolicyActions", "CedarPolicyReadActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action ApplyProjectCedarPolicies in ["ProjectCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  // Switching one predefined policy on or off for this project. Asked once per
+  // policy in the request, so a policy of yours can decide each one on its own:
+  //
+  //   when { context.enabled == false }      // may switch off, never on
+  //   when { context.policy_id like "predefined-grants-table-*" }
+  //
+  action ToggleProjectPredefinedPolicy in ["ProjectCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // The policy being switched, e.g. "predefined-grants-table-select".
+        policy_id: String,
+        // What it is being switched to: true turns the policy on.
+        enabled: Bool,
+      }
+    };
+  // Dropping every predefined-policy decision this project has recorded, putting
+  // it back on the shipped defaults in one step.
+  action ResetProjectPredefinedPolicies in ["ProjectCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+
+  // This group holds the policy actions alone. Every warehouse route asks
+  // `UseWarehouse` first and answers "not found" when it is denied, so a policy
+  // permitting this group names `UseWarehouse` too where it wants those routes
+  // reachable — the shipped `manage_policies` policy does. Keeping the probe out
+  // of the group also keeps a blanket `forbid` on `CedarPolicyActions` from
+  // hiding every warehouse.
+  action "WarehouseCedarPolicyActions" in ["CedarPolicyActions"];
+  action ListWarehouseCedarPolicies, GetWarehouseCedarPolicy
+      in ["WarehouseCedarPolicyActions", "CedarPolicyReadActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action ApplyWarehouseCedarPolicies in ["WarehouseCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  // Switching one predefined policy on or off for this warehouse. Asked once per
+  // policy in the request, so a policy of yours can decide each one on its own:
+  //
+  //   when { context.enabled == false }      // may switch off, never on
+  //   when { context.policy_id like "predefined-grants-table-*" }
+  //
+  action ToggleWarehousePredefinedPolicy in ["WarehouseCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // The policy being switched, e.g. "predefined-grants-table-select".
+        policy_id: String,
+        // What it is being switched to: true turns the policy on.
+        enabled: Bool,
+      }
+    };
+  // Dropping every predefined-policy decision this warehouse has recorded, putting
+  // it back on the shipped defaults in one step.
+  action ResetWarehousePredefinedPolicies in ["WarehouseCedarPolicyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
     };
 }
