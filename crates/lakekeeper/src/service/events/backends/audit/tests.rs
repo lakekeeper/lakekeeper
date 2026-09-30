@@ -1938,28 +1938,14 @@ fn only_the_shapes_emit_audit_records() {
     );
 }
 
-/// No key of a `context` map may spell a top-level field, whatever its separator: a consumer
-/// flattening nested keys would see two fields of one name with unrelated meanings.
+/// One key of an object means one thing, whoever declared it.
+///
+/// A name reused at a different path is not a clash: `actor.principal` and
+/// `context.principal` are two fields named for where they sit. Two vocabularies declaring
+/// the same key of the same object is, because both land at one path in one record.
 #[test]
-fn no_context_key_spells_a_top_level_field() {
-    use crate::audit::{Kind, Registration};
-    Registration::require_registry();
-    let normalise = |s: &str| s.replace('-', "_");
-    let top_level: Vec<String> = super::shapes::TOP_LEVEL_FIELDS
-        .iter()
-        .map(|f| normalise(f))
-        .collect();
-    for reg in Registration::all()
-        .filter(|r| matches!(r.kind, Kind::Keys { object, .. } if object == "context"))
-    {
-        for key in reg.kind.names().iter().map(|name| name.text) {
-            assert!(
-                !top_level.contains(&normalise(key)),
-                "context key `{key}` of {} spells the top-level field `{key}`",
-                (reg.type_name)()
-            );
-        }
-    }
+fn no_object_declares_a_key_twice() {
+    crate::audit::schema::assert_no_object_declares_a_key_twice();
 }
 
 /// A key flattened into an object may not spell a field that object already has.

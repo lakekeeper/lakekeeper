@@ -101,7 +101,6 @@ impl From<bool> for AuthorizationDecision {
     Serialize,
     Deserialize,
     schemars::JsonSchema,
-    valuable::Valuable,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -159,7 +158,6 @@ pub enum DeterminingFactor {
     Serialize,
     Deserialize,
     schemars::JsonSchema,
-    valuable::Valuable,
     strum_macros::VariantArray,
     strum_macros::VariantNames,
 )]
