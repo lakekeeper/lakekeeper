@@ -106,7 +106,7 @@ Things to know:
 A default project is configured out of the box, so these attributes are rarely empty; that happens only when the request names no project and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT=false`. Two consequences for a policy that can decide a server-level or user-management action:
 
 - Which roles it sees depends on `x-project-id`. A `forbid` naming a role stops firing when the header names another project — `principal in Lakekeeper::Role::"..."` included, since the Role ID embeds a project.
-- Naming a role is only meaningful if that role means the same people in every project. Identity-provider groups shared across projects do, and so do roles from the token and roles an admission gate grants, which appear in every project's `project_roles`; catalog roles created per project do not, so anyone able to create a role in their own project can match such a policy from there.
+- Naming a role is only meaningful if that role means the same people in every project. Identity-provider groups shared across projects do, and so do roles from the token and roles an admission gate grants, which appear in every project's `project_roles`; catalog roles created per project do not, so anyone able to create a role in their own project and add themselves to it (`POST /management/v1/role/{role_id}/members`) can match such a policy from there.
 
 For authority that must not depend on the request, use a grant on the server — grants belong to no project — or name the user. To keep a role-based policy at the project level, add `principal has request_project && resource in principal.request_project`; a server or user resource is never inside a project.
 

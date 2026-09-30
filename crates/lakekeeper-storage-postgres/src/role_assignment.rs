@@ -145,10 +145,11 @@ pub(crate) async fn sync_role_members_by_ident(
         .iter()
         .map(|m| DbUserLastUpdatedWith::from(m.updated_with))
         .collect();
-    // Capture the timestamp on the client so the value written to Postgres
-    // and the value returned to the caller are identical, avoiding any
-    // clock skew between the DB server and the application server.
-    let synced_at = chrono::Utc::now();
+    // Capture the timestamp on the client, at the microsecond precision Postgres
+    // stores, so the value written and the value returned to the caller are
+    // identical, avoiding any clock skew between the DB server and the
+    // application server.
+    let synced_at = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
 
     // Deleted users stay deleted and get no assignment.
     let deleted_ids: Vec<String> = sqlx::query!(
@@ -354,10 +355,11 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     let role_names: Vec<Option<&str>> = roles.iter().map(|r| r.name).collect();
     let role_descs: Vec<Option<&str>> = roles.iter().map(|r| r.description).collect();
     let role_src_ids: Vec<&str> = roles.iter().map(|r| r.ident.source_id().as_str()).collect();
-    // Capture the timestamp on the client so the value written to Postgres
-    // and the value returned to the caller are identical, avoiding any
-    // clock skew between the DB server and the application server.
-    let synced_at = chrono::Utc::now();
+    // Capture the timestamp on the client, at the microsecond precision Postgres
+    // stores, so the value written and the value returned to the caller are
+    // identical, avoiding any clock skew between the DB server and the
+    // application server.
+    let synced_at = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
 
     let user_deleted = sqlx::query_scalar!(
         r#"SELECT deleted_at IS NOT NULL AS "deleted!" FROM users WHERE id = $1 FOR NO KEY UPDATE"#,
