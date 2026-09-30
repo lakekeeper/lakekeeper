@@ -351,9 +351,9 @@ impl LakekeeperStorage for AdlsStorage {
 
         let head_response = head(&client, &adls_location).await?;
 
-        // The `head` above already carries the object metadata, so surface it
-        // rather than issue a second request. Built before `adls_location` is
-        // moved into the fetch calls below.
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed. Built before
+        // `adls_location` is moved into the fetch calls below.
         let info = FileInfo::new(
             parse_offsetdatetime(&head_response.last_modified),
             adls_location.location().clone(),

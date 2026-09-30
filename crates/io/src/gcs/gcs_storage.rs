@@ -285,8 +285,8 @@ impl LakekeeperStorage for GcsStorage {
         let head_response = head(&self.client, &gcs_location).await?;
         let file_size = validate_file_size(head_response.size, gcs_location.as_str())?;
 
-        // The `head` above already carries the object metadata, so surface it
-        // rather than issue a second request.
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed.
         let info = FileInfo::new(
             head_response
                 .updated

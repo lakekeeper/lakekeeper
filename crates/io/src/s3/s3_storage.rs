@@ -214,8 +214,8 @@ impl LakekeeperStorage for S3Storage {
         let content_length = head_response.content_length().unwrap_or(0);
         let file_size = validate_file_size(content_length, path)?;
 
-        // The `head` above already carries the object metadata, so surface it
-        // rather than issue a second request.
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed.
         let location_str = s3_location.to_string();
         let info = FileInfo::new(
             head_response.last_modified().and_then(parse_timestamp),

@@ -266,10 +266,10 @@ impl FileInfo {
 /// The result of [`LakekeeperStorage::read`]: the object's bytes plus the
 /// [`FileInfo`] the backend surfaced while fetching them.
 ///
-/// Backends already obtain the object metadata during a read (all of them issue
-/// a `head` to size the request), so returning it here lets callers get the
-/// bytes and the metadata (`last_modified`, `size`) in one round-trip instead of
-/// a separate [`LakekeeperStorage::metadata`] call.
+/// A read already yields the object metadata (the cloud backends issue a `head`
+/// to size the request; the in-memory backend holds it directly), so returning
+/// it here lets callers get the bytes and the metadata (`last_modified`, `size`)
+/// in one call — a separate [`LakekeeperStorage::metadata`] request is not needed.
 #[derive(Debug, Clone)]
 pub struct ObjectRead {
     /// The object's bytes.
