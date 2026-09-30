@@ -3283,6 +3283,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=a0d385821c75855acb654a017d945109b57f32b5#a0d385821c75855acb654a017d945109b57f32b5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3369,6 +3370,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=a0d385821c75855acb654a017d945109b57f32b5#a0d385821c75855acb654a017d945109b57f32b5"
 dependencies = [
  "proc-macro2",
  "quote",
