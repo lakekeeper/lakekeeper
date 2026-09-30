@@ -293,6 +293,15 @@ impl RequestMetadata {
         self
     }
 
+    /// Set the request's project to the project of the warehouse a catalog request
+    /// addresses. Written by the auth middleware, only for a request that sent no
+    /// `x-project-id`, before anything reads the request's project.
+    #[cfg_attr(not(feature = "router"), allow(dead_code))]
+    pub(crate) fn set_warehouse_project_id(&mut self, project_id: ArcProjectId) -> &mut Self {
+        self.project_id = Some(project_id);
+        self
+    }
+
     /// Roles resolved by a post-authentication admission gate, if any.
     #[must_use]
     pub fn admission_roles(&self) -> Option<&TokenRoles> {
@@ -724,6 +733,24 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
     }
 }
 
+/// Extract the project id from [`X_PROJECT_ID_HEADER`] (or its deprecated alias
+/// `x-project-ident`), if either was sent with a value that is non-empty after
+/// trimming. `Ok(None)` when neither header was sent, or when the value sent was
+/// empty or whitespace-only after trimming — such a request is treated the same as
+/// one that sent no header at all.
+#[cfg(any(feature = "router", test))]
+fn project_id_from_headers(headers: &HeaderMap) -> Result<Option<ProjectId>, ErrorModel> {
+    headers
+        .get(X_PROJECT_ID_HEADER)
+        .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
+        .and_then(|hv| hv.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ProjectId::from_str)
+        .transpose()
+        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")))
+}
+
 #[cfg(feature = "router")]
 /// Initializes request metadata with a random request ID as an axum Extension.
 /// Does not authenticate the request.
@@ -754,16 +781,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .into_response();
     };
 
-    let project_id = headers
-        .get(X_PROJECT_ID_HEADER)
-        .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
-        .and_then(|hv| hv.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ProjectId::from_str)
-        .transpose()
-        .map_err(|e| e.append_detail(format!("Invalid {X_PROJECT_ID_HEADER} header value.")));
-    let project_id = match project_id {
+    let project_id = match project_id_from_headers(&headers) {
         Ok(ident) => ident,
         Err(err) => {
             return err.into_response();
@@ -968,6 +986,23 @@ mod test {
             DEFAULT_PROJECT_ID.clone(),
             "while the preferred project still falls back to the configured default"
         );
+    }
+
+    /// A caller who sends `x-project-id` but leaves it empty or whitespace-only has
+    /// named no project — same as sending no header at all. Feeds
+    /// [`RequestMetadata::requested_project_id`] via `project_id.map(Arc::new)`, so
+    /// `None` here means `requested_project_id()` is `None` too.
+    #[test]
+    fn a_project_id_header_that_is_empty_or_whitespace_only_is_treated_as_absent() {
+        for raw in ["", "   ", "\t \t"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                X_PROJECT_ID_HEADER_NAME,
+                HeaderValue::from_str(raw).unwrap(),
+            );
+            assert_eq!(project_id_from_headers(&headers).unwrap(), None, "{raw:?}");
+        }
+        assert_eq!(project_id_from_headers(&HeaderMap::new()).unwrap(), None);
     }
 
     /// The header is caller-controlled and lands on every audit record, so its

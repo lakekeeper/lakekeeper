@@ -22,10 +22,10 @@ use serde::{Deserialize, Serialize};
 use crate::{CONFIG, api, service::ArcRole};
 #[cfg(feature = "router")]
 use crate::{
-    XXHashSet,
+    WarehouseId, XXHashSet,
     request_metadata::{RequestMetadata, TokenRoles},
     service::{
-        RoleIdent,
+        ArcProjectId, RoleIdent,
         admission::{AdmissionContext, AdmissionGates, RejectionKind},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
@@ -722,12 +722,38 @@ pub(crate) async fn auth_middleware_fn<
         Ok(role_id) => role_id,
         Err(e) => return e.into_response(),
     };
-    let actor = match resolve_actor::<C>(user_id, role_id, catalog_state).await {
+    let actor = match resolve_actor::<C>(user_id, role_id, catalog_state.clone()).await {
         Ok(actor) => actor,
         Err(e) => return e,
     };
 
+    // A catalog request that names no project is about the project of the warehouse it
+    // addresses. Resolved here: after the token is verified, so only an authenticated
+    // caller can make the server look a warehouse up, and before anything below reads
+    // the request's project. A lookup failure is left to the handler, whose audit record
+    // for it names the handler's own action, which this generic step does not know.
+    let warehouse_project = warehouse_project_for_request(&mut request, |warehouse_id| async move {
+        use crate::service::{CatalogWarehouseOps as _, WarehouseStatus};
+        match C::get_warehouse_by_id(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            catalog_state,
+        )
+        .await
+        {
+            Ok(warehouse) => warehouse.map(|warehouse| warehouse.project_id.clone()),
+            Err(error) => {
+                tracing::debug!(?error, %warehouse_id, "warehouse lookup for the request's project failed");
+                None
+            }
+        }
+    })
+    .await;
+
     if let Some(request_metadata) = request.extensions_mut().get_mut::<RequestMetadata>() {
+        if let Some(project_id) = warehouse_project {
+            request_metadata.set_warehouse_project_id(project_id);
+        }
         match extract_and_set_token_roles(&authentication, request_metadata) {
             Ok(Some(token_roles)) => {
                 request_metadata.set_token_roles(token_roles);
@@ -927,6 +953,59 @@ async fn resolve_actor<C: super::CatalogStore>(
             }
         }
         None => Ok(Actor::Principal(user_id)),
+    }
+}
+
+#[cfg(feature = "router")]
+/// The project of the warehouse a request addresses, for a request that sent no
+/// `x-project-id`. `None` when it sent one, when its route addresses no warehouse, or
+/// when `lookup` finds no such warehouse — the handler then answers as it does today.
+async fn warehouse_project_for_request<F, Fut>(
+    request: &mut Request,
+    lookup: F,
+) -> Option<ArcProjectId>
+where
+    F: FnOnce(WarehouseId) -> Fut,
+    Fut: std::future::Future<Output = Option<ArcProjectId>>,
+{
+    use axum::{
+        RequestExt as _,
+        extract::{MatchedPath, RawPathParams},
+    };
+
+    use crate::service::request_project::{WarehouseReference, warehouse_reference};
+
+    let names_a_project = request
+        .extensions()
+        .get::<RequestMetadata>()
+        .is_none_or(|metadata| metadata.requested_project_id().is_some());
+    if names_a_project {
+        return None;
+    }
+    let method = request.method().clone();
+    let matched_path = request
+        .extensions()
+        .get::<MatchedPath>()?
+        .as_str()
+        .to_owned();
+    let prefix = request
+        .extract_parts::<RawPathParams>()
+        .await
+        .ok()
+        .and_then(|params| {
+            params
+                .iter()
+                .find(|(key, _)| *key == "prefix")
+                .map(|(_, value)| value.to_owned())
+        });
+    match warehouse_reference(
+        &method,
+        &matched_path,
+        prefix.as_deref(),
+        request.uri().query(),
+    )? {
+        WarehouseReference::Project(project_id) => Some(Arc::new(project_id)),
+        WarehouseReference::Warehouse(warehouse_id) => lookup(warehouse_id).await,
     }
 }
 
@@ -2221,5 +2300,195 @@ mod tests {
         );
         let role_id = extract_role_id(&headers).unwrap().unwrap();
         assert_eq!(role_id, RoleId::new(this_role_id));
+    }
+
+    mod warehouse_project {
+        use std::{
+            str::FromStr as _,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+
+        use axum::{
+            Router,
+            body::Body,
+            extract::Request,
+            http::{Method, StatusCode},
+            middleware::{Next, from_fn},
+            routing::{get, post},
+        };
+        use tower::ServiceExt as _;
+
+        use super::super::warehouse_project_for_request;
+        use crate::{
+            ProjectId, WarehouseId,
+            request_metadata::RequestMetadata,
+            service::{ArcProjectId, UserId},
+        };
+
+        const WAREHOUSE: &str = "01970000-0000-7000-8000-00000000000a";
+        const WAREHOUSE_PROJECT: &str = "01970000-0000-7000-8000-00000000000b";
+        const HEADER_PROJECT: &str = "01970000-0000-7000-8000-00000000000c";
+
+        /// Runs one request through a router shaped like the real one: the metadata
+        /// is attached outside, the step runs in a route-level layer, and the handler
+        /// answers with the project the metadata ends up with. Returns that project
+        /// and how often the warehouse lookup ran.
+        async fn project_after(
+            method: Method,
+            uri: &str,
+            header_project: Option<&str>,
+        ) -> (String, usize) {
+            let lookups = Arc::new(AtomicUsize::new(0));
+            let counted = lookups.clone();
+            let step = move |mut request: Request, next: Next| {
+                let counted = counted.clone();
+                async move {
+                    let project = warehouse_project_for_request(&mut request, |id| {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            (id == WarehouseId::from(uuid::Uuid::parse_str(WAREHOUSE).unwrap()))
+                                .then(|| {
+                                    Arc::new(ProjectId::from_str(WAREHOUSE_PROJECT).unwrap())
+                                        as ArcProjectId
+                                })
+                        }
+                    })
+                    .await;
+                    if let (Some(project), Some(metadata)) = (
+                        project,
+                        request.extensions_mut().get_mut::<RequestMetadata>(),
+                    ) {
+                        metadata.set_warehouse_project_id(project);
+                    }
+                    next.run(request).await
+                }
+            };
+            let echo = |request: Request| async move {
+                request
+                    .extensions()
+                    .get::<RequestMetadata>()
+                    .and_then(RequestMetadata::requested_project_id)
+                    .map_or_else(|| "none".to_string(), ToString::to_string)
+            };
+            // `/config` also answers `DELETE`, a method the endpoint registry does not
+            // know for that path, so a request through it exercises the "known path,
+            // unlisted method" case without axum's own 405 masking the result.
+            let catalog = Router::new()
+                .route("/{prefix}/namespaces", get(echo))
+                .route("/config", get(echo).delete(echo))
+                .route("/aws/s3/sign", post(echo));
+            let app = Router::new()
+                .nest("/catalog/v1", catalog)
+                .route("/management/v1/project-list", get(echo))
+                .layer(from_fn(step));
+            let header_project = header_project.map(|p| ProjectId::from_str(p).unwrap());
+            let app = app.layer(from_fn(move |mut request: Request, next: Next| {
+                let header_project = header_project.clone();
+                async move {
+                    // `test_user` starts without a project, like a request without the header.
+                    let mut metadata =
+                        RequestMetadata::test_user(UserId::new_unchecked("oidc", "test-user-one"));
+                    if let Some(project) = header_project {
+                        metadata.with_project_id(project);
+                    }
+                    request.extensions_mut().insert(metadata);
+                    next.run(request).await
+                }
+            }));
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                String::from_utf8(body.to_vec()).unwrap(),
+                lookups.load(Ordering::SeqCst),
+            )
+        }
+
+        #[tokio::test]
+        async fn a_header_less_catalog_request_takes_its_warehouses_project() {
+            let (project, lookups) = project_after(
+                Method::GET,
+                &format!("/catalog/v1/{WAREHOUSE}/namespaces"),
+                None,
+            )
+            .await;
+            assert_eq!(project, WAREHOUSE_PROJECT);
+            assert_eq!(lookups, 1);
+        }
+
+        #[tokio::test]
+        async fn a_sent_header_wins_and_skips_the_lookup() {
+            let (project, lookups) = project_after(
+                Method::GET,
+                &format!("/catalog/v1/{WAREHOUSE}/namespaces"),
+                Some(HEADER_PROJECT),
+            )
+            .await;
+            assert_eq!(project, HEADER_PROJECT);
+            assert_eq!(lookups, 0);
+        }
+
+        #[tokio::test]
+        async fn config_takes_the_project_its_argument_names_without_a_lookup() {
+            let (project, lookups) = project_after(
+                Method::GET,
+                &format!("/catalog/v1/config?warehouse={WAREHOUSE_PROJECT}%2Fmy-warehouse"),
+                None,
+            )
+            .await;
+            assert_eq!(project, WAREHOUSE_PROJECT);
+            assert_eq!(lookups, 0);
+        }
+
+        #[tokio::test]
+        async fn an_unknown_warehouse_leaves_the_project_alone() {
+            let (project, lookups) = project_after(
+                Method::GET,
+                "/catalog/v1/01970000-0000-7000-8000-0000000000ff/namespaces",
+                None,
+            )
+            .await;
+            assert_eq!(project, "none");
+            assert_eq!(lookups, 1);
+        }
+
+        #[tokio::test]
+        async fn routes_without_a_warehouse_are_left_alone() {
+            for (method, uri) in [
+                (Method::GET, "/management/v1/project-list"),
+                (Method::POST, "/catalog/v1/aws/s3/sign"),
+                (Method::GET, "/catalog/v1/not-a-uuid/namespaces"),
+            ] {
+                let (project, lookups) = project_after(method, uri, None).await;
+                assert_eq!(project, "none", "{uri}");
+                assert_eq!(lookups, 0, "{uri}");
+            }
+        }
+
+        /// The registry knows `GET /catalog/v1/config`, not `DELETE` on the same path —
+        /// a route the test router still serves 200 for. Project resolution matches on
+        /// the request's actual method, so the `DELETE` resolves no project and looks
+        /// nothing up.
+        #[tokio::test]
+        async fn a_known_path_with_a_method_the_registry_does_not_list_is_left_alone() {
+            let (project, lookups) =
+                project_after(Method::DELETE, "/catalog/v1/config", None).await;
+            assert_eq!(project, "none");
+            assert_eq!(lookups, 0);
+        }
     }
 }

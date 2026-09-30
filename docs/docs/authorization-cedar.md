@@ -93,7 +93,7 @@ Things to know:
 
 - Name a role by its `source_id`. The role's display name is not available to Cedar, and a role created with a `source-id` of its own cannot be named by its id.
 - A `source_id` names a role only together with its `provider_id`: `analysts` in `lakekeeper` and `analysts` in `ldap` are different roles. Wherever a policy reads a `source_id` — `resource.source_id` on a role action, or `context.requested_source_id` — check the matching `provider_id` too.
-- The `project_roles` form without a project is safe for project, warehouse, namespace, table and view actions: a request about a resource must name that resource's project, so the roles it sees are that project's roles. For server-level and user-management actions the caller chooses the project, so name one project's role or add `resource in principal.request_project` — see [Role scope](#role-scope-one-project-per-request).
+- The `project_roles` form without a project is safe for project, warehouse, namespace, table and view actions: a request about a resource is decided in that resource's project — named by `x-project-id` or, for a catalog request without it, by the warehouse it addresses — so the roles it sees are that project's roles. For server-level and user-management actions the caller chooses the project, so name one project's role or add `resource in principal.request_project` — see [Role scope](#role-scope-one-project-per-request).
 - Changing a role's `source_id` through the source-system endpoint changes its name in Cedar: policies naming the old `source_id` stop matching it.
 - `global_role_ids` does not include these roles, and resource property tags (`role:` / `role-full:`) cannot reference them.
 - When a user acts as a role with `x-assume-role`, the principal is that role: `principal in Lakekeeper::Role::"…"` still matches the roles it is nested in, but `principal.project_roles` is not available, and a policy that starts with `principal is Lakekeeper::User` does not apply.
@@ -101,7 +101,7 @@ Things to know:
 ### Role scope: one project per request
 
 !!! warning "One project's roles, on every request"
-    `roles`, `project_roles` and `global_role_ids` hold the roles of **one** project — the one `x-project-id` names, or the default project — on every request, server-level actions included.
+    `roles`, `project_roles` and `global_role_ids` hold the roles of **one** project on every request, server-level actions included: the one `x-project-id` names; for a catalog request without the header, the project of the warehouse it addresses; otherwise the default project.
 
 A default project is configured out of the box, so these attributes are rarely empty; that happens only when the request names no project and `LAKEKEEPER__ENABLE_DEFAULT_PROJECT=false`. Two consequences for a policy that can decide a server-level or user-management action:
 
