@@ -3958,6 +3958,9 @@ pub mod tests {
         unsupported_project_listing: bool,
         /// Awaited by every catalog object check. See [`Self::with_check_hook`].
         check_hook: Option<CheckHook>,
+        /// The admission roles each assume-role check saw. See
+        /// [`Self::assume_role_checks`].
+        assume_role_checks: Arc<std::sync::Mutex<Vec<Option<Vec<String>>>>>,
     }
 
     /// A future run by each check, as `HidingAuthorizer` holds it.
@@ -4016,7 +4019,18 @@ pub mod tests {
                 own_grant_store: false,
                 unsupported_project_listing: false,
                 check_hook: None,
+                assume_role_checks: Arc::default(),
             }
+        }
+
+        /// One entry per assume-role check, in call order: the admission roles on
+        /// the request it decided, sorted. `None` when the request carried none.
+        ///
+        /// # Panics
+        /// Panics if the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn assume_role_checks(&self) -> Vec<Option<Vec<String>>> {
+            self.assume_role_checks.lock().unwrap().clone()
         }
 
         /// Report `providers` as provider-managed, so a test can exercise the
@@ -4256,8 +4270,17 @@ pub mod tests {
             &self,
             _principal: &UserId,
             _assumed_role: &Role,
-            _request_metadata: &RequestMetadata,
+            request_metadata: &RequestMetadata,
         ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
+            let admission_roles = request_metadata.admission_roles().map(|roles| {
+                let mut roles: Vec<String> = roles.iter().map(ToString::to_string).collect();
+                roles.sort();
+                roles
+            });
+            self.assume_role_checks
+                .lock()
+                .unwrap()
+                .push(admission_roles);
             Ok(true)
         }
 

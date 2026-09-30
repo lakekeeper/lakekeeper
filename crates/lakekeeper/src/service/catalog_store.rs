@@ -1130,6 +1130,7 @@ where
 
     async fn sync_user_role_assignments_by_provider_impl<'a>(
         user: &CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
@@ -1222,11 +1223,12 @@ where
 
     /// Delete the role-provider sync records of `user_ids` for `provider_id` in
     /// `project_id`, so the provider re-syncs those users on their next request.
-    async fn expire_role_assignment_syncs_impl(
+    /// Runs on the caller's transaction.
+    async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         user_ids: &[UserId],
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----

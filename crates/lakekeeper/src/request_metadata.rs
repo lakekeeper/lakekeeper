@@ -132,7 +132,9 @@ pub struct RequestMetadata {
     received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
-    token_roles: Option<TokenRoles>,
+    /// Roles the caller's token carries in the identity provider's roles claim. They
+    /// hold in every project.
+    token_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     /// Roles resolved by a post-authentication admission gate (see
     /// [`AdmissionGate`](crate::service::admission::AdmissionGate)) — e.g. from
     /// an external entitlement service. Kept separate from `token_roles` so the
@@ -152,31 +154,6 @@ pub struct RequestMetadata {
     /// length. Captured as sent, save for undecodable bytes; whether an emergency
     /// override is permitted, and for what, is the authorizer's business.
     break_glass: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenRoles {
-    project_id: ArcProjectId,
-    roles: XXHashSet<Arc<RoleIdent>>,
-}
-
-impl TokenRoles {
-    #[must_use]
-    pub fn new(project_id: ArcProjectId, roles: XXHashSet<Arc<RoleIdent>>) -> Self {
-        Self { project_id, roles }
-    }
-}
-
-impl TokenRoles {
-    #[must_use]
-    pub fn project_id(&self) -> &ArcProjectId {
-        &self.project_id
-    }
-
-    #[must_use]
-    pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
-        &self.roles
-    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -273,8 +250,10 @@ impl RequestMetadata {
         self.idempotency_key.as_ref()
     }
 
-    pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
-        self.token_roles = Some(token_roles);
+    /// Set the roles the caller's token carries. Written by the auth middleware
+    /// after the token is verified.
+    pub fn set_token_roles(&mut self, roles: XXHashSet<Arc<RoleIdent>>) -> &mut Self {
+        self.token_roles = Some(roles);
         self
     }
 
@@ -329,8 +308,9 @@ impl RequestMetadata {
         &self.request_method
     }
 
+    /// Roles the caller's token carries, if any. They hold in every project.
     #[must_use]
-    pub fn token_roles(&self) -> Option<&TokenRoles> {
+    pub fn token_roles(&self) -> Option<&XXHashSet<Arc<RoleIdent>>> {
         self.token_roles.as_ref()
     }
 
@@ -686,8 +666,11 @@ pub struct RequestMetadataTestBuilder {
     pub request_method: Method,
     #[builder(default = false)]
     pub is_instance_admin: bool,
+    /// Roles the caller's token carries. In production only the auth middleware
+    /// sets these; this builder field lets tests construct a request that carries
+    /// them.
     #[builder(default, setter(strip_option))]
-    pub token_roles: Option<TokenRoles>,
+    pub token_roles: Option<XXHashSet<Arc<RoleIdent>>>,
     /// Roles a post-authentication admission gate resolved for the caller. In
     /// production only the auth middleware sets these (via the `pub(crate)`
     /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests

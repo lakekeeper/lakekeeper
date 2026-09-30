@@ -8481,7 +8481,8 @@ components:
             $ref: '#/components/schemas/DeterminingFactor'
           description: |-
             What determined this decision: the policies that matched, each with its
-            identifier, optional name and source, or a system-authority override.
+            identifier, optional name and source, a system-authority override, or an
+            admission gate that would refuse the user.
 
             Absent when the configured authorizer produces no per-decision
             diagnostics.
@@ -8986,18 +8987,44 @@ components:
       oneOf:
         - $ref: '#/components/schemas/DeterminingFactorPolicy'
         - $ref: '#/components/schemas/DeterminingFactorSystemAuthority'
+        - $ref: '#/components/schemas/DeterminingFactorAdmissionGate'
       description: |-
         A single factor that contributed to an authorization decision.
 
-        Discriminated by `type`: `policy` names a policy the authorizer matched, and
-        `system-authority` records that a built-in authority tier decided the request. The
-        schema is a closed `oneOf` over those two, so a further kind is a schema change a
-        generated client has to be rebuilt for rather than one it absorbs on its own.
+        Discriminated by `type`: `policy` names a policy the authorizer matched,
+        `system-authority` records that a built-in authority tier decided the request, and
+        `admission-gate` records that an admission gate would refuse the user. The schema is
+        a closed `oneOf` over those three, so a further kind is a schema change that generated
+        clients have to be rebuilt for.
       discriminator:
         propertyName: type
         mapping:
+          admission-gate: '#/components/schemas/DeterminingFactorAdmissionGate'
           policy: '#/components/schemas/DeterminingFactorPolicy'
           system-authority: '#/components/schemas/DeterminingFactorSystemAuthority'
+    DeterminingFactorAdmissionGate:
+      type: object
+      description: |-
+        The user would be refused at admission by this gate, so the request is
+        denied whatever the policies say.
+      required:
+        - gate
+        - type
+      properties:
+        check:
+          type:
+            - string
+            - 'null'
+          description: |-
+            The gate's check that refused the user. Absent when the gate names
+            none.
+        gate:
+          type: string
+          description: Name of the admission gate that would refuse the user.
+        type:
+          type: string
+          enum:
+            - admission-gate
     DeterminingFactorPolicy:
       type: object
       description: |-

@@ -1654,43 +1654,45 @@ async fn test_managed_role_refuses_edits_allows_delete(pool: PgPool) {
     );
 }
 
-/// Deleting a provider-managed role expires its members' sync records for that
-/// provider, so the provider re-syncs them on their next request.
-#[sqlx::test]
-async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
+/// Sync `user_id` in `project_id` for `provider` into one group, straight to the
+/// catalog store.
+async fn sync_into_group(
+    ctx: &lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            impl lakekeeper::service::authz::Authorizer,
+            PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    user_id: &lakekeeper::service::UserId,
+    project_id: &ProjectId,
+    provider: &RoleProviderId,
+    group: &str,
+) -> RoleId {
     use lakekeeper::{
         api::management::v1::user::UserLastUpdatedWith,
         service::{
             CatalogRoleAssignmentOps as _, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
-            RoleIdent, UserId, authz::tests::HidingAuthorizer,
+            RoleIdent, SyncFor,
         },
     };
 
-    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
-    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
-        .pool(pool.clone())
-        .storage_profile(memory_io_profile())
-        .authorizer(HidingAuthorizer::new().with_managed_role_providers([provider.clone()]))
-        .number_of_warehouses(1)
-        .build()
-        .setup()
-        .await;
-    let project_id = &warehouse_resp.project_id;
-    let alice = std::sync::Arc::new(UserId::new_unchecked("oidc", "alice"));
-    let ident = std::sync::Arc::new(RoleIdent::new_unchecked("corporate-ldap", "contractors"));
+    let ident = std::sync::Arc::new(RoleIdent::new_unchecked(provider.as_str(), group));
+    let user_id = std::sync::Arc::new(user_id.clone());
     let synced = PostgresBackend::sync_user_role_assignments(
         CatalogUserRoleAssignmentUser {
-            user_id: &alice,
-            name: Some("Alice"),
+            user_id: &user_id,
+            name: None,
             email: None,
             user_type: None,
             updated_with: UserLastUpdatedWith::RoleProvider,
         },
+        SyncFor::Caller,
         project_id,
-        &provider,
+        provider,
         &[CatalogRoleForAssignment {
             ident: &ident,
-            name: Some("Contractors"),
+            name: None,
             description: None,
         }],
         ctx.v1_state.catalog.clone(),
@@ -1698,26 +1700,149 @@ async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
     )
     .await
     .unwrap();
-    assert_eq!(synced.provider_sync_times.len(), 1);
+    synced
+        .assignments
+        .roles
+        .iter()
+        .find(|r| r.project_id.as_ref() == project_id)
+        .expect("the synced group is assigned")
+        .role_id
+}
+
+/// Every `role_assignment_sync` row as `(user_id, project_id, provider_id)`, sorted.
+async fn sync_records(pool: &PgPool) -> Vec<(String, String, String)> {
+    sqlx::query_as(
+        "SELECT user_id, project_id, provider_id FROM role_assignment_sync \
+         ORDER BY user_id, project_id, provider_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Deleting a provider-managed role expires its members' sync records for that
+/// provider in that project, so the provider re-syncs them on their next request.
+/// Their records for other projects and other providers, and the records of users
+/// outside the role, stay.
+#[sqlx::test]
+async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
+    use lakekeeper::service::{
+        CatalogRoleAssignmentOps as _, UserId, authz::tests::HidingAuthorizer,
+    };
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let other_provider: RoleProviderId = "corporate-okta".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(
+            HidingAuthorizer::new()
+                .with_managed_role_providers([provider.clone(), other_provider.clone()]),
+        )
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let other_project = ProjectId::new_random();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::create_project(&other_project, "Other".to_string(), tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let alice = UserId::new_unchecked("oidc", "alice");
+    let bob = UserId::new_unchecked("oidc", "bob");
+    let carol = UserId::new_unchecked("oidc", "carol");
+    let role_id = sync_into_group(&ctx, &alice, project_id, &provider, "contractors").await;
+    sync_into_group(&ctx, &bob, project_id, &provider, "contractors").await;
+    sync_into_group(&ctx, &alice, &other_project, &provider, "contractors").await;
+    sync_into_group(&ctx, &alice, project_id, &other_provider, "engineering").await;
+    sync_into_group(&ctx, &carol, project_id, &provider, "staff").await;
+    assert_eq!(sync_records(&pool).await.len(), 5);
 
     ApiServer::delete_role(
         ctx.clone(),
         request_metadata_with_project(project_id),
-        synced.roles[0].role_id,
+        role_id,
         DeleteRoleQuery::default(),
     )
     .await
     .unwrap();
 
-    let after =
-        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+    let p = project_id.to_string();
+    let other = other_project.to_string();
+    let record = |user: &UserId, project: &str, provider: &RoleProviderId| {
+        (user.to_string(), project.to_string(), provider.to_string())
+    };
+    let mut expected = vec![
+        record(&alice, &other, &provider),
+        record(&alice, &p, &other_provider),
+        record(&carol, &p, &provider),
+    ];
+    expected.sort();
+    assert_eq!(sync_records(&pool).await, expected);
+
+    let after = PostgresBackend::list_role_assignments_for_user(&bob, ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    assert!(after.roles.is_empty());
+    assert!(after.provider_sync_times.is_empty());
+}
+
+/// Deleting a `lakekeeper` role leaves its members' provider sync records alone.
+#[sqlx::test]
+async fn test_delete_lakekeeper_role_keeps_member_syncs(pool: PgPool) {
+    use lakekeeper::service::UserId;
+
+    let provider: RoleProviderId = "corporate-ldap".parse().unwrap();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    sync_into_group(&ctx, &alice, project_id, &provider, "contractors").await;
+
+    let role = db_create_role(&ctx, project_id, "lk-role", "src-lk").await;
+    let arc_project: ArcProjectId = project_id.clone();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
             .await
             .unwrap();
-    assert!(after.roles.is_empty());
-    assert!(
-        after.provider_sync_times.is_empty(),
-        "the member's sync record is gone: {:?}",
-        after.provider_sync_times
+    PostgresBackend::add_user_role_assignments_impl(
+        &arc_project,
+        role.id(),
+        std::slice::from_ref(&alice),
+        tx.transaction(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        role.id(),
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sync_records(&pool).await,
+        vec![(
+            alice.to_string(),
+            project_id.to_string(),
+            provider.to_string()
+        )]
     );
 }
 

@@ -206,42 +206,57 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 /// (consistent with `get`/`list`, which hide soft-deleted users). Otherwise
 /// returns the (possibly empty) set of roles the user was assigned to, so the
 /// caller can evict those roles' member caches and the user's effective-roles
-/// cache. Done in one round-trip.
-pub(crate) async fn delete_user<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+/// cache.
+///
+/// Takes its locks in separate statements, in the order of the role-assignment
+/// writers: the user row, then the user's assignments, then the user's sync
+/// records. Each statement after the user lock reads a snapshot taken after that
+/// lock was granted, so it sees every row a concurrent sync of the user committed
+/// while this waited.
+pub(crate) async fn delete_user(
     id: UserId,
-    connection: E,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<Vec<RoleId>>> {
-    let row = sqlx::query!(
-        r#"
-        WITH
-        deleted_user AS (
-            UPDATE users
-            SET deleted_at = now(),
-                name = 'Deleted User',
-                email = null
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id
-        ),
-        deleted_assignments AS (
-            DELETE FROM role_assignment WHERE user_id = $1 RETURNING role_id
-        ),
-        deleted_sync AS (
-            DELETE FROM role_assignment_sync WHERE user_id = $1
-        )
-        SELECT
-            (SELECT id FROM deleted_user) AS "user_id?",
-            COALESCE((SELECT array_agg(role_id) FROM deleted_assignments), ARRAY[]::uuid[])
-                AS "affected_roles!: Vec<uuid::Uuid>"
-        "#,
-        id.to_string(),
-    )
-    .fetch_one(connection)
-    .await
-    .map_err(|e| e.into_error_model("Error deleting user".to_string()))?;
+    let id = id.to_string();
+    let map_err = |e: sqlx::Error| e.into_error_model("Error deleting user".to_string());
 
-    Ok(row
-        .user_id
-        .map(|_| row.affected_roles.into_iter().map(RoleId::new).collect()))
+    sqlx::query!(
+        r#"SELECT 1 AS "locked!" FROM users WHERE id = $1 FOR NO KEY UPDATE"#,
+        id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(map_err)?;
+
+    let deleted_user = sqlx::query_scalar!(
+        r#"
+        UPDATE users
+        SET deleted_at = now(),
+            name = 'Deleted User',
+            email = null
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING id
+        "#,
+        id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(map_err)?;
+
+    let affected_roles = sqlx::query_scalar!(
+        r#"DELETE FROM role_assignment WHERE user_id = $1 RETURNING role_id"#,
+        id,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query!(r#"DELETE FROM role_assignment_sync WHERE user_id = $1"#, id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(map_err)?;
+
+    Ok(deleted_user.map(|_| affected_roles.into_iter().map(RoleId::new).collect()))
 }
 
 pub(crate) async fn create_or_update_user<
@@ -387,6 +402,13 @@ mod test {
     use super::*;
     use crate::CatalogState;
 
+    async fn delete_user_committed(state: &CatalogState, user_id: UserId) -> Option<Vec<RoleId>> {
+        let mut t = state.read_write.write_pool.begin().await.unwrap();
+        let result = delete_user(user_id, &mut t).await.unwrap();
+        t.commit().await.unwrap();
+        result
+    }
+
     #[sqlx::test]
     async fn test_create_or_update_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -486,9 +508,7 @@ mod test {
         // A soft-deleted user must not surface in search. delete_user tombstones the
         // row (deleted_at set, name -> 'Deleted User'); search must exclude it both by
         // its former name and by the 'Deleted User' tombstone name.
-        delete_user(user_id.clone(), &state.read_write.write_pool)
-            .await
-            .unwrap();
+        delete_user_committed(&state, user_id.clone()).await;
         assert_eq!(
             search_user("Test", &state.read_write.read_pool)
                 .await
@@ -526,9 +546,7 @@ mod test {
         .await
         .unwrap();
 
-        delete_user(user_id, &state.read_write.write_pool)
-            .await
-            .unwrap();
+        delete_user_committed(&state, user_id).await;
 
         let users = list_users(
             None,
@@ -546,9 +564,7 @@ mod test {
 
         // Delete non-existent user
         let user_id = UserId::new_unchecked("oidc", "test_user_2");
-        let result = delete_user(user_id, &state.read_write.write_pool)
-            .await
-            .unwrap();
+        let result = delete_user_committed(&state, user_id).await;
         assert_eq!(result, None);
     }
 
@@ -575,15 +591,11 @@ mod test {
         .unwrap();
 
         // First delete acts on the active row.
-        let first = delete_user(user_id.clone(), &state.read_write.write_pool)
-            .await
-            .unwrap();
+        let first = delete_user_committed(&state, user_id.clone()).await;
         assert!(first.is_some());
 
         // Second delete finds no active row → no-op, no tombstone reset.
-        let second = delete_user(user_id, &state.read_write.write_pool)
-            .await
-            .unwrap();
+        let second = delete_user_committed(&state, user_id).await;
         assert_eq!(second, None);
     }
 

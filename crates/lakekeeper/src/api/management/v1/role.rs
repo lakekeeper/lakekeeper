@@ -980,7 +980,7 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
 ) -> Result<(), AuthZError> {
     let role_id = role.id;
 
-    let mut t = C::Transaction::begin_write(catalog_state.clone())
+    let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // Lock first: until commit no sync can add an assignee this delete would miss
@@ -1003,34 +1003,27 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
     C::delete_role(project_id, role_id, t.transaction()).await?;
-    t.commit()
-        .await
-        .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-
-    // Post-commit: expire the members' sync records for the role's provider, so the
-    // provider re-syncs them on their next request. A fresh record would otherwise
-    // keep serving their stored roles, now missing this one, until it ages out. It
-    // runs outside the delete transaction, so it holds no lock a concurrent sync or
-    // user delete waits on; if it fails, the records age out as usual. A provider
-    // role has no member roles, so `affected_users` are exactly its assignees.
+    // Expire the members' sync records for the role's provider with the delete, so
+    // the provider re-syncs them on their next request. A fresh record would keep
+    // serving their stored roles, now missing this one, until it ages out. It runs
+    // after the cascade: a sync writes its record after its assignments and a user
+    // delete removes it after theirs, so neither holds a record while waiting on this
+    // transaction. A provider role has no member roles, so `affected_users` are
+    // exactly its assignees.
     let provider_id = role.ident.provider_id();
     if !provider_id.is_lakekeeper() && !provider_id.is_system() && !affected_users.is_empty() {
         C::expire_role_assignment_syncs_impl(
             project_id,
             provider_id,
             &affected_users,
-            catalog_state,
+            t.transaction(),
         )
         .await
-        .inspect_err(|e| {
-            tracing::warn!(
-                %role_id,
-                error = %e,
-                "Failed to expire role-provider sync records after deleting a role"
-            );
-        })
-        .ok();
+        .map_err::<DeleteRoleError, _>(Into::into)?;
     }
+    t.commit()
+        .await
+        .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
 
     // Post-commit: best-effort authz cleanup. `create_role`'s `require_no_relations`
     // guard blocks reuse of the id, so a leftover edge can't grant access.

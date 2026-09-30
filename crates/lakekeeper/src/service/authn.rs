@@ -23,10 +23,10 @@ use crate::{CONFIG, api, service::ArcRole};
 #[cfg(feature = "router")]
 use crate::{
     WarehouseId, XXHashSet,
-    request_metadata::{RequestMetadata, TokenRoles},
+    request_metadata::RequestMetadata,
     service::{
         ArcProjectId, RoleIdent,
-        admission::{AdmissionContext, AdmissionGates, RejectionKind},
+        admission::{AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
     },
@@ -69,8 +69,8 @@ pub(crate) struct AuthMiddlewareState<
     /// [`ConfiguredInstanceAdmins`](super::authz::ConfiguredInstanceAdmins).
     pub instance_admin_membership: Arc<dyn InstanceAdminMembership>,
     /// Post-authentication admission gates, evaluated once per authenticated
-    /// request after actor/instance-admin resolution and before the request
-    /// reaches any handler. Empty by default (admits everything).
+    /// request before the assume-role check and before the request reaches any
+    /// handler. Empty by default (admits everything).
     pub admission_gates: AdmissionGates,
 }
 
@@ -692,8 +692,6 @@ pub(crate) async fn auth_middleware_fn<
     mut request: Request,
     next: Next,
 ) -> Response {
-    use crate::service::authz::AuthZServerOps;
-
     let authenticator = &state.authenticator;
     let authorizer = &state.authorizer;
     let catalog_state = state.catalog_state;
@@ -754,12 +752,8 @@ pub(crate) async fn auth_middleware_fn<
         if let Some(project_id) = warehouse_project {
             request_metadata.set_warehouse_project_id(project_id);
         }
-        match extract_and_set_token_roles(&authentication, request_metadata) {
-            Ok(Some(token_roles)) => {
-                request_metadata.set_token_roles(token_roles);
-            }
-            Ok(None) => {}
-            Err(e) => return e.into_response(),
+        if let Err(e) = apply_token_roles(&authentication, request_metadata) {
+            return e.into_response();
         }
 
         request_metadata.set_authentication(actor.clone(), authentication.clone());
@@ -812,95 +806,143 @@ pub(crate) async fn auth_middleware_fn<
             }
         }
 
-        let check_result = if let Some(role_id) = role_id {
-            use crate::service::{
-                authz::{ActionDescriptor, CatalogAction},
-                events::{APIEventContext, context::AuthnAction},
-            };
-
-            #[derive(Debug)]
-            struct AssumeRoleAction;
-            impl CatalogAction for AssumeRoleAction {
-                fn action_descriptor(&self) -> ActionDescriptor {
-                    ActionDescriptor::builder()
-                        .action_name(AuthnAction::AssumeRole.into())
-                        .build()
-                }
-            }
-
-            let event_ctx = APIEventContext::for_role(
-                std::sync::Arc::new(request_metadata.clone()),
-                state.events.clone(),
-                role_id,
-                AssumeRoleAction,
-            );
-
-            event_ctx
-                .emit_authz(authorizer.check_actor(&actor, request_metadata).await)
-                .map(|_| ())
-        } else {
-            authorizer
-                .check_actor(&actor, request_metadata)
-                .await
-                .map_err(crate::service::events::context::authz_to_error_no_audit)
-        };
-
-        // Ensure assume role, if present, is allowed
-        if let Err(err) = check_result {
-            return err.into_response();
-        }
-
-        // Post-authentication admission gates: a coarse, pluggable rejection of
-        // an already-authenticated principal that must not be admitted to this
-        // instance at all (e.g. an external control-plane permission service).
-        // Runs after instance-admin and assumed-role resolution so a gate can
-        // honor instance-admin status and see the resolved actor.
-        // No-op unless the host binary registered at least one gate.
-        if !state.admission_gates.is_empty() {
-            // The raw bearer is handed to gates via a transient context, never
-            // stored on `RequestMetadata`, so a gate can relay it to an external
-            // service without it leaking into metadata/audit.
-            let bearer_token = authorization.token();
-            match state
-                .admission_gates
-                .admit(AdmissionContext::new(request_metadata, Some(bearer_token)))
-                .await
-            {
-                // On admit, fold any roles the gate(s) resolved into the request
-                // metadata for downstream authorization and audit.
-                Ok(admission) => {
-                    if let Some(roles) = admission.resolved_roles {
-                        request_metadata.set_admission_roles(roles);
-                    }
-                }
-                // The rejection variant carries its own HTTP semantics: an
-                // authoritative deny is a plain 403, while a fail-closed
-                // `Unavailable` is a 503 with the gate's chosen `Retry-After`.
-                Err(rejection) => {
-                    let retry_after = match rejection.kind() {
-                        RejectionKind::Forbidden => None,
-                        // `Retry-After` is whole seconds; round any sub-second
-                        // remainder up so a sub-second Duration still asks for
-                        // at least 1s of backoff rather than truncating to 0
-                        // ("retry immediately").
-                        RejectionKind::Unavailable { retry_after } => {
-                            Some(retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0))
-                        }
-                    };
-                    let mut response = rejection.into_error().into_response();
-                    if let Some(secs) = retry_after {
-                        response.headers_mut().insert(
-                            axum::http::header::RETRY_AFTER,
-                            axum::http::HeaderValue::from(secs),
-                        );
-                    }
-                    return response;
-                }
-            }
+        if let Some(refusal) = admit_then_check_actor(
+            &state.admission_gates,
+            authorizer,
+            &state.events,
+            &actor,
+            role_id,
+            request_metadata,
+        )
+        .await
+        {
+            return refusal;
         }
     }
 
     next.run(request).await
+}
+
+/// Admission gates, then the assume-role check. `Some` is the refusal the request gets.
+///
+/// The gates run first, so a caller a gate rejects is refused before anything else
+/// resolves roles for them, and the assume-role decision sees the caller's admission
+/// roles, like every other decision. A caller refused by both gets the gate's refusal.
+#[cfg(feature = "router")]
+async fn admit_then_check_actor<A: super::authz::Authorizer>(
+    admission_gates: &AdmissionGates,
+    authorizer: &A,
+    events: &EventDispatcher,
+    actor: &Actor,
+    role_id: Option<super::RoleId>,
+    request_metadata: &mut RequestMetadata,
+) -> Option<Response> {
+    use crate::service::authz::AuthZServerOps;
+
+    if let Some(refusal) = run_admission_gates(admission_gates, request_metadata).await {
+        return Some(refusal);
+    }
+
+    let check_result = if let Some(role_id) = role_id {
+        use crate::service::{
+            authz::{ActionDescriptor, CatalogAction},
+            events::{APIEventContext, context::AuthnAction},
+        };
+
+        #[derive(Debug)]
+        struct AssumeRoleAction;
+        impl CatalogAction for AssumeRoleAction {
+            fn action_descriptor(&self) -> ActionDescriptor {
+                ActionDescriptor::builder()
+                    .action_name(AuthnAction::AssumeRole.into())
+                    .build()
+            }
+        }
+
+        let event_ctx = APIEventContext::for_role(
+            std::sync::Arc::new(request_metadata.clone()),
+            events.clone(),
+            role_id,
+            AssumeRoleAction,
+        );
+
+        event_ctx
+            .emit_authz(authorizer.check_actor(actor, request_metadata).await)
+            .map(|_| ())
+    } else {
+        authorizer
+            .check_actor(actor, request_metadata)
+            .await
+            .map_err(crate::service::events::context::authz_to_error_no_audit)
+    };
+
+    // Ensure assume role, if present, is allowed
+    check_result.err().map(IntoResponse::into_response)
+}
+
+/// Post-authentication admission gates: a coarse, pluggable rejection of an
+/// already-authenticated user that must not be admitted to this instance at all
+/// (e.g. an external control-plane permission service). A gate decides about the
+/// request's user and sees nothing of the request itself. `Some` is the refusal the
+/// request gets. No-op unless the host binary registered at least one gate.
+#[cfg(feature = "router")]
+async fn run_admission_gates(
+    admission_gates: &AdmissionGates,
+    request_metadata: &mut RequestMetadata,
+) -> Option<Response> {
+    if admission_gates.is_empty() {
+        return None;
+    }
+    // Authentication has run, so the request has a user; a request without one
+    // cannot be admitted.
+    let Some(user_id) = request_metadata.user_id() else {
+        return Some(
+            ErrorModel::internal(
+                "Admission cannot be decided for a request without a user",
+                "AdmissionWithoutUser",
+                None,
+            )
+            .into_response(),
+        );
+    };
+    match admission_gates
+        .admit(AdmissionContext::new(
+            user_id,
+            AdmissionTrigger::from_request(request_metadata),
+        ))
+        .await
+    {
+        // On admit, fold any roles the gate(s) resolved into the request
+        // metadata for downstream authorization and audit.
+        Ok(admission) => {
+            if let Some(roles) = admission.resolved_roles {
+                request_metadata.set_admission_roles(roles);
+            }
+            None
+        }
+        // The rejection variant carries its own HTTP semantics: an
+        // authoritative deny is a plain 403, while a fail-closed
+        // `Unavailable` is a 503 with the gate's chosen `Retry-After`.
+        Err(rejection) => {
+            let retry_after = match rejection.kind() {
+                RejectionKind::Forbidden => None,
+                // `Retry-After` is whole seconds; any sub-second remainder
+                // rounds up, so a sub-second Duration still asks for at
+                // least 1s of backoff and never for 0 ("retry immediately").
+                RejectionKind::Unavailable { retry_after } => {
+                    Some(retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0))
+                }
+            };
+            let mut response = rejection.into_error().into_response();
+            if let Some(secs) = retry_after {
+                response.headers_mut().insert(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from(secs),
+                );
+            }
+            Some(response)
+        }
+    }
 }
 
 #[cfg(feature = "router")]
@@ -1009,23 +1051,29 @@ where
     }
 }
 
+/// Set the roles the token carries on the request. A token without roles leaves the
+/// request without token roles. The roles hold in every project.
 #[cfg(feature = "router")]
-fn extract_and_set_token_roles(
+fn apply_token_roles(
     authentication: &limes::Authentication,
-    request_metadata: &RequestMetadata,
-) -> Result<Option<TokenRoles>, ErrorModel> {
+    request_metadata: &mut RequestMetadata,
+) -> Result<(), ErrorModel> {
+    if let Some(token_roles) = extract_token_roles(authentication)? {
+        request_metadata.set_token_roles(token_roles);
+    }
+    Ok(())
+}
+
+/// The roles the token carries in its identity provider's roles claim, as role idents
+/// of that provider. `None` when the token carries no roles. They hold in every project.
+#[cfg(feature = "router")]
+fn extract_token_roles(
+    authentication: &limes::Authentication,
+) -> Result<Option<XXHashSet<Arc<RoleIdent>>>, ErrorModel> {
     use crate::service::{RoleProviderId, RoleSourceId};
 
     let Some(roles) = authentication.roles() else {
         return Ok(None);
-    };
-
-    let Some(project_id) = request_metadata.preferred_project_id() else {
-        return Err(ErrorModel::bad_request(
-            "Default project must be set or X-Project-ID header must be provided if roles are extracted from tokens",
-            "MissingProjectId",
-            None,
-        ));
     };
 
     let role_idents = roles
@@ -1052,7 +1100,7 @@ fn extract_and_set_token_roles(
         })
         .collect::<Result<XXHashSet<_>, ErrorModel>>()?;
 
-    Ok(Some(TokenRoles::new(project_id, role_idents)))
+    Ok(Some(role_idents))
 }
 
 impl std::fmt::Display for UserId {
@@ -2489,6 +2537,253 @@ mod tests {
                 project_after(Method::DELETE, "/catalog/v1/config", None).await;
             assert_eq!(project, "none");
             assert_eq!(lookups, 0);
+        }
+    }
+
+    mod token_roles {
+        use axum::{
+            Router,
+            body::Body,
+            extract::Request,
+            http::StatusCode,
+            middleware::{Next, from_fn},
+            response::IntoResponse as _,
+            routing::get,
+        };
+        use tower::ServiceExt as _;
+
+        use super::super::{apply_token_roles, extract_token_roles};
+        use crate::{request_metadata::RequestMetadata, service::UserId};
+
+        fn authentication(idp_id: Option<&str>, roles: Option<&[&str]>) -> limes::Authentication {
+            limes::Authentication::builder()
+                .token_header(None)
+                .claims(serde_json::json!({}))
+                .subject(limes::Subject::new(
+                    idp_id.map(ToString::to_string),
+                    "test-user-one".to_string(),
+                ))
+                .name(None)
+                .email(None)
+                .principal_type(None)
+                .roles(roles.map(|roles| roles.iter().map(ToString::to_string).collect()))
+                .build()
+        }
+
+        /// Runs one request through a router shaped like the real one: the metadata
+        /// is attached outside, the auth middleware's token-role step
+        /// ([`apply_token_roles`]) runs in a route-level layer, and the handler answers
+        /// with the request's project and the token roles the metadata ends up with.
+        async fn respond(authentication: limes::Authentication) -> (StatusCode, String) {
+            let step = move |mut request: Request, next: Next| {
+                let authentication = authentication.clone();
+                async move {
+                    if let Some(metadata) = request.extensions_mut().get_mut::<RequestMetadata>()
+                        && let Err(e) = apply_token_roles(&authentication, metadata)
+                    {
+                        return e.into_response();
+                    }
+                    next.run(request).await
+                }
+            };
+            let echo = |request: Request| async move {
+                let metadata = request.extensions().get::<RequestMetadata>().unwrap();
+                let project = metadata
+                    .requested_project_id()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
+                let roles = metadata.token_roles().map_or_else(
+                    || "none".to_string(),
+                    |roles| {
+                        let mut roles: Vec<String> =
+                            roles.iter().map(ToString::to_string).collect();
+                        roles.sort();
+                        roles.join(",")
+                    },
+                );
+                format!("{project}|{roles}")
+            };
+            let app = Router::new()
+                .route("/management/v1/project-list", get(echo))
+                .layer(from_fn(step))
+                .layer(from_fn(|mut request: Request, next: Next| async move {
+                    // `test_user` starts without a project, like a request without the header.
+                    request.extensions_mut().insert(RequestMetadata::test_user(
+                        UserId::new_unchecked("oidc", "test-user-one"),
+                    ));
+                    next.run(request).await
+                }));
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/management/v1/project-list")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8(body.to_vec()).unwrap())
+        }
+
+        /// The token-role step takes no project, so a request that names none is never
+        /// refused for it. The test configuration always has a default project, which is
+        /// process-global, so a run without one is not possible in-process.
+        #[tokio::test]
+        async fn a_header_less_request_with_token_roles_reaches_the_handler() {
+            let (status, body) = respond(authentication(
+                Some("oidc"),
+                Some(&["test-readers", "test-writers"]),
+            ))
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body, "none|oidc~test-readers,oidc~test-writers");
+        }
+
+        #[tokio::test]
+        async fn a_token_without_roles_sets_none() {
+            let (status, body) = respond(authentication(Some("oidc"), None)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body, "none|none");
+        }
+
+        #[tokio::test]
+        async fn an_invalid_role_in_the_token_is_a_bad_request() {
+            let (status, body) =
+                respond(authentication(Some("oidc"), Some(&["test-readers", ""]))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body.contains("RoleSourceIdError"), "{body}");
+        }
+
+        #[test]
+        fn a_token_without_an_idp_id_is_an_internal_error() {
+            let err =
+                extract_token_roles(&authentication(None, Some(&["test-readers"]))).unwrap_err();
+            assert_eq!(err.r#type, "AuthenticatorMissingProviderId");
+        }
+    }
+
+    mod admission_order {
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+        use http::StatusCode;
+
+        use super::super::admit_then_check_actor;
+        use crate::{
+            request_metadata::RequestMetadata,
+            service::{
+                RoleId, RoleIdent, UserId,
+                admission::{
+                    AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection,
+                    GateDecision,
+                },
+                authz::tests::HidingAuthorizer,
+                events::EventDispatcher,
+            },
+        };
+
+        #[derive(Debug)]
+        struct DenyGate;
+        #[async_trait]
+        impl AdmissionGate for DenyGate {
+            fn name(&self) -> &'static str {
+                "deny"
+            }
+            async fn admit(
+                &self,
+                _: AdmissionContext<'_>,
+            ) -> Result<GateDecision, AdmissionRejection> {
+                Err(AdmissionRejection::forbidden("not admitted", "TestDenied"))
+            }
+        }
+
+        fn granted_role() -> Arc<RoleIdent> {
+            Arc::new(RoleIdent::new_unchecked("test", "test-granted-role"))
+        }
+
+        #[derive(Debug)]
+        struct RolesGate;
+        #[async_trait]
+        impl AdmissionGate for RolesGate {
+            fn name(&self) -> &'static str {
+                "roles"
+            }
+            async fn admit(
+                &self,
+                _: AdmissionContext<'_>,
+            ) -> Result<GateDecision, AdmissionRejection> {
+                Ok(GateDecision::with_roles(
+                    std::iter::once(granted_role()).collect(),
+                ))
+            }
+        }
+
+        /// A caller who sent `x-assume-role`, after actor resolution.
+        fn assuming_caller() -> (RoleId, RequestMetadata) {
+            let role_id = RoleId::new_random();
+            let metadata = RequestMetadata::test_user_assumed_role(
+                UserId::new_unchecked("oidc", "test-user-one"),
+                role_id,
+            );
+            (role_id, metadata)
+        }
+
+        #[tokio::test]
+        async fn a_gate_refusal_wins_before_the_assume_role_check() {
+            let (role_id, mut metadata) = assuming_caller();
+            let actor = metadata.actor().clone();
+            let authorizer = HidingAuthorizer::new();
+
+            let response = admit_then_check_actor(
+                &AdmissionGates::new(vec![Arc::new(DenyGate)]),
+                &authorizer,
+                &EventDispatcher::new(vec![]),
+                &actor,
+                Some(role_id),
+                &mut metadata,
+            )
+            .await
+            .expect("the gate refuses");
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(body.contains("TestDenied"), "{body}");
+            assert!(
+                authorizer.assume_role_checks().is_empty(),
+                "the assume-role check ran for a refused caller"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_assume_role_check_sees_the_admission_roles() {
+            let (role_id, mut metadata) = assuming_caller();
+            let actor = metadata.actor().clone();
+            let authorizer = HidingAuthorizer::new();
+
+            let refusal = admit_then_check_actor(
+                &AdmissionGates::new(vec![Arc::new(RolesGate)]),
+                &authorizer,
+                &EventDispatcher::new(vec![]),
+                &actor,
+                Some(role_id),
+                &mut metadata,
+            )
+            .await;
+            assert!(
+                refusal.is_none(),
+                "the gate admits and the role may be assumed"
+            );
+
+            assert_eq!(
+                authorizer.assume_role_checks(),
+                vec![Some(vec![granted_role().to_string()])]
+            );
         }
     }
 }

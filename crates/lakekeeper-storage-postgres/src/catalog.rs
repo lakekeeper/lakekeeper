@@ -53,14 +53,15 @@ use lakekeeper::{
         SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
-        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
-        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
-        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
-        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        StagedTableId, SyncFor, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
+        TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Tag,
+        TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
+        TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
+        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
+        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
@@ -688,6 +689,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn sync_user_role_assignments_by_provider_impl<'a>(
         user: &CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
@@ -705,6 +707,7 @@ impl CatalogStore for super::PostgresBackend {
         let unique = UniqueRoles::from_unchecked(roles);
         super::role_assignment::sync_user_role_assignments_by_provider(
             user,
+            sync_for,
             project_id,
             provider_id,
             unique,
@@ -833,17 +836,17 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn expire_role_assignment_syncs_impl(
+    async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         user_ids: &[UserId],
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), CatalogBackendError> {
         super::role_assignment::expire_role_assignment_syncs(
             project_id,
             provider_id,
             user_ids,
-            &catalog_state.write_pool(),
+            &mut **transaction,
         )
         .await
     }
@@ -999,7 +1002,7 @@ impl CatalogStore for super::PostgresBackend {
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<Vec<RoleId>>> {
-        delete_user(user_id, &mut **transaction).await
+        delete_user(user_id, transaction).await
     }
 
     async fn create_warehouse_impl<'a>(
