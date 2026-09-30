@@ -46,6 +46,20 @@ pub struct CatalogUserRoleAssignmentUser<'a> {
     pub updated_with: UserLastUpdatedWith,
 }
 
+/// Whose request a user-centric role sync runs for, which decides whether it may
+/// restore a deleted user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncFor {
+    /// The synced user is the authenticated caller of the request. A deleted user is
+    /// restored and gets the synced assignments.
+    Caller,
+    /// The synced user is someone other than the caller, e.g. the subject of a
+    /// `for_user` check, a grantee or the owner of a DEFINER view. A deleted user
+    /// stays deleted: the sync upserts the roles but writes no assignment and no
+    /// sync record for that user.
+    OtherUser,
+}
+
 /// Role data supplied by an external provider when syncing a user's assignments.
 ///
 /// The implementation upserts the role (creating it with a fresh [`RoleId`] if
@@ -149,6 +163,9 @@ pub struct SyncRoleMembersResult {
     /// Members for whom the `user_role` row was removed because they were
     /// absent from `members`.
     pub removed: Vec<AssignedUser>,
+    /// Members left unassigned because their user is deleted. The sync keeps
+    /// them deleted and reports them neither as added nor as removed.
+    pub skipped_deleted: Vec<AssignedUser>,
     /// The timestamp written to the role member sync log by this sync run.
     pub synced_at: chrono::DateTime<chrono::Utc>,
 }
@@ -161,22 +178,41 @@ pub struct SyncUserRoleAssignmentsResult {
     /// IDs of roles removed from the user (were assigned via `provider_id`,
     /// are no longer present in `roles`).
     pub removed: Vec<RoleId>,
+    /// The catalog row of each requested role in `project_id`, in request
+    /// order, also when the sync assigned nothing.
+    pub requested_roles: Vec<AssignedRole>,
     /// The timestamp written to the user role sync log for
-    /// `(user_id, project_id, provider_id)` by this sync run.
-    pub synced_at: chrono::DateTime<chrono::Utc>,
+    /// `(user_id, project_id, provider_id)` by this sync run. `None` when the
+    /// sync wrote no assignment and no sync record: the user is deleted and the
+    /// sync ran for [`SyncFor::OtherUser`].
+    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
     /// The complete, authoritative role assignment list for this user after the
     /// sync run, covering **all** providers (not just `provider_id`).
     ///
     /// Returned so the caller can build [`ListUserRoleAssignmentsResult`]
     /// without a separate DB round-trip.
     pub all_roles: Vec<AssignedRole>,
-    /// One [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair for
-    /// which the user has at least one assignment row after this sync run.
-    /// Pairs with no remaining assignments are omitted even if a prior sync was
-    /// recorded for them.
+    /// One [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair the
+    /// user has a sync record for after this sync run, including pairs whose
+    /// sync assigned no role.
     ///
     /// Matches the `provider_sync_times` field of [`ListUserRoleAssignmentsResult`].
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
+}
+
+/// Outcome of a [`CatalogRoleAssignmentOps::sync_user_role_assignments`] call.
+#[derive(Debug, Clone)]
+pub struct SyncedUserRoleAssignments {
+    /// The catalog row of each requested role in the synced project, in request
+    /// order, also when the sync assigned nothing.
+    pub requested_roles: Vec<AssignedRole>,
+    /// The timestamp written to the user role sync log by this sync run. `None`
+    /// when the sync wrote no assignment and no sync record: the user is deleted
+    /// and the sync ran for [`SyncFor::OtherUser`].
+    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The user's role assignments after the sync, across all providers and
+    /// projects.
+    pub assignments: Arc<ListUserRoleAssignmentsResult>,
 }
 
 // ============================================================================
@@ -344,13 +380,16 @@ impl From<ReservedRoleProvider> for ErrorModel {
     }
 }
 
-/// A role this sync assigns was deleted while the sync ran: its row was present when
-/// the statement started, but gone by the time the assignment was inserted. Nothing
-/// was written. The standalone `sync_user_role_assignments` retries once, which
-/// recreates the role if the provider still reports it; the variant that runs in
-/// the caller's transaction returns this error for the caller to retry.
+/// A role this sync assigns was deleted or first created by another transaction
+/// while the sync ran, so the sync could not resolve one row per requested role.
+/// The transaction must be rolled back. The standalone `sync_user_role_assignments`
+/// rolls back and retries once, which reads the committed state and recreates the
+/// role if the provider still reports it; the variant that runs in the caller's
+/// transaction returns this error for the caller to roll back and retry.
 #[derive(thiserror::Error, Debug, PartialEq, Default)]
-#[error("A role was deleted while the role assignments were being synced. Retry the request.")]
+#[error(
+    "A role was deleted or created while the role assignments were being synced. Retry the request."
+)]
 pub struct RoleDeletedDuringSync {
     pub stack: Vec<String>,
 }
@@ -935,7 +974,8 @@ where
     ///
     /// 1. Upsert the role for `project_id`:
     ///    create with a fresh [`RoleId`] if absent, leave unchanged if present.
-    /// 2. Upsert every user in `members`.
+    /// 2. Upsert every user in `members`. A deleted user stays deleted and gets
+    ///    no assignment; [`SyncRoleMembersResult::skipped_deleted`] lists them.
     /// 3. Add assignment rows for newly assigned users.
     /// 4. Delete assignment rows for users absent from `members`.
     /// 5. Record the sync timestamp in the role member sync log.
@@ -969,10 +1009,15 @@ where
     /// 5. Record the sync timestamp in the user role sync log for
     ///    `(user_id, project_id, provider_id)`.
     ///
+    /// For a deleted user and [`SyncFor::OtherUser`] only step 2 runs: the user
+    /// stays deleted, and the result carries the roles in
+    /// [`SyncUserRoleAssignmentsResult::requested_roles`] with `synced_at: None`.
+    ///
     /// Returns [`RoleProviderMismatchError`] if any role's `ident.provider_id()`
     /// differs from `provider_id`.
     async fn sync_user_role_assignments_by_provider<'a>(
         user: CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
@@ -990,6 +1035,7 @@ where
         }
         Self::sync_user_role_assignments_by_provider_impl(
             &user,
+            sync_for,
             project_id,
             provider_id,
             roles,
@@ -1011,8 +1057,8 @@ where
     ///
     /// 1. Opens and commits its own transaction.
     /// 2. Builds [`ListRoleMembersResult`] directly from the inputs — the
-    ///    `members` slice is by definition the complete new member list, so no
-    ///    extra DB round-trip is needed.
+    ///    `members` slice without the deleted users the sync skipped is the
+    ///    complete new member list, so no extra DB round-trip is needed.
     /// 3. Inserts the result into `ROLE_MEMBERS_CACHE`.
     /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
     async fn sync_role_members(
@@ -1032,13 +1078,20 @@ where
         t.commit().await?;
 
         // Build the authoritative member list directly from the sync inputs.
-        // `members` is exactly the complete new state — no DB read required.
+        // `members` minus the skipped deleted users is exactly the complete new
+        // state — no DB read required.
+        let skipped: HashSet<&UserId> = sync_result
+            .skipped_deleted
+            .iter()
+            .map(|u| &*u.user_id)
+            .collect();
         let list_result = Arc::new(ListRoleMembersResult {
             role_id: sync_result.role_id,
             project_id: project_id.clone(),
             role_ident: role.ident.clone(),
             members: members
                 .iter()
+                .filter(|m| !skipped.contains(&**m.user_id))
                 .map(|m| AssignedUser {
                     user_id: m.user_id.clone(),
                 })
@@ -1091,14 +1144,18 @@ where
     /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher` so that
     ///    listeners can invalidate per-role member caches on this and other
     ///    instances.
+    ///
+    /// A sync that wrote nothing (a deleted user and [`SyncFor::OtherUser`])
+    /// skips steps 3 and 4 and returns `synced_at: None`.
     async fn sync_user_role_assignments(
         user: CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
-    ) -> crate::api::Result<Arc<ListUserRoleAssignmentsResult>> {
+    ) -> crate::api::Result<SyncedUserRoleAssignments> {
         UniqueRoles::try_from_slice(roles).map_err(SyncUserRoleAssignmentsError::from)?;
         reject_reserved_sync_provider(provider_id).map_err(SyncUserRoleAssignmentsError::from)?;
         if let Some(r) = roles.iter().find(|r| r.ident.provider_id() != provider_id) {
@@ -1116,6 +1173,7 @@ where
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
         let first = Self::sync_user_role_assignments_by_provider_impl(
             &user,
+            sync_for,
             project_id,
             provider_id,
             roles,
@@ -1128,6 +1186,7 @@ where
                 t = Self::Transaction::begin_write(catalog_state.clone()).await?;
                 Self::sync_user_role_assignments_by_provider_impl(
                     &user,
+                    sync_for,
                     project_id,
                     provider_id,
                     roles,
@@ -1146,6 +1205,14 @@ where
         // Dedup role/project identity across cached users before storing.
         role_assignments_cache::share_identities(&mut list).await;
         let list_result = Arc::new(list);
+
+        let Some(synced_at) = sync_result.synced_at else {
+            return Ok(SyncedUserRoleAssignments {
+                requested_roles: sync_result.requested_roles,
+                synced_at: None,
+                assignments: list_result,
+            });
+        };
 
         // Update the cache directly after the commit, before dispatching the
         // event (mirrors the warehouse / namespace cache-on-read pattern).
@@ -1167,7 +1234,7 @@ where
             user_id: user.user_id.clone(),
             added: sync_result.added.into(),
             removed: sync_result.removed.into(),
-            synced_at: sync_result.synced_at,
+            synced_at,
             result: Arc::clone(&list_result),
         };
         let dispatcher = dispatcher.clone();
@@ -1175,7 +1242,11 @@ where
             dispatcher.user_role_assignments_synced(event).await;
         });
 
-        Ok(list_result)
+        Ok(SyncedUserRoleAssignments {
+            requested_roles: sync_result.requested_roles,
+            synced_at: Some(synced_at),
+            assignments: list_result,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1453,9 +1524,9 @@ where
     /// Each [`AssignedRole`] carries `role_id` (for internal authorizers) as
     /// well as `role_ident` + `project_id` (for external authorizers).
     /// [`ListUserRoleAssignmentsResult::provider_sync_times`] holds one
-    /// [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair for which
-    /// the user has at least one active assignment — the sync clock is at that
-    /// granularity, not per individual role.
+    /// [`UserProviderSyncInfo`] per `(project_id, provider_id)` pair the user
+    /// has a sync record for, including pairs whose sync assigned no role — the
+    /// sync clock is at that granularity, not per individual role.
     ///
     /// Primary consumer: authorizers resolving a user's effective roles for a
     /// permission check.

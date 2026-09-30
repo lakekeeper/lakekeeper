@@ -327,7 +327,8 @@ pub struct CatalogActionsBatchCheckResult {
     /// Whether the checked identity may perform the operation.
     pub allowed: bool,
     /// What determined this decision: the policies that matched, each with its
-    /// identifier, optional name and source, or a system-authority override.
+    /// identifier, optional name and source, a system-authority override, or an
+    /// admission gate that would refuse the user.
     ///
     /// Absent when the configured authorizer produces no per-decision
     /// diagnostics.
@@ -2114,6 +2115,39 @@ mod tests {
             serde_json::from_value::<CatalogActionsBatchCheckResult>(json)
                 .expect("the response must round-trip"),
             result
+        );
+    }
+
+    /// An admission-gate factor names the gate, and the check that refused the
+    /// user when the gate names one.
+    #[test]
+    fn an_admission_gate_factor_round_trips_with_and_without_its_check() {
+        let with_check = DeterminingFactor::AdmissionGate {
+            gate: "gate-a".to_string(),
+            check: Some("check-a".to_string()),
+        };
+        let json = serde_json::to_value(&with_check).expect("the factor must serialise");
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "admission-gate", "gate": "gate-a", "check": "check-a"})
+        );
+        assert_eq!(
+            serde_json::from_value::<DeterminingFactor>(json).expect("the factor must round-trip"),
+            with_check
+        );
+
+        let without_check = DeterminingFactor::AdmissionGate {
+            gate: "gate-a".to_string(),
+            check: None,
+        };
+        let json = serde_json::to_value(&without_check).expect("the factor must serialise");
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "admission-gate", "gate": "gate-a"})
+        );
+        assert_eq!(
+            serde_json::from_value::<DeterminingFactor>(json).expect("the factor must round-trip"),
+            without_check
         );
     }
 

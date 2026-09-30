@@ -182,6 +182,7 @@
   },
   "determined_by": {
     "DeterminingFactor": [
+      "AdmissionGate",
       "Policy",
       "SystemAuthority"
     ]

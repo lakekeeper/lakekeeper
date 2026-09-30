@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Returned per checked `(resource, action)` tuple by the batch authorizer
 /// methods. `allowed` is the decision; `determined_by` lists the factors that
-/// determined it — matched policies, or a system-authority override.
+/// determined it — matched policies, a system-authority override, or an
+/// admission gate that would refuse the user.
 /// `determined_by` is empty when the authorizer produces no per-decision
 /// diagnostics (`AllowAll`, OpenFGA) or for a default-deny where no policy
 /// matched.
@@ -72,10 +73,11 @@ impl From<bool> for AuthorizationDecision {
 
 /// A single factor that contributed to an authorization decision.
 ///
-/// Discriminated by `type`: `policy` names a policy the authorizer matched, and
-/// `system-authority` records that a built-in authority tier decided the request. The
-/// schema is a closed `oneOf` over those two, so a further kind is a schema change a
-/// generated client has to be rebuilt for rather than one it absorbs on its own.
+/// Discriminated by `type`: `policy` names a policy the authorizer matched,
+/// `system-authority` records that a built-in authority tier decided the request, and
+/// `admission-gate` records that an admission gate would refuse the user. The schema is
+/// a closed `oneOf` over those three, so a further kind is a schema change that generated
+/// clients have to be rebuilt for.
 // Deliberately a plain comment, not a doc comment: `utoipa` copies doc comments into the
 // public OpenAPI schema, and what follows is internal to this repository.
 //
@@ -90,7 +92,7 @@ impl From<bool> for AuthorizationDecision {
 // The two renderings differ, deliberately. The `serde` attributes below govern the
 // management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
 // log renders this type through `valuable`, which ignores `serde` attributes: it emits the
-// Rust variant name as a single-key wrapper, and `name`, `source` and `reason`
+// Rust variant name as a single-key wrapper, and `name`, `source`, `reason` and `check`
 // unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
 // never an absent field, unlike the hand-written `visit` impls elsewhere in the record.
 #[derive(
@@ -145,6 +147,18 @@ pub enum DeterminingFactor {
         /// lockout-recovery grant). Absent when the authorizer gives none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    /// The user would be refused at admission by this gate, so the request is
+    /// denied whatever the policies say.
+    #[cfg_attr(feature = "open-api", schema(title = "DeterminingFactorAdmissionGate"))]
+    #[serde(rename_all = "kebab-case")]
+    AdmissionGate {
+        /// Name of the admission gate that would refuse the user.
+        gate: String,
+        /// The gate's check that refused the user. Absent when the gate names
+        /// none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check: Option<String>,
     },
 }
 

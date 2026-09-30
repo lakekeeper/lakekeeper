@@ -125,11 +125,11 @@ Label values:
 | `decision`                            | `allow`, `deny` |
 | `source`                              | `cache`, `upstream` |
 | `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
-| `reason` on `fail_closed_total`       | `upstream`, `no_bearer_token`, `no_principal` |
+| `reason` on `fail_closed_total`       | `upstream` |
 
 Buckets stop at 10s. Cached decisions make no call, so `_count` measures load on your endpoint, not the request rate.
 
-A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times. `no_bearer_token` and `no_principal` (a `403`, not a `503`) are unreachable on the shipped server. Nonzero means a [custom build](./customize.md) runs the gate unauthenticated.
+A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times.
 
 A `role_granting` `deny` withholds a role but still admits the request, so no error series moves. These metrics name no principal. To find who lost a role, read the audit record `operation="admission_enforce_check"` (see [Logging](./logging.md#operational-audit-events)).
 
