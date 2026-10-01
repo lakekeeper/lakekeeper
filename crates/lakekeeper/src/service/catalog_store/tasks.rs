@@ -77,30 +77,35 @@ pub struct TaskQueueStatsRequest {
     /// [`CatalogTaskOps::cancel_scheduled_tasks`] resolve a logical queue. Omitting a
     /// legacy name would under-report the backlog and mislead an autoscaler.
     pub legacy_queue_names: Vec<TaskQueueName>,
-    /// How long a picked-up task may go without a heartbeat before the worker treats it
-    /// as abandoned and re-picks it. A `running`/`should-stop` task past this threshold is
-    /// counted as due (it needs a worker again), matching `pick_new_task`'s reclaim
-    /// predicate — otherwise a crashed worker's task would show as `running` with an empty
-    /// due backlog and an autoscaler would never start a replacement.
+    /// Fallback for how long a picked-up task may go without a heartbeat before the worker
+    /// treats it as abandoned and re-picks it. A `running`/`should-stop` task past the
+    /// threshold is counted as due (it needs a worker again) — otherwise a crashed worker's
+    /// task would show as `running` with an empty due backlog and an autoscaler would never
+    /// start a replacement. Used only when no per-project/warehouse `task_config` override
+    /// exists, exactly as [`CatalogTaskOps::pick_new_task`] resolves the timeout, so stats
+    /// and pickup agree even under an override.
     pub max_time_since_last_heartbeat: chrono::Duration,
     /// A top-level `task_data` JSONB field whose numeric values are summed over due tasks.
     /// `None` leaves [`TaskQueueStats::payload_field_sum`] `None`.
     pub sum_payload_field: Option<String>,
 }
 
-/// Aggregate counts for one task queue, materialized in a single query. Due (runnable)
-/// work is a scheduled task past its `scheduled_for`, plus any running/should-stop task
-/// whose heartbeat has expired — the same set `pick_new_task` can claim.
+/// Aggregate counts for one task queue. Due (runnable) work is a scheduled task past its
+/// `scheduled_for`, plus any running/should-stop task whose heartbeat has expired — the
+/// same set `pick_new_task` can claim. A heartbeat-expired task counts toward
+/// `scheduled_due`, not `running`: each task falls in exactly one of the two buckets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskQueueStats {
     pub queue_name: TaskQueueName,
     /// The runnable backlog: scheduled tasks whose `scheduled_for` is due now, plus
     /// running/should-stop tasks whose heartbeat expired (abandoned attempts a worker
-    /// will re-pick). A crashed worker's task therefore stays visible as due.
+    /// will re-pick). A crashed worker's task therefore stays visible as due. May exceed
+    /// `scheduled_total`, which counts only `scheduled`-status rows.
     pub scheduled_due: i64,
     /// All scheduled tasks (due or future).
     pub scheduled_total: i64,
-    /// Tasks currently `running` or `should-stop`.
+    /// Live workers: tasks `running` or `should-stop` whose heartbeat is still fresh.
+    /// Heartbeat-expired tasks are excluded here and counted under `scheduled_due`.
     pub running: i64,
     /// `scheduled_for` of the oldest due-scheduled task, for backlog-age metrics.
     pub oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>>,

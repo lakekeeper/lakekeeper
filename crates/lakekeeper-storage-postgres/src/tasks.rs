@@ -319,26 +319,40 @@ fn duration_to_interval(duration: chrono::Duration) -> Result<PgInterval, Iceber
     })
 }
 
-/// Aggregate per-queue statistics in one query: due/total scheduled counts, running
-/// count, the oldest due timestamp, and an optional sum of a numeric `task_data` field
-/// over due tasks. Global across warehouses.
+/// Aggregate per-queue statistics: due/total scheduled counts, a live-running count, the
+/// oldest due timestamp, and an optional sum of a numeric `task_data` field over due tasks.
+/// Global across warehouses.
 ///
 /// Each request describes one *logical* queue — its canonical name plus any pre-rename
 /// aliases (`legacy_queue_names`). The DB aggregates by physical `queue_name`
-/// (`WHERE queue_name = ANY(...)`, an index range scan), and a logical queue's per-name
-/// rows are folded back together here in Rust: counts summed, oldest timestamps min-ed.
-/// So a renamed queue's backlog isn't under-reported, and a queue with no tasks yields no
-/// row and folds to zeros. Names are deduplicated, so an alias equal to the canonical name
-/// (or a repeated alias) can't multiply a queue's counts.
+/// (`WHERE queue_name = ANY(...)`), and a logical queue's per-name rows are folded back
+/// together here in Rust: counts summed, oldest timestamps min-ed. So a renamed queue's
+/// backlog isn't under-reported, and a queue with no tasks yields no row and folds to
+/// zeros. Names are deduplicated, so an alias equal to the canonical name (or a repeated
+/// alias) can't multiply a queue's counts.
+///
+/// Runs as two statements so neither needs a full heap scan:
+/// - **totals** — `scheduled_total` and the raw running/should-stop count, grouped by
+///   `queue_name`. A count-only, index-only scan on `task_queue_name_status_idx`.
+/// - **due/stale** — restricted to `scheduled_for <= now()` (the only rows `pick_task` can
+///   claim), it computes the due backlog, the heartbeat-expired (`stale`) subset, the
+///   oldest due timestamp, and the payload sum.
 ///
 /// "Due" mirrors what `pick_task` can claim: a `scheduled` task past its `scheduled_for`,
-/// or a `running`/`should-stop` task whose heartbeat is older than the queue's
-/// `max_time_since_last_heartbeat` (an abandoned attempt awaiting re-pickup).
+/// or a `running`/`should-stop` task whose heartbeat is older than the queue's reclaim
+/// timeout. That timeout is resolved exactly as `pick_task` resolves it — a per-row
+/// `LEFT JOIN LATERAL` into `task_config`, scoped to the task's project/warehouse,
+/// preferring the canonical queue's config over a legacy-named one, falling back to the
+/// request's code-default (`max_time_since_last_heartbeat`) when no config row exists — so
+/// a per-warehouse override moves the stats in lockstep with pickup. The stale subset is
+/// subtracted from the raw running count, so `running` reports only live workers and a
+/// reclaimable task is counted once, under `scheduled_due`.
 ///
 /// The summed field name is a bind **value** (`->` with a text parameter), never
-/// interpolated SQL. `jsonb_typeof(...) = 'number'` plus a `numeric` range guard keep a
-/// malformed or out-of-`float8`-range payload (e.g. `1e400`) from erroring the whole
-/// scrape — out-of-range values contribute 0.
+/// interpolated SQL. The sum accumulates in `numeric` (unbounded magnitude, so a payload
+/// like `1e400` neither overflows nor errors) inside a `CASE` gated on
+/// `jsonb_typeof(...) = 'number'` (a non-number contributes 0), then clamps to the
+/// `float8` range once at the end.
 pub(crate) async fn get_task_queue_stats(
     requests: &[TaskQueueStatsRequest],
     pool: &PgPool,
@@ -346,111 +360,156 @@ pub(crate) async fn get_task_queue_stats(
     if requests.is_empty() {
         return Ok(Vec::new());
     }
-    // One row per distinct `(name, heartbeat, sum_field)` triple across all requests. The
-    // triple — not the name alone — is the key, because two requests can name the same
-    // queue with a different heartbeat or summed field; deduping on name alone would let
-    // the first request's timeout/field silently decide the other's row. Deduping the full
-    // triple still collapses a name repeated within a request (e.g. an alias equal to the
-    // canonical name), which can't multiply counts.
+    // Deduped set of every physical name any request answers to, for the totals query and
+    // its `WHERE queue_name = ANY(...)` index driver.
+    let mut name_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut match_names: Vec<String> = Vec::new();
-    let mut heartbeats: Vec<PgInterval> = Vec::new();
-    let mut sum_fields: Vec<Option<String>> = Vec::new();
-    let mut req_heartbeat_micros: Vec<i64> = Vec::with_capacity(requests.len());
-    let mut seen: std::collections::HashSet<(&str, i64, Option<&str>)> =
+    // One entry per distinct `(name, sum_field)` for the due/stale query. The heartbeat is
+    // no longer part of the key: it's resolved per row against `task_config` with the
+    // request's code-default only as a fallback, and a given name has exactly one default.
+    // The summed field still splits rows, since two requests can name the same queue with a
+    // different field. `canonical` and `default_hb` ride along, functionally determined by
+    // the name, to drive the config lateral and the fallback timeout.
+    let mut b_seen: std::collections::HashSet<(&str, Option<&str>)> =
         std::collections::HashSet::new();
+    let mut b_match: Vec<String> = Vec::new();
+    let mut b_canonical: Vec<String> = Vec::new();
+    let mut b_default_hb: Vec<PgInterval> = Vec::new();
+    let mut b_sum_field: Vec<Option<String>> = Vec::new();
     for req in requests {
         let heartbeat = duration_to_interval(req.max_time_since_last_heartbeat)?;
-        req_heartbeat_micros.push(heartbeat.microseconds);
         let sum_field = req.sum_payload_field.as_deref();
-        for name in std::iter::once(req.queue_name.as_str())
-            .chain(req.legacy_queue_names.iter().map(|n| n.as_str()))
+        let canonical = req.queue_name.as_str();
+        for name in
+            std::iter::once(canonical).chain(req.legacy_queue_names.iter().map(|n| n.as_str()))
         {
-            if seen.insert((name, heartbeat.microseconds, sum_field)) {
+            if name_set.insert(name) {
                 match_names.push(name.to_string());
-                heartbeats.push(heartbeat);
-                sum_fields.push(req.sum_payload_field.clone());
+            }
+            if b_seen.insert((name, sum_field)) {
+                b_match.push(name.to_string());
+                b_canonical.push(canonical.to_string());
+                b_default_hb.push(heartbeat);
+                b_sum_field.push(req.sum_payload_field.clone());
             }
         }
     }
 
-    // Group by the physical queue name plus the heartbeat and summed field it was
-    // requested with, so a name requested two ways yields one row per way. The fold keys
-    // on the same triple to route each row back to the request that asked for it.
-    let rows = sqlx::query!(
+    // Totals: count-only, index-only on (queue_name, status). `running_raw` is every
+    // running/should-stop row; the stale subset is subtracted after the due/stale query so
+    // `running` ends up live-only.
+    let totals_rows = sqlx::query!(
         r#"
         SELECT
             t.queue_name AS "queue_name!",
-            m.heartbeat AS "heartbeat!",
-            m.sum_field,
-            COUNT(*) FILTER (
-                WHERE (t.status = 'scheduled' AND t.scheduled_for <= now())
-                   OR (t.status IN ('running', 'should-stop') AND t.scheduled_for <= now()
-                       AND now() - t.last_heartbeat_at > m.heartbeat)
-            ) AS "scheduled_due!",
             COUNT(*) FILTER (WHERE t.status = 'scheduled') AS "scheduled_total!",
-            COUNT(*) FILTER (WHERE t.status IN ('running', 'should-stop')) AS "running!",
-            MIN(t.scheduled_for) FILTER (
-                WHERE (t.status = 'scheduled' AND t.scheduled_for <= now())
-                   OR (t.status IN ('running', 'should-stop') AND t.scheduled_for <= now()
-                       AND now() - t.last_heartbeat_at > m.heartbeat)
-            ) AS "oldest_due_scheduled_for",
-            COALESCE(SUM(
-                CASE
-                    WHEN m.sum_field IS NOT NULL
-                        AND ((t.status = 'scheduled' AND t.scheduled_for <= now())
-                             OR (t.status IN ('running', 'should-stop') AND t.scheduled_for <= now()
-                                 AND now() - t.last_heartbeat_at > m.heartbeat))
-                        AND jsonb_typeof(t.task_data -> m.sum_field) = 'number'
-                        AND (t.task_data ->> m.sum_field)::numeric
-                            BETWEEN '-1e308'::numeric AND '1e308'::numeric
-                    THEN (t.task_data ->> m.sum_field)::float8
-                    ELSE 0
-                END
-            ), 0) AS "payload_field_sum!"
+            COUNT(*) FILTER (WHERE t.status IN ('running', 'should-stop')) AS "running_raw!"
         FROM task t
-        JOIN UNNEST($1::text[], $2::interval[], $3::text[]) AS m(match_name, heartbeat, sum_field)
-            ON t.queue_name = m.match_name
         WHERE t.queue_name = ANY($1)
-        GROUP BY t.queue_name, m.heartbeat, m.sum_field
+        GROUP BY t.queue_name
         "#,
         &match_names,
-        &heartbeats,
-        &sum_fields as &[Option<String>],
     )
     .fetch_all(pool)
     .await
-    .map_err(|e| e.into_error_model("failed to aggregate task queue stats"))?;
+    .map_err(|e| e.into_error_model("failed to aggregate task queue totals"))?;
 
-    // Fold each logical queue's per-name rows back into one result: sum the counts, take
-    // the oldest of the oldest-due timestamps. Rows are keyed by the same
-    // `(name, heartbeat, sum_field)` triple used to build the query, so a request only
-    // picks up rows computed with its own timeout and summed field.
-    let by_key: std::collections::HashMap<(&str, i64, Option<&str>), _> = rows
+    // Due/stale: only `scheduled_for <= now()` rows — the set `pick_task` can claim — so the
+    // heap scan stays small. `tc` resolves the reclaim timeout exactly as `pick_task` does
+    // (canonical config preferred, scoped to the row's project/warehouse, code-default as
+    // fallback). `scheduled_due` is a due scheduled task or a heartbeat-expired running one;
+    // `stale_running` is the expired subset alone.
+    let due_rows = sqlx::query!(
+        r#"
+        WITH m AS (
+            SELECT match_name, canonical, default_hb, sum_field
+            FROM UNNEST($1::text[], $2::text[], $3::interval[], $4::text[])
+                AS u(match_name, canonical, default_hb, sum_field)
+        ),
+        names AS (
+            SELECT DISTINCT match_name, canonical FROM m
+        )
+        SELECT
+            t.queue_name AS "queue_name!",
+            m.sum_field,
+            COUNT(*) FILTER (
+                WHERE t.status = 'scheduled'
+                   OR (t.status IN ('running', 'should-stop')
+                       AND now() - t.last_heartbeat_at
+                           > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb))
+            ) AS "scheduled_due!",
+            COUNT(*) FILTER (
+                WHERE t.status IN ('running', 'should-stop')
+                  AND now() - t.last_heartbeat_at
+                      > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb)
+            ) AS "stale_running!",
+            MIN(t.scheduled_for) FILTER (
+                WHERE t.status = 'scheduled'
+                   OR (t.status IN ('running', 'should-stop')
+                       AND now() - t.last_heartbeat_at
+                           > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb))
+            ) AS "oldest_due_scheduled_for",
+            LEAST(GREATEST(
+                COALESCE(SUM(
+                    CASE
+                        WHEN m.sum_field IS NOT NULL
+                            AND (t.status = 'scheduled'
+                                 OR (t.status IN ('running', 'should-stop')
+                                     AND now() - t.last_heartbeat_at
+                                         > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb)))
+                            AND jsonb_typeof(t.task_data -> m.sum_field) = 'number'
+                        THEN (t.task_data ->> m.sum_field)::numeric
+                        ELSE 0
+                    END
+                ), 0),
+                '-1e308'::numeric), '1e308'::numeric)::float8 AS "payload_field_sum!"
+        FROM task t
+        JOIN m ON t.queue_name = m.match_name
+        LEFT JOIN LATERAL (
+            SELECT cfg.max_time_since_last_heartbeat
+            FROM task_config cfg
+            JOIN names n ON n.match_name = cfg.queue_name AND n.canonical = m.canonical
+            WHERE ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL)
+                   OR (cfg.warehouse_id = t.warehouse_id))
+                AND cfg.project_id = t.project_id
+            ORDER BY (cfg.queue_name = m.canonical) DESC
+            LIMIT 1
+        ) tc ON true
+        WHERE t.queue_name = ANY($5) AND t.scheduled_for <= now()
+        GROUP BY t.queue_name, m.sum_field
+        "#,
+        &b_match,
+        &b_canonical,
+        &b_default_hb,
+        &b_sum_field as &[Option<String>],
+        &match_names,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.into_error_model("failed to aggregate task queue due counts"))?;
+
+    let totals: std::collections::HashMap<&str, (i64, i64)> = totals_rows
         .iter()
-        .map(|r| {
-            (
-                (
-                    r.queue_name.as_str(),
-                    r.heartbeat.microseconds,
-                    r.sum_field.as_deref(),
-                ),
-                r,
-            )
-        })
+        .map(|r| (r.queue_name.as_str(), (r.scheduled_total, r.running_raw)))
         .collect();
+    // Due/stale rows keyed by `(name, sum_field)`, so a request only picks up the row
+    // computed for its own summed field.
+    let by_key: std::collections::HashMap<(&str, Option<&str>), _> = due_rows
+        .iter()
+        .map(|r| ((r.queue_name.as_str(), r.sum_field.as_deref()), r))
+        .collect();
+    // Fold each logical queue's per-name rows into one result: sum counts, min the
+    // oldest-due timestamps, and derive `running` as the raw count minus the stale subset.
     Ok(requests
         .iter()
-        .zip(&req_heartbeat_micros)
-        .map(|(req, &heartbeat_micros)| {
-            let mut stats = TaskQueueStats {
-                queue_name: req.queue_name.clone(),
-                scheduled_due: 0,
-                scheduled_total: 0,
-                running: 0,
-                oldest_due_scheduled_for: None,
-                payload_field_sum: req.sum_payload_field.as_ref().map(|_| 0.0),
-            };
+        .map(|req| {
             let sum_field = req.sum_payload_field.as_deref();
+            let mut scheduled_due = 0_i64;
+            let mut scheduled_total = 0_i64;
+            let mut running_raw = 0_i64;
+            let mut stale_running = 0_i64;
+            let mut oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>> = None;
+            let mut payload_field_sum = req.sum_payload_field.as_ref().map(|_| 0.0);
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for name in std::iter::once(req.queue_name.as_str())
                 .chain(req.legacy_queue_names.iter().map(|n| n.as_str()))
@@ -458,22 +517,33 @@ pub(crate) async fn get_task_queue_stats(
                 if !seen.insert(name) {
                     continue;
                 }
-                let Some(row) = by_key.get(&(name, heartbeat_micros, sum_field)) else {
-                    continue;
-                };
-                stats.scheduled_due += row.scheduled_due;
-                stats.scheduled_total += row.scheduled_total;
-                stats.running += row.running;
-                if let Some(sum) = stats.payload_field_sum.as_mut() {
-                    *sum += row.payload_field_sum;
+                if let Some((total, raw)) = totals.get(name) {
+                    scheduled_total += total;
+                    running_raw += raw;
                 }
-                stats.oldest_due_scheduled_for =
-                    match (stats.oldest_due_scheduled_for, row.oldest_due_scheduled_for) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    };
+                if let Some(row) = by_key.get(&(name, sum_field)) {
+                    scheduled_due += row.scheduled_due;
+                    stale_running += row.stale_running;
+                    if let Some(sum) = payload_field_sum.as_mut() {
+                        *sum += row.payload_field_sum;
+                    }
+                    oldest_due_scheduled_for =
+                        match (oldest_due_scheduled_for, row.oldest_due_scheduled_for) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (a, b) => a.or(b),
+                        };
+                }
             }
-            stats
+            TaskQueueStats {
+                queue_name: req.queue_name.clone(),
+                scheduled_due,
+                scheduled_total,
+                // All running rows have `scheduled_for <= now()`, so the stale subset is a
+                // subset of `running_raw` and this stays non-negative.
+                running: running_raw - stale_running,
+                oldest_due_scheduled_for,
+                payload_field_sum,
+            }
         })
         .collect())
 }
@@ -1843,18 +1913,18 @@ mod test {
             }]
         };
 
-        // Timeout 1 minute: the 10-minute-old heartbeat has expired → due again, and its
-        // payload counts toward the due-sum.
+        // Timeout 1 minute: the 10-minute-old heartbeat has expired → reclaimable, so it
+        // counts as due (with its payload) and drops out of the live `running` count.
         let stats = get_task_queue_stats(&request(chrono::Duration::minutes(1)), &pool)
             .await
             .unwrap();
-        assert_eq!(stats[0].running, 1);
+        assert_eq!(stats[0].running, 0);
         assert_eq!(stats[0].scheduled_due, 1);
         assert_eq!(stats[0].scheduled_total, 0);
         assert!(stats[0].oldest_due_scheduled_for.is_some());
         assert_eq!(stats[0].payload_field_sum, Some(7.0));
 
-        // Timeout 1 hour: the heartbeat is still fresh → not reclaimable, not due.
+        // Timeout 1 hour: the heartbeat is still fresh → a live worker, not reclaimable.
         let stats = get_task_queue_stats(&request(chrono::Duration::hours(1)), &pool)
             .await
             .unwrap();
@@ -1958,6 +2028,77 @@ mod test {
         assert_eq!(stats[0].payload_field_sum, None);
         assert_eq!(stats[1].scheduled_due, 1);
         assert_eq!(stats[1].payload_field_sum, Some(8.0));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_respects_task_config_override(pool: PgPool) {
+        // The reclaim timeout must follow a per-warehouse `task_config` override when one
+        // exists, exactly as `pick_task` resolves it. Otherwise stats would call a task
+        // stale (due) on the code-default while `pick_task`, honoring the override, won't
+        // re-pick it yet — and an autoscaler would start a worker with nothing to feed.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            &tq,
+            None,
+            project_id.clone(),
+            None,
+            Some(serde_json::json!({ "offered-pod-seconds": 4.0 })),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap();
+
+        // Running with a 5-minute-old heartbeat.
+        sqlx::query!(
+            r#"
+            UPDATE task
+            SET status = 'running', last_heartbeat_at = now() - interval '5 minutes'
+            WHERE queue_name = $1
+            "#,
+            tq.as_str(),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Per-warehouse override of 1 hour, far above the request's 1-minute code-default.
+        sqlx::query!(
+            r#"
+            INSERT INTO task_config
+                (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)
+            VALUES ($1, $2, $3, '{}'::jsonb, interval '1 hour')
+            "#,
+            tq.as_str(),
+            project_id.as_str(),
+            Uuid::from(warehouse_id),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let request = vec![TaskQueueStatsRequest {
+            queue_name: tq.clone(),
+            legacy_queue_names: vec![],
+            max_time_since_last_heartbeat: chrono::Duration::minutes(1),
+            sum_payload_field: Some("offered-pod-seconds".to_string()),
+        }];
+
+        // 5 min < the 1-hour override → still a live worker, not due. On the 1-minute
+        // code-default alone it would instead read as stale and due.
+        let stats = get_task_queue_stats(&request, &pool).await.unwrap();
+        assert_eq!(stats[0].running, 1);
+        assert_eq!(stats[0].scheduled_due, 0);
+        assert_eq!(stats[0].payload_field_sum, Some(0.0));
     }
 
     #[sqlx::test]
