@@ -519,6 +519,21 @@ async fn serve_inner<
         register_fn(task_queue_registry.clone(), state.clone()).await?;
     }
 
+    // Number of task-queue workers that will actually run. Queues register even
+    // with zero workers, so this is distinct from "any queues registered".
+    let total_task_workers = task_queue_registry.total_workers().await;
+    // A headless worker with no workers would do nothing: no HTTP API, no task
+    // processing, yet `/health` would report 200. Fail fast rather than run a
+    // process that only pretends to be healthy.
+    if total_task_workers == 0 && !CONFIG.serve_http_api {
+        return Err(anyhow!(
+            "Headless worker has no task-queue workers to run: serve_http_api is disabled and \
+             all task workers are disabled (TASK_*_WORKERS=0) or skipped (read-only \
+             maintenance). Refusing to start a process that would do nothing. Enable at least \
+             one TASK_*_WORKERS, or set LAKEKEEPER__SERVE_HTTP_API=true."
+        ));
+    }
+
     // Router: the full catalog API when serving it, otherwise a minimal
     // `/health`-only router for headless worker deployments. Building the full
     // router generates the OpenAPI document and installs CORS/auth layers, so a
@@ -604,8 +619,16 @@ async fn serve_inner<
     let task_runner = task_queue_registry
         .task_queues_runner(cancellation_token.clone())
         .await;
-    if task_queue_registry.is_empty().await {
-        tracing::info!("No task queues registered, skipping task queue worker startup");
+    if total_task_workers == 0 {
+        // Queues can be registered with zero workers (every TASK_*_WORKERS=0) or
+        // skipped entirely (read-only maintenance). `run_queue_workers` returns
+        // immediately in that case, so don't spawn the monitor — otherwise its
+        // early `Ok(())` is treated as a service that should run forever exiting,
+        // which shuts the whole process down. The headless no-work case already
+        // failed fast above, so this is an API-only pod.
+        tracing::info!(
+            "No task-queue workers configured; serving the HTTP API without a task worker monitor."
+        );
     } else {
         let task_abort_handle = service_futures.spawn(async move {
             task_runner.run_queue_workers(true).await;

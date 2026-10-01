@@ -128,17 +128,22 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 ### Task Queues
 
-Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
+Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files.
 
 Every Lakekeeper process runs the built-in task-queue workers by default, including instances that serve the HTTP API. You do not need dedicated worker pods to process background tasks.
+
 To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
-To stop an instance from running a given queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. For example, set them to `0` on your API pods to dedicate task processing to headless worker instances.
+
+To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
+
+The following global configuration options are available:
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__TASK_POLL_INTERVAL` | 3600ms/30s | 10s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 | `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` | 2 | `2` | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
 ### NATS
