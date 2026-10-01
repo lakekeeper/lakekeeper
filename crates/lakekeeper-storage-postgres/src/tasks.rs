@@ -331,7 +331,9 @@ fn duration_to_interval(duration: chrono::Duration) -> Result<PgInterval, Iceber
 /// zeros. Names are deduplicated, so an alias equal to the canonical name (or a repeated
 /// alias) can't multiply a queue's counts.
 ///
-/// Runs as two statements so neither needs a full heap scan:
+/// Runs as two statements — in one read-only `REPEATABLE READ` transaction, so they share a
+/// single snapshot and one `now()` and `running` (derived across both) can't go negative —
+/// and neither needs a full heap scan:
 /// - **totals** — `scheduled_total` and the raw running/should-stop count, grouped by
 ///   `queue_name`. A count-only, index-only scan on `task_queue_name_status_idx`.
 /// - **due/stale** — restricted to `scheduled_for <= now()` (the only rows `pick_task` can
@@ -399,6 +401,20 @@ pub(crate) async fn get_task_queue_stats(
         }
     }
 
+    // Both queries run in one read-only REPEATABLE READ transaction so they share a single
+    // snapshot and one `now()`. `running` is derived as `running_raw - stale_running` across
+    // the two; without a shared snapshot the totals could be read from a laggier replica than
+    // the due/stale rows, and `running` could go negative. One transaction = one connection =
+    // one snapshot, matching the "point-in-time read" the API promises.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| e.into_error_model("failed to start task queue stats transaction"))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.into_error_model("failed to configure task queue stats transaction"))?;
+
     // Totals: count-only, index-only on (queue_name, status). `running_raw` is every
     // running/should-stop row; the stale subset is subtracted after the due/stale query so
     // `running` ends up live-only.
@@ -414,7 +430,7 @@ pub(crate) async fn get_task_queue_stats(
         "#,
         &match_names,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| e.into_error_model("failed to aggregate task queue totals"))?;
 
@@ -489,9 +505,13 @@ pub(crate) async fn get_task_queue_stats(
         &b_sum_field as &[Option<String>],
         &match_names,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| e.into_error_model("failed to aggregate task queue due counts"))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| e.into_error_model("failed to finish task queue stats transaction"))?;
 
     let totals: std::collections::HashMap<&str, (i64, i64)> = totals_rows
         .iter()
@@ -553,9 +573,10 @@ pub(crate) async fn get_task_queue_stats(
                 queue_name: req.queue_name.clone(),
                 scheduled_due,
                 scheduled_total,
-                // All running rows have `scheduled_for <= now()`, so the stale subset is a
-                // subset of `running_raw` and this stays non-negative.
-                running: running_raw - stale_running,
+                // Within the shared snapshot every stale row is a running/should-stop row, so
+                // the stale subset is contained in `running_raw`; `max(0)` is a defensive floor
+                // so the gauge can never report a negative worker count.
+                running: (running_raw - stale_running).max(0),
                 oldest_due_scheduled_for,
                 payload_field_sum,
             }
