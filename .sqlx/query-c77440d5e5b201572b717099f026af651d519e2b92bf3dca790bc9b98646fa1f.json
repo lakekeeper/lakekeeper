@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE task\n            SET last_heartbeat_at = now() - $2::interval\n            WHERE queue_name = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c77440d5e5b201572b717099f026af651d519e2b92bf3dca790bc9b98646fa1f"
+}

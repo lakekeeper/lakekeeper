@@ -240,6 +240,24 @@ pub trait TaskConfig:
     ) -> Result<(), ErrorModel> {
         Ok(())
     }
+
+    /// Build a [`TaskQueueStatsRequest`] for this queue straight from its config, so
+    /// callers don't hand-copy the queue's legacy aliases or its heartbeat timeout. The
+    /// canonical name, its pre-rename aliases, and the fallback timeout are resolved the
+    /// same way `pick_new_task` resolves them, so the reported backlog matches what the
+    /// worker actually picks.
+    ///
+    /// `sum_payload_field` names an optional numeric `task_data` field to sum over the
+    /// queue's due tasks (e.g. a per-task work estimate); `None` reports counts only.
+    #[must_use]
+    fn stats_request(sum_payload_field: Option<String>) -> TaskQueueStatsRequest {
+        TaskQueueStatsRequest::builder()
+            .queue_name(Self::queue_name().clone())
+            .legacy_queue_names(Self::legacy_queue_names().into_iter().cloned().collect())
+            .max_time_since_last_heartbeat(Self::max_time_since_last_heartbeat())
+            .sum_payload_field(sum_payload_field)
+            .build()
+    }
 }
 
 #[cfg(not(feature = "open-api"))]
@@ -268,6 +286,17 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
         entity: WarehouseTaskEntityId,
     ) -> Result<(), ErrorModel> {
         Ok(())
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn stats_request(sum_payload_field: Option<String>) -> TaskQueueStatsRequest {
+        TaskQueueStatsRequest::builder()
+            .queue_name(Self::queue_name().clone())
+            .legacy_queue_names(Self::legacy_queue_names().into_iter().cloned().collect())
+            .max_time_since_last_heartbeat(Self::max_time_since_last_heartbeat())
+            .sum_payload_field(sum_payload_field)
+            .build()
     }
 }
 
@@ -744,24 +773,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     #[must_use]
     pub fn queue_name() -> &'static TaskQueueName {
         Q::queue_name()
-    }
-
-    /// Build a [`TaskQueueStatsRequest`] for this logical queue straight from its
-    /// [`TaskConfig`], so callers don't hand-copy the queue's legacy aliases or its
-    /// heartbeat timeout. The canonical name, its pre-rename aliases, and the
-    /// heartbeat timeout are resolved the same way [`Self::pick_new_task`] resolves
-    /// them, so the reported backlog matches what the worker actually picks.
-    ///
-    /// `sum_payload_field` names an optional numeric `task_data` field to sum over the
-    /// queue's due tasks (e.g. a per-task work estimate); `None` reports counts only.
-    #[must_use]
-    pub fn stats_request(sum_payload_field: Option<String>) -> TaskQueueStatsRequest {
-        TaskQueueStatsRequest {
-            queue_name: Q::queue_name().clone(),
-            legacy_queue_names: Q::legacy_queue_names().into_iter().cloned().collect(),
-            max_time_since_last_heartbeat: Q::max_time_since_last_heartbeat(),
-            sum_payload_field,
-        }
     }
 
     #[must_use]

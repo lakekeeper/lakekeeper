@@ -364,20 +364,24 @@ pub(crate) async fn get_task_queue_stats(
     // its `WHERE queue_name = ANY(...)` index driver.
     let mut name_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut match_names: Vec<String> = Vec::new();
-    // One entry per distinct `(name, sum_field)` for the due/stale query. The heartbeat is
-    // no longer part of the key: it's resolved per row against `task_config` with the
-    // request's code-default only as a fallback, and a given name has exactly one default.
-    // The summed field still splits rows, since two requests can name the same queue with a
-    // different field. `canonical` and `default_hb` ride along, functionally determined by
-    // the name, to drive the config lateral and the fallback timeout.
-    let mut b_seen: std::collections::HashSet<(&str, Option<&str>)> =
+    // One entry per distinct `(name, default_hb, sum_field)` for the due/stale query. The
+    // fallback heartbeat stays in the key: a `task_config` override aside, the reclaim cut-off
+    // is the request's code-default, and two requests can name the same queue with different
+    // defaults (resolved via `stats_request`, each queue has one — but the API doesn't enforce
+    // it). Keeping it in the key lets each request pick up a row computed with its own cut-off.
+    // The summed field splits rows the same way. `canonical` rides along, functionally
+    // determined by the name, to drive the config lateral.
+    let mut b_seen: std::collections::HashSet<(&str, i64, Option<&str>)> =
         std::collections::HashSet::new();
     let mut b_match: Vec<String> = Vec::new();
     let mut b_canonical: Vec<String> = Vec::new();
     let mut b_default_hb: Vec<PgInterval> = Vec::new();
     let mut b_sum_field: Vec<Option<String>> = Vec::new();
+    // Per-request fallback cut-off in microseconds, to route each request to its own row.
+    let mut req_heartbeat_micros: Vec<i64> = Vec::with_capacity(requests.len());
     for req in requests {
         let heartbeat = duration_to_interval(req.max_time_since_last_heartbeat)?;
+        req_heartbeat_micros.push(heartbeat.microseconds);
         let sum_field = req.sum_payload_field.as_deref();
         let canonical = req.queue_name.as_str();
         for name in
@@ -386,7 +390,7 @@ pub(crate) async fn get_task_queue_stats(
             if name_set.insert(name) {
                 match_names.push(name.to_string());
             }
-            if b_seen.insert((name, sum_field)) {
+            if b_seen.insert((name, heartbeat.microseconds, sum_field)) {
                 b_match.push(name.to_string());
                 b_canonical.push(canonical.to_string());
                 b_default_hb.push(heartbeat);
@@ -431,6 +435,7 @@ pub(crate) async fn get_task_queue_stats(
         )
         SELECT
             t.queue_name AS "queue_name!",
+            m.default_hb AS "default_hb!",
             m.sum_field,
             COUNT(*) FILTER (
                 WHERE t.status = 'scheduled'
@@ -476,7 +481,7 @@ pub(crate) async fn get_task_queue_stats(
             LIMIT 1
         ) tc ON true
         WHERE t.queue_name = ANY($5) AND t.scheduled_for <= now()
-        GROUP BY t.queue_name, m.sum_field
+        GROUP BY t.queue_name, m.default_hb, m.sum_field
         "#,
         &b_match,
         &b_canonical,
@@ -492,17 +497,27 @@ pub(crate) async fn get_task_queue_stats(
         .iter()
         .map(|r| (r.queue_name.as_str(), (r.scheduled_total, r.running_raw)))
         .collect();
-    // Due/stale rows keyed by `(name, sum_field)`, so a request only picks up the row
-    // computed for its own summed field.
-    let by_key: std::collections::HashMap<(&str, Option<&str>), _> = due_rows
+    // Due/stale rows keyed by `(name, fallback-micros, sum_field)`, so a request only picks up
+    // the row computed with its own fallback cut-off and summed field.
+    let by_key: std::collections::HashMap<(&str, i64, Option<&str>), _> = due_rows
         .iter()
-        .map(|r| ((r.queue_name.as_str(), r.sum_field.as_deref()), r))
+        .map(|r| {
+            (
+                (
+                    r.queue_name.as_str(),
+                    r.default_hb.microseconds,
+                    r.sum_field.as_deref(),
+                ),
+                r,
+            )
+        })
         .collect();
     // Fold each logical queue's per-name rows into one result: sum counts, min the
     // oldest-due timestamps, and derive `running` as the raw count minus the stale subset.
     Ok(requests
         .iter()
-        .map(|req| {
+        .zip(&req_heartbeat_micros)
+        .map(|(req, &heartbeat_micros)| {
             let sum_field = req.sum_payload_field.as_deref();
             let mut scheduled_due = 0_i64;
             let mut scheduled_total = 0_i64;
@@ -521,7 +536,7 @@ pub(crate) async fn get_task_queue_stats(
                     scheduled_total += total;
                     running_raw += raw;
                 }
-                if let Some(row) = by_key.get(&(name, sum_field)) {
+                if let Some(row) = by_key.get(&(name, heartbeat_micros, sum_field)) {
                     scheduled_due += row.scheduled_due;
                     stale_running += row.stale_running;
                     if let Some(sum) = payload_field_sum.as_mut() {
@@ -1088,22 +1103,10 @@ pub(crate) async fn set_task_queue_config(
     config: &SetTaskQueueConfigRequest,
 ) -> lakekeeper::api::Result<()> {
     let serialized = config.queue_config.as_json();
-    let max_time_since_last_heartbeat =
-        if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
-            Some(PgInterval {
-                months: 0,
-                days: 0,
-                microseconds: chrono::Duration::seconds(max_seconds_since_last_heartbeat)
-                    .num_microseconds()
-                    .ok_or_else(|| ErrorModel::internal(
-                    "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
-                    "InternalError",
-                    None,
-                ))?,
-            })
-        } else {
-            None
-        };
+    let max_time_since_last_heartbeat = config
+        .max_seconds_since_last_heartbeat
+        .map(|secs| duration_to_interval(chrono::Duration::seconds(secs)))
+        .transpose()?;
     sqlx::query!(
         r#"
         INSERT INTO task_config (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)
@@ -1579,6 +1582,24 @@ mod test {
         TaskQueueName::from(format!("test-{}", Uuid::now_v7()))
     }
 
+    /// Backdate a queue's `last_heartbeat_at` so its running tasks read as abandoned,
+    /// simulating a worker that picked a task and then crashed. One shared query rather
+    /// than an ad-hoc `UPDATE` per test.
+    async fn age_last_heartbeat(pool: &PgPool, queue_name: &TaskQueueName, age: chrono::Duration) {
+        sqlx::query!(
+            r#"
+            UPDATE task
+            SET last_heartbeat_at = now() - $2::interval
+            WHERE queue_name = $1
+            "#,
+            queue_name.as_str(),
+            duration_to_interval(age).unwrap(),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[sqlx::test]
     async fn test_queue_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
@@ -1664,14 +1685,16 @@ mod test {
         };
         let payload = |v: f64| Some(serde_json::json!({ "offered-pod-seconds": v }));
 
-        // Two due-scheduled tasks (10.0 each) and one future-scheduled (100.0, never due).
+        // Two due-scheduled tasks (10.0 each) at a fixed past instant, and one
+        // future-scheduled (100.0, never due).
+        let due_at = DateTime::from_timestamp(1_600_000_000, 0).unwrap();
         for _ in 0..2 {
             queue_task(
                 &mut conn,
                 &tq,
                 None,
                 project_id.clone(),
-                None,
+                Some(due_at),
                 payload(10.0),
                 entity(warehouse_id),
             )
@@ -1693,26 +1716,22 @@ mod test {
 
         let requests = || {
             vec![
-                TaskQueueStatsRequest {
-                    queue_name: tq.clone(),
-                    legacy_queue_names: vec![],
-                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                    sum_payload_field: Some("offered-pod-seconds".to_string()),
-                },
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
                 // Same queue but no field requested → sum must be None.
-                TaskQueueStatsRequest {
-                    queue_name: tq.clone(),
-                    legacy_queue_names: vec![],
-                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                    sum_payload_field: None,
-                },
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .build(),
                 // A queue with no tasks → folds to zeros, Some(0.0) sum.
-                TaskQueueStatsRequest {
-                    queue_name: empty_tq.clone(),
-                    legacy_queue_names: vec![],
-                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                    sum_payload_field: Some("offered-pod-seconds".to_string()),
-                },
+                TaskQueueStatsRequest::builder()
+                    .queue_name(empty_tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
             ]
         };
 
@@ -1722,7 +1741,7 @@ mod test {
         assert_eq!(stats[0].scheduled_due, 2);
         assert_eq!(stats[0].scheduled_total, 3);
         assert_eq!(stats[0].running, 0);
-        assert!(stats[0].oldest_due_scheduled_for.is_some());
+        assert_eq!(stats[0].oldest_due_scheduled_for, Some(due_at));
         assert_eq!(stats[0].payload_field_sum, Some(20.0));
         // No field requested → sum is None regardless of the tasks' payloads.
         assert_eq!(stats[1].payload_field_sum, None);
@@ -1735,28 +1754,18 @@ mod test {
         assert_eq!(stats[2].oldest_due_scheduled_for, None);
         assert_eq!(stats[2].payload_field_sum, Some(0.0));
 
-        // Move exactly one due task to `running`; its 10.0 leaves the due-sum at 10.0
-        // regardless of which identical-value task was moved.
-        sqlx::query!(
-            r#"
-            UPDATE task SET status = 'running'
-            WHERE task_id = (
-                SELECT task_id FROM task
-                WHERE queue_name = $1 AND status = 'scheduled' AND scheduled_for <= now()
-                ORDER BY task_id
-                LIMIT 1
-            )
-            "#,
-            tq.as_str(),
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        // Pick exactly one due task: it becomes `running` with a fresh heartbeat — a live
+        // worker, not reclaimable. Its 10.0 leaves the remaining due-sum at 10.0.
+        pick_task(&pool, &tq, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         let stats = get_task_queue_stats(&requests(), &pool).await.unwrap();
         assert_eq!(stats[0].scheduled_due, 1);
         assert_eq!(stats[0].scheduled_total, 2);
         assert_eq!(stats[0].running, 1);
+        assert_eq!(stats[0].oldest_due_scheduled_for, Some(due_at));
         assert_eq!(stats[0].payload_field_sum, Some(10.0));
     }
 
@@ -1785,12 +1794,13 @@ mod test {
         .await
         .unwrap();
 
-        let requests = vec![TaskQueueStatsRequest {
-            queue_name: tq.clone(),
-            legacy_queue_names: vec![],
-            max_time_since_last_heartbeat: chrono::Duration::hours(1),
-            sum_payload_field: Some("offered-pod-seconds".to_string()),
-        }];
+        let requests = vec![
+            TaskQueueStatsRequest::builder()
+                .queue_name(tq.clone())
+                .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build(),
+        ];
         let stats = get_task_queue_stats(&requests, &pool).await.unwrap();
         assert_eq!(stats[0].scheduled_due, 1);
         assert_eq!(stats[0].payload_field_sum, Some(0.0));
@@ -1832,12 +1842,11 @@ mod test {
 
         // Without the alias: only the canonical task is seen.
         let stats = get_task_queue_stats(
-            &[TaskQueueStatsRequest {
-                queue_name: canonical.clone(),
-                legacy_queue_names: vec![],
-                max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                sum_payload_field: Some("offered-pod-seconds".to_string()),
-            }],
+            &[TaskQueueStatsRequest::builder()
+                .queue_name(canonical.clone())
+                .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build()],
             &pool,
         )
         .await
@@ -1847,12 +1856,12 @@ mod test {
 
         // With the alias: both tasks are aggregated into the logical queue.
         let stats = get_task_queue_stats(
-            &[TaskQueueStatsRequest {
-                queue_name: canonical.clone(),
-                legacy_queue_names: vec![legacy.clone()],
-                max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                sum_payload_field: Some("offered-pod-seconds".to_string()),
-            }],
+            &[TaskQueueStatsRequest::builder()
+                .queue_name(canonical.clone())
+                .legacy_queue_names(vec![legacy.clone()])
+                .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build()],
             &pool,
         )
         .await
@@ -1875,12 +1884,13 @@ mod test {
         let entity_id = WarehouseTaskEntityId::Table {
             table_id: Uuid::now_v7().into(),
         };
+        let due_at = DateTime::from_timestamp(1_600_000_000, 0).unwrap();
         queue_task(
             &mut conn,
             &tq,
             None,
             project_id.clone(),
-            None,
+            Some(due_at),
             Some(serde_json::json!({ "offered-pod-seconds": 7.0 })),
             TaskEntity::EntityInWarehouse {
                 warehouse_id,
@@ -1891,26 +1901,22 @@ mod test {
         .await
         .unwrap();
 
-        // Mark it running with a heartbeat 10 minutes old (the queue holds one task).
-        sqlx::query!(
-            r#"
-            UPDATE task
-            SET status = 'running', last_heartbeat_at = now() - interval '10 minutes'
-            WHERE queue_name = $1
-            "#,
-            tq.as_str(),
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        // Pick it (realistic running state with a fresh heartbeat), then backdate the
+        // heartbeat 10 minutes to simulate a crashed worker.
+        pick_task(&pool, &tq, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        age_last_heartbeat(&pool, &tq, chrono::Duration::minutes(10)).await;
 
         let request = |heartbeat: chrono::Duration| {
-            vec![TaskQueueStatsRequest {
-                queue_name: tq.clone(),
-                legacy_queue_names: vec![],
-                max_time_since_last_heartbeat: heartbeat,
-                sum_payload_field: Some("offered-pod-seconds".to_string()),
-            }]
+            vec![
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(heartbeat)
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
+            ]
         };
 
         // Timeout 1 minute: the 10-minute-old heartbeat has expired → reclaimable, so it
@@ -1921,7 +1927,7 @@ mod test {
         assert_eq!(stats[0].running, 0);
         assert_eq!(stats[0].scheduled_due, 1);
         assert_eq!(stats[0].scheduled_total, 0);
-        assert!(stats[0].oldest_due_scheduled_for.is_some());
+        assert_eq!(stats[0].oldest_due_scheduled_for, Some(due_at));
         assert_eq!(stats[0].payload_field_sum, Some(7.0));
 
         // Timeout 1 hour: the heartbeat is still fresh → a live worker, not reclaimable.
@@ -1962,12 +1968,12 @@ mod test {
 
         // The alias list repeats the canonical name and itself.
         let stats = get_task_queue_stats(
-            &[TaskQueueStatsRequest {
-                queue_name: tq.clone(),
-                legacy_queue_names: vec![tq.clone(), tq.clone()],
-                max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                sum_payload_field: Some("offered-pod-seconds".to_string()),
-            }],
+            &[TaskQueueStatsRequest::builder()
+                .queue_name(tq.clone())
+                .legacy_queue_names(vec![tq.clone(), tq.clone()])
+                .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build()],
             &pool,
         )
         .await
@@ -2007,18 +2013,15 @@ mod test {
         // The field-less request comes first — the order a name-only dedup mishandles.
         let stats = get_task_queue_stats(
             &[
-                TaskQueueStatsRequest {
-                    queue_name: tq.clone(),
-                    legacy_queue_names: vec![],
-                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                    sum_payload_field: None,
-                },
-                TaskQueueStatsRequest {
-                    queue_name: tq.clone(),
-                    legacy_queue_names: vec![],
-                    max_time_since_last_heartbeat: chrono::Duration::hours(1),
-                    sum_payload_field: Some("offered-pod-seconds".to_string()),
-                },
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .build(),
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
             ],
             &pool,
         )
@@ -2059,17 +2062,12 @@ mod test {
         .unwrap();
 
         // Running with a 5-minute-old heartbeat.
-        sqlx::query!(
-            r#"
-            UPDATE task
-            SET status = 'running', last_heartbeat_at = now() - interval '5 minutes'
-            WHERE queue_name = $1
-            "#,
-            tq.as_str(),
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        // Pick it, then backdate the heartbeat 5 minutes (a worker that went quiet).
+        pick_task(&pool, &tq, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        age_last_heartbeat(&pool, &tq, chrono::Duration::minutes(5)).await;
 
         // Per-warehouse override of 1 hour, far above the request's 1-minute code-default.
         sqlx::query!(
@@ -2086,12 +2084,13 @@ mod test {
         .await
         .unwrap();
 
-        let request = vec![TaskQueueStatsRequest {
-            queue_name: tq.clone(),
-            legacy_queue_names: vec![],
-            max_time_since_last_heartbeat: chrono::Duration::minutes(1),
-            sum_payload_field: Some("offered-pod-seconds".to_string()),
-        }];
+        let request = vec![
+            TaskQueueStatsRequest::builder()
+                .queue_name(tq.clone())
+                .max_time_since_last_heartbeat(chrono::Duration::minutes(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build(),
+        ];
 
         // 5 min < the 1-hour override → still a live worker, not due. On the 1-minute
         // code-default alone it would instead read as stale and due.
@@ -2099,6 +2098,178 @@ mod test {
         assert_eq!(stats[0].running, 1);
         assert_eq!(stats[0].scheduled_due, 0);
         assert_eq!(stats[0].payload_field_sum, Some(0.0));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_counts_stale_should_stop_as_due(pool: PgPool) {
+        // A `should-stop` task whose heartbeat expired is still reclaimable by `pick_task`
+        // (it matches `status != 'scheduled'`), so stats must count it as due, not running.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            &tq,
+            None,
+            project_id.clone(),
+            None,
+            Some(serde_json::json!({ "offered-pod-seconds": 6.0 })),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap();
+
+        // Pick it, ask it to stop, then let its heartbeat go stale.
+        let task = pick_task(&pool, &tq, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        request_tasks_stop(&mut conn, &[task.task_id()])
+            .await
+            .unwrap();
+        age_last_heartbeat(&pool, &tq, chrono::Duration::minutes(10)).await;
+
+        let request = |heartbeat: chrono::Duration| {
+            vec![
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(heartbeat)
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
+            ]
+        };
+
+        // Stale (timeout 1 minute): the should-stop task is reclaimable → due, not running.
+        let stats = get_task_queue_stats(&request(chrono::Duration::minutes(1)), &pool)
+            .await
+            .unwrap();
+        assert_eq!(stats[0].running, 0);
+        assert_eq!(stats[0].scheduled_due, 1);
+        assert_eq!(stats[0].payload_field_sum, Some(6.0));
+
+        // Fresh (timeout 1 hour): the 10-minute-old heartbeat is within the window → live.
+        let stats = get_task_queue_stats(&request(chrono::Duration::hours(1)), &pool)
+            .await
+            .unwrap();
+        assert_eq!(stats[0].running, 1);
+        assert_eq!(stats[0].scheduled_due, 0);
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_same_name_distinct_timeouts(pool: PgPool) {
+        // Two requests name the same queue with different reclaim timeouts. Each must get a
+        // row computed with its own cut-off — the stricter one reclaims the stale task, the
+        // looser one still sees a live worker.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            &tq,
+            None,
+            project_id.clone(),
+            None,
+            Some(serde_json::json!({ "offered-pod-seconds": 9.0 })),
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap();
+        pick_task(&pool, &tq, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        age_last_heartbeat(&pool, &tq, chrono::Duration::minutes(10)).await;
+
+        let stats = get_task_queue_stats(
+            &[
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::minutes(1))
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
+                TaskQueueStatsRequest::builder()
+                    .queue_name(tq.clone())
+                    .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                    .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                    .build(),
+            ],
+            &pool,
+        )
+        .await
+        .unwrap();
+        // 1-minute cut-off: the 10-minute-old heartbeat is stale → due, payload counted.
+        assert_eq!(stats[0].running, 0);
+        assert_eq!(stats[0].scheduled_due, 1);
+        assert_eq!(stats[0].payload_field_sum, Some(9.0));
+        // 1-hour cut-off on the SAME queue: still a live worker, nothing due.
+        assert_eq!(stats[1].running, 1);
+        assert_eq!(stats[1].scheduled_due, 0);
+        assert_eq!(stats[1].payload_field_sum, Some(0.0));
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_queue_stats_payload_sum_clamps_out_of_range(pool: PgPool) {
+        // Two due tasks whose payloads sum beyond f64::MAX. The sum must saturate to the
+        // float8 range, not raise "value out of range: overflow" and abort the scrape.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq = generate_tq_name();
+        let entity = || {
+            let entity_id = WarehouseTaskEntityId::Table {
+                table_id: Uuid::now_v7().into(),
+            };
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("e-{}", entity_id.as_uuid())],
+            }
+        };
+        for _ in 0..2 {
+            queue_task(
+                &mut conn,
+                &tq,
+                None,
+                project_id.clone(),
+                None,
+                Some(serde_json::json!({ "offered-pod-seconds": 1e308 })),
+                entity(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let stats = get_task_queue_stats(
+            &[TaskQueueStatsRequest::builder()
+                .queue_name(tq.clone())
+                .max_time_since_last_heartbeat(chrono::Duration::hours(1))
+                .sum_payload_field(Some("offered-pod-seconds".to_string()))
+                .build()],
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats[0].scheduled_due, 2);
+        let sum = stats[0].payload_field_sum.unwrap();
+        assert!(
+            sum.is_finite(),
+            "sum must saturate to a finite value, got {sum}"
+        );
+        // 1e308 + 1e308 overflows f64; the query clamps to the positive float8 bound.
+        assert_eq!(sum, 1e308);
     }
 
     #[sqlx::test]

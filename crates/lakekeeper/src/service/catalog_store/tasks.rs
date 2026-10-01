@@ -68,7 +68,7 @@ pub struct TaskList {
 /// optional numeric `task_data` field to sum over its due-scheduled tasks. Kept generic
 /// (no queue-specific knowledge) so callers such as the autoscaling gauge can aggregate
 /// an arbitrary payload field (e.g. a per-task work estimate) at scrape time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, typed_builder::TypedBuilder)]
 pub struct TaskQueueStatsRequest {
     pub queue_name: TaskQueueName,
     /// Pre-rename aliases of `queue_name`. Tasks enqueued before a rename still carry
@@ -76,6 +76,7 @@ pub struct TaskQueueStatsRequest {
     /// these — matching how [`CatalogTaskOps::pick_new_task`] and
     /// [`CatalogTaskOps::cancel_scheduled_tasks`] resolve a logical queue. Omitting a
     /// legacy name would under-report the backlog and mislead an autoscaler.
+    #[builder(default)]
     pub legacy_queue_names: Vec<TaskQueueName>,
     /// Fallback for how long a picked-up task may go without a heartbeat before the worker
     /// treats it as abandoned and re-picks it. A `running`/`should-stop` task past the
@@ -87,6 +88,7 @@ pub struct TaskQueueStatsRequest {
     pub max_time_since_last_heartbeat: chrono::Duration,
     /// A top-level `task_data` JSONB field whose numeric values are summed over due tasks.
     /// `None` leaves [`TaskQueueStats::payload_field_sum`] `None`.
+    #[builder(default)]
     pub sum_payload_field: Option<String>,
 }
 
@@ -109,8 +111,10 @@ pub struct TaskQueueStats {
     pub running: i64,
     /// `scheduled_for` of the oldest due-scheduled task, for backlog-age metrics.
     pub oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
-    /// Sum of the requested `sum_payload_field` over due-scheduled tasks. `None` when
-    /// no field was requested; `Some(0.0)` when requested but no rows contribute.
+    /// Sum of the requested `sum_payload_field` over the due set — the same tasks counted
+    /// in `scheduled_due`, so a heartbeat-expired task's payload is included. `None` when
+    /// no field was requested; `Some(0.0)` when requested but no rows contribute. Clamped
+    /// to the `f64` range, so a pathological payload saturates instead of erroring.
     pub payload_field_sum: Option<f64>,
 }
 
