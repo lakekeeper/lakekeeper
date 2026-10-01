@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
@@ -337,49 +337,62 @@ impl LakekeeperStorage for AdlsStorage {
             .content_length
             .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str()));
         let last_modified = parse_offsetdatetime(&head_response.last_modified);
-        Ok(FileInfo::new(
-            last_modified,
-            adls_location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, adls_location.location().clone(), size)
+                .with_e_tag(Some(head_response.etag.clone())),
+        )
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
 
         let head_response = head(&client, &adls_location).await?;
+
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed. Built before
+        // `adls_location` is moved into the fetch calls below.
+        let info = FileInfo::new(
+            parse_offsetdatetime(&head_response.last_modified),
+            adls_location.location().clone(),
+            head_response
+                .content_length
+                .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
+        )
+        .with_e_tag(Some(head_response.etag.clone()));
+
         let Some(content_length) = head_response.content_length else {
             // If we do not get content_length, we cannot read in chunks,
             // so read the file in one request. We can use `fetch_range`
             // with `u64::MAX`, which is set by client if no range is provided
-            return fetch_range(&client, 0..u64::MAX, adls_location)
+            let bytes = fetch_range(&client, 0..u64::MAX, adls_location)
                 .await
-                .map(|gfr| gfr.data);
+                .map(|gfr| gfr.data)?;
+            return Ok(ObjectRead { bytes, info });
         };
         let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
 
-        if file_size == 0 {
-            return Ok(Bytes::new());
-        }
-
-        if file_size < MAX_BYTES_PER_REQUEST {
+        let bytes = if file_size == 0 {
+            Bytes::new()
+        } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            return fetch_range(&client, 0..file_size as u64, adls_location)
+            fetch_range(&client, 0..file_size as u64, adls_location)
                 .await
-                .map(|gfr| gfr.data);
-        }
+                .map(|gfr| gfr.data)?
+        } else {
+            parallel_chunked_read_with_integrity(
+                &client,
+                path,
+                0,
+                file_size,
+                head_response.last_modified,
+                adls_location,
+            )
+            .await?
+        };
 
-        parallel_chunked_read_with_integrity(
-            &client,
-            path,
-            0,
-            file_size,
-            head_response.last_modified,
-            adls_location,
-        )
-        .await
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(

@@ -228,6 +228,7 @@ pub struct FileInfo {
     last_modified: Option<DateTime<Utc>>,
     location: Location,
     size: Option<u64>,
+    e_tag: Option<String>,
 }
 
 impl FileInfo {
@@ -241,7 +242,15 @@ impl FileInfo {
             last_modified,
             location,
             size,
+            e_tag: None,
         }
+    }
+
+    /// Attach the backend's entity tag (`ETag`) for this object.
+    #[must_use]
+    pub fn with_e_tag(mut self, e_tag: Option<String>) -> Self {
+        self.e_tag = e_tag;
+        self
     }
 
     #[must_use]
@@ -261,6 +270,29 @@ impl FileInfo {
     pub fn size(&self) -> Option<u64> {
         self.size
     }
+
+    /// The object's entity tag (`ETag`), if the backend surfaced one. `None`
+    /// for backends that don't expose an `ETag` (e.g. the in-memory backend).
+    #[must_use]
+    pub fn e_tag(&self) -> Option<&str> {
+        self.e_tag.as_deref()
+    }
+}
+
+/// The result of [`LakekeeperStorage::read`]: the object's bytes plus the
+/// [`FileInfo`] the backend surfaced while fetching them.
+///
+/// A read already yields the object metadata (the cloud backends issue a `head`
+/// to size the request; the in-memory backend holds it directly), so returning
+/// it here lets callers get the bytes and the metadata (`last_modified`, `size`,
+/// `e_tag`) in one call — a separate [`LakekeeperStorage::metadata`] request is
+/// not needed.
+#[derive(Debug, Clone)]
+pub struct ObjectRead {
+    /// The object's bytes.
+    pub bytes: Bytes,
+    /// Metadata surfaced while reading the object.
+    pub info: FileInfo,
 }
 
 /// Streaming file writer.
@@ -327,11 +359,15 @@ where
     ))]
     async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
 
-    /// Read a file from the specified path, possibly in chunks
+    /// Read a file from the specified path, possibly in chunks.
+    ///
+    /// Returns the bytes together with the [`FileInfo`] the backend surfaced
+    /// while reading, so callers avoid a separate [`LakekeeperStorage::metadata`]
+    /// round-trip when they need both.
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError>;
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError>;
 
     /// Read a file from the specified path with a single request.
     ///
@@ -476,7 +512,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.read(path).await,
@@ -616,7 +652,7 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).writer(path).await
                 }
 
-                async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+                async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
                     (**self).read(path).await
                 }
 

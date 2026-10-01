@@ -100,7 +100,11 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn read(&self, path: &str) -> iceberg::Result<bytes::Bytes> {
-        self.lakekeeper_io.read(path).await.map_err(Into::into)
+        self.lakekeeper_io
+            .read(path)
+            .await
+            .map(|o| o.bytes)
+            .map_err(Into::into)
     }
 
     async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileRead>> {
