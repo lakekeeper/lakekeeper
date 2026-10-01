@@ -1,5 +1,8 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
+    hash::{DefaultHasher, Hash, Hasher},
+    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -26,73 +29,360 @@ use crate::{
 };
 
 // ============================================================================
+// Counted caches: writes under the key lock, striped invalidation counts
+// ============================================================================
+
+/// Invalidation counts, striped by key hash into 256 stripes. Every invalidation
+/// of a key bumps that key's stripe; an invalidation of another key bumps the same
+/// stripe only when both keys hash to it.
+struct Invalidations([AtomicU64; 256]);
+
+impl Invalidations {
+    const fn new() -> Self {
+        Self([const { AtomicU64::new(0) }; 256])
+    }
+
+    fn stripe_index<K: Hash + ?Sized>(key: &K) -> usize {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        usize::from(hasher.finish().to_le_bytes()[0])
+    }
+
+    fn stripe<K: Hash + ?Sized>(&self, key: &K) -> &AtomicU64 {
+        &self.0[Self::stripe_index(key)]
+    }
+
+    fn read<K: Hash + ?Sized>(&self, key: &K) -> u64 {
+        self.stripe(key).load(Ordering::Acquire)
+    }
+
+    fn bump<K: Hash + ?Sized>(&self, key: &K) {
+        self.stripe(key).fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn snapshot(&self) -> [u64; 256] {
+        std::array::from_fn(|index| self.0[index].load(Ordering::Acquire))
+    }
+
+    /// Bump each stripe that holds one of `keys`, once.
+    fn bump_many<K: Hash>(&self, keys: &[K]) {
+        let mut bumped = [false; 256];
+        for key in keys {
+            let index = Self::stripe_index(key);
+            if !bumped[index] {
+                bumped[index] = true;
+                self.0[index].fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+}
+
+/// One key's invalidation count, read before a sync's transaction and passed to
+/// [`CountedCache::commit_and_cache`]. Typed by the key, so a count only reaches a
+/// cache with the same key type.
+pub(super) struct InvalidationCount<K>(u64, PhantomData<fn(&K)>);
+
+/// Every stripe of a [`CountedCache`]'s invalidation counts, for a writer that
+/// learns its key only inside its transaction.
+pub(super) struct InvalidationsSnapshot<K>([u64; 256], PhantomData<fn(&K)>);
+
+impl<K: Hash> InvalidationsSnapshot<K> {
+    /// `key`'s count when the snapshot was taken.
+    pub(super) fn read(&self, key: &K) -> InvalidationCount<K> {
+        InvalidationCount(self.0[Invalidations::stripe_index(key)], PhantomData)
+    }
+}
+
+/// A moka cache that is written only under the per-key compute lock, together with
+/// its striped invalidation counts.
+///
+/// Three kinds of write take the key lock: [`Self::commit_and_cache`] (a sync that
+/// commits under the lock), the loaders ([`Self::get_or_load`],
+/// [`Self::get_or_load_optional`]) and [`Self::invalidate`] (`Op::Remove`). A hit
+/// takes no lock.
+pub(super) struct CountedCache<K, V> {
+    cache: Cache<K, V>,
+    invalidations: Invalidations,
+    enabled: bool,
+    /// The `cache_type` label of the cache metrics.
+    cache_type: &'static str,
+    /// What an entry holds, for log messages.
+    noun: &'static str,
+}
+
+impl<K, V> CountedCache<K, V>
+where
+    K: Hash + Eq + Clone + Display + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn new(
+        cache_type: &'static str,
+        noun: &'static str,
+        enabled: bool,
+        cache: Cache<K, V>,
+    ) -> Self {
+        Self {
+            cache,
+            invalidations: Invalidations::new(),
+            enabled,
+            cache_type,
+            noun,
+        }
+    }
+
+    /// `key`'s invalidation count, read before a sync's transaction and passed to
+    /// [`Self::commit_and_cache`].
+    pub(super) fn invalidations(&self, key: &K) -> InvalidationCount<K> {
+        InvalidationCount(self.invalidations.read(key), PhantomData)
+    }
+
+    /// Every invalidation count, read before a sync's transaction when the sync
+    /// resolves its key inside the transaction.
+    pub(super) fn invalidations_snapshot(&self) -> InvalidationsSnapshot<K> {
+        InvalidationsSnapshot(self.invalidations.snapshot(), PhantomData)
+    }
+
+    /// Run `commit`, then write `value` under `key`, both under the key's compute
+    /// lock.
+    ///
+    /// Loaders and invalidations of the key take the same lock, so a load that read
+    /// before this commit writes first, or skips its write, and this write replaces
+    /// it; an invalidation that counts after the check below removes this write.
+    /// `invalidations_before` is the key's count, read before the caller's
+    /// transaction began. A writer that commits after this transaction's read
+    /// invalidates the key after its commit, which bumps that stripe. So if the
+    /// stripe moved, the writer may already have removed the key: the entry is
+    /// removed and the next read loads it. A key sharing the stripe causes the same
+    /// reload. A failed commit leaves the entry unchanged and returns its error.
+    /// With the cache disabled this only commits.
+    ///
+    /// Lock order is database locks, then this key lock. Code run under the key lock
+    /// must not wait for a database lock or a write-pool connection; the loaders only
+    /// read, through the read pool.
+    pub(super) async fn commit_and_cache<Fut, E>(
+        &self,
+        key: &K,
+        value: V,
+        invalidations_before: InvalidationCount<K>,
+        commit: Fut,
+    ) -> Result<(), E>
+    where
+        Fut: std::future::Future<Output = Result<(), E>> + Send,
+        E: Send + Sync + 'static,
+    {
+        if !self.enabled {
+            return commit.await;
+        }
+        let stripe = self.invalidations.stripe(key);
+        let outcome = self
+            .cache
+            .entry(key.clone())
+            .and_try_compute_with(|_| async move {
+                commit.await?;
+                if stripe.load(Ordering::Acquire) == invalidations_before.0 {
+                    Ok(Op::Put(value))
+                } else {
+                    Ok(Op::Remove)
+                }
+            })
+            .await?;
+        if matches!(
+            outcome,
+            CompResult::Inserted(_) | CompResult::ReplacedWith(_)
+        ) {
+            tracing::debug!("Inserted {} for {key} into cache", self.noun);
+        } else {
+            tracing::debug!(
+                "Left {} for {key} uncached after an overlapping invalidation",
+                self.noun
+            );
+        }
+        self.update_size_metric();
+        Ok(())
+    }
+
+    async fn get(&self, key: &K) -> Option<V> {
+        if !self.enabled {
+            return None;
+        }
+        self.update_size_metric();
+        if let Some(value) = self.cache.get(key).await {
+            tracing::debug!("Found {} for {key} in cache", self.noun);
+            cache_metrics::record_cache_hit(self.cache_type);
+            Some(value)
+        } else {
+            cache_metrics::record_cache_miss(self.cache_type);
+            None
+        }
+    }
+
+    /// Count an invalidation of `key`, then remove its entry.
+    ///
+    /// The removal runs through the loader's per-key compute lock (`Op::Remove`), not
+    /// a bare `invalidate()`: a bare invalidate is a different moka lock domain, so
+    /// one landing mid-load is a no-op and the loader's later insert resurrects the
+    /// revoked entry until TTL. `Op::Remove` orders this post-commit removal after
+    /// any in-flight load's insert. See [`Self::get_or_load_optional`].
+    async fn invalidate(&self, key: &K) {
+        if self.enabled {
+            tracing::debug!("Invalidating {} for {key} from cache", self.noun);
+            self.invalidations.bump(key);
+            self.remove(key).await;
+            self.update_size_metric();
+        }
+    }
+
+    /// [`Self::invalidate`] for every key in `keys`, bumping each distinct stripe
+    /// once.
+    async fn invalidate_many(&self, keys: &[K]) {
+        if !self.enabled || keys.is_empty() {
+            return;
+        }
+        self.invalidations.bump_many(keys);
+        for key in keys {
+            tracing::debug!("Invalidating {} for {key} from cache", self.noun);
+            self.remove(key).await;
+        }
+        self.update_size_metric();
+    }
+
+    async fn remove(&self, key: &K) {
+        self.cache
+            .entry(key.clone())
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
+    }
+
+    /// [`Self::get_or_load_optional`] for a loader that always finds its entry.
+    pub(super) async fn get_or_load<Fut>(
+        &self,
+        key: &K,
+        load: Fut,
+    ) -> Result<V, CatalogBackendError>
+    where
+        Fut: std::future::Future<Output = Result<V, CatalogBackendError>> + Send,
+    {
+        self.get_or_load_optional(key, async move { load.await.map(Some) })
+            .await?
+            .ok_or_else(|| {
+                CatalogBackendError::new_unexpected(std::io::Error::other(format!(
+                    "{} cache compute returned no entry",
+                    self.cache_type
+                )))
+            })
+    }
+
+    /// Single-flight read-through. A `None` from `load` is returned and never
+    /// cached, so the entry stays absent.
+    ///
+    /// Concurrent misses for the same key coalesce onto one loader run that finds its
+    /// entry, unless an invalidation counted during the load (see below). Otherwise
+    /// each queued caller loads again. Hit/miss metrics and the `enabled` flag are
+    /// preserved; with the cache disabled `load` runs directly. Errors are never
+    /// cached: each serialized caller re-runs a failing load.
+    ///
+    /// Uses `and_try_compute_with`: moka holds the per-key compute lock across the
+    /// `load` await, and [`Self::invalidate`] removes through that same lock
+    /// (`Op::Remove`). So a removal racing an in-flight load runs after this
+    /// loader's insert or before the load starts.
+    ///
+    /// The loader also reads the key's invalidation count before `load` and caches
+    /// the result only if the count is unchanged. So an invalidation that counts
+    /// during the load leaves the result uncached, also when its `Op::Remove` never
+    /// runs. One that counts after that check and whose request is cancelled before
+    /// its `Op::Remove` runs leaves this insert cached until the TTL.
+    pub(super) async fn get_or_load_optional<Fut>(
+        &self,
+        key: &K,
+        load: Fut,
+    ) -> Result<Option<V>, CatalogBackendError>
+    where
+        Fut: std::future::Future<Output = Result<Option<V>, CatalogBackendError>> + Send,
+    {
+        if !self.enabled {
+            return load.await;
+        }
+        // Fast path: a hit returns the stored value.
+        if let Some(cached) = self.get(key).await {
+            return Ok(Some(cached));
+        }
+
+        // Miss (already counted by the get above).
+        let stripe = self.invalidations.stripe(key);
+        let mut uncached = None;
+        let uncached_slot = &mut uncached;
+        let outcome = self
+            .cache
+            .entry(key.clone())
+            .and_try_compute_with(|maybe_entry| async move {
+                if maybe_entry.is_some() {
+                    // Populated by another caller while we waited on the key lock.
+                    return Ok::<_, CatalogBackendError>(Op::Nop);
+                }
+                let invalidations_before = stripe.load(Ordering::Acquire);
+                match load.await? {
+                    Some(value) if stripe.load(Ordering::Acquire) == invalidations_before => {
+                        Ok(Op::Put(value))
+                    }
+                    Some(value) => {
+                        *uncached_slot = Some(value);
+                        Ok(Op::Nop)
+                    }
+                    None => Ok(Op::Nop),
+                }
+            })
+            .await?;
+        self.update_size_metric();
+        if let Some(loaded) = uncached {
+            return Ok(Some(loaded));
+        }
+
+        Ok(match outcome {
+            CompResult::Inserted(entry)
+            | CompResult::ReplacedWith(entry)
+            | CompResult::Unchanged(entry) => Some(entry.into_value()),
+            // `StillNone`: the loader returned `None`. `Removed` is unreachable, since
+            // the closure returns only `Nop` or `Put`.
+            CompResult::StillNone(_) | CompResult::Removed(_) => None,
+        })
+    }
+
+    fn update_size_metric(&self) {
+        cache_metrics::set_cache_size(self.cache_type, self.cache.entry_count());
+    }
+}
+
+// ============================================================================
 // User assignments cache  (UserId → Arc<ListUserRoleAssignmentsResult>)
 // ============================================================================
 
-const CACHE_TYPE_UA: &str = "user_assignments";
-
 /// Hot path: one entry per active user.
 ///
-/// Value is `Arc`-wrapped so every caller receives a pointer clone — O(1) —
-/// rather than a deep copy of the `Vec<AssignedRole>`.
-pub(crate) static USER_ASSIGNMENTS_CACHE: std::sync::LazyLock<
-    Cache<UserId, Arc<ListUserRoleAssignmentsResult>>,
+/// Value is `Arc`-wrapped, so every caller receives an O(1) pointer clone of the
+/// `Vec<AssignedRole>`.
+pub(super) static USER_ASSIGNMENTS_CACHE: std::sync::LazyLock<
+    CountedCache<UserId, Arc<ListUserRoleAssignmentsResult>>,
 > = std::sync::LazyLock::new(|| {
-    Cache::builder()
-        .max_capacity(CONFIG.cache.user_assignments.capacity)
-        .initial_capacity(1_000)
-        .time_to_live(Duration::from_secs(
-            CONFIG.cache.user_assignments.time_to_live_secs,
-        ))
-        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
-            CONFIG.cache.user_assignments.time_to_live_secs,
-        )))
-        .build()
+    CountedCache::new(
+        "user_assignments",
+        "user assignments",
+        CONFIG.cache.user_assignments.enabled,
+        Cache::builder()
+            .max_capacity(CONFIG.cache.user_assignments.capacity)
+            .initial_capacity(1_000)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            )))
+            .build(),
+    )
 });
-
-pub(crate) async fn user_assignments_cache_insert(
-    user_id: &UserId,
-    result: Arc<ListUserRoleAssignmentsResult>,
-) {
-    if CONFIG.cache.user_assignments.enabled {
-        tracing::debug!("Inserting user assignments for {user_id} into cache");
-        USER_ASSIGNMENTS_CACHE.insert(user_id.clone(), result).await;
-        update_ua_size_metric();
-    }
-}
-
-pub(crate) async fn user_assignments_cache_get(
-    user_id: &UserId,
-) -> Option<Arc<ListUserRoleAssignmentsResult>> {
-    if !CONFIG.cache.user_assignments.enabled {
-        return None;
-    }
-    update_ua_size_metric();
-    if let Some(result) = USER_ASSIGNMENTS_CACHE.get(user_id).await {
-        tracing::debug!("User assignments for {user_id} found in cache");
-        cache_metrics::record_cache_hit(CACHE_TYPE_UA);
-        Some(result)
-    } else {
-        cache_metrics::record_cache_miss(CACHE_TYPE_UA);
-        None
-    }
-}
 
 #[allow(dead_code)] // Not required for all features
 pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
-    if CONFIG.cache.user_assignments.enabled {
-        tracing::debug!("Invalidating user assignments for {user_id} from cache");
-        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
-        // `invalidate()`: a bare invalidate is a different moka lock domain, so one
-        // landing mid-load is a no-op and the loader's later insert resurrects the
-        // revoked entry until TTL. `Op::Remove` orders this post-commit removal after
-        // any in-flight load's insert. See `user_assignments_cache_get_or_load`.
-        USER_ASSIGNMENTS_CACHE
-            .entry(user_id.clone())
-            .and_compute_with(|_| async { Op::Remove })
-            .await;
-        update_ua_size_metric();
-    }
+    USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
 }
 
 /// Invalidate the user-assignments cache entry for every user in `user_ids`.
@@ -101,86 +391,7 @@ pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
 /// used when a single mutation (e.g. a `role_membership` edge change) makes the
 /// effective-role list of a whole set of users stale at once.
 pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) {
-    if !CONFIG.cache.user_assignments.enabled {
-        return;
-    }
-    for user_id in user_ids {
-        tracing::debug!("Invalidating user assignments for {user_id} from cache");
-        // Compute-based removal — serializes with the loader. See
-        // `user_assignments_cache_invalidate`.
-        USER_ASSIGNMENTS_CACHE
-            .entry(user_id.clone())
-            .and_compute_with(|_| async { Op::Remove })
-            .await;
-    }
-    update_ua_size_metric();
-}
-
-#[inline]
-fn update_ua_size_metric() {
-    cache_metrics::set_cache_size(CACHE_TYPE_UA, USER_ASSIGNMENTS_CACHE.entry_count());
-}
-
-/// Single-flight read-through for the user-assignments cache.
-///
-/// Concurrent misses for the same `user_id` coalesce onto one loader run; hit/miss
-/// metrics and the `enabled` flag are preserved; errors are never cached (returned
-/// by value, never poisoning the entry).
-///
-/// Uses `and_try_compute_with`, not `try_get_with`, deliberately: moka holds the
-/// per-key compute lock across the `load` await, and `user_assignments_cache_invalidate`
-/// removes through that *same* lock (`Op::Remove`). So a revocation racing an
-/// in-flight load can't be lost — it is serialized after this loader's insert
-/// (cleaning it up) or before it starts. `try_get_with` removed in a different lock
-/// domain, so the loader's insert resurrected the revoked grant until TTL.
-pub(super) async fn user_assignments_cache_get_or_load<Fut>(
-    user_id: &UserId,
-    load: Fut,
-) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError>
-where
-    Fut: std::future::Future<
-            Output = Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError>,
-        > + Send,
-{
-    if !CONFIG.cache.user_assignments.enabled {
-        return load.await;
-    }
-
-    // Fast path: a hit returns the stored `Arc`. Reuses `user_assignments_cache_get`
-    // so hit/miss metrics and the size gauge stay in one place.
-    if let Some(cached) = user_assignments_cache_get(user_id).await {
-        return Ok(cached);
-    }
-
-    // Miss (already counted by the get above): coalesce concurrent loaders for this
-    // key and hold the per-key compute lock across the load, so a racing invalidate
-    // is serialized against us rather than lost (see the doc comment).
-    let outcome = USER_ASSIGNMENTS_CACHE
-        .entry(user_id.clone())
-        .and_try_compute_with(|maybe_entry| async move {
-            if maybe_entry.is_some() {
-                // Populated by another caller while we waited on the key lock.
-                return Ok::<_, CatalogBackendError>(Op::Nop);
-            }
-            Ok(Op::Put(load.await?))
-        })
-        .await?;
-    update_ua_size_metric();
-
-    Ok(match outcome {
-        CompResult::Inserted(entry)
-        | CompResult::ReplacedWith(entry)
-        | CompResult::Unchanged(entry) => entry.into_value(),
-        // Unreachable: the closure only emits `Put` (→ Inserted) or `Nop` with an
-        // existing entry (→ Unchanged). Re-read defensively rather than panic.
-        CompResult::StillNone(_) | CompResult::Removed(_) => {
-            user_assignments_cache_get(user_id).await.ok_or_else(|| {
-                CatalogBackendError::new_unexpected(std::io::Error::other(
-                    "user-assignments cache compute returned no entry",
-                ))
-            })?
-        }
-    })
+    USER_ASSIGNMENTS_CACHE.invalidate_many(user_ids).await;
 }
 
 // ============================================================================
@@ -295,129 +506,33 @@ fn update_shared_identity_metrics() {
 // Role members cache  (RoleId → Arc<ListRoleMembersResult>)
 // ============================================================================
 
-const CACHE_TYPE_RM: &str = "role_members";
-
 /// Cold path: one entry per queried role. `RoleId` is `Copy` (UUID).
 ///
 /// Value is `Arc`-wrapped because each entry may hold an arbitrarily large
 /// `Vec<AssignedUser>`.
-pub(crate) static ROLE_MEMBERS_CACHE: std::sync::LazyLock<
-    Cache<RoleId, Arc<ListRoleMembersResult>>,
+pub(super) static ROLE_MEMBERS_CACHE: std::sync::LazyLock<
+    CountedCache<RoleId, Arc<ListRoleMembersResult>>,
 > = std::sync::LazyLock::new(|| {
-    Cache::builder()
-        .max_capacity(CONFIG.cache.role_members.capacity)
-        .initial_capacity(100)
-        .time_to_live(Duration::from_secs(
-            CONFIG.cache.role_members.time_to_live_secs,
-        ))
-        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
-            CONFIG.cache.role_members.time_to_live_secs,
-        )))
-        .build()
+    CountedCache::new(
+        "role_members",
+        "role members",
+        CONFIG.cache.role_members.enabled,
+        Cache::builder()
+            .max_capacity(CONFIG.cache.role_members.capacity)
+            .initial_capacity(100)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.role_members.time_to_live_secs,
+            ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.role_members.time_to_live_secs,
+            )))
+            .build(),
+    )
 });
-
-pub(crate) async fn role_members_cache_insert(role_id: RoleId, result: Arc<ListRoleMembersResult>) {
-    if CONFIG.cache.role_members.enabled {
-        tracing::debug!("Inserting role members for {role_id} into cache");
-        ROLE_MEMBERS_CACHE.insert(role_id, result).await;
-        update_rm_size_metric();
-    }
-}
-
-pub(crate) async fn role_members_cache_get(role_id: RoleId) -> Option<Arc<ListRoleMembersResult>> {
-    if !CONFIG.cache.role_members.enabled {
-        return None;
-    }
-    update_rm_size_metric();
-    if let Some(result) = ROLE_MEMBERS_CACHE.get(&role_id).await {
-        tracing::debug!("Role members for {role_id} found in cache");
-        cache_metrics::record_cache_hit(CACHE_TYPE_RM);
-        Some(result)
-    } else {
-        cache_metrics::record_cache_miss(CACHE_TYPE_RM);
-        None
-    }
-}
 
 #[allow(dead_code)] // Not required for all features
 pub(crate) async fn role_members_cache_invalidate(role_id: RoleId) {
-    if CONFIG.cache.role_members.enabled {
-        tracing::debug!("Invalidating role members for {role_id} from cache");
-        // Compute-based removal — serializes with the loader's per-key lock so a
-        // racing in-flight load can't resurrect the entry. See
-        // `user_assignments_cache_invalidate`.
-        ROLE_MEMBERS_CACHE
-            .entry(role_id)
-            .and_compute_with(|_| async { Op::Remove })
-            .await;
-        update_rm_size_metric();
-    }
-}
-
-#[inline]
-fn update_rm_size_metric() {
-    cache_metrics::set_cache_size(CACHE_TYPE_RM, ROLE_MEMBERS_CACHE.entry_count());
-}
-
-/// Single-flight read-through for the role-members cache.
-///
-/// On a miss, concurrent requests for the same `role_id` are **coalesced**: moka
-/// serializes the per-key compute, so the loader runs once and later callers
-/// observe the just-inserted entry instead of re-loading. Unlike the
-/// user-assignments read-through this one returns `Option` — a non-existent role
-/// yields `None` and is **not** negative-cached (the entry stays absent). The
-/// `enabled` flag and hit/miss metrics are preserved; when caching is disabled
-/// the loader runs directly. `and_try_compute_with` returns the loader error by
-/// value (no `Arc`-sharing), so no wrapping or cloning is needed.
-pub(super) async fn role_members_cache_get_or_load<Fut>(
-    role_id: RoleId,
-    load: Fut,
-) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError>
-where
-    Fut: std::future::Future<
-            Output = Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError>,
-        > + Send,
-{
-    if !CONFIG.cache.role_members.enabled {
-        return load.await;
-    }
-
-    // Fast path: a hit returns the stored `Arc` and keeps the hit/miss metrics in
-    // `role_members_cache_get`.
-    if let Some(cached) = role_members_cache_get(role_id).await {
-        return Ok(Some(cached));
-    }
-
-    // Miss: coalesce concurrent loaders for this key. moka holds a per-key lock
-    // across the compute, so only the first caller runs `load`; the rest see the
-    // entry it inserted and skip straight to it.
-    let outcome = ROLE_MEMBERS_CACHE
-        .entry(role_id)
-        .and_try_compute_with(|maybe_entry| async move {
-            if maybe_entry.is_some() {
-                // Populated by another caller while we waited on the key lock.
-                return Ok(Op::Nop);
-            }
-            match load.await {
-                Ok(Some(value)) => Ok(Op::Put(value)),
-                // Absent role — never negative-cached. Coalescing therefore
-                // applies only to a found role; concurrent lookups of a missing
-                // one each re-run the loader (rare, and no worse than before).
-                Ok(None) => Ok(Op::Nop),
-                Err(e) => Err(e),
-            }
-        })
-        .await?;
-    update_rm_size_metric();
-
-    Ok(match outcome {
-        CompResult::Inserted(entry)
-        | CompResult::ReplacedWith(entry)
-        | CompResult::Unchanged(entry) => Some(entry.into_value()),
-        // `StillNone` = absent (loader returned `None`). `Removed` is unreachable
-        // here — the closure only returns `Nop`/`Put`, never `Remove`.
-        CompResult::StillNone(_) | CompResult::Removed(_) => None,
-    })
+    ROLE_MEMBERS_CACHE.invalidate(&role_id).await;
 }
 
 // ============================================================================
@@ -589,6 +704,57 @@ mod tests {
         },
     };
 
+    type UaCache = CountedCache<UserId, Arc<ListUserRoleAssignmentsResult>>;
+    type RmCache = CountedCache<RoleId, Arc<ListRoleMembersResult>>;
+
+    /// A user-assignments cache of the calling test's own, so other tests' entries and
+    /// invalidations cannot reach it.
+    fn ua_cache() -> Arc<UaCache> {
+        Arc::new(CountedCache::new(
+            "test_user_assignments",
+            "user assignments",
+            true,
+            Cache::new(1_000),
+        ))
+    }
+
+    /// A role-members cache of the calling test's own; see [`ua_cache`].
+    fn rm_cache() -> Arc<RmCache> {
+        Arc::new(CountedCache::new(
+            "test_role_members",
+            "role members",
+            true,
+            Cache::new(1_000),
+        ))
+    }
+
+    /// A sync of `key`: read its invalidation count, then commit and cache `value`.
+    async fn sync_for_test<K, V>(
+        cache: &CountedCache<K, V>,
+        key: &K,
+        value: V,
+        commit: impl std::future::Future<Output = Result<(), CatalogBackendError>> + Send,
+    ) -> Result<(), CatalogBackendError>
+    where
+        K: Hash + Eq + Clone + Display + Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        let invalidations_before = cache.invalidations(key);
+        cache
+            .commit_and_cache(key, value, invalidations_before, commit)
+            .await
+    }
+
+    async fn insert_for_test<K, V>(cache: &CountedCache<K, V>, key: &K, value: V)
+    where
+        K: Hash + Eq + Clone + Display + Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        sync_for_test(cache, key, value, async { Ok(()) })
+            .await
+            .expect("a no-op commit succeeds");
+    }
+
     fn test_user_id(s: &str) -> UserId {
         serde_json::from_str(&format!(r#""oidc~{s}""#)).unwrap()
     }
@@ -654,28 +820,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_assignments_insert_and_get() {
+        let cache = ua_cache();
         let user_id = test_user_id("insert-get");
-        user_assignments_cache_insert(&user_id, empty_user_result()).await;
+        insert_for_test(&cache, &user_id, empty_user_result()).await;
 
-        let cached = user_assignments_cache_get(&user_id).await;
+        let cached = cache.get(&user_id).await;
         assert!(cached.is_some());
         assert_eq!(cached.unwrap().roles.len(), 0);
     }
 
     #[tokio::test]
     async fn test_user_assignments_miss() {
+        let cache = ua_cache();
         let user_id = test_user_id("never-inserted-ua");
-        assert!(user_assignments_cache_get(&user_id).await.is_none());
+        assert!(cache.get(&user_id).await.is_none());
     }
 
     #[tokio::test]
     async fn test_user_assignments_invalidate() {
+        let cache = ua_cache();
         let user_id = test_user_id("invalidate-ua");
-        user_assignments_cache_insert(&user_id, empty_user_result()).await;
-        assert!(user_assignments_cache_get(&user_id).await.is_some());
+        insert_for_test(&cache, &user_id, empty_user_result()).await;
+        assert!(cache.get(&user_id).await.is_some());
 
-        user_assignments_cache_invalidate(&user_id).await;
-        assert!(user_assignments_cache_get(&user_id).await.is_none());
+        cache.invalidate(&user_id).await;
+        assert!(cache.get(&user_id).await.is_none());
     }
 
     /// Regression: a revocation racing an in-flight loader must win — no resurrecting
@@ -688,9 +857,8 @@ mod tests {
     async fn invalidate_wins_over_in_flight_user_assignments_loader() {
         use tokio::sync::oneshot;
 
+        let cache = ua_cache();
         let user_id = test_user_id("race-invalidate-vs-loader");
-        // Clean slate — the cache is a process-global static shared across tests.
-        user_assignments_cache_invalidate(&user_id).await;
 
         let (started_tx, started_rx) = oneshot::channel::<()>();
         let (release_tx, release_rx) = oneshot::channel::<()>();
@@ -706,21 +874,23 @@ mod tests {
         // signals once mid-flight, then blocks until the test releases it before
         // returning the now-stale snapshot.
         let uid = user_id.clone();
+        let cache_task = Arc::clone(&cache);
         let loader = tokio::spawn(async move {
             let load = async move {
                 started_tx.send(()).unwrap();
                 release_rx.await.unwrap();
                 Ok(stale_for_loader)
             };
-            user_assignments_cache_get_or_load(&uid, load).await
+            cache_task.get_or_load(&uid, load).await
         });
 
         // Once the loader holds the key lock, fire the revocation. Its `Op::Remove`
         // queues behind the loader on the same key lock.
         started_rx.await.unwrap();
         let inv_uid = user_id.clone();
+        let cache_task = Arc::clone(&cache);
         let invalidate = tokio::spawn(async move {
-            user_assignments_cache_invalidate(&inv_uid).await;
+            cache_task.invalidate(&inv_uid).await;
         });
 
         release_tx.send(()).unwrap();
@@ -732,8 +902,530 @@ mod tests {
         assert_eq!(returned.roles.len(), 1);
         // ... but the cache must NOT retain the revoked grant: the invalidate won.
         assert!(
-            user_assignments_cache_get(&user_id).await.is_none(),
+            cache.get(&user_id).await.is_none(),
             "revoked grant was resurrected by the racing loader"
+        );
+    }
+
+    /// A load that read before a sync committed cannot overwrite the sync's result: the
+    /// sync's commit waits for the load's write, then replaces it.
+    #[tokio::test]
+    async fn a_sync_racing_a_load_leaves_the_synced_entry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use tokio::sync::oneshot;
+
+        let cache = ua_cache();
+        let user_id = test_user_id("race-sync-vs-loader");
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let before_sync = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "before-sync"),
+        );
+        let after_sync = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "after-sync"),
+        );
+
+        let uid = user_id.clone();
+        let cache_task = Arc::clone(&cache);
+        let loader = tokio::spawn(async move {
+            let load = async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(before_sync)
+            };
+            cache_task.get_or_load(&uid, load).await
+        });
+        started_rx.await.unwrap();
+
+        let committed = Arc::new(AtomicBool::new(false));
+        let cache_task = Arc::clone(&cache);
+        let sync = tokio::spawn({
+            let uid = user_id.clone();
+            let committed = Arc::clone(&committed);
+            let after_sync = Arc::clone(&after_sync);
+            async move {
+                sync_for_test(&cache_task, &uid, after_sync, async move {
+                    committed.store(true, Ordering::SeqCst);
+                    Ok::<_, CatalogBackendError>(())
+                })
+                .await
+            }
+        });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !committed.load(Ordering::SeqCst),
+            "the commit waits for the in-flight load"
+        );
+
+        release_tx.send(()).unwrap();
+        loader.await.unwrap().expect("loader succeeds");
+        sync.await.unwrap().expect("sync succeeds");
+
+        let cached = cache.get(&user_id).await.expect("cached");
+        assert!(
+            Arc::ptr_eq(&cached, &after_sync),
+            "the synced state stays cached"
+        );
+    }
+
+    /// Two syncs of one user write the cache in commit order, so the later one stays.
+    #[tokio::test]
+    async fn two_syncs_leave_the_later_commit_cached() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use tokio::sync::oneshot;
+
+        let cache = ua_cache();
+        let user_id = test_user_id("race-sync-vs-sync");
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let first = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "first-sync"),
+        );
+        let second = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "second-sync"),
+        );
+
+        let cache_task = Arc::clone(&cache);
+        let first_sync = tokio::spawn({
+            let uid = user_id.clone();
+            async move {
+                sync_for_test(&cache_task, &uid, first, async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok::<_, CatalogBackendError>(())
+                })
+                .await
+            }
+        });
+        started_rx.await.unwrap();
+
+        let second_committed = Arc::new(AtomicBool::new(false));
+        let cache_task = Arc::clone(&cache);
+        let second_sync = tokio::spawn({
+            let uid = user_id.clone();
+            let second_committed = Arc::clone(&second_committed);
+            let second = Arc::clone(&second);
+            async move {
+                sync_for_test(&cache_task, &uid, second, async move {
+                    second_committed.store(true, Ordering::SeqCst);
+                    Ok::<_, CatalogBackendError>(())
+                })
+                .await
+            }
+        });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !second_committed.load(Ordering::SeqCst),
+            "the second commit waits for the first sync's cache write"
+        );
+
+        release_tx.send(()).unwrap();
+        first_sync.await.unwrap().expect("first sync succeeds");
+        second_sync.await.unwrap().expect("second sync succeeds");
+
+        let cached = cache.get(&user_id).await.expect("cached");
+        assert!(
+            Arc::ptr_eq(&cached, &second),
+            "the later commit stays cached"
+        );
+    }
+
+    /// A failed commit returns its error and leaves the cached entry as it was.
+    #[tokio::test]
+    async fn a_failed_commit_caches_nothing() {
+        let cache = ua_cache();
+        let user_id = test_user_id("failed-commit");
+        let existing = empty_user_result();
+        insert_for_test(&cache, &user_id, Arc::clone(&existing)).await;
+
+        let err = sync_for_test(
+            &cache,
+            &user_id,
+            user_result_with_role(
+                RoleId::new_random(),
+                Arc::new(ProjectId::new_random()),
+                test_role_ident("lakekeeper", "uncommitted"),
+            ),
+            async {
+                Err(CatalogBackendError::new_unexpected(std::io::Error::other(
+                    "boom",
+                )))
+            },
+        )
+        .await;
+        assert!(err.is_err(), "the commit error reaches the caller");
+
+        let cached = cache.get(&user_id).await.expect("cached");
+        assert!(
+            Arc::ptr_eq(&cached, &existing),
+            "the uncommitted state is not cached"
+        );
+    }
+
+    /// A role-assignment removal that commits between a sync's read and its commit
+    /// invalidates before the sync takes the key lock. The sync's snapshot still holds
+    /// the removed role, so the sync removes the entry and the next read loads.
+    #[tokio::test]
+    async fn an_invalidation_during_a_sync_removes_its_entry() {
+        let cache = ua_cache();
+        let user_id = test_user_id("invalidation-during-sync");
+        let removed_role = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "removed-during-sync"),
+        );
+        insert_for_test(&cache, &user_id, Arc::clone(&removed_role)).await;
+
+        let invalidations_before = cache.invalidations(&user_id);
+        // The removal commits and invalidates while the sync's transaction is open.
+        cache.invalidate(&user_id).await;
+
+        cache
+            .commit_and_cache(
+                &user_id,
+                Arc::clone(&removed_role),
+                invalidations_before,
+                async { Ok::<_, CatalogBackendError>(()) },
+            )
+            .await
+            .expect("sync succeeds");
+        assert!(
+            cache.get(&user_id).await.is_none(),
+            "the sync's pre-removal snapshot is not cached"
+        );
+    }
+
+    /// Without an invalidation since its read, a sync caches its result.
+    #[tokio::test]
+    async fn a_sync_without_an_invalidation_caches_its_entry() {
+        let cache = ua_cache();
+        let user_id = test_user_id("sync-without-invalidation");
+        let synced = empty_user_result();
+
+        sync_for_test(&cache, &user_id, Arc::clone(&synced), async { Ok(()) })
+            .await
+            .expect("sync succeeds");
+        let entry = cache.get(&user_id).await.expect("cached");
+        assert!(Arc::ptr_eq(&entry, &synced));
+    }
+
+    /// Role members: a load that read before a sync committed cannot overwrite the
+    /// sync's result.
+    #[tokio::test]
+    async fn a_role_members_sync_racing_a_load_leaves_the_synced_entry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use tokio::sync::oneshot;
+
+        let cache = rm_cache();
+        let role_id = RoleId::new_random();
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let before_sync = role_result_with_members(role_id, vec![test_user_id("rm-before-sync")]);
+        let after_sync = role_result_with_members(role_id, vec![test_user_id("rm-after-sync")]);
+
+        let cache_task = Arc::clone(&cache);
+        let loader = tokio::spawn(async move {
+            let load = async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(Some(before_sync))
+            };
+            cache_task.get_or_load_optional(&role_id, load).await
+        });
+        started_rx.await.unwrap();
+
+        let committed = Arc::new(AtomicBool::new(false));
+        let cache_task = Arc::clone(&cache);
+        let sync = tokio::spawn({
+            let committed = Arc::clone(&committed);
+            let after_sync = Arc::clone(&after_sync);
+            async move {
+                sync_for_test(&cache_task, &role_id, after_sync, async move {
+                    committed.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+            }
+        });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !committed.load(Ordering::SeqCst),
+            "the commit waits for the in-flight load"
+        );
+
+        release_tx.send(()).unwrap();
+        loader.await.unwrap().expect("loader succeeds");
+        sync.await.unwrap().expect("sync succeeds");
+
+        let cached = cache.get(&role_id).await.expect("cached");
+        assert!(
+            Arc::ptr_eq(&cached, &after_sync),
+            "the synced member list stays cached"
+        );
+    }
+
+    /// Role members: an invalidation between a sync's read and its commit makes the
+    /// sync remove the entry.
+    #[tokio::test]
+    async fn an_invalidation_during_a_role_members_sync_removes_its_entry() {
+        let cache = rm_cache();
+        let role_id = RoleId::new_random();
+        let stale = role_result_with_members(role_id, vec![test_user_id("rm-removed-member")]);
+        insert_for_test(&cache, &role_id, Arc::clone(&stale)).await;
+
+        let invalidations_before = cache.invalidations_snapshot();
+        cache.invalidate(&role_id).await;
+
+        cache
+            .commit_and_cache(
+                &role_id,
+                Arc::clone(&stale),
+                invalidations_before.read(&role_id),
+                async { Ok::<_, CatalogBackendError>(()) },
+            )
+            .await
+            .expect("sync succeeds");
+        assert!(
+            cache.get(&role_id).await.is_none(),
+            "the sync's pre-invalidation member list is not cached"
+        );
+    }
+
+    /// `invalidate_many` bumps the stripe of each of its keys once, so a sync of any of
+    /// them that overlaps it removes its entry.
+    #[tokio::test]
+    async fn invalidate_many_bumps_each_key_and_an_overlapping_sync_removes() {
+        let cache = ua_cache();
+        let first = test_user_id("invalidate-many-first");
+        let second = test_user_id("invalidate-many-second");
+        let first_before = cache.invalidations(&first).0;
+        let second_before = cache.invalidations(&second);
+
+        cache
+            .invalidate_many(&[first.clone(), first.clone(), second.clone()])
+            .await;
+        assert!(cache.invalidations(&first).0 > first_before);
+        assert!(cache.invalidations(&second).0 > second_before.0);
+        let first_after = cache.invalidations(&first).0;
+        cache.invalidate_many(&[first.clone(), first.clone()]).await;
+        assert_eq!(
+            cache.invalidations(&first).0,
+            first_after + 1,
+            "a stripe is bumped once per call"
+        );
+
+        cache
+            .commit_and_cache(&second, empty_user_result(), second_before, async {
+                Ok::<_, CatalogBackendError>(())
+            })
+            .await
+            .expect("sync succeeds");
+        assert!(
+            cache.get(&second).await.is_none(),
+            "the overlapping sync removes its entry"
+        );
+    }
+
+    /// The production functions count in the process's caches: each invalidation
+    /// increases its key's stripe in its own cache's counts. Only increases are
+    /// checked, so the test holds whatever else the process invalidates.
+    #[tokio::test]
+    async fn the_invalidate_functions_count_in_the_process_caches() {
+        let user_id = test_user_id("process-counters");
+        let before = USER_ASSIGNMENTS_CACHE.invalidations(&user_id).0;
+        user_assignments_cache_invalidate(&user_id).await;
+        assert!(USER_ASSIGNMENTS_CACHE.invalidations(&user_id).0 > before);
+
+        let other = test_user_id("process-counters-many");
+        let before = USER_ASSIGNMENTS_CACHE.invalidations(&other).0;
+        user_assignments_cache_invalidate_many(std::slice::from_ref(&other)).await;
+        assert!(USER_ASSIGNMENTS_CACHE.invalidations(&other).0 > before);
+
+        let role_id = RoleId::new_random();
+        let before = ROLE_MEMBERS_CACHE.invalidations(&role_id).0;
+        role_members_cache_invalidate(role_id).await;
+        assert!(ROLE_MEMBERS_CACHE.invalidations(&role_id).0 > before);
+    }
+
+    /// An invalidation of a key in another stripe leaves an overlapping sync's write.
+    #[tokio::test]
+    async fn an_invalidation_in_another_stripe_leaves_the_sync_entry() {
+        let cache = ua_cache();
+        let user_id = test_user_id("stripe-own");
+        let other = (0..1024)
+            .map(|n| test_user_id(&format!("stripe-other-{n:04}")))
+            .find(|other| {
+                Invalidations::stripe_index(other) != Invalidations::stripe_index(&user_id)
+            })
+            .expect("some id hashes to another stripe");
+        let invalidations_before = cache.invalidations(&user_id);
+
+        cache.invalidate(&other).await;
+
+        let synced = empty_user_result();
+        cache
+            .commit_and_cache(&user_id, Arc::clone(&synced), invalidations_before, async {
+                Ok::<_, CatalogBackendError>(())
+            })
+            .await
+            .expect("sync succeeds");
+        let cached = cache.get(&user_id).await.expect("cached");
+        assert!(Arc::ptr_eq(&cached, &synced));
+    }
+
+    /// An empty `invalidate_many` bumps nothing, so an overlapping sync still caches.
+    #[tokio::test]
+    async fn an_empty_invalidate_many_bumps_nothing() {
+        let cache = ua_cache();
+        let user_id = test_user_id("invalidate-many-empty");
+        let before = cache.invalidations_snapshot();
+        let invalidations_before = cache.invalidations(&user_id);
+
+        cache.invalidate_many(&[]).await;
+        assert_eq!(cache.invalidations_snapshot().0, before.0);
+
+        let synced = empty_user_result();
+        cache
+            .commit_and_cache(&user_id, Arc::clone(&synced), invalidations_before, async {
+                Ok::<_, CatalogBackendError>(())
+            })
+            .await
+            .expect("sync succeeds");
+        let cached = cache.get(&user_id).await.expect("cached");
+        assert!(Arc::ptr_eq(&cached, &synced));
+    }
+
+    /// An invalidation that counts during a load leaves no entry, also when its
+    /// `Op::Remove` never runs: here its request is dropped while it waits for the
+    /// key lock.
+    #[tokio::test]
+    async fn an_invalidation_during_a_load_leaves_no_entry() {
+        use tokio::sync::oneshot;
+
+        let cache = ua_cache();
+        let user_id = test_user_id("invalidation-during-load");
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let stale = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "revoked-during-load"),
+        );
+        let cache_task = Arc::clone(&cache);
+        let loader = tokio::spawn({
+            let uid = user_id.clone();
+            let stale = Arc::clone(&stale);
+            async move {
+                let load = async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok(stale)
+                };
+                cache_task.get_or_load(&uid, load).await
+            }
+        });
+        started_rx.await.unwrap();
+
+        let before = cache.invalidations(&user_id).0;
+        let cache_task = Arc::clone(&cache);
+        let invalidate = tokio::spawn({
+            let uid = user_id.clone();
+            async move { cache_task.invalidate(&uid).await }
+        });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            cache.invalidations(&user_id).0 > before,
+            "the invalidation counted and now waits for the key lock"
+        );
+        invalidate.abort();
+        assert!(invalidate.await.unwrap_err().is_cancelled());
+
+        release_tx.send(()).unwrap();
+        let returned = loader.await.unwrap().expect("loader succeeds");
+        assert!(
+            Arc::ptr_eq(&returned, &stale),
+            "the loader answers its caller"
+        );
+        assert!(
+            cache.get(&user_id).await.is_none(),
+            "the loaded state is not cached"
+        );
+    }
+
+    /// Role members: an invalidation that counts during a load leaves no entry, also
+    /// when its `Op::Remove` never runs.
+    #[tokio::test]
+    async fn an_invalidation_during_a_role_members_load_leaves_no_entry() {
+        use tokio::sync::oneshot;
+
+        let cache = rm_cache();
+        let role_id = RoleId::new_random();
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let stale = role_result_with_members(role_id, vec![test_user_id("rm-removed-during-load")]);
+        let cache_task = Arc::clone(&cache);
+        let loader = tokio::spawn({
+            let stale = Arc::clone(&stale);
+            async move {
+                let load = async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok(Some(stale))
+                };
+                cache_task.get_or_load_optional(&role_id, load).await
+            }
+        });
+        started_rx.await.unwrap();
+
+        let before = cache.invalidations(&role_id).0;
+        let cache_task = Arc::clone(&cache);
+        let invalidate = tokio::spawn(async move { cache_task.invalidate(&role_id).await });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            cache.invalidations(&role_id).0 > before,
+            "the invalidation counted and now waits for the key lock"
+        );
+        invalidate.abort();
+        assert!(invalidate.await.unwrap_err().is_cancelled());
+
+        release_tx.send(()).unwrap();
+        let returned = loader
+            .await
+            .unwrap()
+            .expect("loader succeeds")
+            .expect("the role exists");
+        assert!(
+            Arc::ptr_eq(&returned, &stale),
+            "the loader answers its caller"
+        );
+        assert!(
+            cache.get(&role_id).await.is_none(),
+            "the loaded member list is not cached"
         );
     }
 
@@ -743,8 +1435,8 @@ mod tests {
     async fn invalidate_wins_over_in_flight_role_members_loader() {
         use tokio::sync::oneshot;
 
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        role_members_cache_invalidate(role_id).await;
 
         let (started_tx, started_rx) = oneshot::channel::<()>();
         let (release_tx, release_rx) = oneshot::channel::<()>();
@@ -752,18 +1444,20 @@ mod tests {
         let stale = role_result_with_members(role_id, vec![test_user_id("stale-member")]);
         let stale_for_loader = Arc::clone(&stale);
 
+        let cache_task = Arc::clone(&cache);
         let loader = tokio::spawn(async move {
             let load = async move {
                 started_tx.send(()).unwrap();
                 release_rx.await.unwrap();
                 Ok(Some(stale_for_loader))
             };
-            role_members_cache_get_or_load(role_id, load).await
+            cache_task.get_or_load_optional(&role_id, load).await
         });
 
         started_rx.await.unwrap();
+        let cache_task = Arc::clone(&cache);
         let invalidate = tokio::spawn(async move {
-            role_members_cache_invalidate(role_id).await;
+            cache_task.invalidate(&role_id).await;
         });
 
         release_tx.send(()).unwrap();
@@ -772,21 +1466,22 @@ mod tests {
 
         assert_eq!(returned.unwrap().members.len(), 1);
         assert!(
-            role_members_cache_get(role_id).await.is_none(),
+            cache.get(&role_id).await.is_none(),
             "removed role-members entry was resurrected by the racing loader"
         );
     }
 
     #[tokio::test]
     async fn test_user_assignments_get_returns_same_arc() {
+        let cache = ua_cache();
         let user_id = test_user_id("arc-check-ua");
         let role_id = RoleId::new_random();
         let project_id = Arc::new(ProjectId::new_random());
         let role_ident = test_role_ident("lakekeeper", "arc-source");
         let result = user_result_with_role(role_id, project_id, role_ident);
 
-        user_assignments_cache_insert(&user_id, Arc::clone(&result)).await;
-        let cached = user_assignments_cache_get(&user_id).await.unwrap();
+        insert_for_test(&cache, &user_id, Arc::clone(&result)).await;
+        let cached = cache.get(&user_id).await.unwrap();
 
         // Only the Arc counter was bumped — no heap allocation.
         assert!(Arc::ptr_eq(&result, &cached));
@@ -830,6 +1525,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_assignments_sync_without_roles() {
+        let cache = ua_cache();
         let user_id = test_user_id("sync-no-roles");
         let provider_id = RoleProviderId::try_new("oidc").unwrap();
         let project_id = Arc::new(ProjectId::new_random());
@@ -844,8 +1540,8 @@ mod tests {
             }],
         });
 
-        user_assignments_cache_insert(&user_id, Arc::clone(&result)).await;
-        let cached = user_assignments_cache_get(&user_id).await.unwrap();
+        insert_for_test(&cache, &user_id, Arc::clone(&result)).await;
+        let cached = cache.get(&user_id).await.unwrap();
 
         assert_eq!(cached.roles.len(), 0, "no roles");
         assert_eq!(
@@ -930,16 +1626,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_assignments_overwrite() {
+        let cache = ua_cache();
         let user_id = test_user_id("overwrite-ua");
         let role_id = RoleId::new_random();
         let project_id = Arc::new(ProjectId::new_random());
         let role_ident = test_role_ident("lakekeeper", "overwrite-src");
 
-        user_assignments_cache_insert(&user_id, empty_user_result()).await;
+        insert_for_test(&cache, &user_id, empty_user_result()).await;
         let rich = user_result_with_role(role_id, project_id, role_ident);
-        user_assignments_cache_insert(&user_id, Arc::clone(&rich)).await;
+        insert_for_test(&cache, &user_id, Arc::clone(&rich)).await;
 
-        let cached = user_assignments_cache_get(&user_id).await.unwrap();
+        let cached = cache.get(&user_id).await.unwrap();
         assert_eq!(cached.roles.len(), 1);
     }
 
@@ -1120,9 +1817,8 @@ mod tests {
     async fn user_assignments_get_or_load_coalesces_concurrent_misses() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        let cache = ua_cache();
         let user_id = test_user_id("single-flight-coalesce");
-        // Guarantee a cold key (other tests share the process-wide cache).
-        user_assignments_cache_invalidate(&user_id).await;
 
         let loads = Arc::new(AtomicUsize::new(0));
         let value = user_result_with_role(
@@ -1136,18 +1832,20 @@ mod tests {
             let loads = Arc::clone(&loads);
             let uid = user_id.clone();
             let value = Arc::clone(&value);
+            let cache_task = Arc::clone(&cache);
             handles.push(tokio::spawn(async move {
-                user_assignments_cache_get_or_load(&uid, async move {
-                    loads.fetch_add(1, Ordering::SeqCst);
-                    // Widen the miss window so every caller races in before the
-                    // first load completes — without coalescing this forces N
-                    // loader runs (the behaviour this guards against).
-                    for _ in 0..100 {
-                        tokio::task::yield_now().await;
-                    }
-                    Ok::<_, CatalogBackendError>(value)
-                })
-                .await
+                cache_task
+                    .get_or_load(&uid, async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        // Widen the miss window so every caller races in before the
+                        // first load completes — without coalescing this forces N
+                        // loader runs (the behaviour this guards against).
+                        for _ in 0..100 {
+                            tokio::task::yield_now().await;
+                        }
+                        Ok::<_, CatalogBackendError>(value)
+                    })
+                    .await
             }));
         }
 
@@ -1167,9 +1865,6 @@ mod tests {
                 "every caller must receive the same coalesced Arc"
             );
         }
-
-        // Clean up the shared cache so we don't leak state into other tests.
-        user_assignments_cache_invalidate(&user_id).await;
     }
 
     /// A failed load must not poison the entry: every caller observes the error and
@@ -1183,8 +1878,9 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         const CALLERS: usize = 16;
+
+        let cache = ua_cache();
         let user_id = test_user_id("single-flight-error");
-        user_assignments_cache_invalidate(&user_id).await;
 
         let loads = Arc::new(AtomicUsize::new(0));
 
@@ -1194,17 +1890,19 @@ mod tests {
         for _ in 0..CALLERS {
             let loads = Arc::clone(&loads);
             let uid = user_id.clone();
+            let cache_task = Arc::clone(&cache);
             handles.push(tokio::spawn(async move {
-                user_assignments_cache_get_or_load(&uid, async move {
-                    loads.fetch_add(1, Ordering::SeqCst);
-                    for _ in 0..100 {
-                        tokio::task::yield_now().await;
-                    }
-                    Err::<Arc<ListUserRoleAssignmentsResult>, _>(
-                        CatalogBackendError::new_unexpected(std::io::Error::other("boom")),
-                    )
-                })
-                .await
+                cache_task
+                    .get_or_load(&uid, async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        for _ in 0..100 {
+                            tokio::task::yield_now().await;
+                        }
+                        Err::<Arc<ListUserRoleAssignmentsResult>, _>(
+                            CatalogBackendError::new_unexpected(std::io::Error::other("boom")),
+                        )
+                    })
+                    .await
             }));
         }
 
@@ -1220,7 +1918,7 @@ mod tests {
             "errors are not negative-cached, so each serialized caller re-runs the failing load"
         );
         assert!(
-            user_assignments_cache_get(&user_id).await.is_none(),
+            cache.get(&user_id).await.is_none(),
             "a failed load must not poison the entry"
         );
 
@@ -1230,19 +1928,18 @@ mod tests {
             Arc::new(ProjectId::new_random()),
             test_role_ident("lakekeeper", "after-error"),
         );
-        let loaded = user_assignments_cache_get_or_load(&user_id, {
-            let value = Arc::clone(&value);
-            async move { Ok::<_, CatalogBackendError>(value) }
-        })
-        .await
-        .expect("loader succeeds after a prior failure");
+        let loaded = cache
+            .get_or_load(&user_id, {
+                let value = Arc::clone(&value);
+                async move { Ok::<_, CatalogBackendError>(value) }
+            })
+            .await
+            .expect("loader succeeds after a prior failure");
         assert!(Arc::ptr_eq(&loaded, &value));
-        assert!(user_assignments_cache_get(&user_id).await.is_some());
-
-        user_assignments_cache_invalidate(&user_id).await;
+        assert!(cache.get(&user_id).await.is_some());
     }
 
-    /// `role_members_cache_get_or_load` must coalesce concurrent misses for the
+    /// `get_or_load_optional` must coalesce concurrent misses for the
     /// same role into ONE loader run, with every caller receiving the same `Arc`.
     /// Mirrors the user-assignments single-flight guard, but this read-through
     /// returns `Option` — a present role coalesces; a non-existent one must not
@@ -1251,8 +1948,8 @@ mod tests {
     async fn role_members_get_or_load_coalesces_concurrent_misses() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        role_members_cache_invalidate(role_id).await;
 
         let loads = Arc::new(AtomicUsize::new(0));
         let value = role_result_with_members(role_id, vec![test_user_id("rm-coalesce")]);
@@ -1261,15 +1958,17 @@ mod tests {
         for _ in 0..32 {
             let loads = Arc::clone(&loads);
             let value = Arc::clone(&value);
+            let cache_task = Arc::clone(&cache);
             handles.push(tokio::spawn(async move {
-                role_members_cache_get_or_load(role_id, async move {
-                    loads.fetch_add(1, Ordering::SeqCst);
-                    for _ in 0..100 {
-                        tokio::task::yield_now().await;
-                    }
-                    Ok::<_, CatalogBackendError>(Some(value))
-                })
-                .await
+                cache_task
+                    .get_or_load_optional(&role_id, async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        for _ in 0..100 {
+                            tokio::task::yield_now().await;
+                        }
+                        Ok::<_, CatalogBackendError>(Some(value))
+                    })
+                    .await
             }));
         }
 
@@ -1294,8 +1993,6 @@ mod tests {
                 "every caller must receive the same coalesced Arc"
             );
         }
-
-        role_members_cache_invalidate(role_id).await;
     }
 
     /// A non-existent role (loader returns `None`) must NOT be negative-cached:
@@ -1303,71 +2000,75 @@ mod tests {
     /// visible immediately rather than shadowed until TTL.
     #[tokio::test]
     async fn role_members_get_or_load_does_not_negative_cache() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        role_members_cache_invalidate(role_id).await;
 
-        let missing = role_members_cache_get_or_load(role_id, async { Ok(None) })
+        let missing = cache
+            .get_or_load_optional(&role_id, async { Ok(None) })
             .await
             .expect("loader succeeds");
         assert!(missing.is_none(), "non-existent role resolves to None");
         assert!(
-            role_members_cache_get(role_id).await.is_none(),
+            cache.get(&role_id).await.is_none(),
             "None must not be cached"
         );
 
         // A subsequent successful load populates the cache as usual.
         let value = role_result_with_members(role_id, vec![test_user_id("rm-late")]);
-        let loaded = role_members_cache_get_or_load(role_id, {
-            let value = Arc::clone(&value);
-            async move { Ok::<_, CatalogBackendError>(Some(value)) }
-        })
-        .await
-        .expect("loader succeeds")
-        .expect("role now exists");
+        let loaded = cache
+            .get_or_load_optional(&role_id, {
+                let value = Arc::clone(&value);
+                async move { Ok::<_, CatalogBackendError>(Some(value)) }
+            })
+            .await
+            .expect("loader succeeds")
+            .expect("role now exists");
         assert!(Arc::ptr_eq(&loaded, &value));
-        assert!(role_members_cache_get(role_id).await.is_some());
-
-        role_members_cache_invalidate(role_id).await;
+        assert!(cache.get(&role_id).await.is_some());
     }
 
     // ── Role members ──────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_role_members_insert_and_get() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        role_members_cache_insert(role_id, empty_role_result(role_id)).await;
+        insert_for_test(&cache, &role_id, empty_role_result(role_id)).await;
 
-        let cached = role_members_cache_get(role_id).await;
+        let cached = cache.get(&role_id).await;
         assert!(cached.is_some());
         assert_eq!(cached.unwrap().members.len(), 0);
     }
 
     #[tokio::test]
     async fn test_role_members_miss() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        assert!(role_members_cache_get(role_id).await.is_none());
+        assert!(cache.get(&role_id).await.is_none());
     }
 
     #[tokio::test]
     async fn test_role_members_invalidate() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
-        role_members_cache_insert(role_id, empty_role_result(role_id)).await;
-        assert!(role_members_cache_get(role_id).await.is_some());
+        insert_for_test(&cache, &role_id, empty_role_result(role_id)).await;
+        assert!(cache.get(&role_id).await.is_some());
 
-        role_members_cache_invalidate(role_id).await;
-        assert!(role_members_cache_get(role_id).await.is_none());
+        cache.invalidate(&role_id).await;
+        assert!(cache.get(&role_id).await.is_none());
     }
 
     #[tokio::test]
     async fn test_role_members_get_returns_same_arc() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
         let result = role_result_with_members(
             role_id,
             vec![test_user_id("member-1"), test_user_id("member-2")],
         );
 
-        role_members_cache_insert(role_id, Arc::clone(&result)).await;
-        let cached = role_members_cache_get(role_id).await.unwrap();
+        insert_for_test(&cache, &role_id, Arc::clone(&result)).await;
+        let cached = cache.get(&role_id).await.unwrap();
 
         assert!(Arc::ptr_eq(&result, &cached));
     }
@@ -1376,6 +2077,7 @@ mod tests {
     /// a cache round-trip intact — this is the "synced but no members" shape.
     #[tokio::test]
     async fn test_role_members_sync_without_members() {
+        let cache = rm_cache();
         let role_id = RoleId::new_random();
         let synced_at = chrono::Utc::now();
 
@@ -1387,8 +2089,8 @@ mod tests {
             last_synced_at: Some(synced_at),
         });
 
-        role_members_cache_insert(role_id, Arc::clone(&result)).await;
-        let cached = role_members_cache_get(role_id).await.unwrap();
+        insert_for_test(&cache, &role_id, Arc::clone(&result)).await;
+        let cached = cache.get(&role_id).await.unwrap();
 
         assert_eq!(cached.members.len(), 0, "no members");
         assert_eq!(
@@ -1400,47 +2102,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_role_members_different_roles_are_independent() {
+        let cache = rm_cache();
         let role_a = RoleId::new_random();
         let role_b = RoleId::new_random();
 
-        role_members_cache_insert(
-            role_a,
+        insert_for_test(
+            &cache,
+            &role_a,
             role_result_with_members(role_a, vec![test_user_id("user-a")]),
         )
         .await;
-        role_members_cache_insert(
-            role_b,
+        insert_for_test(
+            &cache,
+            &role_b,
             role_result_with_members(role_b, vec![test_user_id("user-b"), test_user_id("user-c")]),
         )
         .await;
 
-        assert_eq!(
-            role_members_cache_get(role_a).await.unwrap().members.len(),
-            1
-        );
-        assert_eq!(
-            role_members_cache_get(role_b).await.unwrap().members.len(),
-            2
-        );
+        assert_eq!(cache.get(&role_a).await.unwrap().members.len(), 1);
+        assert_eq!(cache.get(&role_b).await.unwrap().members.len(), 2);
 
-        role_members_cache_invalidate(role_a).await;
-        assert!(role_members_cache_get(role_a).await.is_none());
-        assert!(role_members_cache_get(role_b).await.is_some());
-    }
-
-    // ── Independence between the two caches ───────────────────────────────────
-
-    #[tokio::test]
-    async fn test_caches_are_independent() {
-        let user_id = test_user_id("independent-cross");
-        let role_id = RoleId::new_random();
-
-        user_assignments_cache_insert(&user_id, empty_user_result()).await;
-        role_members_cache_insert(role_id, empty_role_result(role_id)).await;
-
-        user_assignments_cache_invalidate(&user_id).await;
-
-        assert!(role_members_cache_get(role_id).await.is_some());
-        assert!(user_assignments_cache_get(&user_id).await.is_none());
+        cache.invalidate(&role_a).await;
+        assert!(cache.get(&role_a).await.is_none());
+        assert!(cache.get(&role_b).await.is_some());
     }
 }

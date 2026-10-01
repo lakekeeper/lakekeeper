@@ -2450,6 +2450,235 @@ mod tests {
         );
     }
 
+    /// The standalone sync commits under the user-assignments cache key lock: while a
+    /// load of the same user holds that lock, the sync's commit waits. The load then
+    /// reads the pre-sync state, and the sync's result replaces it in the cache.
+    #[sqlx::test]
+    async fn sync_commits_after_an_in_flight_load_of_the_same_user(pool: sqlx::PgPool) {
+        // A one-connection read pool, held below, parks the load inside the key lock.
+        let read_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(60))
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap();
+        let state = CatalogState::from_pools(read_pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-commit-order"));
+        let roles = [make_role(&ident, "Group Commit Order")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "sync-commit-order-0001"));
+
+        let mut held = read_pool.acquire().await.unwrap();
+        let load = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone());
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&user_id, "Sync Commit Order"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        let observe = async {
+            // The sync waits on an in-memory lock, invisible to `pg_stat_activity`,
+            // so this waits a fixed time. A slow sync only makes the check pass
+            // before the sync reaches that lock.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let sync_records: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM role_assignment_sync WHERE user_id = $1")
+                    .bind(user_id.to_string())
+                    .fetch_one(&mut *held)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                sync_records, 0,
+                "the sync has not committed while the load holds the key lock"
+            );
+            drop(held);
+        };
+        let (loaded, synced, ()) = tokio::join!(load, sync, observe);
+
+        assert!(
+            loaded.unwrap().roles.is_empty(),
+            "the load read the pre-sync state"
+        );
+        let synced = synced.expect("sync succeeds");
+        assert_eq!(synced.assignments.roles.len(), 1);
+        // Served state: a parallel test's invalidation in the same stripe turns the
+        // sync's write into a removal, and this read then loads the same state.
+        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(served.roles.len(), 1, "the synced state is served");
+        assert_eq!(*served.roles[0].role_ident, *ident);
+    }
+
+    /// The standalone role-members sync commits under the role-members cache key lock:
+    /// while a load of the same role holds that lock, the sync's commit waits. The load
+    /// then reads the pre-sync members, and the sync's result replaces them.
+    #[sqlx::test]
+    async fn role_members_sync_commits_after_an_in_flight_load_of_the_same_role(
+        pool: sqlx::PgPool,
+    ) {
+        // A one-connection read pool, held below, parks the load inside the key lock.
+        let read_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(60))
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap();
+        let state = CatalogState::from_pools(read_pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_id =
+            create_external_role(&state, &project_id, "ldap", "group-members-order").await;
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-members-order"));
+        let role = make_role(&ident, "Group Members Order");
+        let member_id = Arc::new(UserId::new_unchecked("oidc", "members-commit-order-0001"));
+        let members = [make_user(&member_id, "Members Commit Order")];
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+
+        let mut held = read_pool.acquire().await.unwrap();
+        let load = PostgresBackend::list_role_assignments_for_role(role_id, state.clone());
+        let sync = PostgresBackend::sync_role_members(
+            &arc_project,
+            &role,
+            &members,
+            state.clone(),
+            &dispatcher,
+        );
+        let observe = async {
+            // Fixed wait; see `sync_commits_after_an_in_flight_load_of_the_same_user`.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let sync_records: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM role_members_sync WHERE role_id = $1")
+                    .bind(*role_id)
+                    .fetch_one(&mut *held)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                sync_records, 0,
+                "the sync has not committed while the load holds the key lock"
+            );
+            drop(held);
+        };
+        let (loaded, synced, ()) = tokio::join!(load, sync, observe);
+
+        assert!(
+            loaded.unwrap().expect("the role exists").members.is_empty(),
+            "the load read the pre-sync members"
+        );
+        assert_eq!(synced.expect("sync succeeds").members.len(), 1);
+        // Served state; see `sync_commits_after_an_in_flight_load_of_the_same_user`.
+        let served = PostgresBackend::list_role_assignments_for_role(role_id, state.clone())
+            .await
+            .unwrap()
+            .expect("the role exists");
+        assert_eq!(served.members.len(), 1, "the synced members are served");
+        assert_eq!(*served.members[0].user_id, *member_id);
+    }
+
+    /// The by-ident member lookup reads a known ident through the cached by-id path,
+    /// and answers for the requested ident after the role's source id is rebound.
+    #[sqlx::test]
+    async fn role_members_by_ident_follow_a_source_id_rebind(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let role_id =
+            create_external_role(&state, &project_id, "ldap", "group-before-rebind").await;
+        let old_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-before-rebind"));
+        let new_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-after-rebind"));
+        let member_id = Arc::new(UserId::new_unchecked("oidc", "by-ident-rebind-0001"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &make_role(&old_ident, "Group Before Rebind"),
+            um(&[make_user(&member_id, "By Ident Rebind")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // The first lookup reads by ident and caches the ident→id mapping.
+        let first = PostgresBackend::list_role_assignments_for_role_by_ident(
+            &arc_project,
+            &old_ident,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("the role exists");
+        assert_eq!(first.role_id, role_id);
+        assert_eq!(first.members.len(), 1);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::set_role_source_system(
+            &project_id,
+            role_id,
+            &lakekeeper::api::management::v1::role::UpdateRoleSourceSystemRequest {
+                source_id: new_ident.source_id().clone(),
+                provider_id: new_ident.provider_id().clone(),
+            },
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // The old ident still maps to the role, whose members now carry the new ident.
+        assert!(
+            PostgresBackend::list_role_assignments_for_role_by_ident(
+                &arc_project,
+                &old_ident,
+                state.clone(),
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "the old ident names no role after the rebind"
+        );
+
+        let mut by_new_ident = Vec::new();
+        for _ in 0..2 {
+            by_new_ident.push(
+                PostgresBackend::list_role_assignments_for_role_by_ident(
+                    &arc_project,
+                    &new_ident,
+                    state.clone(),
+                )
+                .await
+                .unwrap()
+                .expect("the new ident names the role"),
+            );
+        }
+        for result in &by_new_ident {
+            assert_eq!(result.role_id, role_id);
+            assert_eq!(*result.role_ident, *new_ident);
+            assert_eq!(*result.members[0].user_id, *member_id);
+        }
+        // The old-ident lookup's by-id load cached the role under its new ident and
+        // mapped the new ident to it, so both new-ident lookups read through the by-id
+        // cache entry.
+        let by_id = PostgresBackend::list_role_assignments_for_role(role_id, state.clone())
+            .await
+            .unwrap()
+            .expect("the role exists");
+        for result in &by_new_ident {
+            assert!(
+                Arc::ptr_eq(result, &by_id),
+                "the known ident is served from the by-id cache entry"
+            );
+        }
+    }
+
     /// Expiring sync records removes the named users' records for that provider
     /// only: their records for other providers, other users' records, and every
     /// assignment stay.

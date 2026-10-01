@@ -1059,7 +1059,9 @@ where
     /// 2. Builds [`ListRoleMembersResult`] directly from the inputs — the
     ///    `members` slice without the deleted users the sync skipped is the
     ///    complete new member list, so no extra DB round-trip is needed.
-    /// 3. Inserts the result into `ROLE_MEMBERS_CACHE`.
+    /// 3. Caches the result in `ROLE_MEMBERS_CACHE` (or removes the entry after an
+    ///    overlapping invalidation), committing under the entry's compute lock (see
+    ///    `CountedCache::commit_and_cache`).
     /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
     async fn sync_role_members(
         project_id: &ArcProjectId,
@@ -1071,11 +1073,12 @@ where
         UniqueMembers::try_from_slice(members).map_err(SyncRoleMembersError::from)?;
         reject_reserved_sync_provider(role.ident.provider_id())
             .map_err(SyncRoleMembersError::from)?;
+        let invalidations_before =
+            role_assignments_cache::ROLE_MEMBERS_CACHE.invalidations_snapshot();
         let mut t = Self::Transaction::begin_write(catalog_state).await?;
         let sync_result =
             Self::sync_role_members_by_ident_impl(project_id, role, members, t.transaction())
                 .await?;
-        t.commit().await?;
 
         // Build the authoritative member list directly from the sync inputs.
         // `members` minus the skipped deleted users is exactly the complete new
@@ -1099,11 +1102,18 @@ where
             last_synced_at: Some(sync_result.synced_at),
         });
 
-        role_assignments_cache::role_members_cache_insert(
-            sync_result.role_id,
-            Arc::clone(&list_result),
-        )
-        .await;
+        // Commit and cache under the cache key's lock; see
+        // `CountedCache::commit_and_cache`. Two syncs of one role serialize on the
+        // role's sync record in the database, so the later one takes the key lock
+        // after the earlier one holds it, and writes after it.
+        role_assignments_cache::ROLE_MEMBERS_CACHE
+            .commit_and_cache(
+                &sync_result.role_id,
+                Arc::clone(&list_result),
+                invalidations_before.read(&sync_result.role_id),
+                t.commit(),
+            )
+            .await?;
         for user_id in sync_result
             .added
             .iter()
@@ -1140,7 +1150,9 @@ where
     ///    returned by the impl — `all_roles` and `provider_sync_times` contain
     ///    the authoritative post-sync state across all providers, so no extra
     ///    DB round-trip is needed.
-    /// 3. Inserts the result into `USER_ASSIGNMENTS_CACHE`.
+    /// 3. Caches the result in `USER_ASSIGNMENTS_CACHE` (or removes the entry after an
+    ///    overlapping invalidation), committing under the entry's compute lock (see
+    ///    `CountedCache::commit_and_cache`).
     /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher` so that
     ///    listeners can invalidate per-role member caches on this and other
     ///    instances.
@@ -1170,6 +1182,8 @@ where
         }
         // One retry: a role deleted while the first attempt ran is recreated by the
         // second, which reads the committed delete.
+        let invalidations_before =
+            role_assignments_cache::USER_ASSIGNMENTS_CACHE.invalidations(user.user_id);
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
         let first = Self::sync_user_role_assignments_by_provider_impl(
             &user,
@@ -1196,7 +1210,6 @@ where
             }
             result => result?,
         };
-        t.commit().await?;
 
         let mut list = ListUserRoleAssignmentsResult {
             roles: sync_result.all_roles,
@@ -1207,6 +1220,7 @@ where
         let list_result = Arc::new(list);
 
         let Some(synced_at) = sync_result.synced_at else {
+            t.commit().await?;
             return Ok(SyncedUserRoleAssignments {
                 requested_roles: sync_result.requested_roles,
                 synced_at: None,
@@ -1214,13 +1228,18 @@ where
             });
         };
 
-        // Update the cache directly after the commit, before dispatching the
-        // event (mirrors the warehouse / namespace cache-on-read pattern).
-        role_assignments_cache::user_assignments_cache_insert(
-            user.user_id,
-            Arc::clone(&list_result),
-        )
-        .await;
+        // Commit and cache under the cache key's lock; see
+        // `CountedCache::commit_and_cache`. Two syncs of one user serialize on the
+        // user's row in the database, so the later one takes the key lock after the
+        // earlier one holds it, and writes after it.
+        role_assignments_cache::USER_ASSIGNMENTS_CACHE
+            .commit_and_cache(
+                user.user_id,
+                Arc::clone(&list_result),
+                invalidations_before,
+                t.commit(),
+            )
+            .await?;
         for role_id in sync_result
             .added
             .iter()
@@ -1331,6 +1350,8 @@ where
         // commit→evict window leaves affected entries stale until the
         // `USER_ASSIGNMENTS_CACHE` TTL — stale-permissive for removes, but bounded
         // and acceptable for this cache.
+        // A request cancelled during a post-commit invalidation loop leaves the
+        // loop's later keys cached until the TTL.
         record_membership_edge_fanout("add", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
         // The edge also changes the ancestor set of the member and of every role nested
@@ -1358,7 +1379,8 @@ where
             .map_err(ErrorModel::from)?;
         t.commit().await?;
 
-        // Infallible post-commit eviction; see `add_role_members_and_invalidate`.
+        // Infallible post-commit eviction; see `add_role_members_and_invalidate`,
+        // also for a request cancelled during the invalidation loop.
         record_membership_edge_fanout("remove", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
         // See `add_role_members_and_invalidate`. A removal is the permissive direction, so
@@ -1535,16 +1557,18 @@ where
         catalog_state: Self::State,
     ) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError> {
         // Single-flight read-through: concurrent misses for the same user coalesce
-        // onto one loader run (see `user_assignments_cache_get_or_load`).
+        // onto one loader run (see `CountedCache::get_or_load_optional`).
         let owned_user_id = user_id.clone();
-        role_assignments_cache::user_assignments_cache_get_or_load(user_id, async move {
-            let mut result =
-                Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state).await?;
-            // Dedup role/project identity across cached users before storing.
-            role_assignments_cache::share_identities(&mut result).await;
-            Ok(Arc::new(result))
-        })
-        .await
+        role_assignments_cache::USER_ASSIGNMENTS_CACHE
+            .get_or_load(user_id, async move {
+                let mut result =
+                    Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state)
+                        .await?;
+                // Dedup role/project identity across cached users before storing.
+                role_assignments_cache::share_identities(&mut result).await;
+                Ok(Arc::new(result))
+            })
+            .await
     }
 
     /// Return every role each of `role_ids` is a member of, transitively, excluding itself.
@@ -1607,25 +1631,26 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
         // Single-flight read-through: concurrent misses for the same role coalesce
-        // onto one loader run (see `role_members_cache_get_or_load`). The helper
+        // onto one loader run (see `CountedCache::get_or_load_optional`). The helper
         // owns the `ROLE_MEMBERS_CACHE` insert; the loader populates the secondary
         // ident→id index on that single load.
-        role_assignments_cache::role_members_cache_get_or_load(role_id, async move {
-            let Some(result) =
-                Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
-            else {
-                return Ok(None);
-            };
-            let result = Arc::new(result);
-            role_cache::role_ident_insert(
-                result.project_id.clone(),
-                result.role_ident.clone(),
-                role_id,
-            )
-            .await;
-            Ok(Some(result))
-        })
-        .await
+        role_assignments_cache::ROLE_MEMBERS_CACHE
+            .get_or_load_optional(&role_id, async move {
+                let Some(result) =
+                    Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
+                else {
+                    return Ok(None);
+                };
+                let result = Arc::new(result);
+                role_cache::role_ident_insert(
+                    result.project_id.clone(),
+                    result.role_ident.clone(),
+                    role_id,
+                )
+                .await;
+                Ok(Some(result))
+            })
+            .await
     }
 
     /// Return all members of a role identified by its project-scoped ident,
@@ -1640,23 +1665,24 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
         // Try to resolve (project_id, role_ident) → RoleId via the secondary
-        // ident cache (populated by role-create/update events and sync events).
-        // A cache hit lets us serve ROLE_MEMBERS_CACHE without touching the DB.
+        // ident cache (populated by role-create/update events and sync events),
+        // then read through ROLE_MEMBERS_CACHE by id.
         if let Some(role_id) =
             role_cache::role_ident_to_id(project_id.clone(), role_ident.clone()).await
-            && let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await
+            && let Some(result) =
+                Self::list_role_assignments_for_role(role_id, catalog_state.clone()).await?
         {
-            // Guard against stale ident→id mappings: if the cached result's
-            // ident no longer matches the requested ident (e.g. source_id
-            // was changed since the entry was written), fall through to the
-            // DB path so we don't return members for the wrong role.
-            if cached.role_ident.as_ref() == role_ident.as_ref() {
-                return Ok(Some(cached));
+            // Guard against stale ident→id mappings: if the result's ident
+            // differs from the requested ident (e.g. source_id was changed after
+            // the mapping was written), fall through to the DB path, which answers
+            // for the requested ident.
+            if result.role_ident.as_ref() == role_ident.as_ref() {
+                return Ok(Some(result));
             }
         }
 
-        // DB fetch — the result carries role_id, project_id and role_ident so
-        // we can populate both caches without a second round-trip.
+        // DB fetch by ident. It reads outside the cache key's compute lock, so it
+        // caches only the ident→id mapping; the next call reads through by id.
         let result = match Self::list_role_assignments_for_role_by_ident_impl(
             project_id,
             role_ident,
@@ -1667,8 +1693,6 @@ where
             Some(r) => Arc::new(r),
             None => return Ok(None),
         };
-        role_assignments_cache::role_members_cache_insert(result.role_id, Arc::clone(&result))
-            .await;
         role_cache::role_ident_insert(
             result.project_id.clone(),
             result.role_ident.clone(),
