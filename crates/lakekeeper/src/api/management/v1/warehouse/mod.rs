@@ -1659,7 +1659,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 event_ctx.action().clone(),
             )
             .await;
-        let (event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -1681,6 +1682,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         transaction.commit().await?;
         warehouse_cache_invalidate(warehouse_id).await;
+
+        event_ctx.emit_warehouse_rollback_compaction_policy_set(
+            request.enabled,
+            updated_warehouse.clone(),
+        );
 
         let credential_type =
             resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;

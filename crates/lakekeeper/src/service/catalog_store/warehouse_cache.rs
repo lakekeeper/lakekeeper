@@ -423,6 +423,19 @@ impl EventListener for WarehouseCacheEventListener {
         Ok(())
     }
 
+    async fn warehouse_rollback_compaction_policy_set(
+        &self,
+        event: events::SetWarehouseRollbackCompactionPolicyEvent,
+    ) -> anyhow::Result<()> {
+        let events::SetWarehouseRollbackCompactionPolicyEvent {
+            requested_enabled: _requested_enabled,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
     async fn warehouse_storage_updated(
         &self,
         event: events::UpdateWarehouseStorageEvent,
