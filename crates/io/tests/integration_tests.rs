@@ -1848,6 +1848,15 @@ async fn test_read_returns_metadata_impl(
         read.info.location()
     );
 
+    // The in-memory backend has no ETag; every cloud backend must surface one,
+    // so the agreement check below can't pass vacuously via `None == None`.
+    if !matches!(storage, StorageBackend::Memory(_)) {
+        assert!(
+            read.info.e_tag().is_some(),
+            "cloud backend should surface an ETag on read",
+        );
+    }
+
     // The metadata surfaced by `read` matches a standalone `metadata` call.
     let meta = storage.metadata(&path).await?;
     assert_eq!(read.info.size(), meta.size());

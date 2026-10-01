@@ -284,8 +284,9 @@ impl FileInfo {
 ///
 /// A read already yields the object metadata (the cloud backends issue a `head`
 /// to size the request; the in-memory backend holds it directly), so returning
-/// it here lets callers get the bytes and the metadata (`last_modified`, `size`)
-/// in one call — a separate [`LakekeeperStorage::metadata`] request is not needed.
+/// it here lets callers get the bytes and the metadata (`last_modified`, `size`,
+/// `e_tag`) in one call — a separate [`LakekeeperStorage::metadata`] request is
+/// not needed.
 #[derive(Debug, Clone)]
 pub struct ObjectRead {
     /// The object's bytes.
