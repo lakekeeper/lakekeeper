@@ -20,7 +20,7 @@ edition = "2024"
 version = "0.13.1"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.94"
+rust-version = "1.95"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -119,7 +119,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "aa04094683f84db8fa82daed716efc0f78d1936d" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "a0d385821c75855acb654a017d945109b57f32b5" }
 inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"

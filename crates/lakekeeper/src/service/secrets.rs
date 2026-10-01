@@ -190,7 +190,7 @@ async fn secrets_cache_invalidate(secret_id: SecretId) {
         // `invalidate()`: otherwise a delete racing an in-flight load lets the loader
         // re-`Put` the removed secret until TTL (up to 600s of a decryptable stale
         // credential). Secrets are by-id only, so this fully closes the race. See
-        // `user_assignments_cache_invalidate`.
+        // `CountedCache::invalidate` in `role_assignments_cache`.
         SECRETS_CACHE
             .entry(secret_id)
             .and_compute_with(|_| async { Op::Remove })

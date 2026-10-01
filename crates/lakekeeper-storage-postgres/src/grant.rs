@@ -1340,6 +1340,9 @@ where
 /// so tables, views and generic tables keep the kind the caller asked with instead of
 /// re-reading `tabular` per call, and grants on soft-deleted tabulars are included,
 /// matching the resource-scoped listing.
+///
+/// Each returned grant's `principal` is the principal that holds it, so one read for
+/// several principals can be split by grantee afterwards.
 pub(crate) async fn list_grants_on_resources<'e, 'c: 'e, E>(
     principals: &[UserOrRoleId],
     resources: &[GrantResource],
@@ -2252,14 +2255,17 @@ mod tests {
     use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
     use lakekeeper::{
         api::iceberg::v1::PageToken,
-        service::{CatalogCreateTagDefinitionRequest, RoleId, TagScope, TagValueSpec},
+        service::{
+            CatalogCreateRoleRequest, CatalogCreateTagDefinitionRequest, OnRoleConflict, RoleId,
+            RoleProviderId, RoleSourceId, TagScope, TagValueSpec,
+        },
     };
     use sqlx::PgPool;
 
     use super::*;
     use crate::{
-        CatalogState, tabular::table::tests::create_table_with_schema, tag::create_tag_definition,
-        warehouse::test::initialize_warehouse,
+        CatalogState, role::create_roles, tabular::table::tests::create_table_with_schema,
+        tag::create_tag_definition, warehouse::test::initialize_warehouse,
     };
 
     /// `users` requires a NOT-NULL `last_updated_with`; `name` is nullable.
@@ -3067,6 +3073,74 @@ mod tests {
                 .unwrap(),
             Vec::new()
         );
+    }
+
+    /// One read for several principals returns each grant under the principal that holds
+    /// it, so a caller may split the result by grantee.
+    #[sqlx::test]
+    async fn the_evaluation_fetch_attributes_each_grant_to_its_grantee(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, _warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let user = seed_user(&pool, "oidc~test-user-one").await;
+        let role = RoleId::new_random();
+        create_roles(
+            &project_id,
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role)
+                    .role_name("test-role-one")
+                    .description(None)
+                    .source_id(&RoleSourceId::new_from_role_id(role))
+                    .provider_id(&RoleProviderId::lakekeeper())
+                    .build(),
+            ],
+            OnRoleConflict::Fail,
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        insert_grants(
+            &[
+                user_spec(&user, GrantResource::Server, "describe"),
+                role_spec(role, GrantResource::Server, "manage"),
+                role_spec(
+                    role,
+                    GrantResource::Project((*project_id).clone()),
+                    "describe",
+                ),
+            ],
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let user_id = UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap());
+        let role_id = UserOrRoleId::Role(role);
+        let mut fetched: Vec<(String, String)> = list_grants_on_resources(
+            &[user_id.clone(), role_id.clone()],
+            &[
+                GrantResource::Server,
+                GrantResource::Project((*project_id).clone()),
+            ],
+            &pool,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|spec| (format!("{:?}", spec.principal), spec.privilege))
+        .collect();
+        fetched.sort();
+        let mut expected = vec![
+            (format!("{user_id:?}"), "describe".to_string()),
+            (format!("{role_id:?}"), "manage".to_string()),
+            (format!("{role_id:?}"), "describe".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(fetched, expected);
     }
 
     /// The statement matches the warehouse-scoped arrays as a cross product, so a grant

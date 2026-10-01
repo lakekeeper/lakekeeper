@@ -11,7 +11,8 @@ use crate::{
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
-            AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, GateDecision,
+            AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
+            GateDecision,
         },
         authn::{Actor, UserId},
         authz::{
@@ -553,6 +554,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_actions_entity",
     "authz_failed_single",
     "authz_failed_context",
+    "authz_failed_admission_gate",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
@@ -626,6 +628,70 @@ fn every_audit_record_example_in_the_docs_declares_the_current_format() {
         "expected at least 10 complete audit record examples in docs/docs/logging.md, \
          found {checked}. Either the examples were removed, or the ```json fence \
          detection above no longer matches them and this test is now asserting nothing."
+    );
+}
+
+/// Every key in a JSON tree, at any depth, as a flat list.
+fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                out.push(key.clone());
+                collect_keys(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_keys(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_emitted_audit_field_is_documented() {
+    // The compile-time check on LOGGING_DOC only covers the file being gone. This covers the other
+    // failure: the file is still there but no longer holds the audit reference —
+    // split into another page, replaced by a stub, or gutted — which would
+    // otherwise surface as one baffling failure per field.
+    assert!(
+        LOGGING_DOC.contains("{#audit-logs}"),
+        "docs/docs/logging.md no longer contains the `{{#audit-logs}}` anchor. The \
+         audit log documentation has moved, been split, or been deleted. This test \
+         asserts that every field the audit log emits is documented there, so point \
+         it at the new location and update the `#audit-logs` links in the other docs."
+    );
+
+    let mut keys = Vec::new();
+    for name in FIXTURE_NAMES {
+        collect_keys(&read_fixture(name), &mut keys);
+    }
+    // The subscriber-owned fields are stripped before a fixture is written, so the walk above
+    // never sees them. They are still on the wire, and `logging.md` restates the list —
+    // this makes the Rust constant the one that decides what that list says.
+    keys.extend(
+        super::contract::ENVELOPE_KEYS
+            .iter()
+            .map(|key| (*key).to_string()),
+    );
+    keys.sort();
+    keys.dedup();
+
+    let undocumented: Vec<&String> = keys
+        .iter()
+        .filter(|key| !LOGGING_DOC.contains(&format!("`{key}`")))
+        .collect();
+
+    assert!(
+        undocumented.is_empty(),
+        "these audit log fields are emitted but not documented in \
+         docs/docs/logging.md: {undocumented:?}\n\n\
+         Add each one to the relevant field table. A field nobody documented is a \
+         field consumers have to reverse-engineer from example output, which is how \
+         the reference fell out of step with the code before.\n\n\
+         Adding a field is a minor change to the audit format: see the audit log \
+         section of docs/docs/developer-guide.md."
     );
 }
 
@@ -883,6 +949,57 @@ fn fixture_authz_failed_with_context() {
     assert_matches_fixture("authz_failed_context", &contract_fields(record));
 }
 
+/// A check for another user whom an admission gate would refuse: the `AdmissionGate`
+/// factor, once naming the refusing check and once with its `check` as null.
+#[test]
+fn fixture_authz_failed_admission_gate() {
+    let for_bob = || {
+        Some(UserOrRoleId::User(
+            crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id"),
+        ))
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::many([
+                fixture_table_entity(),
+                fixture_namespace_entity(),
+            ])),
+            actions: Arc::new(vec![fixture_read_action()]),
+            failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
+            error: fixture_error(),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![
+                Authorization {
+                    id: Some("check-0".to_string()),
+                    for_principal: for_bob(),
+                    action: fixture_read_action(),
+                    entity: fixture_table_entity(),
+                    allowed: Some(false),
+                    determined_by: vec![DeterminingFactor::AdmissionGate {
+                        gate: "gate-a".to_string(),
+                        check: Some("check-a".to_string()),
+                    }],
+                },
+                Authorization {
+                    id: Some("check-1".to_string()),
+                    for_principal: for_bob(),
+                    action: fixture_read_action(),
+                    entity: fixture_namespace_entity(),
+                    allowed: Some(false),
+                    determined_by: vec![DeterminingFactor::AdmissionGate {
+                        gate: "gate-a".to_string(),
+                        check: None,
+                    }],
+                },
+            ]),
+        })
+    });
+
+    assert_matches_fixture("authz_failed_admission_gate", &contract_fields(record));
+}
+
+/// The operational family, emitted through `audit_operation!` rather than
 /// The operational family, emitted through `OperationRecord` — a different shape
 /// entirely, with `operation` / `outcome` / `context` and no `entity` or `decision`.
 ///
@@ -1112,9 +1229,13 @@ fn emit_admission_rejection(
     rejection: fn() -> AdmissionRejection,
 ) -> serde_json::Value {
     let metadata = fixture_admission_metadata(actor);
+    let user_id = metadata.user_id().expect("the fixture actor is a user");
     let records = emit_and_capture(|| async {
         AdmissionGates::new(vec![Arc::new(FixtureGate { rejection })])
-            .admit(AdmissionContext::new(&metadata, None))
+            .admit(AdmissionContext::new(
+                user_id,
+                AdmissionTrigger::from_request(&metadata),
+            ))
             .await
             .expect_err("the fixture gate rejects");
         Ok(())

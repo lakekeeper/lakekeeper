@@ -150,6 +150,31 @@ pub trait AuthZProjectOps: Authorizer {
         ))
     }
 
+    async fn are_projects_included_in_list(
+        &self,
+        metadata: &RequestMetadata,
+        projects: &[&ArcProjectId],
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
+        if metadata.bypasses_control_plane_authz(None) {
+            return Ok(MustUse::from(vec![
+                AuthorizationDecision::allow();
+                projects.len()
+            ]));
+        }
+        let decisions = self
+            .are_projects_included_in_list_impl(metadata, projects)
+            .await?;
+        if decisions.len() != projects.len() {
+            return Err(AuthorizationCountMismatch::new(
+                projects.len(),
+                decisions.len(),
+                "project",
+            )
+            .into());
+        }
+        Ok(MustUse::from(decisions))
+    }
+
     async fn are_allowed_project_actions_arr<
         const N: usize,
         A: Into<Self::ProjectAction> + Send + Clone + Sync,
