@@ -6,7 +6,7 @@ description: "Configure admission gates in Lakekeeper Plus to allow or deny auth
 
 An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, or to suspend a tenant or principal.
 
-Gates run on every authenticated request, in order, before the `x-assume-role` check and before any handler; the first rejection wins. A gate decides about the user alone: it sees the user's identity provider and subject, never the project, warehouse or token of the request, and the roles it grants hold in every project. A gate returns either a terminal `403 Forbidden` or — when it fails closed because an upstream it depends on is unreachable — a `503` with a `Retry-After`.
+Gates run on every authenticated request, in order, before the `x-assume-role` check and before any handler. The first rejection wins. A gate decides about the user alone: it sees the user's identity provider and subject, never the project, warehouse or token of the request. The roles it grants hold in every project and at server actions, on the user's own requests. A gate returns either a terminal `403 Forbidden` or — when it fails closed because an upstream it depends on is unreachable — a `503` with a `Retry-After`.
 
 The gate seam itself ([`AdmissionGate`](https://github.com/lakekeeper/lakekeeper/blob/main/crates/lakekeeper/src/service/admission.rs)) is a Rust trait; see [Customize](./customize.md) to implement your own. This page documents the **external enforce-endpoint gate** that ships ready-to-configure with Lakekeeper Plus.
 
@@ -14,7 +14,7 @@ The gate seam itself ([`AdmissionGate`](https://github.com/lakekeeper/lakekeeper
 
 This gate is for deployments whose IdP issues **broad, non-instance-scoped tokens**, where a separate service — not the token — is authoritative for whether the caller may use *this* Lakekeeper instance. After authentication, the gate asks that service, per caller, and either lets the request through or rejects it.
 
-If your tokens already carry the entitlement (claims, roles, audience), you don't need this — use [authentication](./authentication.md) and [authorization](./authorization.md).
+If your tokens already carry the entitlement (claims, roles, audience), rely on [authentication](./authentication.md) and [authorization](./authorization.md) alone.
 
 ## How it works
 
@@ -28,7 +28,7 @@ The gate evaluates one or more named **checks** against a configured enforce end
 
 Only an exact `403` is read as an authoritative deny. Every other non-`2xx` status — including other `4xx` (e.g. `400`, `401`, `404`, `429`) and any `5xx` — is treated as the endpoint being unable to give a verdict, so the gate fails closed with a `503`. This is deliberate: a misconfigured or malfunctioning enforce endpoint must never silently admit. If your endpoint signals "denied" with a status other than `403`, map it to `403` on its side.
 
-On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream.
+On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream. Under [Cedar](./authorization-cedar.md#role-matching-with-project_roles), name an admission role like any group, for example `principal.project_roles.contains({provider_id: "control-plane", source_id: "instance-access"})` for the [example](#example) below.
 
 - **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the user-derived placeholders `{{subject}}` (the user's subject in its identity provider) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
 - **IdP-scoped.** The gate only governs users of the configured `idp_id`. Users of any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
