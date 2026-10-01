@@ -1850,7 +1850,14 @@ async fn test_read_returns_metadata_impl(
 
     // The in-memory backend has no ETag; every cloud backend must surface one,
     // so the agreement check below can't pass vacuously via `None == None`.
-    if !matches!(storage, StorageBackend::Memory(_)) {
+    // The `Memory` variant only exists when `storage-in-memory` is enabled, so
+    // gate the arm by its feature (every other build is cloud-only).
+    let is_memory = match storage {
+        #[cfg(feature = "storage-in-memory")]
+        StorageBackend::Memory(_) => true,
+        _ => false,
+    };
+    if !is_memory {
         assert!(
             read.info.e_tag().is_some(),
             "cloud backend should surface an ETag on read",
