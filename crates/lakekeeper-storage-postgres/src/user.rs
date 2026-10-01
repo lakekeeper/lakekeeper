@@ -204,9 +204,8 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 /// active user with this id exists — including re-deleting an already
 /// soft-deleted user, which is a no-op that preserves the original `deleted_at`
 /// (consistent with `get`/`list`, which hide soft-deleted users). Otherwise
-/// returns the (possibly empty) set of roles the user was assigned to, so the
-/// caller can evict those roles' member caches and the user's effective-roles
-/// cache.
+/// returns the (possibly empty) set of roles the user was assigned to. The caller
+/// evicts the user's effective-roles cache after commit.
 ///
 /// Takes its locks in separate statements, in the order of the role-assignment
 /// writers: the user row, then the user's assignments, then the user's sync

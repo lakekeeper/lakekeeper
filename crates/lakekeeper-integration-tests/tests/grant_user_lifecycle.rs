@@ -109,3 +109,104 @@ async fn deleting_a_user_revokes_their_grants(pool: PgPool) {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].principal, UserOrRoleId::User(bob));
 }
+
+/// Records the grant events a request produced.
+#[derive(Debug)]
+struct GrantEventCapture(
+    tokio::sync::mpsc::UnboundedSender<lakekeeper::service::events::GrantsChangedEvent>,
+);
+
+impl std::fmt::Display for GrantEventCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GrantEventCapture")
+    }
+}
+
+#[async_trait::async_trait]
+impl lakekeeper::service::events::EventListener for GrantEventCapture {
+    async fn grants_changed(
+        &self,
+        event: lakekeeper::service::events::GrantsChangedEvent,
+    ) -> anyhow::Result<()> {
+        let _ = self.0.send(event);
+        Ok(())
+    }
+}
+
+/// A user delete whose request is dropped while it commits still clears the user's
+/// cached role assignments and announces the revoked grants.
+#[sqlx::test]
+async fn a_user_delete_dropped_while_committing_still_announces_and_updates_the_cache(
+    pool: PgPool,
+) {
+    use lakekeeper::service::CatalogRoleAssignmentOps as _;
+    use lakekeeper_integration_tests::{CommitGate, eventually};
+
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let metadata: RequestMetadata = RequestMetadataTestBuilder::builder()
+        .project_id(Some(warehouse.project_id.clone()))
+        .build();
+    let alice = UserId::try_from("oidc~dropped-user-delete-0001").unwrap();
+    provision_user(&ctx, &alice, "Alice").await;
+    let grant = GrantSpec {
+        principal: UserOrRoleId::User(alice.clone()),
+        resource: GrantResource::Warehouse(warehouse.warehouse_id),
+        privilege: "get_metadata".to_string(),
+    };
+    PostgresBackend::apply_grants(
+        std::slice::from_ref(&grant),
+        &[],
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    ctx.v1_state
+        .events
+        .append(std::sync::Arc::new(GrantEventCapture(sender)))
+        .await;
+    let warmed =
+        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let gate = CommitGate::install(&pool, "users", "UPDATE").await;
+    let request = tokio::spawn(
+        ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::delete_user(
+            ctx.clone(),
+            metadata,
+            alice.clone(),
+        ),
+    );
+    gate.wait_for_a_held_commit().await;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    gate.release().await;
+
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let event = events.recv().await.expect("the capture outlives dispatch");
+            if event.removed.contains(&grant) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("the revoked grant is announced");
+    assert!(announced.created.is_empty());
+    eventually("the user's cached assignments are reloaded", || async {
+        let served =
+            PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+                .await
+                .unwrap();
+        !std::sync::Arc::ptr_eq(&served, &warmed)
+    })
+    .await;
+}

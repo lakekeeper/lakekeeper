@@ -836,6 +836,18 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn affected_users_for_membership_edges_after_commit_impl(
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserId>, CatalogBackendError> {
+        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
+        super::role_assignment::affected_users_for_membership_edges_after_commit(
+            &member_uuids,
+            &catalog_state.write_pool(),
+        )
+        .await
+    }
+
     async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
