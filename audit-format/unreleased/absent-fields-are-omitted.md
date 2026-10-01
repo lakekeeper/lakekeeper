@@ -8,7 +8,7 @@ Inside each entry of `determined_by`, `name` and `source` were `null` when the a
 gave none. They are now absent.
 
 ```
-before  {"policy_id": "p-42", "name": null, "effect": "Permit", "source": null}
+before  {"Policy": {"policy_id": "p-42", "name": null, "effect": {"Permit": []}, "source": null}}
 after   {"type": "policy", "policy-id": "p-42", "effect": "permit"}
 ```
 

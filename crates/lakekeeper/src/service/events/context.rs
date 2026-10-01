@@ -90,12 +90,6 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
-/// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
-///
-/// Values are strings the handler chooses. A key declared here is declared in Lakekeeper's
-/// audit schema; another emitter declares its own enum with `#[audit_part(keys_of =
-/// "context")]`. One key of the map means one thing: a second vocabulary declaring the same
-/// key would put two meanings at one path, and a test rejects that.
 /// What a `context` entry holds.
 ///
 /// Most keys carry a string the handler chose, and nothing describes it beyond the key's own
@@ -133,6 +127,13 @@ pub struct ContextEntry {
     pub emitter_format: &'static str,
 }
 
+/// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
+///
+/// A value is a string the handler chooses, unless the key declares a shape. A key declared
+/// here is declared in Lakekeeper's audit schema; another emitter declares its own enum with
+/// `#[audit_part(keys_of = "context")]`. One key of the map means one thing: a second
+/// vocabulary declaring the same key would put two meanings at one path, and a test rejects
+/// that.
 #[audit_part(keys_of = "context")]
 #[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]

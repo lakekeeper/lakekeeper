@@ -548,9 +548,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        // Soft-deletes the user AND removes their role assignments; returns the
-        // roles whose member lists changed (for cache eviction below).
-        let Some(affected_roles) = C::delete_user(user_id.clone(), t.transaction()).await? else {
+        // Soft-deletes the user AND removes their role assignments.
+        let Some(_) = C::delete_user(user_id.clone(), t.transaction()).await? else {
             return Err(ErrorModel::not_found(
                 format!("User with id {} not found.", user_id.clone()),
                 "UserNotFound",
@@ -570,27 +569,32 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         authorizer
             .delete_user(event_ctx.request_metadata(), user_id.clone())
             .await?;
-        t.commit().await?;
 
-        // One event, not one per grant: a user can hold an unbounded number.
-        if !revoked_grants.is_empty() {
-            events
-                .grants_changed(GrantsChangedEvent::new(
-                    revoked_grants,
-                    Vec::new(),
-                    event_ctx.request_metadata_arc(),
-                ))
-                .await;
-        }
-
-        // Post-commit (infallible, in-memory): the user's assignments were
-        // removed, so their effective-roles entry and each affected role's
-        // member-list entry are now stale.
-        for role_id in &affected_roles {
-            crate::service::role_assignments_cache::role_members_cache_invalidate(*role_id).await;
-        }
-        crate::service::role_assignments_cache::user_assignments_cache_invalidate(&user_id).await;
-        Ok(())
+        // Post-commit: the user's assignments were removed, so their effective-roles
+        // entry is stale, and the revoked grants are announced. A failed commit may
+        // have landed, so it clears the entry too; only a commit announces.
+        let deleted_user_id = user_id.clone();
+        let request_metadata = event_ctx.request_metadata_arc();
+        crate::service::role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            crate::service::role_assignments_cache::user_assignments_cache_invalidate(
+                &deleted_user_id,
+            )
+            .await;
+            committed?;
+            // One event, not one per grant: a user can hold an unbounded number.
+            if !revoked_grants.is_empty() {
+                events
+                    .grants_changed(GrantsChangedEvent::new(
+                        revoked_grants,
+                        Vec::new(),
+                        request_metadata,
+                    ))
+                    .await;
+            }
+            crate::api::Result::<()>::Ok(())
+        })
+        .await
     }
 }
 

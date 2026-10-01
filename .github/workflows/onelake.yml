@@ -24,7 +24,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.94.1
+  RUST_TOOLCHAIN: 1.95.1
   CAPACITY_API_VERSION: "2023-11-01"
   NEXTEST_ARCHIVE: onelake-tests.tar.zst
 

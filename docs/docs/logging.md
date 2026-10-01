@@ -44,7 +44,7 @@ RUST_LOG=warn,lakekeeper::audit=info
 RUST_LOG=info,lakekeeper::audit=warn
 ```
 
-Select them by that target and nothing else. A directive naming a Rust module path — anything beginning `lakekeeper::service` — matches no audit record, and matches nothing else either, so it produces an empty stream with no error. The catalog prints a warning to standard error at start-up when it finds one in `RUST_LOG`.
+Select them by that target and nothing else. A directive naming a Rust module path — anything beginning `lakekeeper::service` — selects no audit record. It still selects the ordinary log lines under that path, which is what such a directive is for, so an audit filter written that way yields no audit records and no error. The catalog prints a warning to standard error at start-up when it finds one in `RUST_LOG`.
 
 Filtering this way stops the record reaching the log. Routing records **after** they are emitted is a different job: match on `event_source`, not on the target, because the `target` key itself is added by the log subscriber.
 
@@ -409,7 +409,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `action`        | Object  | One action, in the same shape as an element of the top-level `actions` array.        |
 | `entity`        | Object  | One entity, in the same shape as an element of the top-level `entities` array.       |
 | `allowed`       | Boolean | Whether this tuple was permitted. `false` means the request was definitively refused for this tuple — by the authorizer, or by a resource-identity guard the authorizer has no say over (see [What counts as a denial](#authorization-events)); `error.type` distinguishes the two, and a guard refusal carries no `determined_by`. Absent when no definitive verdict was reached — e.g. on `internal_authorization_error`, `internal_catalog_error`, or `invalid_request_data` failures, where the system never actually evaluated the request. Definitive denials (`action_forbidden`, `resource_not_found`, `cannot_see_resource`) are recorded as `false`. |
-| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `permit` or `forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
+| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `permit` or `forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it; or an **admission gate** (the gate's name and an optional check) recording that the gate would refuse this user at admission, so the request is denied whatever the policies say. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
 
 Each `determined_by` element is a flat object whose `type` field names the kind of factor. The same shape is returned by `POST /management/v1/action/batch-check`, where the field is spelled `determined-by`, so one parser reads both.
 
@@ -421,6 +421,8 @@ Each `determined_by` element is a flat object whose `type` field names the kind 
 | `policy`           | `source`    | String | Opaque origin of the policy. Absent when the producer cannot attribute one.               |
 | `system-authority` | `source`    | String | Opaque identifier of the built-in authority tier. Absent when none can be attributed.     |
 | `system-authority` | `reason`    | String | Human-facing reason the tier applied. Absent when the producer gives none.                |
+| `admission-gate`   | `gate`      | String | Name of the admission gate that would refuse the user. Always present.                    |
+| `admission-gate`   | `check`     | String | The check within that gate that decided. Absent when the gate names none.                 |
 
 ```json
 {"type": "policy", "policy-id": "policy-42", "name": "deny-stale-namespaces", "effect": "forbid", "source": "cedar"}
@@ -642,7 +644,7 @@ Emitted for operations that produce no authorization decision of their own — L
 |----------------|--------|----------------------------------------------------|
 | `event_source` | String | Always `"audit"`                                   |
 | `operation`    | String | Machine-readable name of the operation (e.g., `"ldap_resolve_roles"`) |
-| `actor`        | Object | Same shape as authorization events, and the same four shapes: `{"actor_type": "principal", "principal": "oidc~…"}` is the common one, but `assumed_role` adds a nested `assumed_role` object, while `anonymous` and `lakekeeper_internal` carry `actor_type` alone. Read `actor_type` before reading `principal` — the four shapes and their fields are tabulated under [Authorization Events](#authorization-events). Which shapes a given operation can produce depends on how it obtains the actor. `admission_decided` and the grant records (`grant_created`, `grant_revoked`) render the request's resolved actor, so any of the shapes can appear — for a caller acting as a role the `assumed_role` object is where the acting identity is, and `principal` alone under-reports it. Only operations that name a user directly rather than taking it from the request are always `principal` |
+| `actor`        | Object | Same shape as authorization events, and the same four shapes: `{"actor_type": "principal", "principal": "oidc~…"}` is the common one, but `assumed_role` adds a nested `assumed_role` object, while `anonymous` and `lakekeeper_internal` carry `actor_type` alone. Read `actor_type` before reading `principal` — the four shapes and their fields are tabulated under [Authorization Events](#authorization-events). Which shapes a given operation can produce depends on how it obtains the actor. `admission_decided` and the grant records (`grant_created`, `grant_revoked`) render the request's resolved actor, so any of the shapes can appear. On the grant records, the `assumed_role` of an assumed-role caller is the role that holds the grant; on `admission_decided`, which is written before the `x-assume-role` check, it is the role the request asked to assume, not yet authorized — for a caller acting as a role the `assumed_role` object is where the acting identity is, and `principal` alone under-reports it. Only operations that name a user directly rather than taking it from the request are always `principal` |
 | `outcome`      | String | Result of the operation. Component-specific; see individual operation docs below |
 | `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
 
@@ -679,7 +681,7 @@ That is deliberate: whether a grant was *already* held is not something every au
 
 **Admission rejections (`operation = "admission_decided"`):**
 
-Emitted when an [admission gate](./admission.md) refuses a request. Gates run after authentication and before any handler.
+Emitted when an [admission gate](./admission.md) refuses a request. Gates run after authentication, before the `x-assume-role` check and before any handler. For an assumed-role caller, `actor.assumed_role` is the role the request asked to assume, which has not been authorized yet. A gate refusal is the only record of the request: no `assume_role` authorization record accompanies it.
 
 `outcome` is one of:
 
@@ -771,7 +773,7 @@ These records are audit-log only. Like the grant records above, they are never p
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "message": "LDAP role resolution complete",
-  "target": "lakekeeper_role_provider::role_provider::ldap",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
@@ -805,7 +807,7 @@ These records are audit-log only. Like the grant records above, they are never p
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "message": "LDAP user not found; returning empty role list",
-  "target": "lakekeeper_role_provider::role_provider::ldap",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
@@ -839,7 +841,7 @@ These records are audit-log only. Like the grant records above, they are never p
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
-  "target": "lakekeeper_role_provider::role_provider::ldap",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
@@ -874,7 +876,7 @@ These records are audit-log only. Like the grant records above, they are never p
   "timestamp": "2026-03-05T09:12:34.000000Z",
   "level": "INFO",
   "message": "branching DN regex did not match; explicit no-roles outcome",
-  "target": "lakekeeper_role_provider::role_provider::ldap",
+  "target": "lakekeeper::audit",
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",

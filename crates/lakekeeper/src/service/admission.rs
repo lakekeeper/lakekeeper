@@ -1,8 +1,7 @@
 //! Post-authentication admission gates.
 //!
 //! An [`AdmissionGate`] is a coarse, pluggable check run once per request
-//! immediately after authentication and actor resolution — instance-admin
-//! membership and assumed-role are already resolved — and before the request
+//! after authentication, before the assume-role check and before the request
 //! reaches any handler. It can reject a *validated* principal that must not be
 //! admitted to this instance at all, for example by consulting an external
 //! control-plane permission service.
@@ -15,8 +14,8 @@
 //!
 //! Keeping it separate means a gate can return the right HTTP semantics (a
 //! denial is not an authentication failure, and "permission service
-//! unreachable" is not a `401`), runs *after* instance-admin status is
-//! resolved, and sees the full [`RequestMetadata`].
+//! unreachable" is not a `401`). A gate decides about a user: it sees the
+//! [`UserId`] it admits, never the project, warehouse or token of the request.
 //!
 //! Gates are composed as a list ([`AdmissionGates`]) and evaluated in
 //! registration order; the first rejection wins and short-circuits the rest.
@@ -36,8 +35,13 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
 
 use crate::{
-    request_metadata::{RequestMetadata, TokenRoles},
-    service::events::backends::audit::{AuditOperation, AuditOutcome},
+    XXHashSet,
+    request_metadata::RequestMetadata,
+    service::{
+        Actor, RoleIdent, UserId,
+        authn::InternalActor,
+        events::backends::audit::{AuditOperation, AuditOutcome},
+    },
 };
 
 /// Histogram of each gate's evaluation time, labelled by `gate` and `outcome`.
@@ -283,7 +287,7 @@ pub struct Admission {
     /// [`RequestMetadata::admission_roles`] by the auth middleware, kept
     /// separate from token-claim roles so the provenance stays explicit.
     /// `None` when the gate resolves no roles.
-    pub resolved_roles: Option<TokenRoles>,
+    pub resolved_roles: Option<XXHashSet<Arc<RoleIdent>>>,
 }
 
 impl Admission {
@@ -293,9 +297,10 @@ impl Admission {
         Self::default()
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. The roles hold
+    /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self {
             resolved_roles: Some(roles),
         }
@@ -304,8 +309,8 @@ impl Admission {
 
 /// What a single [`AdmissionGate`] concluded about a request it did not reject.
 ///
-/// A gate that governs only some principals — scoped to one identity provider,
-/// tenant or path — returns [`GateDecision::NotApplicable`] for the rest. The
+/// A gate that governs only some principals — scoped to one identity provider
+/// or tenant — returns [`GateDecision::NotApplicable`] for the rest. The
 /// request proceeds either way; the distinction is that a gate which silently
 /// stopped covering its principals would otherwise be indistinguishable from
 /// one approving them all.
@@ -329,9 +334,11 @@ impl GateDecision {
         Self::Admitted(Admission::admit())
     }
 
-    /// Admit the request and contribute the roles the gate resolved.
+    /// Admit the request and contribute the roles the gate resolved. A gate sees
+    /// no project, so the roles hold in every project, and a request is decided
+    /// with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: TokenRoles) -> Self {
+    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
         Self::Admitted(Admission::with_roles(roles))
     }
 
@@ -348,37 +355,80 @@ impl From<Admission> for GateDecision {
     }
 }
 
-/// Per-request inputs handed to an [`AdmissionGate`].
+/// What an [`AdmissionGate`] decides from: the user being admitted, and who
+/// triggered the evaluation.
 ///
-/// Carries borrowed request state for the duration of the [`AdmissionGate::admit`]
-/// call only. Nothing here is persisted onto [`RequestMetadata`] or logged — in
-/// particular the raw bearer token is exposed to gates that must relay it to an
-/// external service, without it leaking into the request's metadata or audit
-/// trail (which are cloned, debugged, and serialized).
+/// A gate sees no project, warehouse or token, so its answer is about the user
+/// alone. The roles it grants hold in every project.
 ///
-/// Non-exhaustive so further per-request inputs can be added without a breaking
-/// change. The auth middleware is the only constructor; gates read the fields
-/// they need.
-#[derive(Clone, Copy, veil::Redact)]
+/// Non-exhaustive so further inputs can be added without a breaking change.
+/// Construct with [`AdmissionContext::new`]; gates read the fields they need.
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct AdmissionContext<'a> {
-    /// Resolved metadata for the request (actor, project, instance-admin, …).
-    pub metadata: &'a RequestMetadata,
-    /// The caller's raw bearer token — the value after `Bearer `. Present for
-    /// every authenticated request (anonymous requests are rejected before any
-    /// gate runs). A gate that relays it to an external service MUST use TLS.
-    #[redact]
-    pub bearer_token: Option<&'a str>,
+    /// The user being admitted.
+    pub user_id: &'a UserId,
+    /// Who triggered the evaluation, for audit records and logs. Not an input
+    /// to the decision.
+    pub triggered_by: AdmissionTrigger<'a>,
 }
 
 impl<'a> AdmissionContext<'a> {
-    /// Construct a context for a request. Called by the auth middleware.
+    /// Evaluate admission of `user_id`, attributed to `triggered_by`.
     #[must_use]
-    pub fn new(metadata: &'a RequestMetadata, bearer_token: Option<&'a str>) -> Self {
+    pub fn new(user_id: &'a UserId, triggered_by: AdmissionTrigger<'a>) -> Self {
         Self {
-            metadata,
-            bearer_token,
+            user_id,
+            triggered_by,
         }
+    }
+}
+
+/// The request that triggered an admission evaluation, as audit records and
+/// logs name it.
+#[derive(Clone, Copy)]
+pub struct AdmissionTrigger<'a> {
+    actor: &'a InternalActor,
+    request_id: Uuid,
+}
+
+// The actor's kind only: an assumed role carries its project, name and
+// description, none of which a gate sees.
+impl std::fmt::Debug for AdmissionTrigger<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let actor = match self.actor {
+            InternalActor::LakekeeperInternal => "LakekeeperInternal",
+            InternalActor::External(Actor::Anonymous) => "Anonymous",
+            InternalActor::External(Actor::Principal(_)) => "Principal",
+            InternalActor::External(Actor::Role { .. }) => "Role",
+        };
+        f.debug_struct("AdmissionTrigger")
+            .field("actor", &actor)
+            .field("request_id", &self.request_id)
+            .finish()
+    }
+}
+
+impl<'a> AdmissionTrigger<'a> {
+    /// The actor and id of `metadata`'s request.
+    #[must_use]
+    pub fn from_request(metadata: &'a RequestMetadata) -> Self {
+        Self {
+            actor: metadata.internal_actor(),
+            request_id: metadata.request_id(),
+        }
+    }
+
+    /// The triggering request's actor as an audit record carries it, assumed role included.
+    #[must_use]
+    pub fn actor_record(&self) -> crate::audit::ActorRecord {
+        crate::audit::ActorRecord::from_internal_actor(self.actor)
+    }
+
+    /// The triggering request's id.
+    #[must_use]
+    pub fn request_id(&self) -> Uuid {
+        self.request_id
     }
 }
 
@@ -393,9 +443,8 @@ pub trait AdmissionGate: std::fmt::Debug + Send + Sync {
 
     /// Decide whether the (already authenticated) request may proceed.
     ///
-    /// [`AdmissionContext`] carries the resolved [`RequestMetadata`] and the
-    /// caller's raw `bearer_token` (for gates that relay it to an external
-    /// service). Return [`GateDecision::admit`] for a plain allow, or
+    /// [`AdmissionContext`] carries the user being admitted and who triggered
+    /// the evaluation. Return [`GateDecision::admit`] for a plain allow, or
     /// [`GateDecision::with_roles`] to also contribute roles resolved in the
     /// same call. A gate that governs only some principals must return
     /// [`GateDecision::not_applicable`] for the rest.
@@ -442,7 +491,7 @@ impl AdmissionGates {
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
     pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-        let mut resolved_roles: Option<TokenRoles> = None;
+        let mut resolved_roles: Option<XXHashSet<Arc<RoleIdent>>> = None;
         for gate in &self.gates {
             let start = Instant::now();
             let result = gate.admit(ctx).await;
@@ -453,7 +502,7 @@ impl AdmissionGates {
                         // Common case is a single role-resolving gate: just move
                         // the set in. Extra gates union in place (no cloning).
                         match resolved_roles.as_mut() {
-                            Some(acc) => acc.merge(roles),
+                            Some(acc) => acc.extend(roles),
                             None => resolved_roles = Some(roles),
                         }
                     }
@@ -474,7 +523,7 @@ impl AdmissionGates {
                     if crate::audit::enabled() {
                         crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
-                            crate::audit::ActorRecord::from_request(ctx.metadata),
+                            ctx.triggered_by.actor_record(),
                             rejection.kind.label().as_wire(),
                         )
                         .context(AdmissionRejectedContext {
@@ -484,7 +533,7 @@ impl AdmissionGates {
                             error_type: rejection.error_type,
                             message: rejection.message.as_ref(),
                             error_id: rejection.error_id.to_string(),
-                            request_id: ctx.metadata.request_id().to_string(),
+                            request_id: ctx.triggered_by.request_id().to_string(),
                         })
                         .message("Request rejected by admission gate")
                         .emit();
@@ -506,7 +555,7 @@ impl AdmissionGates {
                             gate = gate.name(),
                             error_type = rejection.error_type,
                             error_id = %rejection.error_id,
-                            request_id = %ctx.metadata.request_id(),
+                            request_id = %ctx.triggered_by.request_id(),
                             cause = cause.as_deref(),
                             "Admission gate failed closed; rejecting the request"
                         );
@@ -575,15 +624,13 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
-    use crate::service::{ProjectId, RoleIdent};
 
-    /// Build a project-scoped role set from role source-id names.
-    fn token_roles(names: &[&str]) -> TokenRoles {
-        let roles = names
+    /// Build a role set from role source-id names.
+    fn role_set(names: &[&str]) -> XXHashSet<Arc<RoleIdent>> {
+        names
             .iter()
             .map(|n| Arc::new(RoleIdent::new_unchecked("test", *n)))
-            .collect();
-        TokenRoles::new(Arc::new(ProjectId::new_random()), roles)
+            .collect()
     }
 
     #[derive(Debug)]
@@ -594,7 +641,7 @@ mod tests {
             "roles"
         }
         async fn admit(&self, _: AdmissionContext<'_>) -> Result<GateDecision, AdmissionRejection> {
-            Ok(GateDecision::with_roles(token_roles(self.0)))
+            Ok(GateDecision::with_roles(role_set(self.0)))
         }
     }
 
@@ -652,50 +699,16 @@ mod tests {
         }
     }
 
-    /// Admits only when the caller's bearer token is threaded through to the
-    /// gate and matches the expected value; otherwise denies.
-    #[derive(Debug)]
-    struct ExpectTokenGate(&'static str);
-    #[async_trait]
-    impl AdmissionGate for ExpectTokenGate {
-        fn name(&self) -> &'static str {
-            "expect-token"
-        }
-        async fn admit(
-            &self,
-            ctx: AdmissionContext<'_>,
-        ) -> Result<GateDecision, AdmissionRejection> {
-            if ctx.bearer_token == Some(self.0) {
-                Ok(GateDecision::admit())
-            } else {
-                Err(AdmissionRejection::forbidden(
-                    "missing or wrong token",
-                    "TestNoToken",
-                ))
-            }
-        }
-    }
-
     fn gates(gates: Vec<Arc<dyn AdmissionGate>>) -> AdmissionGates {
         AdmissionGates::new(gates)
     }
 
-    #[tokio::test]
-    async fn bearer_token_is_threaded_to_gates() {
-        let md = RequestMetadata::new_unauthenticated();
-        assert!(
-            gates(vec![Arc::new(ExpectTokenGate("tok-123"))])
-                .admit(AdmissionContext::new(&md, Some("tok-123")))
-                .await
-                .is_ok()
-        );
-        // A gate that needs the token rejects when it is absent.
-        assert!(
-            gates(vec![Arc::new(ExpectTokenGate("tok-123"))])
-                .admit(AdmissionContext::new(&md, None))
-                .await
-                .is_err()
-        );
+    static TEST_USER: LazyLock<UserId> =
+        LazyLock::new(|| UserId::new_unchecked("oidc", "test-user-one"));
+
+    /// Admission of the test user, triggered by `md`'s request.
+    fn context_for(md: &RequestMetadata) -> AdmissionContext<'_> {
+        AdmissionContext::new(&TEST_USER, AdmissionTrigger::from_request(md))
     }
 
     /// A gate scoped to principals it does not cover: it adjudicates nothing.
@@ -729,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn a_gate_that_does_not_apply_is_not_an_allow() {
         let md = RequestMetadata::new_unauthenticated();
-        let ctx = AdmissionContext::new(&md, None);
+        let ctx = context_for(&md);
         // The histogram labels each gate's own result, which is what the driver
         // passes to `record_gate_duration` — not its merged return value.
         for (gate, expected) in [
@@ -822,10 +835,8 @@ mod tests {
         ] {
             let name = gate.name();
             let lines = capture_json(|| {
-                futures::executor::block_on(
-                    gates(vec![gate]).admit(AdmissionContext::new(&md, None)),
-                )
-                .expect_err("gate rejects");
+                futures::executor::block_on(gates(vec![gate]).admit(context_for(&md)))
+                    .expect_err("gate rejects");
             });
 
             let record = lines
@@ -862,11 +873,11 @@ mod tests {
         }
     }
 
-    /// Admission runs after assume-role resolution, so the actor on the record
-    /// is the one the request is acting as. A gate raising its own record for
-    /// the same request reaches the identical shape through
-    /// `RequestMetadata::audit_actor`; rendering only the principal would leave
-    /// the two disagreeing about who was refused.
+    /// The actor on the record names the role the triggering request asked to
+    /// assume, which the assume-role check has not authorized yet. A gate
+    /// raising its own record for the same request reaches the identical shape
+    /// through `AdmissionTrigger::audit_actor`; rendering only the principal
+    /// would leave the two disagreeing about who was refused.
     #[tokio::test]
     async fn the_record_names_the_role_the_caller_assumed() {
         let user_id = crate::service::UserId::new_unchecked("oidc", "u-1");
@@ -874,9 +885,9 @@ mod tests {
         let md = RequestMetadata::test_user_assumed_role(user_id.clone(), role_id);
 
         let lines = capture_json(|| {
-            futures::executor::block_on(
-                gates(vec![Arc::new(DenyGate)]).admit(AdmissionContext::new(&md, None)),
-            )
+            futures::executor::block_on(gates(vec![Arc::new(DenyGate)]).admit(
+                AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md)),
+            ))
             .expect_err("gate rejects");
         });
         let record = lines
@@ -891,6 +902,31 @@ mod tests {
         );
     }
 
+    /// A logged context names no project: the assumed role's project stays out
+    /// of the trigger's `Debug`.
+    #[test]
+    fn the_context_debug_names_no_project() {
+        let user_id = crate::service::UserId::new_unchecked("oidc", "u-1");
+        let md = RequestMetadata::test_user_assumed_role(
+            user_id.clone(),
+            crate::service::RoleId::new_random(),
+        );
+        let Actor::Role { assumed_role, .. } = md.actor() else {
+            panic!("the test caller assumes a role");
+        };
+        let project_id = assumed_role.project_id().to_string();
+        let rendered = format!(
+            "{:?}",
+            AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md))
+        );
+        assert!(!rendered.contains(&project_id), "{rendered}");
+        assert!(rendered.contains("Role"), "{rendered}");
+        assert!(
+            rendered.contains(&md.request_id().to_string()),
+            "{rendered}"
+        );
+    }
+
     /// A fail-closed gate is an outage of a dependency, and must stay visible to
     /// an operator filtering at `RUST_LOG=warn` — which the audit record, being
     /// `INFO`, is not.
@@ -900,7 +936,7 @@ mod tests {
 
         let lines = capture_json(|| {
             futures::executor::block_on(
-                gates(vec![Arc::new(UnavailableGate)]).admit(AdmissionContext::new(&md, None)),
+                gates(vec![Arc::new(UnavailableGate)]).admit(context_for(&md)),
             )
             .expect_err("gate rejects");
         });
@@ -916,10 +952,8 @@ mod tests {
         // An authoritative denial is a decision about the caller, not an
         // outage, and must not warn.
         let lines = capture_json(|| {
-            futures::executor::block_on(
-                gates(vec![Arc::new(DenyGate)]).admit(AdmissionContext::new(&md, None)),
-            )
-            .expect_err("gate rejects");
+            futures::executor::block_on(gates(vec![Arc::new(DenyGate)]).admit(context_for(&md)))
+                .expect_err("gate rejects");
         });
         assert!(
             !lines.iter().any(|l| l["level"] == "WARN"),
@@ -967,10 +1001,8 @@ mod tests {
     async fn the_cause_of_a_fail_closed_reaches_the_warning_only() {
         let md = RequestMetadata::new_unauthenticated();
         let lines = capture_json(|| {
-            futures::executor::block_on(
-                gates(vec![Arc::new(CausedGate)]).admit(AdmissionContext::new(&md, None)),
-            )
-            .expect_err("gate rejects");
+            futures::executor::block_on(gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)))
+                .expect_err("gate rejects");
         });
 
         let warn = lines
@@ -999,7 +1031,7 @@ mod tests {
         #[cfg(feature = "router")]
         {
             let rendered = futures::executor::block_on(
-                gates(vec![Arc::new(CausedGate)]).admit(AdmissionContext::new(&md, None)),
+                gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)),
             )
             .expect_err("gate rejects")
             .into_error();
@@ -1037,7 +1069,7 @@ mod tests {
         ] {
             let reject = async || {
                 gates(vec![Arc::clone(&gate)])
-                    .admit(AdmissionContext::new(&md, None))
+                    .admit(context_for(&md))
                     .await
                     .expect_err("gate rejects")
             };
@@ -1066,14 +1098,14 @@ mod tests {
     async fn a_rejection_carries_the_rule_that_decided_it() {
         let md = RequestMetadata::new_unauthenticated();
         let named = gates(vec![Arc::new(NamedRuleDenyGate)])
-            .admit(AdmissionContext::new(&md, None))
+            .admit(context_for(&md))
             .await
             .expect_err("gate rejects");
         assert_eq!(named.deciding_rule(), Some("instance_access"));
 
         // A gate with one rule names none, and that is not an error.
         let unnamed = gates(vec![Arc::new(DenyGate)])
-            .admit(AdmissionContext::new(&md, None))
+            .admit(context_for(&md))
             .await
             .expect_err("gate rejects");
         assert_eq!(unnamed.deciding_rule(), None);
@@ -1085,7 +1117,7 @@ mod tests {
         assert!(AdmissionGates::default().is_empty());
         assert!(
             AdmissionGates::default()
-                .admit(AdmissionContext::new(&md, None))
+                .admit(context_for(&md))
                 .await
                 .is_ok()
         );
@@ -1096,7 +1128,7 @@ mod tests {
         let md = RequestMetadata::new_unauthenticated();
         assert!(
             gates(vec![Arc::new(AllowGate)])
-                .admit(AdmissionContext::new(&md, None))
+                .admit(context_for(&md))
                 .await
                 .is_ok()
         );
@@ -1106,7 +1138,7 @@ mod tests {
     async fn forbidden_is_403() {
         let md = RequestMetadata::new_unauthenticated();
         let rejection = gates(vec![Arc::new(DenyGate)])
-            .admit(AdmissionContext::new(&md, None))
+            .admit(context_for(&md))
             .await
             .expect_err("DenyGate rejects");
         assert_eq!(rejection.kind(), RejectionKind::Forbidden);
@@ -1118,7 +1150,7 @@ mod tests {
     async fn unavailable_is_503_with_gate_chosen_retry_after() {
         let md = RequestMetadata::new_unauthenticated();
         let rejection = gates(vec![Arc::new(UnavailableGate)])
-            .admit(AdmissionContext::new(&md, None))
+            .admit(context_for(&md))
             .await
             .expect_err("UnavailableGate rejects");
         assert_eq!(
@@ -1142,7 +1174,7 @@ mod tests {
             Arc::new(DenyGate),
             Arc::new(PanicGate),
         ])
-        .admit(AdmissionContext::new(&md, None))
+        .admit(context_for(&md))
         .await
         .expect_err("DenyGate rejects before PanicGate is reached");
         assert_eq!(rejection.error_type(), "TestDenied");
@@ -1152,11 +1184,11 @@ mod tests {
     async fn resolved_roles_surface_on_admit() {
         let md = RequestMetadata::new_unauthenticated();
         let admission = gates(vec![Arc::new(RolesGate(&["a", "b"]))])
-            .admit(AdmissionContext::new(&md, None))
+            .admit(context_for(&md))
             .await
             .expect("RolesGate admits");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 2);
+        assert_eq!(roles.len(), 2);
     }
 
     #[test]
@@ -1190,10 +1222,10 @@ mod tests {
             Arc::new(RolesGate(&["a", "b"])),
             Arc::new(RolesGate(&["b", "c"])),
         ])
-        .admit(AdmissionContext::new(&md, None))
+        .admit(context_for(&md))
         .await
         .expect("all gates admit");
         let roles = admission.resolved_roles.expect("roles were resolved");
-        assert_eq!(roles.roles().len(), 3);
+        assert_eq!(roles.len(), 3);
     }
 }

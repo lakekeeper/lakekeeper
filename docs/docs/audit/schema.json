@@ -722,9 +722,31 @@
             "type"
           ],
           "description": "An allow contributed by a built-in/system authority tier that takes\nprecedence over normal authored policy — e.g. a recovery mechanism that\nlets a privileged system role act despite a policy that would otherwise\nforbid it. Its presence means the verdict rested on built-in authority\nrather than on a configured policy."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gate": {
+              "type": "string",
+              "description": "Name of the admission gate that would refuse the user."
+            },
+            "check": {
+              "type": "string",
+              "description": "The gate's check that refused the user. Absent when the gate names\nnone."
+            },
+            "type": {
+              "type": "string",
+              "const": "admission-gate"
+            }
+          },
+          "required": [
+            "type",
+            "gate"
+          ],
+          "description": "The user would be refused at admission by this gate, so the request is\ndenied whatever the policies say."
         }
       ],
-      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched, and\n`system-authority` records that a built-in authority tier decided the request. The\nschema is a closed `oneOf` over those two, so a further kind is a schema change a\ngenerated client has to be rebuilt for rather than one it absorbs on its own.",
+      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched,\n`system-authority` records that a built-in authority tier decided the request, and\n`admission-gate` records that an admission gate would refuse the user. The schema is\na closed `oneOf` over those three, so a further kind is a schema change that generated\nclients have to be rebuilt for.",
       "x-audit-kind": "part"
     },
     "EmitterRecord": {

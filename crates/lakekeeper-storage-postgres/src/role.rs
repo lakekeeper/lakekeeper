@@ -486,19 +486,22 @@ pub(crate) async fn delete_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sq
     Ok(deleted_ids.into_iter().map(Into::into).collect())
 }
 
-pub(crate) async fn list_roles_by_idents<
+/// Every role in one of `project_ids` whose `(provider_id, source_id)` is exactly one of
+/// `idents`. No pagination.
+pub(crate) async fn list_roles_by_idents_in_projects<
     'e,
     'c: 'e,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
-    project_id: &ProjectId,
+    project_ids: &[&ProjectId],
     idents: &[&RoleIdent],
     connection: E,
 ) -> Result<Vec<Role>, CatalogBackendError> {
-    if idents.is_empty() {
+    if project_ids.is_empty() || idents.is_empty() {
         return Ok(Vec::new());
     }
 
+    let projects: Vec<&str> = project_ids.iter().map(|p| p.as_str()).collect();
     let providers: Vec<&str> = idents.iter().map(|i| i.provider_id().as_str()).collect();
     let source_ids: Vec<&str> = idents.iter().map(|i| i.source_id().as_str()).collect();
 
@@ -507,13 +510,13 @@ pub(crate) async fn list_roles_by_idents<
         r#"
         SELECT id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
         FROM role
-        WHERE project_id = $1
+        WHERE project_id = ANY($1)
           AND EXISTS (
               SELECT 1 FROM UNNEST($2::TEXT[], $3::TEXT[]) AS u(p, s)
               WHERE u.p = provider_id AND u.s = source_id
           )
         "#,
-        project_id,
+        &projects as &[&str],
         &providers as &[&str],
         &source_ids as &[&str],
     )
@@ -2299,6 +2302,95 @@ mod test {
         assert!(
             ROLE_CACHE.get(&role_id).await.is_some(),
             "re-load must re-populate the by-id cache"
+        );
+    }
+
+    /// Exact pairs across projects: a role matches only when both its provider and its
+    /// source id are one requested pair, and only in a requested project.
+    #[sqlx::test]
+    async fn roles_by_idents_in_projects_match_exact_pairs(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let first = ProjectId::new_random();
+        let second = ProjectId::new_random();
+        let unasked = ProjectId::new_random();
+        let ldap: RoleProviderId = "ldap".parse().unwrap();
+        let okta: RoleProviderId = "okta".parse().unwrap();
+        let admins: RoleSourceId = "admins".parse().unwrap();
+        let readers: RoleSourceId = "readers".parse().unwrap();
+
+        for project in [&first, &second, &unasked] {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            PostgresBackend::create_project(project, format!("Project {project}"), t.transaction())
+                .await
+                .unwrap();
+            t.commit().await.unwrap();
+        }
+
+        let mut ids = std::collections::HashMap::new();
+        for (project, provider, source) in [
+            (&first, &ldap, &admins),
+            (&second, &ldap, &admins),
+            (&unasked, &ldap, &admins),
+            // Same source id under another provider: not a requested pair.
+            (&first, &okta, &admins),
+            // Requested provider with another source id: not a requested pair.
+            (&second, &ldap, &readers),
+        ] {
+            let role_id = RoleId::new_random();
+            create_roles(
+                project,
+                vec![
+                    CatalogCreateRoleRequest::builder()
+                        .role_id(role_id)
+                        .role_name(&format!("{provider}-{source}-{role_id}"))
+                        .description(None)
+                        .source_id(source)
+                        .provider_id(provider)
+                        .build(),
+                ],
+                OnRoleConflict::Fail,
+                &state.write_pool(),
+            )
+            .await
+            .unwrap();
+            ids.insert((project.clone(), provider.clone(), source.clone()), role_id);
+        }
+
+        let wanted = RoleIdent::new(ldap.clone(), admins.clone());
+        let mut found: Vec<(ProjectId, RoleId)> =
+            list_roles_by_idents_in_projects(&[&first, &second], &[&wanted], &state.read_pool())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|role| ((*role.project_id).clone(), role.id))
+                .collect();
+        found.sort_by_key(|(project, _)| project.to_string());
+        let mut expected = vec![
+            (
+                first.clone(),
+                ids[&(first.clone(), ldap.clone(), admins.clone())],
+            ),
+            (
+                second.clone(),
+                ids[&(second.clone(), ldap.clone(), admins.clone())],
+            ),
+        ];
+        expected.sort_by_key(|(project, _)| project.to_string());
+        assert_eq!(found, expected);
+
+        assert!(
+            list_roles_by_idents_in_projects(&[], &[&wanted], &state.read_pool())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            list_roles_by_idents_in_projects(&[&first], &[], &state.read_pool())
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }
