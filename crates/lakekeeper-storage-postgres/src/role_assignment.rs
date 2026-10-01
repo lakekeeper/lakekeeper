@@ -1317,6 +1317,30 @@ pub(crate) async fn affected_users_for_membership_edges<
         .map_err(CatalogBackendError::new_unexpected)
 }
 
+/// How long the read after an edge change's commit waits for a table lock before it
+/// fails, for example behind a pending `ALTER TABLE`.
+const AFFECTED_USERS_AFTER_COMMIT_LOCK_TIMEOUT: &str =
+    "BEGIN READ ONLY; SET LOCAL lock_timeout = '5s'";
+
+/// [`affected_users_for_membership_edges`] in a read-only transaction of its own on
+/// `write_pool`, bounded by a lock timeout. The `BEGIN` and the `SET` go in one round
+/// trip.
+pub(crate) async fn affected_users_for_membership_edges_after_commit(
+    member_role_ids: &[Uuid],
+    write_pool: &sqlx::PgPool,
+) -> Result<Vec<UserId>, CatalogBackendError> {
+    let mut transaction = write_pool
+        .begin_with(AFFECTED_USERS_AFTER_COMMIT_LOCK_TIMEOUT)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    let users = affected_users_for_membership_edges(member_role_ids, &mut *transaction).await;
+    transaction
+        .rollback()
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    users
+}
+
 // ─── expire_role_assignment_syncs ─────────────────────────────────────────────
 
 /// Delete the sync records of `user_ids` for `provider_id` in `project_id`, so the
@@ -2450,11 +2474,12 @@ mod tests {
         );
     }
 
-    /// The standalone sync commits under the user-assignments cache key lock: while a
-    /// load of the same user holds that lock, the sync's commit waits. The load then
-    /// reads the pre-sync state, and the sync's result replaces it in the cache.
+    /// The standalone sync commits while a load of the same user holds the
+    /// user-assignments cache key lock: no sync waits for that lock with its transaction
+    /// open, so DDL queued behind the sync cannot also hold up the load and close a
+    /// cycle. The sync's result is cached once the load releases the lock.
     #[sqlx::test]
-    async fn sync_commits_after_an_in_flight_load_of_the_same_user(pool: sqlx::PgPool) {
+    async fn sync_commits_while_a_load_of_the_same_user_holds_the_key_lock(pool: sqlx::PgPool) {
         // A one-connection read pool, held below, parks the load inside the key lock.
         let read_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
@@ -2482,32 +2507,35 @@ mod tests {
             &dispatcher,
         );
         let observe = async {
-            // The sync waits on an in-memory lock, invisible to `pg_stat_activity`,
-            // so this waits a fixed time. A slow sync only makes the check pass
-            // before the sync reaches that lock.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let sync_records: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM role_assignment_sync WHERE user_id = $1")
+            let committed = async {
+                loop {
+                    let sync_records: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM role_assignment_sync WHERE user_id = $1",
+                    )
                     .bind(user_id.to_string())
                     .fetch_one(&mut *held)
                     .await
                     .unwrap();
-            assert_eq!(
-                sync_records, 0,
-                "the sync has not committed while the load holds the key lock"
-            );
+                    if sync_records == 1 {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(10), committed)
+                .await
+                .expect("the sync commits while the load holds the key lock");
             drop(held);
         };
         let (loaded, synced, ()) = tokio::join!(load, sync, observe);
 
-        assert!(
-            loaded.unwrap().roles.is_empty(),
-            "the load read the pre-sync state"
+        assert_eq!(
+            loaded.unwrap().roles.len(),
+            1,
+            "the load read after the sync committed"
         );
         let synced = synced.expect("sync succeeds");
         assert_eq!(synced.assignments.roles.len(), 1);
-        // Served state: a parallel test's invalidation in the same stripe turns the
-        // sync's write into a removal, and this read then loads the same state.
         let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
             .await
             .unwrap();
@@ -2515,73 +2543,8 @@ mod tests {
         assert_eq!(*served.roles[0].role_ident, *ident);
     }
 
-    /// The standalone role-members sync commits under the role-members cache key lock:
-    /// while a load of the same role holds that lock, the sync's commit waits. The load
-    /// then reads the pre-sync members, and the sync's result replaces them.
-    #[sqlx::test]
-    async fn role_members_sync_commits_after_an_in_flight_load_of_the_same_role(
-        pool: sqlx::PgPool,
-    ) {
-        // A one-connection read pool, held below, parks the load inside the key lock.
-        let read_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(60))
-            .connect_with((*pool.connect_options()).clone())
-            .await
-            .unwrap();
-        let state = CatalogState::from_pools(read_pool.clone(), pool.clone());
-        let project_id = make_project(&state).await;
-        let role_id =
-            create_external_role(&state, &project_id, "ldap", "group-members-order").await;
-        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-members-order"));
-        let role = make_role(&ident, "Group Members Order");
-        let member_id = Arc::new(UserId::new_unchecked("oidc", "members-commit-order-0001"));
-        let members = [make_user(&member_id, "Members Commit Order")];
-        let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
-
-        let mut held = read_pool.acquire().await.unwrap();
-        let load = PostgresBackend::list_role_assignments_for_role(role_id, state.clone());
-        let sync = PostgresBackend::sync_role_members(
-            &arc_project,
-            &role,
-            &members,
-            state.clone(),
-            &dispatcher,
-        );
-        let observe = async {
-            // Fixed wait; see `sync_commits_after_an_in_flight_load_of_the_same_user`.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let sync_records: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM role_members_sync WHERE role_id = $1")
-                    .bind(*role_id)
-                    .fetch_one(&mut *held)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                sync_records, 0,
-                "the sync has not committed while the load holds the key lock"
-            );
-            drop(held);
-        };
-        let (loaded, synced, ()) = tokio::join!(load, sync, observe);
-
-        assert!(
-            loaded.unwrap().expect("the role exists").members.is_empty(),
-            "the load read the pre-sync members"
-        );
-        assert_eq!(synced.expect("sync succeeds").members.len(), 1);
-        // Served state; see `sync_commits_after_an_in_flight_load_of_the_same_user`.
-        let served = PostgresBackend::list_role_assignments_for_role(role_id, state.clone())
-            .await
-            .unwrap()
-            .expect("the role exists");
-        assert_eq!(served.members.len(), 1, "the synced members are served");
-        assert_eq!(*served.members[0].user_id, *member_id);
-    }
-
-    /// The by-ident member lookup reads a known ident through the cached by-id path,
-    /// and answers for the requested ident after the role's source id is rebound.
+    /// The by-ident member lookup answers for the requested ident after the role's
+    /// source id is rebound.
     #[sqlx::test]
     async fn role_members_by_ident_follow_a_source_id_rebind(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -2605,7 +2568,7 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
 
-        // The first lookup reads by ident and caches the ident→id mapping.
+        // The first lookup reads by ident.
         let first = PostgresBackend::list_role_assignments_for_role_by_ident(
             &arc_project,
             &old_ident,
@@ -2633,7 +2596,6 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
 
-        // The old ident still maps to the role, whose members now carry the new ident.
         assert!(
             PostgresBackend::list_role_assignments_for_role_by_ident(
                 &arc_project,
@@ -2663,19 +2625,6 @@ mod tests {
             assert_eq!(result.role_id, role_id);
             assert_eq!(*result.role_ident, *new_ident);
             assert_eq!(*result.members[0].user_id, *member_id);
-        }
-        // The old-ident lookup's by-id load cached the role under its new ident and
-        // mapped the new ident to it, so both new-ident lookups read through the by-id
-        // cache entry.
-        let by_id = PostgresBackend::list_role_assignments_for_role(role_id, state.clone())
-            .await
-            .unwrap()
-            .expect("the role exists");
-        for result in &by_new_ident {
-            assert!(
-                Arc::ptr_eq(result, &by_id),
-                "the known ident is served from the by-id cache entry"
-            );
         }
     }
 
@@ -6531,6 +6480,350 @@ mod tests {
             HashSet::from([child, parent]),
             "after the edge, U transitively gains `parent`"
         );
+    }
+
+    /// A user assigned to a member role while an edge removal is in flight, after the
+    /// removal read its affected users and before it commits, loses the removed
+    /// parent from the cache once the removal commits. The user's load in that window
+    /// still reads the edge; the removal reads its affected users again after the
+    /// commit and invalidates that user too.
+    #[sqlx::test]
+    async fn an_edge_removal_invalidates_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let parent = create_managed_role(&state, &project_id, "edge-race-parent").await;
+        let member = create_managed_role(&state, &project_id, "edge-race-member").await;
+        let user_id = UserId::new_unchecked("oidc", "edge-race-0001");
+        provision_user(&state, &user_id, "Edge Race").await;
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project,
+            parent,
+            &[member],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // The edge removal's commit waits for this gate, after its pre-commit read.
+        let gate = gate_commits(&pool, "role_membership", "DELETE").await;
+
+        let removal = tokio::spawn({
+            let state = state.clone();
+            async move {
+                PostgresBackend::remove_role_members_and_invalidate(parent, &[member], state).await
+            }
+        });
+        wait_for_lock_waiter(&pool).await;
+
+        PostgresBackend::add_user_role_assignments_and_invalidate(
+            &arc_project,
+            member,
+            std::slice::from_ref(&user_id),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let during = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            during
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([member, parent]),
+            "the load reads the edge before the removal commits"
+        );
+
+        open_commit_gate(gate).await;
+        removal.await.unwrap().expect("the removal succeeds");
+
+        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            served
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([member]),
+            "the removed parent is not served after the removal"
+        );
+    }
+
+    /// The advisory lock key [`gate_commits`] holds.
+    const COMMIT_GATE: i64 = 727_001;
+
+    /// Make every commit of a transaction that ran `operation` on `table` wait until
+    /// the returned connection releases [`COMMIT_GATE`].
+    async fn gate_commits(
+        pool: &sqlx::PgPool,
+        table: &str,
+        operation: &str,
+    ) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+        sqlx::query(
+            "CREATE OR REPLACE FUNCTION test_commit_gate() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN PERFORM pg_advisory_xact_lock_shared(727001); RETURN NULL; END $$",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE CONSTRAINT TRIGGER test_commit_gate AFTER {operation} ON {table} \
+             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_commit_gate()"
+        )))
+        .execute(pool)
+        .await
+        .unwrap();
+        let mut gate = pool.acquire().await.unwrap();
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(COMMIT_GATE)
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+        gate
+    }
+
+    async fn open_commit_gate(mut gate: sqlx::pool::PoolConnection<sqlx::Postgres>) {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(COMMIT_GATE)
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+    }
+
+    /// Make every commit of a transaction that ran `operation` on `table` fail.
+    async fn fail_commits(pool: &sqlx::PgPool, table: &str, operation: &str) {
+        sqlx::query(
+            "CREATE OR REPLACE FUNCTION test_fail_commit() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN RAISE EXCEPTION 'commit refused by the test'; END $$",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE CONSTRAINT TRIGGER test_fail_commit AFTER {operation} ON {table} \
+             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_fail_commit()"
+        )))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn role_ids(result: &ListUserRoleAssignmentsResult) -> HashSet<RoleId> {
+        result.roles.iter().map(|r| r.role_id).collect()
+    }
+
+    /// Which entry point adds the edge in [`edge_add_reaches_a_user_assigned_while_it_runs`].
+    enum EdgeAdd {
+        Members,
+        Mixed,
+    }
+
+    /// A user assigned below the member role while an edge add is in flight, after
+    /// the add read its affected users and before it commits, gains the new parent in
+    /// the cache once the add commits. The user's load in that window reads no edge;
+    /// the add reads its affected users again after the commit.
+    ///
+    /// The user is assigned to a role nested in the member: an assignment to the
+    /// member itself waits for the add's lock on the member row.
+    async fn edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool, entry: EdgeAdd) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let parent = create_managed_role(&state, &project_id, "edge-add-parent").await;
+        let member = create_managed_role(&state, &project_id, "edge-add-member").await;
+        let nested = create_managed_role(&state, &project_id, "edge-add-nested").await;
+        let user_id = UserId::new_unchecked(
+            "oidc",
+            match entry {
+                EdgeAdd::Members => "edge-add-race-0001",
+                EdgeAdd::Mixed => "edge-add-race-0002",
+            },
+        );
+        provision_user(&state, &user_id, "Edge Add Race").await;
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project,
+            member,
+            &[nested],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        let gate = gate_commits(&pool, "role_membership", "INSERT").await;
+        let add = tokio::spawn({
+            let state = state.clone();
+            let arc_project = Arc::clone(&arc_project);
+            async move {
+                match entry {
+                    EdgeAdd::Members => PostgresBackend::add_role_members_and_invalidate(
+                        &arc_project,
+                        parent,
+                        &[member],
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                    EdgeAdd::Mixed => PostgresBackend::add_role_members_mixed_and_invalidate(
+                        &arc_project,
+                        parent,
+                        &[],
+                        &[member],
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                }
+            }
+        });
+        wait_for_lock_waiter(&pool).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            PostgresBackend::add_user_role_assignments_and_invalidate(
+                &arc_project,
+                nested,
+                std::slice::from_ref(&user_id),
+                state.clone(),
+            ),
+        )
+        .await
+        .expect("the assignment completes while the edge add waits")
+        .unwrap();
+        let during = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            role_ids(&during),
+            HashSet::from([nested, member]),
+            "the load reads no edge before the add commits"
+        );
+
+        open_commit_gate(gate).await;
+        add.await.unwrap().expect("the edge add succeeds");
+
+        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            role_ids(&served),
+            HashSet::from([nested, member, parent]),
+            "the new parent is served after the add"
+        );
+    }
+
+    #[sqlx::test]
+    async fn an_edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
+        edge_add_reaches_a_user_assigned_while_it_runs(pool, EdgeAdd::Members).await;
+    }
+
+    #[sqlx::test]
+    async fn a_mixed_edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
+        edge_add_reaches_a_user_assigned_while_it_runs(pool, EdgeAdd::Mixed).await;
+    }
+
+    /// A sync whose commit fails removes the user's cached entry: a commit error can
+    /// hide a commit that landed, so the next read loads from the database.
+    #[sqlx::test]
+    async fn a_sync_whose_commit_fails_removes_the_cached_entry(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-failed-commit"));
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "sync-failed-commit-0001"));
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+
+        fail_commits(&pool, "role_assignment_sync", "INSERT").await;
+        let synced = PostgresBackend::sync_user_role_assignments(
+            make_user(&user_id, "Failed Commit"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            &[make_role(&ident, "Group Failed Commit")],
+            state.clone(),
+            &dispatcher,
+        )
+        .await;
+        assert!(synced.is_err(), "the commit error reaches the caller");
+
+        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&served, &warmed),
+            "the entry cached before the sync is reloaded"
+        );
+    }
+
+    /// A member removal whose commit fails removes the member's cached entry.
+    #[sqlx::test]
+    async fn a_member_removal_whose_commit_fails_removes_the_cached_entry(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let role = create_managed_role(&state, &project_id, "failed-removal").await;
+        let user_id = UserId::new_unchecked("oidc", "removal-failed-commit-0001");
+        provision_user(&state, &user_id, "Failed Removal").await;
+        PostgresBackend::add_user_role_assignments_and_invalidate(
+            &arc_project,
+            role,
+            std::slice::from_ref(&user_id),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+
+        fail_commits(&pool, "role_assignment", "DELETE").await;
+        let removed = PostgresBackend::remove_user_role_assignments_and_invalidate(
+            role,
+            std::slice::from_ref(&user_id),
+            state.clone(),
+        )
+        .await;
+        assert!(removed.is_err(), "the commit error reaches the caller");
+
+        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&served, &warmed),
+            "the entry cached before the removal is reloaded"
+        );
+        assert_eq!(
+            role_ids(&served),
+            HashSet::from([role]),
+            "the removal rolled back"
+        );
+    }
+
+    /// The read after an edge change's commit gives up on a table lock it cannot get,
+    /// for example behind a pending `ALTER TABLE`.
+    #[sqlx::test]
+    async fn the_read_after_an_edge_commit_gives_up_on_a_held_table_lock(pool: sqlx::PgPool) {
+        let mut ddl = pool.begin().await.unwrap();
+        sqlx::query("LOCK TABLE role_assignment IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *ddl)
+            .await
+            .unwrap();
+
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            affected_users_for_membership_edges_after_commit(&[Uuid::now_v7()], &pool),
+        )
+        .await
+        .expect("the read ends while the lock is held");
+        assert!(read.is_err(), "the read fails on the lock timeout");
+        ddl.rollback().await.unwrap();
     }
 
     /// Direct assignments only: a role the user reaches through nesting is absent, and

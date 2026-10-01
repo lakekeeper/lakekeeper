@@ -132,9 +132,9 @@ pub struct ListUserRoleAssignmentsResult {
 /// Result of [`CatalogRoleAssignmentOps::list_role_assignments_for_role`] and
 /// [`CatalogRoleAssignmentOps::list_role_assignments_for_role_by_ident`].
 ///
-/// Carries the role's own identifiers so that every consumer — cache layers,
-/// event listeners, external callers — can work with the result without a
-/// second look-up.
+/// Carries the role's own identifiers so that every consumer — event
+/// listeners, external callers — can work with the result without a second
+/// look-up.
 #[derive(Debug, Clone)]
 pub struct ListRoleMembersResult {
     /// The UUID of this role.
@@ -155,8 +155,8 @@ pub struct ListRoleMembersResult {
 pub struct SyncRoleMembersResult {
     /// The UUID of the role whose members were synced.
     ///
-    /// Returned so the caller (and the default trait impl) can invalidate the
-    /// role-members cache without a separate role-lookup round-trip.
+    /// Returned so the caller (and the default trait impl) can name the role
+    /// without a separate role-lookup round-trip.
     pub role_id: RoleId,
     /// Members for whom a new `user_role` row was inserted.
     pub added: Vec<AssignedUser>,
@@ -1048,20 +1048,20 @@ where
     // WRITE: standalone sync (owns its own transaction)
     // -----------------------------------------------------------------------
 
-    /// Sync a role's complete member list, commit, populate the cache with the
-    /// authoritative result, and dispatch a [`RoleMembersSyncedEvent`].
+    /// Sync a role's complete member list, commit, invalidate the cached role
+    /// assignments of the members it added or removed, and dispatch a
+    /// [`RoleMembersSyncedEvent`].
     ///
     /// This is the preferred entry point for external role providers (LDAP,
-    /// SCIM) that drive the sync and want to serve cached data immediately
-    /// after.  Unlike [`sync_role_members_by_ident`], this method:
+    /// SCIM) that drive the sync.  Unlike [`sync_role_members_by_ident`], this
+    /// method:
     ///
     /// 1. Opens and commits its own transaction.
     /// 2. Builds [`ListRoleMembersResult`] directly from the inputs — the
     ///    `members` slice without the deleted users the sync skipped is the
     ///    complete new member list, so no extra DB round-trip is needed.
-    /// 3. Caches the result in `ROLE_MEMBERS_CACHE` (or removes the entry after an
-    ///    overlapping invalidation), committing under the entry's compute lock (see
-    ///    `CountedCache::commit_and_cache`).
+    /// 3. Invalidates the `USER_ASSIGNMENTS_CACHE` entries of the added and removed
+    ///    members after the commit.
     /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
     async fn sync_role_members(
         project_id: &ArcProjectId,
@@ -1073,8 +1073,6 @@ where
         UniqueMembers::try_from_slice(members).map_err(SyncRoleMembersError::from)?;
         reject_reserved_sync_provider(role.ident.provider_id())
             .map_err(SyncRoleMembersError::from)?;
-        let invalidations_before =
-            role_assignments_cache::ROLE_MEMBERS_CACHE.invalidations_snapshot();
         let mut t = Self::Transaction::begin_write(catalog_state).await?;
         let sync_result =
             Self::sync_role_members_by_ident_impl(project_id, role, members, t.transaction())
@@ -1102,26 +1100,20 @@ where
             last_synced_at: Some(sync_result.synced_at),
         });
 
-        // Commit and cache under the cache key's lock; see
-        // `CountedCache::commit_and_cache`. Two syncs of one role serialize on the
-        // role's sync record in the database, so the later one takes the key lock
-        // after the earlier one holds it, and writes after it.
-        role_assignments_cache::ROLE_MEMBERS_CACHE
-            .commit_and_cache(
-                &sync_result.role_id,
-                Arc::clone(&list_result),
-                invalidations_before.read(&sync_result.role_id),
-                t.commit(),
-            )
-            .await?;
-        for user_id in sync_result
+        // The members whose assignment changed have stale user-assignments entries.
+        let changed_users: Vec<UserId> = sync_result
             .added
             .iter()
             .chain(sync_result.removed.iter())
-            .map(|u| &u.user_id)
-        {
-            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
-        }
+            .map(|u| (*u.user_id).clone())
+            .collect();
+        // Also after a failed commit, which may have landed.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            role_assignments_cache::user_assignments_cache_invalidate_many(&changed_users).await;
+            committed
+        })
+        .await?;
 
         let event = RoleMembersSyncedEvent {
             added: sync_result.added.into_iter().map(|u| u.user_id).collect(),
@@ -1143,19 +1135,19 @@ where
     ///
     /// This is the preferred entry point for external role providers (LDAP,
     /// SCIM) that drive the sync and want to serve cached data immediately
-    /// after.  Unlike [`sync_user_role_assignments_by_provider`], this method:
+    /// after: the cache holds the result once this returns, unless an
+    /// overlapping change made the sync remove the entry. Unlike
+    /// [`sync_user_role_assignments_by_provider`], this method:
     ///
     /// 1. Opens and commits its own transaction.
     /// 2. Builds [`ListUserRoleAssignmentsResult`] directly from the data
     ///    returned by the impl — `all_roles` and `provider_sync_times` contain
     ///    the authoritative post-sync state across all providers, so no extra
     ///    DB round-trip is needed.
-    /// 3. Caches the result in `USER_ASSIGNMENTS_CACHE` (or removes the entry after an
-    ///    overlapping invalidation), committing under the entry's compute lock (see
-    ///    `CountedCache::commit_and_cache`).
-    /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher` so that
-    ///    listeners can invalidate per-role member caches on this and other
-    ///    instances.
+    /// 3. Caches the result in `USER_ASSIGNMENTS_CACHE` after the commit, or removes
+    ///    the entry after an overlapping invalidation (see
+    ///    `CountedCache::cache_after_commit`).
+    /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher`.
     ///
     /// A sync that wrote nothing (a deleted user and [`SyncFor::OtherUser`])
     /// skips steps 3 and 4 and returns `synced_at: None`.
@@ -1180,10 +1172,11 @@ where
                 .into(),
             );
         }
-        // One retry: a role deleted while the first attempt ran is recreated by the
-        // second, which reads the committed delete.
+        // Read before the first transaction, so it also covers the retry.
         let invalidations_before =
             role_assignments_cache::USER_ASSIGNMENTS_CACHE.invalidations(user.user_id);
+        // One retry: a role deleted while the first attempt ran is recreated by the
+        // second, which reads the committed delete.
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
         let first = Self::sync_user_role_assignments_by_provider_impl(
             &user,
@@ -1228,26 +1221,22 @@ where
             });
         };
 
-        // Commit and cache under the cache key's lock; see
-        // `CountedCache::commit_and_cache`. Two syncs of one user serialize on the
-        // user's row in the database, so the later one takes the key lock after the
-        // earlier one holds it, and writes after it.
-        role_assignments_cache::USER_ASSIGNMENTS_CACHE
-            .commit_and_cache(
-                user.user_id,
-                Arc::clone(&list_result),
-                invalidations_before,
-                t.commit(),
-            )
-            .await?;
-        for role_id in sync_result
-            .added
-            .iter()
-            .chain(sync_result.removed.iter())
-            .copied()
-        {
-            role_assignments_cache::role_members_cache_invalidate(role_id).await;
-        }
+        // Commit, then cache; see `CountedCache::cache_after_commit`.
+        let user_id = Arc::clone(user.user_id);
+        let cached = Arc::clone(&list_result);
+        // A failed commit may have landed, so it removes the user's entry.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            if committed.is_ok() {
+                role_assignments_cache::USER_ASSIGNMENTS_CACHE
+                    .cache_after_commit(&user_id, cached, invalidations_before)
+                    .await;
+            } else {
+                role_assignments_cache::user_assignments_cache_invalidate(&user_id).await;
+            }
+            committed
+        })
+        .await?;
 
         let event = UserRoleAssignmentsSyncedEvent {
             user_id: user.user_id.clone(),
@@ -1322,7 +1311,7 @@ where
     ///
     /// An edge change only alters *transitive* effective roles, never direct
     /// assignments, so only `USER_ASSIGNMENTS_CACHE` is invalidated (for users
-    /// assigned to `member` or its descendants) — `ROLE_MEMBERS_CACHE` is not.
+    /// assigned to `member` or its descendants).
     async fn add_role_members_and_invalidate(
         project_id: &ArcProjectId,
         parent_role_id: RoleId,
@@ -1344,19 +1333,31 @@ where
         let affected = membership_edge_affected_users::<Self>(&result.added, &mut t)
             .await
             .map_err(ErrorModel::from)?;
-        t.commit().await?;
 
-        // Post-commit eviction is infallible (in-memory). A crash in the
+        // Post-commit eviction is in-memory, after one more read of the affected
+        // users (see `membership_edge_affected_users_after_commit`). A crash in the
         // commit→evict window leaves affected entries stale until the
         // `USER_ASSIGNMENTS_CACHE` TTL — stale-permissive for removes, but bounded
         // and acceptable for this cache.
-        // A request cancelled during a post-commit invalidation loop leaves the
-        // loop's later keys cached until the TTL.
-        record_membership_edge_fanout("add", parent_role_id, &affected);
-        role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
-        // The edge also changes the ancestor set of the member and of every role nested
-        // beneath it, which is cached per role rather than per user.
-        role_assignments_cache::role_ancestors_cache_invalidate_all();
+        let added = result.added.clone();
+        // A failed commit may have landed, so it still invalidates the users read
+        // before it.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            let affected = if committed.is_ok() {
+                membership_edge_affected_users_after_commit::<Self>(affected, &added, catalog_state)
+                    .await
+            } else {
+                affected
+            };
+            record_membership_edge_fanout("add", parent_role_id, &affected);
+            role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+            // The edge also changes the ancestor set of the member and of every role
+            // nested beneath it, which is cached per role, not per user.
+            role_assignments_cache::role_ancestors_cache_invalidate_all();
+            committed
+        })
+        .await?;
         Ok(result)
     }
 
@@ -1373,19 +1374,34 @@ where
             Self::remove_role_members_impl(parent_role_id, member_role_ids, t.transaction())
                 .await?;
 
-        // Computed before commit; see `add_role_members_and_invalidate`.
+        // Computed before commit and again after it; see
+        // `add_role_members_and_invalidate`.
         let affected = membership_edge_affected_users::<Self>(&result.removed, &mut t)
             .await
             .map_err(ErrorModel::from)?;
-        t.commit().await?;
 
-        // Infallible post-commit eviction; see `add_role_members_and_invalidate`,
-        // also for a request cancelled during the invalidation loop.
-        record_membership_edge_fanout("remove", parent_role_id, &affected);
-        role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
-        // See `add_role_members_and_invalidate`. A removal is the permissive direction, so
-        // this clear is what keeps the window down to the commit→evict gap on this replica.
-        role_assignments_cache::role_ancestors_cache_invalidate_all();
+        let removed = result.removed.clone();
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            let affected = if committed.is_ok() {
+                membership_edge_affected_users_after_commit::<Self>(
+                    affected,
+                    &removed,
+                    catalog_state,
+                )
+                .await
+            } else {
+                affected
+            };
+            record_membership_edge_fanout("remove", parent_role_id, &affected);
+            role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+            // See `add_role_members_and_invalidate`. A removal is the permissive
+            // direction, so this clear is what keeps the window down to the
+            // commit→evict gap on this replica.
+            role_assignments_cache::role_ancestors_cache_invalidate_all();
+            committed
+        })
+        .await?;
         Ok(result)
     }
 
@@ -1417,8 +1433,7 @@ where
     ///
     /// A *direct* user→role assignment changes only the assigned user's effective
     /// roles (no transitive fan-out to other users — unlike a role→role edge), so
-    /// only those users' `USER_ASSIGNMENTS_CACHE` entries plus the role's
-    /// `ROLE_MEMBERS_CACHE` (its direct user-member list) need eviction.
+    /// only those users' `USER_ASSIGNMENTS_CACHE` entries need eviction.
     async fn add_user_role_assignments_and_invalidate(
         project_id: &ArcProjectId,
         role_id: RoleId,
@@ -1430,14 +1445,16 @@ where
         let result =
             Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
                 .await?;
-        t.commit().await?;
 
-        // Post-commit, infallible (in-memory). Only the newly-assigned users and
-        // this role's member list are affected.
-        for user_id in &result.added {
-            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
-        }
-        role_assignments_cache::role_members_cache_invalidate(role_id).await;
+        // Post-commit, in-memory. Only the newly-assigned users are affected.
+        let added = result.added.clone();
+        // Also after a failed commit, which may have landed.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            role_assignments_cache::user_assignments_cache_invalidate_many(&added).await;
+            committed
+        })
+        .await?;
         Ok(result)
     }
 
@@ -1452,12 +1469,15 @@ where
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
         let result =
             Self::remove_user_role_assignments_impl(role_id, &user_ids, t.transaction()).await?;
-        t.commit().await?;
 
-        for user_id in &result.removed {
-            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
-        }
-        role_assignments_cache::role_members_cache_invalidate(role_id).await;
+        let removed = result.removed.clone();
+        // Also after a failed commit, which may have landed.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            role_assignments_cache::user_assignments_cache_invalidate_many(&removed).await;
+            committed
+        })
+        .await?;
         Ok(result)
     }
 
@@ -1469,8 +1489,7 @@ where
     /// kinds; this wrapper exists precisely to span both writes on one transaction.
     ///
     /// Combines their cache rationale: each newly-assigned user evicts its
-    /// `USER_ASSIGNMENTS_CACHE`, the role's `ROLE_MEMBERS_CACHE` is evicted iff a
-    /// direct user member was added, and edge additions evict the transitively-
+    /// `USER_ASSIGNMENTS_CACHE`, and edge additions evict the transitively-
     /// affected users' `USER_ASSIGNMENTS_CACHE`.
     async fn add_role_members_mixed_and_invalidate(
         project_id: &ArcProjectId,
@@ -1503,25 +1522,39 @@ where
         };
 
         // Transitively-affected users from the edge additions, computed on the same
-        // transaction before commit (see `add_role_members_and_invalidate`).
+        // transaction before commit and again after it (see
+        // `add_role_members_and_invalidate`).
         let edge_affected = membership_edge_affected_users::<Self>(&role_result.added, &mut t)
             .await
             .map_err(ErrorModel::from)?;
-        t.commit().await?;
 
-        // Post-commit, infallible in-memory eviction.
-        for user_id in &user_result.added {
-            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
-        }
-        role_assignments_cache::user_assignments_cache_invalidate_many(&edge_affected).await;
-        if !user_result.added.is_empty() {
-            role_assignments_cache::role_members_cache_invalidate(role_id).await;
-        }
-        if !role_result.added.is_empty() {
-            // Role→role edges landed; see `add_role_members_and_invalidate`. Skipped when
-            // this batch added only user members, which leave the graph untouched.
-            role_assignments_cache::role_ancestors_cache_invalidate_all();
-        }
+        // Post-commit, in-memory eviction.
+        let added_users = user_result.added.clone();
+        let added_roles = role_result.added.clone();
+        // Also after a failed commit, which may have landed.
+        role_assignments_cache::run_to_completion(async move {
+            let committed = t.commit().await;
+            let edge_affected = if committed.is_ok() {
+                membership_edge_affected_users_after_commit::<Self>(
+                    edge_affected,
+                    &added_roles,
+                    catalog_state,
+                )
+                .await
+            } else {
+                edge_affected
+            };
+            role_assignments_cache::user_assignments_cache_invalidate_many(&added_users).await;
+            role_assignments_cache::user_assignments_cache_invalidate_many(&edge_affected).await;
+            if !added_roles.is_empty() {
+                // Role→role edges landed; see `add_role_members_and_invalidate`. Skipped
+                // when this batch added only user members, which leave the graph
+                // untouched.
+                role_assignments_cache::role_ancestors_cache_invalidate_all();
+            }
+            committed
+        })
+        .await?;
         Ok((user_result, role_result))
     }
 
@@ -1552,6 +1585,11 @@ where
     ///
     /// Primary consumer: authorizers resolving a user's effective roles for a
     /// permission check.
+    ///
+    /// Never call this while holding an open transaction. A cache miss holds the
+    /// user's cache entry lock across a read-pool query, which can queue behind DDL. A
+    /// caller that waits for that lock while its transaction holds locks the DDL waits
+    /// for closes a cycle that Postgres' deadlock detection cannot see.
     async fn list_role_assignments_for_user(
         user_id: &UserId,
         catalog_state: Self::State,
@@ -1625,74 +1663,49 @@ where
     /// timestamp for this role's member list.
     ///
     /// Identified by [`RoleId`] — use when the UUID is already known (e.g.
-    /// inside an authorizer after having resolved the role).
+    /// inside an authorizer after having resolved the role). Read from the
+    /// database on every call.
     async fn list_role_assignments_for_role(
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
-        // Single-flight read-through: concurrent misses for the same role coalesce
-        // onto one loader run (see `CountedCache::get_or_load_optional`). The helper
-        // owns the `ROLE_MEMBERS_CACHE` insert; the loader populates the secondary
-        // ident→id index on that single load.
-        role_assignments_cache::ROLE_MEMBERS_CACHE
-            .get_or_load_optional(&role_id, async move {
-                let Some(result) =
-                    Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
-                else {
-                    return Ok(None);
-                };
-                let result = Arc::new(result);
-                role_cache::role_ident_insert(
-                    result.project_id.clone(),
-                    result.role_ident.clone(),
-                    role_id,
-                )
-                .await;
-                Ok(Some(result))
-            })
-            .await
+        let Some(result) =
+            Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
+        else {
+            return Ok(None);
+        };
+        let result = Arc::new(result);
+        role_cache::role_ident_insert(
+            result.project_id.clone(),
+            result.role_ident.clone(),
+            role_id,
+        )
+        .await;
+        Ok(Some(result))
     }
 
     /// Return all members of a role identified by its project-scoped ident,
     /// together with the last sync timestamp for this role's member list.
     ///
-    /// Resolves `(project_id, role_ident)` → [`RoleId`] internally.  Use when
-    /// the caller has an external identifier (LDAP group DN, SCIM group ID)
-    /// and wants to avoid a separate role-lookup round-trip.
+    /// Resolves `(project_id, role_ident)` → [`RoleId`] in the same query. Use
+    /// when the caller has an external identifier (LDAP group DN, SCIM group ID)
+    /// and wants to avoid a separate role-lookup round-trip. Read from the
+    /// database on every call.
     async fn list_role_assignments_for_role_by_ident(
         project_id: &ArcProjectId,
         role_ident: &Arc<RoleIdent>,
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
-        // Try to resolve (project_id, role_ident) → RoleId via the secondary
-        // ident cache (populated by role-create/update events and sync events),
-        // then read through ROLE_MEMBERS_CACHE by id.
-        if let Some(role_id) =
-            role_cache::role_ident_to_id(project_id.clone(), role_ident.clone()).await
-            && let Some(result) =
-                Self::list_role_assignments_for_role(role_id, catalog_state.clone()).await?
-        {
-            // Guard against stale ident→id mappings: if the result's ident
-            // differs from the requested ident (e.g. source_id was changed after
-            // the mapping was written), fall through to the DB path, which answers
-            // for the requested ident.
-            if result.role_ident.as_ref() == role_ident.as_ref() {
-                return Ok(Some(result));
-            }
-        }
-
-        // DB fetch by ident. It reads outside the cache key's compute lock, so it
-        // caches only the ident→id mapping; the next call reads through by id.
-        let result = match Self::list_role_assignments_for_role_by_ident_impl(
+        let Some(result) = Self::list_role_assignments_for_role_by_ident_impl(
             project_id,
             role_ident,
             catalog_state,
         )
         .await?
-        {
-            Some(r) => Arc::new(r),
-            None => return Ok(None),
+        else {
+            return Ok(None);
         };
+        let result = Arc::new(result);
         role_cache::role_ident_insert(
             result.project_id.clone(),
             result.role_ident.clone(),
@@ -1741,10 +1754,12 @@ fn record_membership_edge_fanout(
 /// Users whose effective roles a `role_membership` edge change on `member_role_ids`
 /// makes stale: those assigned to a member or any role in its descendant closure.
 ///
-/// Runs on the caller's write transaction. The result is identical before and after
-/// the edge mutation (the changed edge is never on the descendant walk — `member`
-/// only appears as `member_role_id`), so computing it pre-commit is sound and keeps
-/// invalidation atomic with the edge change.
+/// Runs on the caller's write transaction. The changed edge is never on the
+/// descendant walk (`member` only appears as `member_role_id`), so the edge change
+/// itself leaves the result unchanged. A read failure rolls the edge change back.
+/// An assignment to one of these roles that commits after this read and before the
+/// edge change commits is missing from it; see
+/// [`membership_edge_affected_users_after_commit`].
 async fn membership_edge_affected_users<S: CatalogStore>(
     member_role_ids: &[RoleId],
     t: &mut S::Transaction,
@@ -1756,6 +1771,37 @@ async fn membership_edge_affected_users<S: CatalogStore>(
     // closure and de-duplicates affected users in SQL (`SELECT DISTINCT`) — no
     // per-member round-trip inside the held write transaction / advisory lock.
     S::affected_users_for_membership_edges_impl(member_role_ids, t.transaction()).await
+}
+
+/// `affected` together with the users [`membership_edge_affected_users`] finds after
+/// the edge change committed, read on the write pool with a bounded lock wait.
+///
+/// A user assigned to a member role (or one of its descendants) by a transaction that
+/// commits after the pre-commit read is missing from `affected`, and a load of that
+/// user before the edge change commits caches the old edge. The read after the
+/// commit includes that user. If it fails, the pre-commit set is all that is
+/// invalidated.
+async fn membership_edge_affected_users_after_commit<S: CatalogStore>(
+    mut affected: Vec<UserId>,
+    member_role_ids: &[RoleId],
+    catalog_state: S::State,
+) -> Vec<UserId> {
+    if member_role_ids.is_empty() {
+        return affected;
+    }
+    match S::affected_users_for_membership_edges_after_commit_impl(member_role_ids, catalog_state)
+        .await
+    {
+        Ok(users) => {
+            let mut seen: HashSet<UserId> = affected.iter().cloned().collect();
+            affected.extend(users.into_iter().filter(|user| seen.insert(user.clone())));
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "Failed to read the users affected by a committed role-membership change; invalidating the users read before the commit"
+        ),
+    }
+    affected
 }
 
 #[cfg(test)]

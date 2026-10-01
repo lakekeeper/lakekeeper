@@ -314,3 +314,108 @@ pub async fn upsert_system_roles_in_all_projects<C: lakekeeper::service::Catalog
 ) -> anyhow::Result<()> {
     lakekeeper::service::upsert_system_roles_in_all_projects::<C>(state, roles).await
 }
+
+/// Holds the commit of every transaction that wrote to one table until
+/// [`Self::release`], so a test can act while a writer waits inside its `COMMIT`.
+///
+/// A deferred constraint trigger runs at commit time and waits for an advisory
+/// lock that the gate holds. The trigger lives in the test's own database.
+pub struct CommitGate {
+    connection: sqlx::pool::PoolConnection<sqlx::Postgres>,
+    pool: sqlx::PgPool,
+}
+
+/// The advisory lock key a [`CommitGate`] holds.
+const COMMIT_GATE_KEY: i64 = 727_101;
+
+impl CommitGate {
+    /// Gate commits of transactions that ran `operation` (`INSERT`, `UPDATE` or
+    /// `DELETE`) on `table` (an identifier, quoted where Postgres needs it).
+    ///
+    /// # Panics
+    /// If the trigger cannot be created or the lock cannot be taken.
+    pub async fn install(pool: &sqlx::PgPool, table: &str, operation: &str) -> Self {
+        sqlx::query(
+            "CREATE OR REPLACE FUNCTION test_commit_gate() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN PERFORM pg_advisory_xact_lock_shared(727101); RETURN NULL; END $$",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let trigger_name: String = table.chars().filter(char::is_ascii_alphanumeric).collect();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE CONSTRAINT TRIGGER test_commit_gate_{trigger_name} AFTER {operation} ON \
+             {table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION \
+             test_commit_gate()"
+        )))
+        .execute(pool)
+        .await
+        .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(COMMIT_GATE_KEY)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        Self {
+            connection,
+            pool: pool.clone(),
+        }
+    }
+
+    /// Returns once a transaction waits at the gate.
+    ///
+    /// # Panics
+    /// If none does within 10 seconds.
+    pub async fn wait_for_a_held_commit(&self) {
+        let waiting = async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event = 'advisory'",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .unwrap();
+                if waiting > 0 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("a commit waits at the gate");
+    }
+
+    /// Let the held commits finish.
+    ///
+    /// # Panics
+    /// If the lock cannot be released.
+    pub async fn release(mut self) {
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(COMMIT_GATE_KEY)
+            .execute(&mut *self.connection)
+            .await
+            .unwrap();
+    }
+}
+
+/// Polls `condition` until it holds.
+///
+/// # Panics
+/// If it still fails after 10 seconds; `what` names it in the message.
+pub async fn eventually<F, Fut>(what: &str, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let polled = async {
+        while !condition().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), polled)
+        .await
+        .unwrap_or_else(|_| panic!("{what}"));
+}

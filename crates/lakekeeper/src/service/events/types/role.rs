@@ -43,9 +43,8 @@ pub struct UpdateRoleEvent {
 /// Event emitted after a role's member list has been successfully synced by an
 /// external provider (e.g. LDAP, SCIM).
 ///
-/// `result` carries the authoritative post-sync member list so that listeners
-/// can **populate** the role-members cache instead of merely invalidating it.
-/// `result.role_id`, `result.project_id`, and `result.role_ident` identify the
+/// `result` carries the authoritative post-sync member list, so listeners need
+/// no read of their own. `result.role_id`, `result.project_id`, and `result.role_ident` identify the
 /// role and allow listeners to also warm `IDENT_TO_ID_CACHE` without an extra
 /// DB round-trip.
 #[derive(Clone, Debug)]

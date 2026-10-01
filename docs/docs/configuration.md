@@ -447,6 +447,8 @@ Lakekeeper uses in-memory caches to speed up certain operations.
 
 Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
 
+With a separate read replica (`LAKEKEEPER__PG_DATABASE_URL_READ`), an entry loaded right after a change can hold the replica's pre-change state, and it is served until it expires, for at most its TTL.
+
 **Short-Term Credentials (STC) Cache**
 
 When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
@@ -555,22 +557,17 @@ _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_cache_size{cache_type="user_assignments"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="user_assignments"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="user_assignments"}`: Total number of cache misses
+- `lakekeeper_cache_fenced_total{cache_type="user_assignments"}`: Total number of loaded or synced entries left uncached because a change or a role provider sync overlapped them, of the same user or of another user that shares its invalidation counter. The next request for that user reads the database.
 
-**Role Members Cache**
+**Role Members Cache (deprecated)**
 
-Caches the members of each role (`RoleId → role members`). This is a cold-path cache populated only by admin/provider queries that list a role's members. Each entry holds a role's full member list, so the default capacity is deliberately low.
+Lakekeeper reads role member lists from the database on every request. The options below are deprecated and have no effect. Setting any of them logs a warning at startup.
 
 | Configuration Key                                                | Type    | Default | Description |
 |------------------------------------------------------------------|---------|---------|-----|
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`           | boolean | `true`  | Enable/disable role-members caching. Default: `true` |
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
-
-_Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
-
-- `lakekeeper_cache_size{cache_type="role_members"}`: Current number of entries in the cache
-- `lakekeeper_cache_hits_total{cache_type="role_members"}`: Total number of cache hits
-- `lakekeeper_cache_misses_total{cache_type="role_members"}`: Total number of cache misses
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`           | boolean | —       | Deprecated, no effect. |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`          | integer | —       | Deprecated, no effect. |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS` | integer | —       | Deprecated, no effect. |
 
 **Role Ancestors Cache**
 

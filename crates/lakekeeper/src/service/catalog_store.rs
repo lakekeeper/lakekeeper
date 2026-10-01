@@ -1214,11 +1214,20 @@ where
     /// endpoints `member_role_ids` are added or removed: every user assigned to any
     /// of those members or to any role in their combined descendant closure. The
     /// whole set is walked in a single query (no per-member fan-out). Runs on the
-    /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
-    /// is sound).
+    /// caller's transaction; see `membership_edge_affected_users` for what a read
+    /// before the commit misses.
     async fn affected_users_for_membership_edges_impl<'a>(
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    /// [`Self::affected_users_for_membership_edges_impl`], read after the edge change
+    /// committed, in a read-only transaction of its own on the write pool. A lock wait
+    /// of more than a few seconds fails the read, so a pending `ALTER TABLE` on a role
+    /// table cannot hold its connection.
+    async fn affected_users_for_membership_edges_after_commit_impl(
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 
     /// Delete the role-provider sync records of `user_ids` for `provider_id` in
@@ -1350,8 +1359,8 @@ where
     /// Soft-deletes the user and removes their role assignments + provider sync
     /// log (so a deleted user is no member of any role, matching the OpenFGA
     /// authorizer). Returns `None` if absent, else the roles the user was
-    /// assigned to — the caller evicts those roles' member caches and the user's
-    /// effective-roles cache after commit.
+    /// assigned to. The caller evicts the user's effective-roles cache after
+    /// commit.
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
