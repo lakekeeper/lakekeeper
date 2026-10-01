@@ -487,8 +487,9 @@ pub struct DynAppConfig {
     pub bind_ip: IpAddr,
     /// Serve the main HTTP API (default: true). When false, the process runs
     /// headless: metrics, health checks, background services and task-queue
-    /// workers still run, but the axum API is not bound. Enables headless
-    /// worker deployments that execute task-queue work without exposing the API.
+    /// workers still run, and the listener serves only `/health` for probes;
+    /// the catalog and management API is not exposed. Enables headless worker
+    /// deployments that execute task-queue work without serving the API.
     pub serve_http_api: bool,
     /// If x-forwarded-x headers should be respected.
     /// Defaults to true

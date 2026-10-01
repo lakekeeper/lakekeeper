@@ -675,7 +675,7 @@ mod test {
 
     use crate::{
         config::MaintenanceMode,
-        service::health::{Health, HealthState, HealthStatus},
+        service::health::{Health, HealthState, HealthStatus, ServiceHealthProvider},
     };
 
     fn test_health_state(health: HealthStatus) -> HealthState {
@@ -864,6 +864,39 @@ mod test {
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body.health, HealthStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn new_health_router_serves_only_health() {
+        // No providers → `collect_health` reports healthy.
+        let app = super::new_health_router(ServiceHealthProvider::new(vec![], 60));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: HealthState = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body.health, HealthStatus::Healthy);
+
+        // The worker router mounts nothing but `/health`.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/catalog/v1/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[cfg(feature = "open-api")]

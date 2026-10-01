@@ -522,15 +522,21 @@ async fn serve_inner<
     // Number of task-queue workers that will actually run. Queues register even
     // with zero workers, so this is distinct from "any queues registered".
     let total_task_workers = task_queue_registry.total_workers().await;
-    // A headless worker with no workers would do nothing: no HTTP API, no task
-    // processing, yet `/health` would report 200. Fail fast rather than run a
-    // process that only pretends to be healthy.
-    if total_task_workers == 0 && !CONFIG.serve_http_api {
+    // A headless host with neither task-queue workers nor background services
+    // does nothing: no HTTP API, no task processing, yet `/health` reports 200.
+    // Fail fast: such a process would only pretend to be healthy. A host that
+    // registers background services (even with no task workers) still does work,
+    // so it is allowed to start.
+    if total_task_workers == 0
+        && additional_background_services.is_empty()
+        && !CONFIG.serve_http_api
+    {
         return Err(anyhow!(
-            "Headless worker has no task-queue workers to run: serve_http_api is disabled and \
-             all task workers are disabled (TASK_*_WORKERS=0) or skipped (read-only \
-             maintenance). Refusing to start a process that would do nothing. Enable at least \
-             one TASK_*_WORKERS, or set LAKEKEEPER__SERVE_HTTP_API=true."
+            "Headless host has no work to do: serve_http_api is disabled, no task-queue workers \
+             are configured (all TASK_*_WORKERS=0 or skipped by read-only maintenance), and no \
+             background services are registered. Refusing to start a process that would do \
+             nothing. Enable at least one TASK_*_WORKERS, register a background service, or set \
+             LAKEKEEPER__SERVE_HTTP_API=true."
         ));
     }
 
@@ -558,11 +564,9 @@ async fn serve_inner<
         }
         router
     } else {
+        // Headless: the host announces the mode at startup (see the binary's
+        // `serve`). Serve only `/health` for probes.
         drop(layer);
-        tracing::info!(
-            "serve_http_api is disabled: running headless (metrics, health checks, background \
-             services and task-queue workers only). Only `/health` is served on {bind_addr}."
-        );
         new_health_router(health_provider.clone())
     };
 
