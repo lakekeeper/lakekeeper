@@ -253,6 +253,70 @@ macro_rules! test_all_storages {
     };
 }
 
+/// Like [`test_all_storages`], but each backend arm additionally requires the
+/// `object-store` feature (the `ObjectStoreBridge` and the `object_store` crate
+/// are only available then). Run e.g. with `--features object-store,storage-s3`.
+#[cfg(feature = "object-store")]
+macro_rules! test_all_storages_object_store {
+    ($test_name:ident, $test_fn:ident) => {
+        pastey::paste! {
+            #[cfg(feature = "storage-in-memory")]
+            #[test]
+            fn [<$test_name _memory>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_memory_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-s3")]
+            #[test]
+            fn [<$test_name _s3>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_s3_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-s3")]
+            #[test]
+            fn [<$test_name _oss>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_oss_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-adls")]
+            #[test]
+            fn [<$test_name _adls>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_adls_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-gcs")]
+            #[test]
+            fn [<$test_name _gcs_regular>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET").await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-gcs")]
+            #[test]
+            fn [<$test_name _gcs_hns>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET").await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+        }
+    };
+}
+
 /// Test configuration for different storage backends
 #[derive(Debug)]
 pub struct TestConfig {
@@ -313,6 +377,11 @@ test_all_storages!(
 test_all_storages!(
     test_percent_encoding_does_not_alias,
     test_percent_encoding_does_not_alias_impl
+);
+#[cfg(feature = "object-store")]
+test_all_storages_object_store!(
+    test_object_store_bridge_roundtrip,
+    test_object_store_bridge_roundtrip_impl
 );
 test_all_storages!(
     test_list_non_existent_directory,
@@ -2072,6 +2141,92 @@ async fn test_percent_encoding_does_not_alias_impl(
             failures.join("\n  ")
         );
     }
+    Ok(())
+}
+
+/// Round-trip through `ObjectStoreBridge` across every backend: keys are written
+/// verbatim through the backend (as an iceberg writer would), then listed, read
+/// and deleted through the bridge. Guards that:
+/// - listed keys carrying a literal `%` round-trip unchanged (`Path::parse`, not
+///   `Path::from`, so `a%20b` is not re-encoded to `a%2520b`);
+/// - directory-marker entries (e.g. ADLS `sub/`) never surface as objects.
+#[cfg(feature = "object-store")]
+async fn test_object_store_bridge_roundtrip_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    use std::{str::FromStr, sync::Arc};
+
+    use lakekeeper_io::{
+        Location,
+        object_store::{ObjectStore, ObjectStoreExt, path::Path as OsPath},
+        object_store_bridge::ObjectStoreBridge,
+    };
+
+    // Root the bridge at a unique directory (no trailing slash) for this run.
+    let base_dir = config.test_dir_path("object-store-bridge");
+    let base_str = base_dir.trim_end_matches('/').to_string();
+    let base = Location::from_str(&base_str)?;
+    let io: Arc<dyn LakekeeperStorage> = Arc::new(storage.clone());
+    let bridge = ObjectStoreBridge::new(io, &base);
+
+    // Literal `%` sequences (`%20`, `%2B`) round-trip on every backend
+    // (see `test_special_characters_in_url_segments`); `sub/deep.txt` forces a
+    // sub-"directory" so backends that emit directory markers are exercised.
+    let names = ["plain.txt", "a%20b.txt", "pct%2Bplus.txt", "sub/deep.txt"];
+    for name in &names {
+        storage
+            .write(
+                &format!("{base_str}/{name}"),
+                Bytes::from(format!("content:{name}")),
+            )
+            .await?;
+    }
+
+    // List through the bridge: exactly the written keys, verbatim, no markers.
+    let listed: Vec<OsPath> = bridge
+        .list(None)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|m| m.map(|meta| meta.location))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut listed_str: Vec<String> = listed.iter().map(|p| p.as_ref().to_string()).collect();
+    listed_str.sort();
+    let mut expected: Vec<String> = names.iter().map(ToString::to_string).collect();
+    expected.sort();
+    assert_eq!(
+        listed_str, expected,
+        "bridge listing must match written keys verbatim"
+    );
+
+    // Each listed path must resolve back to its own object via `get`.
+    for path in &listed {
+        let got = bridge.get(path).await?.bytes().await?;
+        let name = path.as_ref();
+        assert_eq!(
+            &got[..],
+            format!("content:{name}").as_bytes(),
+            "round-trip get for `{name}`"
+        );
+    }
+
+    // Batch delete via `delete_stream`, then confirm nothing remains.
+    let del = futures::stream::iter(listed.clone().into_iter().map(Ok)).boxed();
+    let deleted: Vec<OsPath> = bridge
+        .delete_stream(del)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(deleted.len(), names.len(), "every path should be deleted");
+
+    let remaining = bridge.list(None).collect::<Vec<_>>().await;
+    assert!(
+        remaining.is_empty(),
+        "all objects deleted, listing must be empty: {remaining:?}"
+    );
+
     Ok(())
 }
 

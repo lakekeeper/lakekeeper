@@ -33,16 +33,15 @@ use object_store::{
 use tokio::sync::{Mutex, oneshot};
 
 use crate::{
-    DeleteError, ErrorKind, FileInfo, LakekeeperFileWrite, LakekeeperStorage, Location, ReadError,
-    WriteError,
+    ErrorKind, FileInfo, LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 /// `store` label attached to [`object_store::Error`]s originating here.
 const STORE: &str = "lakekeeper";
 
-/// Concurrency for the individual deletes issued by [`ObjectStore::delete_stream`],
-/// matching `object_store`'s own per-object delete backends (GCP/HTTP/Local).
-const DELETE_CONCURRENCY: usize = 10;
+/// Batch size for the deletes issued by [`ObjectStore::delete_stream`], matching
+/// [`crate::iceberg_bridge`]'s streamed deletes and the backends' bulk-delete APIs.
+const DELETE_BATCH_SIZE: usize = 1000;
 
 /// An [`object_store::ObjectStore`] backed by a [`LakekeeperStorage`], rooted at a
 /// base [`Location`] (`scheme://authority[/prefix]`).
@@ -83,13 +82,21 @@ fn join(base: &str, path: &Path) -> String {
 
 /// Strip the base off an absolute location to recover the relative `object_store` path.
 fn strip_to_relative(base: &str, absolute: &str) -> object_store::Result<Path> {
-    absolute
+    let rest = absolute
         .strip_prefix(base)
-        .map(|rest| Path::from(rest.strip_prefix('/').unwrap_or(rest)))
         .ok_or_else(|| object_store::Error::Generic {
             store: STORE,
             source: format!("listed location `{absolute}` is not under base `{base}`").into(),
-        })
+        })?;
+    let rel = rest.strip_prefix('/').unwrap_or(rest);
+    // `Path::parse` keeps each segment verbatim; `Path::from` would percent-encode
+    // it again (a `lakekeeper-io` key `a%2Fb` becomes `a%252Fb`), so a follow-up
+    // `get`/`delete` on the returned path would address a different — usually
+    // absent — object.
+    Path::parse(rel).map_err(|e| object_store::Error::Generic {
+        store: STORE,
+        source: Box::new(e),
+    })
 }
 
 /// Epoch fallback for backends that don't report a modification time.
@@ -97,11 +104,32 @@ fn epoch() -> DateTime<Utc> {
     DateTime::from_timestamp(0, 0).unwrap_or_default()
 }
 
+/// A directory-marker entry (e.g. ADLS lists directories as `name/` with no
+/// size). These are not objects, so they are skipped in listings.
+fn is_directory_marker(info: &FileInfo) -> bool {
+    info.location().as_str().ends_with('/')
+}
+
+/// The backend-reported object size, or a `Generic` error if absent. A real
+/// object always carries a size (directory markers, which don't, are filtered
+/// out beforehand), so a missing size is a backend fault — surface it instead
+/// of silently reporting a zero-length object.
+fn required_size(info: &FileInfo) -> object_store::Result<u64> {
+    info.size().ok_or_else(|| object_store::Error::Generic {
+        store: STORE,
+        source: format!(
+            "backend did not report a size for `{}`",
+            info.location().as_str()
+        )
+        .into(),
+    })
+}
+
 fn file_info_to_meta(base: &str, info: &FileInfo) -> object_store::Result<ObjectMeta> {
     Ok(ObjectMeta {
         location: strip_to_relative(base, info.location().as_str())?,
         last_modified: info.last_modified().unwrap_or_else(epoch),
-        size: info.size().unwrap_or(0),
+        size: required_size(info)?,
         e_tag: None,
         version: None,
     })
@@ -125,20 +153,6 @@ fn write_err_to_os(err: WriteError) -> object_store::Error {
     object_store::Error::Generic {
         store: STORE,
         source: Box::new(err),
-    }
-}
-
-fn delete_err_to_os(path: &str, err: DeleteError) -> object_store::Error {
-    if matches!(&err, DeleteError::IOError(e) if e.kind() == ErrorKind::NotFound) {
-        object_store::Error::NotFound {
-            path: path.to_string(),
-            source: Box::new(err),
-        }
-    } else {
-        object_store::Error::Generic {
-            store: STORE,
-            source: Box::new(err),
-        }
     }
 }
 
@@ -227,7 +241,7 @@ impl ObjectStore for ObjectStoreBridge {
             let meta = ObjectMeta {
                 location: location.clone(),
                 last_modified: info.last_modified().unwrap_or_else(epoch),
-                size: info.size().unwrap_or(0),
+                size: required_size(&info)?,
                 e_tag: None,
                 version: None,
             };
@@ -248,7 +262,7 @@ impl ObjectStore for ObjectStoreBridge {
                 .metadata(&path)
                 .await
                 .map_err(|e| read_err_to_os(location.as_ref(), e))?;
-            let size = info.size().unwrap_or(0);
+            let size = required_size(&info)?;
             let range = get_range
                 .as_range(size)
                 .map_err(|e| object_store::Error::Generic {
@@ -302,21 +316,52 @@ impl ObjectStore for ObjectStoreBridge {
     ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
         let io = self.lakekeeper_io.clone();
         let base = self.base.clone();
-        locations
-            .map(move |location| {
-                let io = io.clone();
-                let base = base.clone();
-                async move {
-                    let location = location?;
-                    let path = join(&base, &location);
-                    io.delete(&path)
-                        .await
-                        .map_err(|e| delete_err_to_os(location.as_ref(), e))?;
-                    Ok(location)
+
+        // Delete in batches (like `crate::iceberg_bridge`) rather than one request per
+        // object. `object_store` expects one result per input path: upstream errors
+        // pass through unchanged; on a successful batch every relative path is echoed
+        // back. `delete_batch` reports a single error for the whole chunk with no
+        // per-path attribution, so a failure is surfaced for each path in that chunk.
+        async_stream::stream! {
+            let mut chunks = locations.chunks(DELETE_BATCH_SIZE);
+            while let Some(chunk) = chunks.next().await {
+                let mut relative = Vec::with_capacity(chunk.len());
+                let mut absolute = Vec::with_capacity(chunk.len());
+                for entry in chunk {
+                    match entry {
+                        Ok(location) => {
+                            absolute.push(join(&base, &location));
+                            relative.push(location);
+                        }
+                        Err(e) => yield Err(e),
+                    }
                 }
-            })
-            .buffered(DELETE_CONCURRENCY)
-            .boxed()
+                if absolute.is_empty() {
+                    continue;
+                }
+                match io.delete_batch(&absolute).await {
+                    Ok(()) => {
+                        for location in relative {
+                            yield Ok(location);
+                        }
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        for location in relative {
+                            yield Err(object_store::Error::Generic {
+                                store: STORE,
+                                source: format!(
+                                    "batch delete of `{}` failed: {msg}",
+                                    location.as_ref()
+                                )
+                                .into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        .boxed()
     }
 
     fn list(
@@ -341,6 +386,9 @@ impl ObjectStore for ObjectStoreBridge {
                 match page {
                     Ok(infos) => {
                         for info in &infos {
+                            if is_directory_marker(info) {
+                                continue;
+                            }
                             yield file_info_to_meta(&base, info);
                         }
                     }
@@ -377,6 +425,9 @@ impl ObjectStore for ObjectStoreBridge {
                 source: Box::new(e),
             })?;
             for info in infos {
+                if is_directory_marker(&info) {
+                    continue;
+                }
                 let relative = strip_to_relative(&self.base, info.location().as_str())?;
                 // Only direct children of `prefix` are returned; deeper entries
                 // collapse into their immediate common prefix (directory). Resolve
@@ -402,7 +453,7 @@ impl ObjectStore for ObjectStoreBridge {
                     None => objects.push(ObjectMeta {
                         location: relative,
                         last_modified: info.last_modified().unwrap_or_else(epoch),
-                        size: info.size().unwrap_or(0),
+                        size: required_size(&info)?,
                         e_tag: None,
                         version: None,
                     }),
@@ -550,9 +601,14 @@ mod tests {
     use crate::memory::MemoryStorage;
 
     fn bridge() -> ObjectStoreBridge {
+        bridge_with_io().1
+    }
+
+    fn bridge_with_io() -> (Arc<dyn LakekeeperStorage>, ObjectStoreBridge) {
         let io: Arc<dyn LakekeeperStorage> = Arc::new(MemoryStorage::new_isolated());
         let base = Location::from_str("memory://bucket").unwrap();
-        ObjectStoreBridge::new(io, &base)
+        let bridge = ObjectStoreBridge::new(io.clone(), &base);
+        (io, bridge)
     }
 
     #[tokio::test]
@@ -796,5 +852,74 @@ mod tests {
             matches!(err, object_store::Error::NotImplemented { .. }),
             "{err:?}"
         );
+    }
+
+    /// `lakekeeper-io` stores keys verbatim. A listed key carrying a literal `%`
+    /// must round-trip through `list` → `get`/`delete_stream` unchanged:
+    /// `strip_to_relative` uses `Path::parse` (verbatim), whereas `Path::from`
+    /// would re-encode `a%20b` to `a%2520b`, so the follow-up `get`/`delete`
+    /// would address a different, absent object.
+    #[tokio::test]
+    async fn test_percent_in_key_round_trips_through_list_get_delete() {
+        let (io, store) = bridge_with_io();
+        let names = ["plain.txt", "a%20b.txt", "pct%2Bplus.txt"];
+        for name in names {
+            io.write(
+                &format!("memory://bucket/{name}"),
+                Bytes::from(format!("content:{name}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut listed: Vec<Path> = store
+            .list(None)
+            .map(|m| m.unwrap().location)
+            .collect::<Vec<_>>()
+            .await;
+        listed.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        let listed_str: Vec<&str> = listed.iter().map(Path::as_ref).collect();
+        assert_eq!(listed_str, ["a%20b.txt", "pct%2Bplus.txt", "plain.txt"]);
+
+        // Each listed path must resolve back to its own object.
+        for path in &listed {
+            let got = store.get(path).await.unwrap().bytes().await.unwrap();
+            assert_eq!(&got[..], format!("content:{}", path.as_ref()).as_bytes());
+        }
+
+        // Batch delete via delete_stream must remove them all.
+        let del = stream::iter(listed.clone().into_iter().map(Ok)).boxed();
+        let deleted: Vec<Path> = store
+            .delete_stream(del)
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(deleted.len(), names.len());
+        assert!(store.list(None).collect::<Vec<_>>().await.is_empty());
+    }
+
+    /// Directory markers (a location ending in `/`, e.g. ADLS lists directories
+    /// this way) are not objects and carry no size; real objects always report a
+    /// size, so a missing one is surfaced as an error rather than a 0-byte object.
+    #[test]
+    fn test_directory_marker_and_required_size() {
+        let loc = |s: &str| Location::from_str(s).unwrap();
+
+        let dir = FileInfo::new(None, loc("memory://bucket/d/"), None);
+        assert!(is_directory_marker(&dir));
+
+        let file = FileInfo::new(None, loc("memory://bucket/d/f.txt"), Some(3));
+        assert!(!is_directory_marker(&file));
+        assert_eq!(required_size(&file).unwrap(), 3);
+
+        let no_size = FileInfo::new(None, loc("memory://bucket/d/f.txt"), None);
+        assert!(matches!(
+            required_size(&no_size),
+            Err(object_store::Error::Generic { .. })
+        ));
+
+        // An explicit zero-length object is a valid empty object, not an error.
+        let empty = FileInfo::new(None, loc("memory://bucket/d/empty"), Some(0));
+        assert_eq!(required_size(&empty).unwrap(), 0);
     }
 }
