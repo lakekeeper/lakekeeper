@@ -223,7 +223,8 @@ impl LakekeeperStorage for S3Storage {
             head_response
                 .content_length()
                 .and_then(|n| crate::size_to_u64(n, &location_str)),
-        );
+        )
+        .with_e_tag(head_response.e_tag().map(ToString::to_string));
 
         let bytes = if file_size == 0 {
             Bytes::new()
@@ -304,11 +305,10 @@ impl LakekeeperStorage for S3Storage {
             .content_length()
             .and_then(|n| crate::size_to_u64(n, &location_str));
         let last_modified = head_response.last_modified().and_then(parse_timestamp);
-        Ok(FileInfo::new(
-            last_modified,
-            s3_location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, s3_location.location().clone(), size)
+                .with_e_tag(head_response.e_tag().map(ToString::to_string)),
+        )
     }
 
     async fn list(

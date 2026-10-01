@@ -337,11 +337,10 @@ impl LakekeeperStorage for AdlsStorage {
             .content_length
             .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str()));
         let last_modified = parse_offsetdatetime(&head_response.last_modified);
-        Ok(FileInfo::new(
-            last_modified,
-            adls_location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, adls_location.location().clone(), size)
+                .with_e_tag(Some(head_response.etag.clone())),
+        )
     }
 
     async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
@@ -360,7 +359,8 @@ impl LakekeeperStorage for AdlsStorage {
             head_response
                 .content_length
                 .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
-        );
+        )
+        .with_e_tag(Some(head_response.etag.clone()));
 
         let Some(content_length) = head_response.content_length else {
             // If we do not get content_length, we cannot read in chunks,

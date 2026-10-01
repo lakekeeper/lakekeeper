@@ -228,6 +228,7 @@ pub struct FileInfo {
     last_modified: Option<DateTime<Utc>>,
     location: Location,
     size: Option<u64>,
+    e_tag: Option<String>,
 }
 
 impl FileInfo {
@@ -241,7 +242,15 @@ impl FileInfo {
             last_modified,
             location,
             size,
+            e_tag: None,
         }
+    }
+
+    /// Attach the backend's entity tag (`ETag`) for this object.
+    #[must_use]
+    pub fn with_e_tag(mut self, e_tag: Option<String>) -> Self {
+        self.e_tag = e_tag;
+        self
     }
 
     #[must_use]
@@ -260,6 +269,13 @@ impl FileInfo {
     #[must_use]
     pub fn size(&self) -> Option<u64> {
         self.size
+    }
+
+    /// The object's entity tag (`ETag`), if the backend surfaced one. `None`
+    /// for backends that don't expose an `ETag` (e.g. the in-memory backend).
+    #[must_use]
+    pub fn e_tag(&self) -> Option<&str> {
+        self.e_tag.as_deref()
     }
 }
 

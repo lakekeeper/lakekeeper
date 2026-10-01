@@ -1852,6 +1852,7 @@ async fn test_read_returns_metadata_impl(
     let meta = storage.metadata(&path).await?;
     assert_eq!(read.info.size(), meta.size());
     assert_eq!(read.info.last_modified(), meta.last_modified());
+    assert_eq!(read.info.e_tag(), meta.e_tag());
 
     storage.delete(&path).await?;
     Ok(())

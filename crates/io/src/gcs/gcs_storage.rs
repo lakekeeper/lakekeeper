@@ -253,11 +253,10 @@ impl LakekeeperStorage for GcsStorage {
             .as_ref()
             .and_then(parse_offsetdatetime);
 
-        Ok(FileInfo::new(
-            last_modified,
-            location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, location.location().clone(), size)
+                .with_e_tag(Some(head_response.etag.clone())),
+        )
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -294,7 +293,8 @@ impl LakekeeperStorage for GcsStorage {
                 .and_then(parse_offsetdatetime),
             gcs_location.location().clone(),
             crate::size_to_u64(head_response.size, gcs_location.as_str()),
-        );
+        )
+        .with_e_tag(Some(head_response.etag.clone()));
 
         let bytes = if file_size == 0 {
             Bytes::new()
