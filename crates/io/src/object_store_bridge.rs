@@ -83,8 +83,12 @@ fn join(base: &str, path: &Path) -> String {
 
 /// Strip the base off an absolute location to recover the relative `object_store` path.
 fn strip_to_relative(base: &str, absolute: &str) -> object_store::Result<Path> {
+    // Require the match to fall on a path boundary: the remainder must be empty
+    // (the base itself) or start with `/`. A bare `strip_prefix` would also
+    // accept a sibling such as `s3://bucket-2/x` under base `s3://bucket`.
     let rest = absolute
         .strip_prefix(base)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
         .ok_or_else(|| object_store::Error::Generic {
             store: STORE,
             source: format!("listed location `{absolute}` is not under base `{base}`").into(),
@@ -112,9 +116,9 @@ fn is_directory_marker(info: &FileInfo) -> bool {
 }
 
 /// The backend-reported object size, or a `Generic` error if absent. A real
-/// object always carries a size (directory markers, which don't, are filtered
-/// out beforehand), so a missing size is a backend fault — surface it instead
-/// of silently reporting a zero-length object.
+/// object always carries a size, so a missing one is a backend fault: surface
+/// it as an error, never a silently zero-length object. (Directory markers,
+/// which have no size, are dropped from listings before this is called.)
 fn required_size(info: &FileInfo) -> object_store::Result<u64> {
     info.size().ok_or_else(|| object_store::Error::Generic {
         store: STORE,
@@ -218,8 +222,8 @@ impl ObjectStore for ObjectStoreBridge {
         let path = self.absolute(location);
 
         // LakekeeperStorage has no ETag/version/conditional-read support, so a
-        // precondition or versioned read can't be honored. Reject rather than
-        // silently return the current object (mirrors `put_opts`).
+        // precondition or versioned read can't be honored. Reject it so the
+        // current object is not silently returned (mirrors `put_opts`).
         if options.if_match.is_some()
             || options.if_none_match.is_some()
             || options.if_modified_since.is_some()
@@ -239,17 +243,20 @@ impl ObjectStore for ObjectStoreBridge {
                 .metadata(&path)
                 .await
                 .map_err(|e| read_err_to_os(location.as_ref(), e))?;
+            let size = required_size(&info)?;
             let meta = ObjectMeta {
                 location: location.clone(),
                 last_modified: info.last_modified().unwrap_or_else(epoch),
-                size: required_size(&info)?,
+                size,
                 e_tag: info.e_tag().map(ToString::to_string),
                 version: None,
             };
             return Ok(GetResult {
                 payload: GetResultPayload::Stream(stream::empty().boxed()),
                 meta,
-                range: 0..0,
+                // No body for a HEAD; report the full extent, as the reference
+                // `object_store` backends do.
+                range: 0..size,
                 attributes: Attributes::default(),
             });
         }
@@ -285,8 +292,9 @@ impl ObjectStore for ObjectStoreBridge {
             (bytes, meta, range)
         } else {
             // Full read: `read` returns the whole object plus the metadata the
-            // backend fetched alongside it, so `last_modified`/`e_tag` match
-            // `head`/`list` instead of falling back to the epoch. The returned
+            // backend fetched alongside it, so `last_modified`/`e_tag` come from
+            // that metadata and match `head`/`list` (the epoch fallback applies
+            // only when the backend reports no modification time). The returned
             // bytes are authoritative for the size.
             let ObjectRead { bytes, info } = self
                 .lakekeeper_io
@@ -322,7 +330,7 @@ impl ObjectStore for ObjectStoreBridge {
         let io = self.lakekeeper_io.clone();
         let base = self.base.clone();
 
-        // Delete in batches (like `crate::iceberg_bridge`) rather than one request per
+        // Delete in batches (like `crate::iceberg_bridge`), not one request per
         // object. `object_store` expects one result per input path: upstream errors
         // pass through unchanged; on a successful batch every relative path is echoed
         // back. `delete_batch` reports a single error for the whole chunk with no
@@ -459,7 +467,7 @@ impl ObjectStore for ObjectStoreBridge {
                         location: relative,
                         last_modified: info.last_modified().unwrap_or_else(epoch),
                         size: required_size(&info)?,
-                        e_tag: None,
+                        e_tag: info.e_tag().map(ToString::to_string),
                         version: None,
                     }),
                 }
@@ -483,8 +491,8 @@ impl ObjectStore for ObjectStoreBridge {
         let to_path = self.absolute(to);
 
         // `Create` mode requires an atomic create-if-absent, which LakekeeperStorage
-        // can't provide (an exists-check would be racy). Reject rather than offer a
-        // non-atomic approximation that could clobber a concurrent write.
+        // can't provide (an exists-check would be racy). Reject it; a non-atomic
+        // approximation could clobber a concurrent write.
         if options.mode == CopyMode::Create {
             return Err(object_store::Error::NotImplemented {
                 operation: "copy_opts with CopyMode::Create".to_string(),
@@ -905,7 +913,7 @@ mod tests {
 
     /// Directory markers (a location ending in `/`, e.g. ADLS lists directories
     /// this way) are not objects and carry no size; real objects always report a
-    /// size, so a missing one is surfaced as an error rather than a 0-byte object.
+    /// size, so a missing one is surfaced as an error, never a 0-byte object.
     #[test]
     fn test_directory_marker_and_required_size() {
         let loc = |s: &str| Location::from_str(s).unwrap();
