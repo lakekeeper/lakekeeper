@@ -33,7 +33,8 @@ use object_store::{
 use tokio::sync::{Mutex, oneshot};
 
 use crate::{
-    ErrorKind, FileInfo, LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    ErrorKind, FileInfo, LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
+    WriteError,
 };
 
 /// `store` label attached to [`object_store::Error`]s originating here.
@@ -130,7 +131,7 @@ fn file_info_to_meta(base: &str, info: &FileInfo) -> object_store::Result<Object
         location: strip_to_relative(base, info.location().as_str())?,
         last_modified: info.last_modified().unwrap_or_else(epoch),
         size: required_size(info)?,
-        e_tag: None,
+        e_tag: info.e_tag().map(ToString::to_string),
         version: None,
     })
 }
@@ -242,7 +243,7 @@ impl ObjectStore for ObjectStoreBridge {
                 location: location.clone(),
                 last_modified: info.last_modified().unwrap_or_else(epoch),
                 size: required_size(&info)?,
-                e_tag: None,
+                e_tag: info.e_tag().map(ToString::to_string),
                 version: None,
             };
             return Ok(GetResult {
@@ -278,12 +279,16 @@ impl ObjectStore for ObjectStoreBridge {
                 location: location.clone(),
                 last_modified: info.last_modified().unwrap_or_else(epoch),
                 size,
-                e_tag: None,
+                e_tag: info.e_tag().map(ToString::to_string),
                 version: None,
             };
             (bytes, meta, range)
         } else {
-            let bytes = self
+            // Full read: `read` returns the whole object plus the metadata the
+            // backend fetched alongside it, so `last_modified`/`e_tag` match
+            // `head`/`list` instead of falling back to the epoch. The returned
+            // bytes are authoritative for the size.
+            let ObjectRead { bytes, info } = self
                 .lakekeeper_io
                 .read(&path)
                 .await
@@ -291,9 +296,9 @@ impl ObjectStore for ObjectStoreBridge {
             let size = bytes.len() as u64;
             let meta = ObjectMeta {
                 location: location.clone(),
-                last_modified: epoch(),
+                last_modified: info.last_modified().unwrap_or_else(epoch),
                 size,
-                e_tag: None,
+                e_tag: info.e_tag().map(ToString::to_string),
                 version: None,
             };
             (bytes, meta, 0..size)
@@ -487,7 +492,7 @@ impl ObjectStore for ObjectStoreBridge {
             });
         }
 
-        let bytes = self
+        let ObjectRead { bytes, .. } = self
             .lakekeeper_io
             .read(&from_path)
             .await
@@ -642,7 +647,7 @@ mod tests {
 
         // The underlying storage must see the fully-qualified, base-rooted path.
         let raw = io.read("memory://bucket/warehouse/a/b.txt").await.unwrap();
-        assert_eq!(&raw[..], b"x");
+        assert_eq!(&raw.bytes[..], b"x");
     }
 
     #[tokio::test]

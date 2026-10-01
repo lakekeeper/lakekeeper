@@ -2200,12 +2200,29 @@ async fn test_object_store_bridge_roundtrip_impl(
         "bridge listing must match written keys verbatim"
     );
 
-    // Each listed path must resolve back to its own object via `get`.
+    // Each listed path must resolve back to its own object via `get`, and the
+    // full get must report the same metadata as `head` — a real `last_modified`
+    // (sourced from the read, not the epoch fallback) and the same `e_tag`.
     for path in &listed {
-        let got = bridge.get(path).await?.bytes().await?;
         let name = path.as_ref();
+        let head_meta = bridge.head(path).await?;
+        let got = bridge.get(path).await?;
         assert_eq!(
-            &got[..],
+            got.meta.last_modified, head_meta.last_modified,
+            "get and head last_modified must agree for `{name}`"
+        );
+        assert_ne!(
+            got.meta.last_modified.timestamp(),
+            0,
+            "full get must report a real last_modified for `{name}`, not the epoch"
+        );
+        assert_eq!(
+            got.meta.e_tag, head_meta.e_tag,
+            "get and head e_tag must agree for `{name}`"
+        );
+        let bytes = got.bytes().await?;
+        assert_eq!(
+            &bytes[..],
             format!("content:{name}").as_bytes(),
             "round-trip get for `{name}`"
         );
