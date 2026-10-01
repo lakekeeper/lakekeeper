@@ -164,6 +164,13 @@ fn plan_compaction_reap_inner(
     if set_ref_count != 1 || set_ref_branch != Some(branch.as_str()) {
         return Err(ReapRejection::UnexpectedUpdateShape);
     }
+    // The writer snapshot must append directly onto the rewound base. The iceberg builder does not
+    // require `parent_snapshot_id` to reference an existing snapshot, so a parent pointing at a
+    // reaped compaction snapshot would leave the rebased branch with a dangling parent instead of a
+    // clean append to `expected_base`.
+    if added_snapshot.parent_snapshot_id() != Some(expected_base) {
+        return Err(ReapRejection::UnexpectedUpdateShape);
+    }
 
     // 3. Walk the gap from the tip back to the expected base. Every snapshot in between must be
     //    a rollbackable compaction snapshot; the first non-rollbackable snapshot (a real data
@@ -502,6 +509,18 @@ mod tests {
         updates.push(TableUpdate::RemoveSnapshots {
             snapshot_ids: vec![2],
         });
+        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+    }
+
+    #[test]
+    fn declines_writer_snapshot_not_parented_on_base() {
+        // Writer asserts base 1 but its snapshot parents off the reaped compaction 2. Accepting it
+        // would leave the rebased branch with a dangling parent instead of a clean append to 1.
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, mut updates) = writer(1, 3, 2);
+        updates[0] = TableUpdate::AddSnapshot {
+            snapshot: snapshot(3, Some(2), 2, 3000, Operation::Delete, &[]),
+        };
         assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
     }
 
