@@ -2504,7 +2504,7 @@ fn an_operation_record_from_another_emitter_satisfies_the_shape() {
         "lakekeeper's own operation record must satisfy the shape: {body}"
     );
 
-    body["emitter"] = serde_json::json!({ "name": "lakekeeper-plus", "format": "1.0" });
+    body["emitters"] = serde_json::json!([{ "name": "lakekeeper-plus", "format": "1.0" }]);
     body["operation"] = "license_checked".into();
     body["outcome"] = "expired".into();
     assert!(
