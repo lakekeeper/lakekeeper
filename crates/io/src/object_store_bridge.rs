@@ -19,7 +19,10 @@
 //! buffering the whole object, and is naturally back-pressured (a part future only
 //! resolves once its bytes have been written).
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -130,14 +133,23 @@ fn required_size(info: &FileInfo) -> object_store::Result<u64> {
     })
 }
 
-fn file_info_to_meta(base: &str, info: &FileInfo) -> object_store::Result<ObjectMeta> {
-    Ok(ObjectMeta {
-        location: strip_to_relative(base, info.location().as_str())?,
+/// Build an `ObjectMeta` for an already-relative `location` from a backend
+/// `FileInfo` and a known `size`. `last_modified` falls back to the epoch only
+/// when the backend reports none; `version` is always `None` (the storage layer
+/// is unversioned).
+fn object_meta(location: Path, info: &FileInfo, size: u64) -> ObjectMeta {
+    ObjectMeta {
+        location,
         last_modified: info.last_modified().unwrap_or_else(epoch),
-        size: required_size(info)?,
+        size,
         e_tag: info.e_tag().map(ToString::to_string),
         version: None,
-    })
+    }
+}
+
+fn file_info_to_meta(base: &str, info: &FileInfo) -> object_store::Result<ObjectMeta> {
+    let location = strip_to_relative(base, info.location().as_str())?;
+    Ok(object_meta(location, info, required_size(info)?))
 }
 
 fn read_err_to_os(path: &str, err: ReadError) -> object_store::Error {
@@ -169,6 +181,14 @@ impl std::fmt::Display for ObjectStoreBridge {
 
 #[async_trait]
 impl ObjectStore for ObjectStoreBridge {
+    /// Write an object.
+    ///
+    /// # Atomicity
+    /// Overwriting an existing object is not atomic on every backend. On ADLS the
+    /// target is truncated at the start of the write and deleted if the write
+    /// fails, aborts, or is dropped, so a failed overwrite can lose the original.
+    /// Writers that always target new, unique paths (e.g. compaction) are
+    /// unaffected; other `object_store` users should avoid in-place overwrites.
     async fn put_opts(
         &self,
         location: &Path,
@@ -200,6 +220,13 @@ impl ObjectStore for ObjectStoreBridge {
         })
     }
 
+    /// Start a multipart upload.
+    ///
+    /// # Atomicity
+    /// Same overwrite caveat as [`Self::put_opts`]: on ADLS the target is
+    /// truncated when the writer opens and removed on failure/abort, so
+    /// overwriting an existing object in place is not atomic and a failed upload
+    /// can lose the original. Targeting new, unique paths avoids this.
     async fn put_multipart_opts(
         &self,
         location: &Path,
@@ -244,13 +271,7 @@ impl ObjectStore for ObjectStoreBridge {
                 .await
                 .map_err(|e| read_err_to_os(location.as_ref(), e))?;
             let size = required_size(&info)?;
-            let meta = ObjectMeta {
-                location: location.clone(),
-                last_modified: info.last_modified().unwrap_or_else(epoch),
-                size,
-                e_tag: info.e_tag().map(ToString::to_string),
-                version: None,
-            };
+            let meta = object_meta(location.clone(), &info, size);
             return Ok(GetResult {
                 payload: GetResultPayload::Stream(stream::empty().boxed()),
                 meta,
@@ -282,33 +303,22 @@ impl ObjectStore for ObjectStoreBridge {
                 .read_range(&path, range.clone())
                 .await
                 .map_err(|e| read_err_to_os(location.as_ref(), e))?;
-            let meta = ObjectMeta {
-                location: location.clone(),
-                last_modified: info.last_modified().unwrap_or_else(epoch),
-                size,
-                e_tag: info.e_tag().map(ToString::to_string),
-                version: None,
-            };
+            let meta = object_meta(location.clone(), &info, size);
             (bytes, meta, range)
         } else {
             // Full read: `read` returns the whole object plus the metadata the
             // backend fetched alongside it, so `last_modified`/`e_tag` come from
-            // that metadata and match `head`/`list` (the epoch fallback applies
-            // only when the backend reports no modification time). The returned
-            // bytes are authoritative for the size.
+            // that metadata and match a `head` of the same object. (`list` carries
+            // `last_modified` but no `e_tag` — no backend surfaces one on list. The
+            // epoch fallback applies only when the backend reports no modification
+            // time.) The returned bytes are authoritative for the size.
             let ObjectRead { bytes, info } = self
                 .lakekeeper_io
                 .read(&path)
                 .await
                 .map_err(|e| read_err_to_os(location.as_ref(), e))?;
             let size = bytes.len() as u64;
-            let meta = ObjectMeta {
-                location: location.clone(),
-                last_modified: info.last_modified().unwrap_or_else(epoch),
-                size,
-                e_tag: info.e_tag().map(ToString::to_string),
-                version: None,
-            };
+            let meta = object_meta(location.clone(), &info, size);
             (bytes, meta, 0..size)
         };
 
@@ -331,46 +341,71 @@ impl ObjectStore for ObjectStoreBridge {
         let base = self.base.clone();
 
         // Delete in batches (like `crate::iceberg_bridge`), not one request per
-        // object. `object_store` expects one result per input path: upstream errors
-        // pass through unchanged; on a successful batch every relative path is echoed
-        // back. `delete_batch` reports a single error for the whole chunk with no
-        // per-path attribution, so a failure is surfaced for each path in that chunk.
+        // object, while honoring the trait's "one result per input path, in input
+        // order" contract. Within a chunk, results are buffered by position so the
+        // order survives; an upstream error or a key the storage layer can't parse
+        // (e.g. a `#`, which `object_store::Path` allows but `Location` does not)
+        // gets its own error in place and is kept out of the batch, so one bad key
+        // doesn't sink the other deletes. A `delete_batch` failure (no per-path
+        // attribution) is surfaced for every path it covered.
         async_stream::stream! {
             let mut chunks = locations.chunks(DELETE_BATCH_SIZE);
             while let Some(chunk) = chunks.next().await {
-                let mut relative = Vec::with_capacity(chunk.len());
-                let mut absolute = Vec::with_capacity(chunk.len());
-                for entry in chunk {
+                let mut results: Vec<Option<object_store::Result<Path>>> =
+                    (0..chunk.len()).map(|_| None).collect();
+                let mut absolute: Vec<String> = Vec::new();
+                let mut batched: Vec<(usize, Path)> = Vec::new();
+
+                for (idx, entry) in chunk.into_iter().enumerate() {
                     match entry {
+                        Err(e) => results[idx] = Some(Err(e)),
                         Ok(location) => {
-                            absolute.push(join(&base, &location));
-                            relative.push(location);
+                            let abs = join(&base, &location);
+                            if abs.parse::<Location>().is_err() {
+                                results[idx] = Some(Err(object_store::Error::Generic {
+                                    store: STORE,
+                                    source: format!(
+                                        "delete path `{}` is not a valid storage location",
+                                        location.as_ref()
+                                    )
+                                    .into(),
+                                }));
+                            } else {
+                                absolute.push(abs);
+                                batched.push((idx, location));
+                            }
                         }
-                        Err(e) => yield Err(e),
                     }
                 }
-                if absolute.is_empty() {
-                    continue;
-                }
-                match io.delete_batch(&absolute).await {
+
+                let batch = if absolute.is_empty() {
+                    Ok(())
+                } else {
+                    io.delete_batch(&absolute).await
+                };
+                match batch {
                     Ok(()) => {
-                        for location in relative {
-                            yield Ok(location);
+                        for (idx, location) in batched {
+                            results[idx] = Some(Ok(location));
                         }
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        for location in relative {
-                            yield Err(object_store::Error::Generic {
+                        for (idx, location) in batched {
+                            results[idx] = Some(Err(object_store::Error::Generic {
                                 store: STORE,
                                 source: format!(
                                     "batch delete of `{}` failed: {msg}",
                                     location.as_ref()
                                 )
                                 .into(),
-                            });
+                            }));
                         }
                     }
+                }
+
+                for result in results.into_iter().flatten() {
+                    yield result;
                 }
             }
         }
@@ -415,6 +450,14 @@ impl ObjectStore for ObjectStoreBridge {
         .boxed()
     }
 
+    /// List the immediate children of `prefix`, grouping deeper entries into
+    /// common prefixes.
+    ///
+    /// # Cost
+    /// `LakekeeperStorage` has no server-side delimiter, so this lists the entire
+    /// subtree under `prefix` and groups client-side. Cost grows with the total
+    /// number of keys beneath `prefix`, not just its direct children — avoid it on
+    /// large/deep prefixes.
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
         let root = Path::default();
         let prefix = prefix.unwrap_or(&root);
@@ -459,17 +502,11 @@ impl ObjectStore for ObjectStoreBridge {
                         None
                     }
                 };
-                match common_prefix {
-                    Some(child) => {
-                        common_prefixes.insert(child);
-                    }
-                    None => objects.push(ObjectMeta {
-                        location: relative,
-                        last_modified: info.last_modified().unwrap_or_else(epoch),
-                        size: required_size(&info)?,
-                        e_tag: info.e_tag().map(ToString::to_string),
-                        version: None,
-                    }),
+                if let Some(child) = common_prefix {
+                    common_prefixes.insert(child);
+                } else {
+                    let size = required_size(&info)?;
+                    objects.push(object_meta(relative, &info, size));
                 }
             }
         }
@@ -480,6 +517,13 @@ impl ObjectStore for ObjectStoreBridge {
         })
     }
 
+    /// Copy an object (read-then-write; `LakekeeperStorage` has no server-side copy).
+    ///
+    /// # Atomicity
+    /// The destination write carries the same overwrite caveat as
+    /// [`Self::put_opts`]: on ADLS an existing destination is truncated up front
+    /// and removed on failure, so copying over an existing object is not atomic
+    /// and a failed copy can lose the destination's prior contents.
     async fn copy_opts(
         &self,
         from: &Path,
@@ -524,6 +568,10 @@ struct GatedMultipartUpload {
     /// already-fired receiver so the first part starts immediately.
     next_gate: oneshot::Receiver<()>,
     path: String,
+    /// Set when any part fails. `complete` refuses to publish a partially-written
+    /// object once poisoned, so a caller that ignores a `put_part` error and calls
+    /// `complete` anyway gets an error, not a truncated object.
+    poisoned: Arc<AtomicBool>,
 }
 
 /// A oneshot receiver whose sender has already fired — an open gate.
@@ -539,6 +587,7 @@ impl GatedMultipartUpload {
             writer: Arc::new(Mutex::new(Some(writer))),
             next_gate: open_gate(),
             path,
+            poisoned: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -553,25 +602,37 @@ impl MultipartUpload for GatedMultipartUpload {
         let wait_for_prev = std::mem::replace(&mut self.next_gate, done_rx);
         let writer = self.writer.clone();
         let path = self.path.clone();
+        let poisoned = self.poisoned.clone();
 
         async move {
+            // Any failure poisons the upload so `complete` won't publish a partial
+            // object. `?` on a poisoning closure keeps the early-return behaviour.
+            let poison = |e: object_store::Error| {
+                poisoned.store(true, Ordering::SeqCst);
+                e
+            };
+
             // Block until the previous part has finished writing. A dropped sender
             // means an earlier part failed or the upload was aborted.
-            wait_for_prev
-                .await
-                .map_err(|_| object_store::Error::Generic {
+            wait_for_prev.await.map_err(|_| {
+                poison(object_store::Error::Generic {
                     store: STORE,
                     source: format!("multipart upload to `{path}` aborted before this part").into(),
-                })?;
+                })
+            })?;
 
             {
                 let mut guard = writer.lock().await;
-                let w = guard.as_mut().ok_or_else(|| object_store::Error::Generic {
-                    store: STORE,
-                    source: format!("multipart upload to `{path}` already finished").into(),
+                let w = guard.as_mut().ok_or_else(|| {
+                    poison(object_store::Error::Generic {
+                        store: STORE,
+                        source: format!("multipart upload to `{path}` already finished").into(),
+                    })
                 })?;
                 for chunk in data {
-                    w.write(chunk).await.map_err(write_err_to_os)?;
+                    w.write(chunk)
+                        .await
+                        .map_err(|e| poison(write_err_to_os(e)))?;
                 }
             }
 
@@ -583,6 +644,18 @@ impl MultipartUpload for GatedMultipartUpload {
     }
 
     async fn complete(&mut self) -> object_store::Result<PutResult> {
+        // A failed part leaves the sequential writer holding a prefix of the
+        // object; closing it would publish that truncated content as success.
+        if self.poisoned.load(Ordering::SeqCst) {
+            return Err(object_store::Error::Generic {
+                store: STORE,
+                source: format!(
+                    "multipart upload to `{}` had a failed part; refusing to publish a partial object",
+                    self.path
+                )
+                .into(),
+            });
+        }
         let mut guard = self.writer.lock().await;
         let mut writer = guard.take().ok_or_else(|| object_store::Error::Generic {
             store: STORE,
@@ -776,7 +849,10 @@ mod tests {
             .unwrap();
         upload.abort().await.unwrap();
 
-        assert!(store.get(&path).await.is_err());
+        assert!(matches!(
+            store.get(&path).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
     }
 
     #[tokio::test]
@@ -838,7 +914,10 @@ mod tests {
                 .unwrap();
         }
         store.delete(&Path::from("d/1.txt")).await.unwrap();
-        assert!(store.get(&Path::from("d/1.txt")).await.is_err());
+        assert!(matches!(
+            store.get(&Path::from("d/1.txt")).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
         assert!(store.get(&Path::from("d/2.txt")).await.is_ok());
     }
 

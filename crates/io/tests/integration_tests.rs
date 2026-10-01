@@ -253,70 +253,6 @@ macro_rules! test_all_storages {
     };
 }
 
-/// Like [`test_all_storages`], but each backend arm additionally requires the
-/// `object-store` feature (the `ObjectStoreBridge` and the `object_store` crate
-/// are only available then). Run e.g. with `--features object-store,storage-s3`.
-#[cfg(feature = "object-store")]
-macro_rules! test_all_storages_object_store {
-    ($test_name:ident, $test_fn:ident) => {
-        pastey::paste! {
-            #[cfg(feature = "storage-in-memory")]
-            #[test]
-            fn [<$test_name _memory>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_memory_storage().await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-s3")]
-            #[test]
-            fn [<$test_name _s3>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_s3_storage().await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-s3")]
-            #[test]
-            fn [<$test_name _oss>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_oss_storage().await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-adls")]
-            #[test]
-            fn [<$test_name _adls>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_adls_storage().await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-gcs")]
-            #[test]
-            fn [<$test_name _gcs_regular>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET").await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-gcs")]
-            #[test]
-            fn [<$test_name _gcs_hns>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET").await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-        }
-    };
-}
-
 /// Test configuration for different storage backends
 #[derive(Debug)]
 pub struct TestConfig {
@@ -379,7 +315,7 @@ test_all_storages!(
     test_percent_encoding_does_not_alias_impl
 );
 #[cfg(feature = "object-store")]
-test_all_storages_object_store!(
+test_all_storages!(
     test_object_store_bridge_roundtrip,
     test_object_store_bridge_roundtrip_impl
 );
@@ -2159,7 +2095,9 @@ async fn test_object_store_bridge_roundtrip_impl(
 
     use lakekeeper_io::{
         Location,
-        object_store::{ObjectStore, ObjectStoreExt, path::Path as OsPath},
+        object_store::{
+            MultipartUpload, ObjectStore, ObjectStoreExt, PutPayload, path::Path as OsPath,
+        },
         object_store_bridge::ObjectStoreBridge,
     };
 
@@ -2236,13 +2174,34 @@ async fn test_object_store_bridge_roundtrip_impl(
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(deleted.len(), names.len(), "every path should be deleted");
+    // `delete_stream` yields one result per input path, in input order, so the
+    // echoed paths must equal the input exactly.
+    assert_eq!(
+        deleted, listed,
+        "delete_stream must echo the input paths in order"
+    );
 
     let remaining = bridge.list(None).collect::<Vec<_>>().await;
     assert!(
         remaining.is_empty(),
         "all objects deleted, listing must be empty: {remaining:?}"
     );
+
+    // Multipart upload exercises `GatedMultipartUpload` over the real backend
+    // writer — the path compaction uses for files above the single-request
+    // threshold. Three 10 MiB parts exceed every backend's threshold (25 MiB on
+    // S3/GCS, 7 MiB on ADLS), so this is a genuine multi-part write.
+    let mp_path = OsPath::from("multipart/big.bin");
+    let mut upload = bridge.put_multipart(&mp_path).await?;
+    let part = Bytes::from(vec![0xab_u8; 10 * 1024 * 1024]);
+    for _ in 0..3 {
+        upload.put_part(PutPayload::from(part.clone())).await?;
+    }
+    upload.complete().await?;
+    let got = bridge.get(&mp_path).await?.bytes().await?;
+    assert_eq!(got.len(), 3 * 10 * 1024 * 1024, "multipart object size");
+    assert!(got.iter().all(|&b| b == 0xab), "multipart content");
+    bridge.delete(&mp_path).await?;
 
     Ok(())
 }
