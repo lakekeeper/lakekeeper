@@ -89,15 +89,20 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
     // schema cannot know, and checking it here would demand that every product's contexts be
     // declared in Lakekeeper's schema — the opposite of what the emitter field is for.
     //
-    // So the record must positively name this schema's emitter. A record naming a different
-    // one, or naming none at all, is not checked: an unknown emitter is not this one, and
+    // So `emitters` must positively name this schema's emitter. A record naming only others,
+    // or naming none at all, is not checked: an unknown emitter is not this one, and
     // guessing otherwise would report a violation of a contract the record never claimed.
-    // Nothing is lost by skipping, because `emitter` is required on every shape, so
+    // Nothing is lost by skipping, because `emitters` is required on every shape, so
     // `assert_valid_record` has already refused a record that carries none.
     let ours = schema["x-audit-emitter"]["name"].as_str();
-    let theirs = record.pointer("/emitter/name").and_then(Value::as_str);
-    if theirs.is_some()
-        && theirs == ours
+    let names = record["emitters"].as_array().map(|emitters| {
+        emitters
+            .iter()
+            .filter_map(|emitter| emitter["name"].as_str())
+            .collect::<Vec<_>>()
+    });
+    let contributed = names.is_some_and(|names| ours.is_some_and(|ours| names.contains(&ours)));
+    if contributed
         && record["record_type"] == "operation"
         && let Some(context) = record.get("context")
     {

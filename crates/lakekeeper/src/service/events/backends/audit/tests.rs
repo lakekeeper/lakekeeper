@@ -435,7 +435,9 @@ fn fixture_succeeded_event(
     request_metadata: RequestMetadata,
     entities: EventEntities,
     actions: Vec<ActionDescriptor>,
-    extra_context: Arc<std::collections::HashMap<String, String>>,
+    extra_context: Arc<
+        std::collections::HashMap<String, crate::service::events::context::ContextEntry>,
+    >,
 ) -> AuthorizationSucceededEvent {
     let entities = Arc::new(entities);
     let actions = Arc::new(actions);
@@ -498,11 +500,25 @@ fn fixture_detailed_decision(action: ActionDescriptor, entity: EntityDescriptor)
     }
 }
 
-fn fixture_context(entries: &[(&str, &str)]) -> Arc<std::collections::HashMap<String, String>> {
+/// Context entries attributed to Lakekeeper, the emitter whose keys these fixtures use.
+fn fixture_context(
+    entries: &[(&str, &str)],
+) -> Arc<std::collections::HashMap<String, crate::service::events::context::ContextEntry>> {
     Arc::new(
         entries
             .iter()
-            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .map(|(key, value)| {
+                (
+                    (*key).to_string(),
+                    crate::service::events::context::ContextEntry {
+                        value: crate::service::events::context::ContextPayload::Text(
+                            (*value).to_string(),
+                        ),
+                        emitter: <crate::Lakekeeper as crate::audit::AuditEmitter>::NAME,
+                        emitter_format: <crate::Lakekeeper as crate::audit::AuditEmitter>::FORMAT,
+                    },
+                )
+            })
             .collect(),
     )
 }
@@ -1948,6 +1964,28 @@ fn no_object_declares_a_key_twice() {
     crate::audit::schema::assert_no_object_declares_a_key_twice();
 }
 
+/// Every shape a key declares names a type this emitter registers.
+///
+/// Lakekeeper declares no shaped key today, so this holds vacuously — and bites the moment
+/// one is added with a name nothing provides.
+#[test]
+fn every_declared_shape_is_registered() {
+    crate::audit::schema::assert_declared_shapes_are_registered::<crate::Lakekeeper>();
+}
+
+/// Every `context` key this crate declares reaches a `push_extra_context` call.
+///
+/// The schema pins the names: a rename or a removal moves the format and the checker reports
+/// it. A push site deleted in a refactor moves nothing — the key leaves the wire while the
+/// vocabulary that declares it stays, so the schema diff is empty and the field a consumer
+/// reads is simply gone.
+#[test]
+fn every_declared_context_key_is_pushed() {
+    crate::audit::schema::assert_every_context_key_is_pushed::<crate::Lakekeeper>(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+    );
+}
+
 /// A key flattened into an object may not spell a field that object already has.
 ///
 /// An `entity` object carries `entity_type` and then every `EntityField` key beside it; an
@@ -2193,7 +2231,7 @@ fn maximal_authorization() -> AuthorizationRecord {
     });
     AuthorizationRecord {
         record_type: assembled.record_type,
-        emitter: assembled.emitter,
+        emitters: assembled.emitters,
         actions: assembled.actions,
         entities: assembled.entities,
         actor: assembled.actor,
@@ -2220,7 +2258,7 @@ fn maximal_replay() -> ReplayRecord {
     });
     ReplayRecord {
         record_type: assembled.record_type,
-        emitter: assembled.emitter,
+        emitters: assembled.emitters,
         actions: assembled.actions,
         entities: assembled.entities,
         actor: assembled.actor,
@@ -2600,7 +2638,7 @@ fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
     let foreign = |name: serde_json::Value| {
         serde_json::json!({
             "record_type": "operation",
-            "emitter": { "name": name, "format": "1.0" },
+            "emitters": [{ "name": name, "format": "1.0" }],
             "operation": "ldap_resolve_roles",
             "actor": { "actor_type": "principal", "principal": "oidc~alice" },
             "outcome": "success",

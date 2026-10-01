@@ -339,6 +339,7 @@ fn expand_vocabulary(
     let mut arms = Vec::new();
     let mut names = Vec::new();
     let mut docs = Vec::new();
+    let mut shapes = Vec::new();
     for v in &data.variants {
         if strum_disabled(&v.attrs)? {
             continue;
@@ -356,6 +357,19 @@ fn expand_vocabulary(
         arms.push(quote!(#pattern => <#wire_ty>::new(#wire)));
         names.push(wire);
         docs.push(doc_text(&v.attrs).unwrap_or_default());
+        let holds = variant_holds(&v.attrs)?;
+        if holds.is_some() && !matches!(vocabulary, Vocabulary::Keys(_)) {
+            return Err(Error::new_spanned(
+                v,
+                "`holds` says what shape sits under a key, so it belongs on a vocabulary \
+                 declared with `keys_of = \"<object>\"`. A value vocabulary names what a field \
+                 holds, and that name is the value itself.",
+            ));
+        }
+        shapes.push(match holds {
+            Some(name) => quote!(::core::option::Option::Some(#name)),
+            None => quote!(::core::option::Option::None),
+        });
     }
     let count = names.len();
     let wire_consts = names.iter().map(|n| quote!(<#wire_ty>::new(#n)));
@@ -398,7 +412,11 @@ fn expand_vocabulary(
                     // The names and their descriptions in one list, built once here, so the
                     // registry cannot hold a description against the wrong name.
                     const WIRE: [::lakekeeper::audit::WireName; #count] = [
-                        #(::lakekeeper::audit::WireName { text: #names, doc: #docs }),*
+                        #(::lakekeeper::audit::WireName {
+                            text: #names,
+                            doc: #docs,
+                            shape: #shapes,
+                        }),*
                     ];
                     #kind_of
                 },
@@ -582,6 +600,15 @@ fn rename_all_rule(attrs: &[Attribute]) -> Result<Option<String>> {
     nested_str(attrs, "serde", "rename_all")
 }
 
+/// The schema name a key's value carries, from `#[audit(holds = "TypeName")]`.
+///
+/// Only a key vocabulary takes it: a key names a slot in an object, and this says what shape
+/// sits in that slot. `audit_part(shape = "...")` is a different thing — it says the struct
+/// carrying it is a whole record.
+fn variant_holds(attrs: &[Attribute]) -> Result<Option<String>> {
+    nested_str(attrs, "audit", "holds")
+}
+
 fn variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
     if let Some(r) = nested_str(attrs, "audit", "rename")? {
         return Ok(Some(r));
@@ -733,8 +760,8 @@ mod tests {
         assert_eq!(
             squash(&wire),
             squash(
-                r#"WireName { text : "Success" , doc : "The operation completed." } ,
-                   WireName { text : "Other" , doc : "" }"#
+                r#"WireName { text : "Success" , doc : "The operation completed." , shape : :: core :: option :: Option :: None , } ,
+                   WireName { text : "Other" , doc : "" , shape : :: core :: option :: Option :: None , }"#
             ),
             "{expansion}"
         );

@@ -17,7 +17,7 @@ use crate::{
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationSucceededEvent, IdempotentReplayEvent,
-            context::{EntityDescriptor, EventEntities},
+            context::{ContextEntry, ContextPayload, EntityDescriptor, EventEntities},
         },
     },
 };
@@ -50,14 +50,17 @@ fn authorization(
     request_metadata: &RequestMetadata,
     actions: &[ActionDescriptor],
     entities: &EventEntities,
-    extra_context: &HashMap<String, String>,
+    extra_context: &HashMap<String, ContextEntry>,
     authorizations: &[Authorization],
     decision: Decision,
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
         record_type: RecordType::Authorization,
-        emitter: EmitterRecord::of::<crate::Lakekeeper>(),
+        emitters: EmitterRecord::list(
+            EmitterRecord::of::<crate::Lakekeeper>(),
+            contributors(actions, authorizations, extra_context),
+        ),
         actions: self::actions(actions),
         entities: self::entities(entities),
         actor: ActorRecord::from_request(request_metadata),
@@ -76,7 +79,10 @@ fn authorization(
 pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     ReplayRecord {
         record_type: RecordType::Replay,
-        emitter: EmitterRecord::of::<crate::Lakekeeper>(),
+        emitters: EmitterRecord::list(
+            EmitterRecord::of::<crate::Lakekeeper>(),
+            contributors(&event.actions, &[], &HashMap::new()),
+        ),
         actions: actions(&event.actions),
         entities: entities(&event.entities),
         actor: ActorRecord::from_request(&event.request_metadata),
@@ -84,6 +90,39 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
         user_agent: user_agent(&event.request_metadata),
         idempotency_key: event.idempotency_key.as_uuid().to_string(),
     }
+}
+
+/// A context value as it reaches the wire: a string, or the object a shaped key carries.
+fn payload(value: &ContextPayload) -> serde_json::Value {
+    match value {
+        ContextPayload::Text(text) => serde_json::Value::String(text.clone()),
+        ContextPayload::Object(json) => json.value().clone(),
+    }
+}
+
+/// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.
+///
+/// An action name comes from a vocabulary any authorizer crate may declare, and a `context`
+/// key from a crate this one does not know. Both carry the emitter that declared them, so the
+/// record can name its contributors without Lakekeeper knowing who they are.
+fn contributors<'a>(
+    actions: &'a [ActionDescriptor],
+    authorizations: &'a [Authorization],
+    extra_context: &'a HashMap<String, ContextEntry>,
+) -> impl Iterator<Item = (&'static str, &'static str)> + 'a {
+    let from_actions = actions
+        .iter()
+        .chain(authorizations.iter().map(|a| &a.action))
+        .map(|descriptor| {
+            (
+                descriptor.action_name.emitter(),
+                descriptor.action_name.emitter_format(),
+            )
+        });
+    let from_context = extra_context
+        .values()
+        .map(|entry| (entry.emitter, entry.emitter_format));
+    from_actions.chain(from_context)
 }
 
 /// The `User-Agent` header, verbatim and unverified, or `None` when the caller sent none.
@@ -151,14 +190,14 @@ fn decisions(authorizations: &[Authorization]) -> Vec<DecisionRecord> {
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is
 /// absent rather than an empty object.
-fn handler_context(extra_context: &HashMap<String, String>) -> Option<HandlerContext> {
+fn handler_context(extra_context: &HashMap<String, ContextEntry>) -> Option<HandlerContext> {
     if extra_context.is_empty() {
         None
     } else {
         Some(HandlerContext(
             extra_context
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|(key, entry)| (key.clone(), payload(&entry.value)))
                 .collect::<BTreeMap<_, _>>(),
         ))
     }

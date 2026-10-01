@@ -26,15 +26,15 @@ A field whose values are a closed set points at the definition listing them, so 
 
 **A value the list does not contain means the record is newer than this schema, not that it is invalid.** Route it to a default branch and carry on — the same rule that applies to every value set. Re-download the schema to pick up the new value. What will not happen without a major version is a value being renamed or removed, so a consumer that matches what it knows keeps working.
 
-Three fields are not linked at all, and carry `x-audit-open` instead: `action_name`, `operation` and `outcome`. Their values come from whichever product wrote the record — `emitter.name` says which — so no single product's schema can list them.
+Three fields are not linked at all, and carry `x-audit-open` instead: `action_name`, `operation` and `outcome`. Their values come from whichever product contributed them — `emitters` names every product a record carries something of — so no single product's schema can list them.
 
-A shape describes the record, not the log line. Your log subscriber adds its own keys around it — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — and no shape lists them, because Lakekeeper does not choose them. No shape forbids them either, so a captured line validates with them still attached. The two keys the emitter stamps on every record, `event_source` and `audit_format`, are likewise in no shape: they are on every record whatever its shape.
+A shape describes the record, not the log line. Your log subscriber adds its own keys around it — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — and no shape lists them, because Lakekeeper does not choose them. No shape forbids them either, so a captured line validates with them still attached. The two keys stamped on every record, `event_source` and `audit_format`, are likewise in no shape: they are on every record whatever its shape.
 
 For what the records *mean* — which family answers which question, when a field appears, worked examples and `jq` recipes — see [Audit Logs](../logging.md#audit-logs).
 
 ## Reading the audit-specific annotations
 
-The schema carries eight extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
+The schema carries nine extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
 
 | Keyword | On | Meaning |
 |---|---|---|
@@ -44,6 +44,7 @@ The schema carries eight extension keywords. A generic JSON Schema tool ignores 
 | `x-audit-field` | each `enum` | The field whose values these are. Several fields draw from more than one set, so the set alone does not tell you where it is used |
 | `x-audit-keys-of` | each `keys` | The object whose keys these are |
 | `x-audit-descriptions` | an `enum` or `keys` | What each name means, keyed by the name. Present for the names that carry a description; a name absent from the map has none |
+| `x-audit-key-shapes` | a `keys` set | What sits under a key whose value is an object, keyed by the key and pointing at the definition. Present only where at least one key declares a shape, so its absence means none does |
 | `x-audit-type` | each definition | The Rust type the definition was generated from. Diagnostic only — it changes when code is reorganised and is not part of the format |
 | `x-audit-open` | a property | The value comes from whichever product wrote the record, so this schema cannot list what it may hold |
 
@@ -55,4 +56,4 @@ A `keys` set lists the keys of an object, so its members are field names. A late
 
 ## Versions
 
-A record carries two. `audit_format` governs the record's overall shape and is the version this schema is stamped with. `emitter.format` governs what the named product contributes. See [Two version numbers](../logging.md#audit-emitter).
+A record carries two. `audit_format` governs the record's overall shape and is the version this schema is stamped with. Each entry in `emitters` carries a `format` governing what that product contributes. See [Two version numbers](../logging.md#audit-emitter).

@@ -84,7 +84,7 @@ In the [schema](audit/schema.md) a closed-value field points at the definition l
 
 A new *key* is a different matter: it is a new field, so it raises MINOR and appears in the release notes. Ignore keys you do not recognise, as the MINOR rule above already says, but you will not meet one without a version to explain it. The [schema](audit/schema.md) marks which sets are which — `x-audit-kind: "enum"` for a set of values, `x-audit-kind: "keys"` for a set of keys.
 
-That promise covers the values Lakekeeper itself emits. Other components write to the same log and name their own values, and `audit_format` does not govern those — whoever ships the component does. The `emitter` field says which component wrote the record, and carries that component's own version.
+That promise covers the values Lakekeeper itself emits. Other components write to the same log and name their own values, and `audit_format` does not govern those — whoever ships the component does. The `emitters` list names every component whose names a record carries, each with that component's own version.
 
 #### Two version numbers, and what each one governs {#audit-emitter}
 
@@ -95,10 +95,12 @@ Every record carries two versions, and they answer different questions.
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "2.1"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "2.1"
+    }
+  ],
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -113,16 +115,18 @@ Every record carries two versions, and they answer different questions.
 }
 ```
 
-The record's shape — that it has a `record_type`, an `actor`, an `outcome` and a `context` — is Lakekeeper's, and `audit_format` governs it. What fills `operation`, `outcome` and `context` belongs to the product named in `emitter`, and `emitter.format` governs that.
+The record's shape — that it has a `record_type`, an `actor`, an `outcome` and a `context` — is Lakekeeper's, and `audit_format` governs it. What fills `operation`, `outcome` and `context` belongs to the products in `emitters`, and each entry's `format` governs what that product put there.
 
 `audit_format` governs **the whole record's shape**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper itself defines. Every record carries it, whoever produced the record.
 
-`emitter` says **who produced the record and what they contribute**. `emitter.name` identifies the product; `emitter.format` is that product's own `MAJOR.MINOR`, and it governs that product's vocabulary, its `context` objects, and any record shape it defines. It moves on that product's release cycle, not on Lakekeeper's.
+`emitters` says **which products this record carries something of, and what each contributes**. It is always an array, sorted by `name`, and it holds one entry per product: the one that assembled the record, plus any other whose vocabulary supplied a name in it. A product's `format` is its own `MAJOR.MINOR`, and it governs that product's vocabulary, its `context` keys, and any record shape it defines. It moves on that product's release cycle, not on Lakekeeper's.
 
-**Match on `audit_format` for the whole log, and on `emitter.name` together with `emitter.format` for anything that emitter carries.** Both can move independently: an addition to a product's own vocabulary moves only its `emitter.format`, and a change to the record's overall shape moves only `audit_format`.
+Most records name one product. A record names two when a component that plugs into Lakekeeper — an authorizer, say — supplied an action name or a `context` key on a record Lakekeeper assembled. That is why the field is a list: the record is then governed by two release cycles at once, and it says so.
+
+**Match on `audit_format` for the whole log, and find the product you care about in `emitters` by its `name`, then read its `format`.** Both can move independently: an addition to a product's own vocabulary moves only that product's entry, and a change to the record's overall shape moves only `audit_format`.
 
 !!! warning "The two numbers are not the same field written twice"
-    For records Lakekeeper itself produces, `emitter.name` is `lakekeeper` and `emitter.format` happens to equal `audit_format`, because one project governs both. That equality is a property of that one emitter, not of the format. A record from any other emitter carries two different numbers, and a consumer that compares whichever it first encountered will route those records wrongly and silently. Compare the one whose scope you mean.
+    For records Lakekeeper alone produces, `emitters` holds one entry named `lakekeeper` whose `format` happens to equal `audit_format`, because one project governs both. That equality is a property of that one entry, not of the format. An entry for any other product carries a different number, and a consumer that compares whichever it first encountered will route those records wrongly and silently. Compare the one whose scope you mean.
 
 Every object, field and closed set of values a record can carry is described in the [audit log schema](audit/schema.md), generated from the emitting code. The sections below describe what the records mean and show examples.
 
@@ -162,7 +166,7 @@ One of them is worth a word. The `target` **key** belongs to the subscriber, but
 
 | Name | Paths | Meaning |
 |---|---|---|
-| `name` | `actions[].name` · `authorizations[].determined_by[].name` · `emitter.name` | A resource name · a policy name · the product |
+| `name` | `actions[].name` · `authorizations[].determined_by[].name` · `emitters[].name` | A resource name · a policy name · the product |
 | `type` | `authorizations[].determined_by[].type` · `error.type` | The kind of deciding factor · the error type |
 | `principal` | `actor.principal` · `context.principal` · `actions[].principal` | Who acted (string) · who holds the grant (object) · who a subtree request reaches (string) |
 
@@ -182,7 +186,7 @@ Discriminate on `record_type`, which every record carries and which is the only 
 |------------------------|-----------------|-----------------------------------|
 | `event_source`         | String          | Always `"audit"`                  |
 | `record_type`          | String          | Always `"authorization"` for this shape. The field every record carries and the one to route on. |
-| `emitter`              | Object          | Which product wrote the record, and the version of what that product contributes: `{"name": "lakekeeper", "format": "1.0"}`. See [Two version numbers](#audit-emitter). |
+| `emitters`             | Array           | Every product this record carries something of, and the version of what each contributes, sorted by name: `[{"name": "lakekeeper", "format": "1.0"}]`. See [Two version numbers](#audit-emitter). |
 | `actions`              | Array           | Operation(s) attempted, always an array however many there are. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. |
 | `entities`             | Array           | Resource(s) accessed, always an array however many there are. Each entity contains `entity_type` and type-specific fields (e.g., `warehouse_id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
@@ -191,8 +195,8 @@ Discriminate on `record_type`, which every record carries and which is the only 
 | `break_glass`          | String          | Optional; present only when the caller sent the `x-break-glass` request header with a value that was non-empty after trimming, which nearly no request does. The reason the caller stated for marking the request an emergency override, recorded as sent (undecodable bytes replaced) and truncated to 256 bytes. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
-| `idempotency_key`      | String \| null  | The request's `Idempotency-Key`, or `null` when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
-| `context`              | Object          | Optional. Additional request context as a flat string-to-string map. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
+| `idempotency_key`      | String          | The request's `Idempotency-Key`. Absent when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
+| `context`              | Object          | Optional. Additional request context, keyed by the handler. A value is a string unless the key declares a shape. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
 | `failure_reason`       | String          | Only on failed events. One of `action_forbidden`, `resource_not_found`, `cannot_see_resource`, `internal_authorization_error`, `internal_catalog_error`, `invalid_request_data`. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
@@ -248,7 +252,7 @@ Equivalently, `authorizations[].allowed == false`. Note also that a single reque
 
 **Context fields** {#audit-context-fields}
 
-The `context` object on an authorization event is a flat string-to-string map that a request handler adds to when there is something worth recording that is not an action or an entity. Only the keys relevant to that request appear; the object is omitted entirely when there are none.
+The `context` object on an authorization event is keyed by the handler, which adds to it when there is something worth recording that is not an action or an entity. Only the keys relevant to that request appear; the object is omitted entirely when there are none.
 
 | Key                        | Description                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------------|
@@ -278,7 +282,7 @@ Which of the following fields appear depends on the entity type and on what the 
 | `table_location`     | Storage location of the table                                      |
 | `view`               | View name, qualified by its namespace                              |
 | `view_id`            | View identifier                                                    |
-| `generic-table`      | Generic-table name, qualified by its namespace                     |
+| `generic_table`      | Generic-table name, qualified by its namespace                     |
 | `generic_table_id`   | Generic-table identifier                                           |
 | `task_id`            | Task identifier                                                    |
 | `role_id`            | Role identifier                                                    |
@@ -405,7 +409,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `action`        | Object  | One action, in the same shape as an element of the top-level `actions` array.        |
 | `entity`        | Object  | One entity, in the same shape as an element of the top-level `entities` array.       |
 | `allowed`       | Boolean | Whether this tuple was permitted. `false` means the request was definitively refused for this tuple — by the authorizer, or by a resource-identity guard the authorizer has no say over (see [What counts as a denial](#authorization-events)); `error.type` distinguishes the two, and a guard refusal carries no `determined_by`. Absent when no definitive verdict was reached — e.g. on `internal_authorization_error`, `internal_catalog_error`, or `invalid_request_data` failures, where the system never actually evaluated the request. Definitive denials (`action_forbidden`, `resource_not_found`, `cannot_see_resource`) are recorded as `false`. |
-| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `Permit` or `Forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
+| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `permit` or `forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
 
 Each `determined_by` element is a flat object whose `type` field names the kind of factor. The same shape is returned by `POST /management/v1/action/batch-check`, where the field is spelled `determined-by`, so one parser reads both.
 
@@ -440,10 +444,12 @@ An absent field is left out rather than written as `null`, here as everywhere el
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "authorization",
-  "emitter": {
-    "name": "lakekeeper",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "actions": [
     {
       "action_name": "create_warehouse",
@@ -493,10 +499,12 @@ An absent field is left out rather than written as `null`, here as everywhere el
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "authorization",
-  "emitter": {
-    "name": "lakekeeper",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "actions": [
     {
       "action_name": "drop"
@@ -557,10 +565,12 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "authorization",
-  "emitter": {
-    "name": "lakekeeper",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "actions": [
     {
       "action_name": "introspect_permissions"
@@ -765,10 +775,12 @@ These records are audit-log only. Like the grant records above, they are never p
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -797,10 +809,12 @@ These records are audit-log only. Like the grant records above, they are never p
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -829,10 +843,12 @@ These records are audit-log only. Like the grant records above, they are never p
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -862,10 +878,12 @@ These records are audit-log only. Like the grant records above, they are never p
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -908,10 +926,12 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -939,10 +959,12 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -984,10 +1006,12 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "operation",
-  "emitter": {
-    "name": "lakekeeper-plus",
-    "format": "1.0"
-  },
+  "emitters": [
+    {
+      "name": "lakekeeper-plus",
+      "format": "1.0"
+    }
+  ],
   "operation": "cached_role_provider",
   "actor": {
     "actor_type": "principal",
