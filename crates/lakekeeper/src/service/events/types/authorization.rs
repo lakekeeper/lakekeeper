@@ -94,7 +94,7 @@ pub struct AuthorizationFailedEvent {
     pub error: Arc<AuthorizationError>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, String>>,
+    pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
     /// Always non-empty: single-check events carry one synthesised entry,
@@ -118,7 +118,7 @@ pub struct AuthorizationSucceededEvent {
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, String>>,
+    pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
     /// Always non-empty: single-check events carry one synthesised entry,

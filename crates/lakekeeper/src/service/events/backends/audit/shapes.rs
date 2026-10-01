@@ -4,7 +4,7 @@
 //! record: it stamps `event_source` and `audit_format`, passes scalar fields as `tracing`
 //! fields, and hands every object field to `tracing` as a JSON tree through the bridge.
 //!
-//! Every record names its shape in `record_type` and its producer in `emitter`, carries its
+//! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
 //! value for rather than writing `null`.
 
@@ -56,8 +56,10 @@ pub struct AuthorizationRecord {
     /// Names this record's shape. Always `authorization`.
     #[schemars(with = "String")]
     pub(crate) record_type: RecordType,
-    /// Which product produced this record, and the version of what it governs.
-    pub(crate) emitter: EmitterRecord,
+    /// Every product that contributed to this record, with the version of what each
+    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
+    /// name, always a list however many there are.
+    pub(crate) emitters: Vec<EmitterRecord>,
     /// The actions evaluated, always a list however many there are.
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities they were evaluated against, always a list.
@@ -94,7 +96,7 @@ impl AuthorizationRecord {
         if !crate::audit::enabled() {
             return;
         }
-        let emitter = AuditJson::of(&self.emitter);
+        let emitters = AuditJson::of(&self.emitters);
         let actions = AuditJson::of(&self.actions);
         let entities = AuditJson::of(&self.entities);
         let actor = AuditJson::of(&self.actor);
@@ -108,7 +110,7 @@ impl AuthorizationRecord {
         emit_stamped!(
             {
                 record_type = self.record_type.as_str(),
-                emitter = valuable(&emitter),
+                emitters = valuable(&emitters),
                 actions = valuable(&actions),
                 entities = valuable(&entities),
                 actor = valuable(&actor),
@@ -134,8 +136,10 @@ pub struct ReplayRecord {
     /// Names this record's shape. Always `replay`.
     #[schemars(with = "String")]
     pub(crate) record_type: RecordType,
-    /// Which product produced this record, and the version of what it governs.
-    pub(crate) emitter: EmitterRecord,
+    /// Every product that contributed to this record, with the version of what each
+    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
+    /// name, always a list however many there are.
+    pub(crate) emitters: Vec<EmitterRecord>,
     /// The actions the replayed request named, always a list.
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities it named, always a list. As the caller wrote them: a replay resolves
@@ -161,14 +165,14 @@ impl ReplayRecord {
         if !crate::audit::enabled() {
             return;
         }
-        let emitter = AuditJson::of(&self.emitter);
+        let emitters = AuditJson::of(&self.emitters);
         let actions = AuditJson::of(&self.actions);
         let entities = AuditJson::of(&self.entities);
         let actor = AuditJson::of(&self.actor);
         emit_stamped!(
             {
                 record_type = self.record_type.as_str(),
-                emitter = valuable(&emitter),
+                emitters = valuable(&emitters),
                 actions = valuable(&actions),
                 entities = valuable(&entities),
                 actor = valuable(&actor),
@@ -233,7 +237,7 @@ impl<E: AuditEmitter> OperationRecord<E> {
     pub fn emit(self) {
         OperationWire {
             record_type: RecordType::Operation,
-            emitter: EmitterRecord::of::<E>(),
+            emitters: vec![EmitterRecord::of::<E>()],
             operation: self.operation.into(),
             actor: self.actor,
             outcome: self.outcome.into(),
@@ -254,8 +258,10 @@ struct OperationWire {
     /// Names this record's shape. Always `operation`.
     #[schemars(with = "String")]
     record_type: RecordType,
-    /// Which product produced this record, and the version of what it governs.
-    emitter: EmitterRecord,
+    /// Every product that contributed to this record, with the version of what each
+    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
+    /// name, always a list however many there are.
+    emitters: Vec<EmitterRecord>,
     /// What was done, from the emitter's own vocabulary.
     operation: AnyWireStr,
     /// Who made the request, as authentication established it.
@@ -276,12 +282,12 @@ impl OperationWire {
         if !crate::audit::enabled() {
             return;
         }
-        let emitter = AuditJson::of(&self.emitter);
+        let emitters = AuditJson::of(&self.emitters);
         let actor = AuditJson::of(&self.actor);
         emit_stamped!(
             {
                 record_type = self.record_type.as_str(),
-                emitter = valuable(&emitter),
+                emitters = valuable(&emitters),
                 operation = self.operation.text(),
                 actor = valuable(&actor),
                 outcome = self.outcome.text(),

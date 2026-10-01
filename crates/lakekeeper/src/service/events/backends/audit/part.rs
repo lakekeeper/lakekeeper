@@ -23,6 +23,15 @@ pub struct WireName {
     pub text: &'static str,
     /// The doc comment on the variant, or empty when it has none.
     pub doc: &'static str,
+    /// For a key whose value is an object, the schema name of that object; `None` for a key
+    /// whose value is a plain string.
+    ///
+    /// A key vocabulary names the keys of `context`, and the schema of what sits under a key
+    /// cannot be reached from the object's own definition: the object is shared, and the
+    /// crate that declares the key may be one the crate that declares the object has never
+    /// heard of. So the key carries the name of its value's shape, and the schema of the
+    /// crate that declares both puts the two together.
+    pub shape: Option<&'static str>,
 }
 
 impl WireName {
@@ -43,12 +52,17 @@ impl WireName {
             texts.len() == N,
             "the length must be the list's own, e.g. `const N: usize = LIST.len();`"
         );
-        let mut out = [Self { text: "", doc: "" }; N];
+        let mut out = [Self {
+            text: "",
+            doc: "",
+            shape: None,
+        }; N];
         let mut i = 0;
         while i < N {
             out[i] = Self {
                 text: texts[i],
                 doc: "",
+                shape: None,
             };
             i += 1;
         }
@@ -312,6 +326,7 @@ impl<E: AuditEmitter> schemars::JsonSchema for WireStr<E> {
 pub struct AnyWireStr {
     text: &'static str,
     emitter: &'static str,
+    emitter_format: &'static str,
 }
 
 impl AnyWireStr {
@@ -327,6 +342,16 @@ impl AnyWireStr {
         self.emitter
     }
 
+    /// `AuditEmitter::FORMAT` of that emitter: the version of what it contributes.
+    ///
+    /// Carried beside the name so a record can say which version each of its contributors
+    /// spoke. The registry could answer it from the name alone, but only in a debug build,
+    /// and every record needs the answer.
+    #[must_use]
+    pub const fn emitter_format(self) -> &'static str {
+        self.emitter_format
+    }
+
     /// A value from nowhere, for tests that build descriptors by hand. Attributed to
     /// `lakekeeper`.
     #[cfg(any(test, feature = "test-utils"))]
@@ -335,6 +360,7 @@ impl AnyWireStr {
         Self {
             text,
             emitter: "lakekeeper",
+            emitter_format: super::AUDIT_FORMAT,
         }
     }
 }
@@ -344,6 +370,7 @@ impl<E: AuditEmitter> From<WireStr<E>> for AnyWireStr {
         Self {
             text: value.text,
             emitter: E::NAME,
+            emitter_format: E::FORMAT,
         }
     }
 }
@@ -577,7 +604,8 @@ mod tests {
             key.kind.names(),
             [WireName {
                 text: "first_key",
-                doc: "The only key."
+                doc: "The only key.",
+                shape: None
             }]
         );
 

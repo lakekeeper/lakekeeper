@@ -25,12 +25,12 @@ use crate::{
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActorRecord {
-    /// One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`.
+    /// One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`.
     pub(crate) actor_type: WireStr<Lakekeeper>,
-    /// The authenticated principal. Present for `principal` and `assumed-role`.
+    /// The authenticated principal. Present for `principal` and `assumed_role`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) principal: Option<String>,
-    /// The role acted as. Present for `assumed-role`; `principal` is still the human.
+    /// The role acted as. Present for `assumed_role`; `principal` is still the human.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) assumed_role: Option<AssumedRoleRecord>,
 }
@@ -88,11 +88,11 @@ impl ActorRecord {
     }
 }
 
-/// The `emitter` object: which product produced this record, and the version of the
+/// One entry of `emitters`: a product that contributed to this record, and the version of the
 /// vocabulary and context shapes it governs.
 ///
-/// A consumer routes the core shape on `audit_format` and everything the emitter owns — its
-/// `context`, its vocabulary, any shape it defines — on this.
+/// A consumer routes the core shape on `audit_format` and everything an emitter owns — its
+/// `context` keys, its vocabulary, any shape it defines — on the entry naming it.
 #[audit_part]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitterRecord {
@@ -110,9 +110,30 @@ impl EmitterRecord {
             format: E::FORMAT,
         }
     }
+
+    /// Every emitter a record carries something of: the one that assembled it, and each one
+    /// whose vocabulary supplied a name in it. Deduplicated, sorted by name.
+    ///
+    /// Sorted rather than assembler-first. A parser reaches a value by path and a reader
+    /// scans the line for a pattern, so neither needs a positional rule, and finding an entry
+    /// by name is easy enough. What governs the record's own shape is `audit_format` and
+    /// `record_type`, not any entry here.
+    pub(crate) fn list(
+        assembler: Self,
+        contributed: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> Vec<Self> {
+        let mut by_name = BTreeMap::from([(assembler.name, assembler.format)]);
+        for (name, format) in contributed {
+            by_name.insert(name, format);
+        }
+        by_name
+            .into_iter()
+            .map(|(name, format)| Self { name, format })
+            .collect()
+    }
 }
 
-/// The role an `assumed-role` actor acts as.
+/// The role an `assumed_role` actor acts as.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::struct_field_names)]
@@ -292,10 +313,15 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
     }
 }
 
-/// The `context` map of an authorization record: keys a handler recorded, with string values.
+/// The `context` map of an authorization record: the keys a handler recorded.
+///
+/// A value is a string unless the key declares a shape with `#[audit(holds = "...")]`, in
+/// which case it is that object. What sits under a key is said by the key vocabulary that
+/// declares it, not here: this object takes keys from every emitter, and the crate that
+/// defines it cannot name a shape declared by a crate it has never heard of.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
-pub struct HandlerContext(pub(crate) BTreeMap<String, String>);
+pub struct HandlerContext(pub(crate) BTreeMap<String, serde_json::Value>);
 
 /// Closed-key fields in the order they were recorded: what a flattened action or entity object
 /// carries. A map by contract (every key is unique and comes from a closed enum), a `Vec` in

@@ -68,15 +68,15 @@
       "type": "object",
       "properties": {
         "actor_type": {
-          "description": "One of `anonymous`, `principal`, `assumed-role`, `lakekeeper-internal`.",
+          "description": "One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`.",
           "$ref": "#/$defs/ActorType"
         },
         "principal": {
           "type": "string",
-          "description": "The authenticated principal. Present for `principal` and `assumed-role`."
+          "description": "The authenticated principal. Present for `principal` and `assumed_role`."
         },
         "assumed_role": {
-          "description": "The role acted as. Present for `assumed-role`; `principal` is still the human.",
+          "description": "The role acted as. Present for `assumed_role`; `principal` is still the human.",
           "$ref": "#/$defs/AssumedRoleRecord"
         }
       },
@@ -167,7 +167,7 @@
         "provider_id",
         "source_id"
       ],
-      "description": "The role an `assumed-role` actor acts as.",
+      "description": "The role an `assumed_role` actor acts as.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::AssumedRoleRecord"
     },
@@ -236,9 +236,12 @@
           "description": "Names this record's shape. Always `authorization`.",
           "const": "authorization"
         },
-        "emitter": {
-          "$ref": "#/$defs/EmitterRecord",
-          "description": "Which product produced this record, and the version of what it governs."
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
         },
         "actions": {
           "type": "array",
@@ -300,7 +303,7 @@
       },
       "required": [
         "record_type",
-        "emitter",
+        "emitters",
         "actions",
         "entities",
         "actor",
@@ -724,7 +727,7 @@
         "name",
         "format"
       ],
-      "description": "The `emitter` object: which product produced this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything the emitter owns — its\n`context`, its vocabulary, any shape it defines — on this.",
+      "description": "One entry of `emitters`: a product that contributed to this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything an emitter owns — its\n`context` keys, its vocabulary, any shape it defines — on the entry naming it.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EmitterRecord"
     },
@@ -876,10 +879,8 @@
     },
     "HandlerContext": {
       "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      },
-      "description": "The `context` map of an authorization record: keys a handler recorded, with string values.",
+      "additionalProperties": true,
+      "description": "The `context` map of an authorization record: the keys a handler recorded.\n\nA value is a string unless the key declares a shape with `#[audit(holds = \"...\")]`, in\nwhich case it is that object. What sits under a key is said by the key vocabulary that\ndeclares it, not here: this object takes keys from every emitter, and the crate that\ndefines it cannot name a shape declared by a crate it has never heard of.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::events::backends::audit::parts::HandlerContext"
     },
@@ -940,9 +941,12 @@
           "description": "Names this record's shape. Always `operation`.",
           "const": "operation"
         },
-        "emitter": {
-          "$ref": "#/$defs/EmitterRecord",
-          "description": "Which product produced this record, and the version of what it governs."
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
         },
         "operation": {
           "type": "string",
@@ -964,7 +968,7 @@
       },
       "required": [
         "record_type",
-        "emitter",
+        "emitters",
         "operation",
         "actor",
         "outcome"
@@ -1039,9 +1043,12 @@
           "description": "Names this record's shape. Always `replay`.",
           "const": "replay"
         },
-        "emitter": {
-          "$ref": "#/$defs/EmitterRecord",
-          "description": "Which product produced this record, and the version of what it governs."
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
         },
         "actions": {
           "type": "array",
@@ -1076,7 +1083,7 @@
       },
       "required": [
         "record_type",
-        "emitter",
+        "emitters",
         "actions",
         "entities",
         "actor",

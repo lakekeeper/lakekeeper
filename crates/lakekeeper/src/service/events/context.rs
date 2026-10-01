@@ -96,6 +96,43 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// audit schema; another emitter declares its own enum with `#[audit_part(keys_of =
 /// "context")]`. One key of the map means one thing: a second vocabulary declaring the same
 /// key would put two meanings at one path, and a test rejects that.
+/// What a `context` entry holds.
+///
+/// Most keys carry a string the handler chose, and nothing describes it beyond the key's own
+/// doc comment. A key whose value has a shape declares that shape with `#[audit(holds =
+/// "...")]`, and carries the serialized part instead: the fields then reach the schema, the
+/// format check and the case check like any other part, rather than being a JSON document
+/// hidden inside a string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextPayload {
+    /// A string the handler recorded.
+    Text(String),
+    /// An audit part, serialized. The key that carries it names its shape.
+    Object(crate::audit::AuditJson),
+}
+
+impl From<String> for ContextPayload {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+/// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
+/// key vocabulary the key came from.
+///
+/// The emitter is kept because a record names every product that contributed to it, and a key
+/// pushed by a crate outside this one is such a contribution. `push_extra_context` is the only
+/// way an entry is made, and it knows the emitter from its type parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextEntry {
+    /// What the handler recorded.
+    pub value: ContextPayload,
+    /// `AuditEmitter::NAME` of the emitter that declared the key.
+    pub emitter: &'static str,
+    /// `AuditEmitter::FORMAT` of that emitter.
+    pub emitter_format: &'static str,
+}
+
 #[audit_part(keys_of = "context")]
 #[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
@@ -856,7 +893,7 @@ where
     pub(super) action: Arc<A>,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
-    pub(super) extra_context: HashMap<String, String>,
+    pub(super) extra_context: HashMap<String, ContextEntry>,
     /// When `Some`, replaces the per-(entity, action) default that
     /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
     /// Used by batch-style call sites (e.g. `introspect_permissions`) to
@@ -1268,8 +1305,40 @@ where
         key: impl Into<crate::audit::WireKey<E>>,
         value: impl Into<String>,
     ) {
-        self.extra_context
-            .insert(key.into().text().to_string(), value.into());
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: ContextPayload::Text(value.into()),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
+    }
+
+    /// Record a key on this event's `context` object whose value is an object.
+    ///
+    /// The part and the key belong to one emitter, which is what ties the value to the shape
+    /// the key declares with `#[audit(holds = "...")]`. A key that declares no shape takes
+    /// [`EventContext::push_extra_context`] and a string.
+    /// Taken by value like every other part of a record, so a caller can hand over one it
+    /// built on the spot; it is serialized here and the entry carries the tree, not the type.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn push_extra_context_object<E, C>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: C,
+    ) where
+        E: crate::audit::AuditEmitter,
+        C: crate::audit::AuditPart<Emitter = E>,
+    {
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: ContextPayload::Object(crate::audit::AuditJson::of(&value)),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to
@@ -1305,7 +1374,7 @@ where
     }
 
     #[must_use]
-    pub fn extra_context(&self) -> &HashMap<String, String> {
+    pub fn extra_context(&self) -> &HashMap<String, ContextEntry> {
         &self.extra_context
     }
 }

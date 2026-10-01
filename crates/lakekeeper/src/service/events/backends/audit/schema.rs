@@ -23,7 +23,7 @@
 //! schema with this implementation. Debug builds only, like the registry it reads: see
 //! [`Registration::require_registry`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
@@ -209,6 +209,26 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                     && let Some(object) = def.as_object_mut()
                 {
                     object.insert("x-audit-descriptions".into(), json!(descriptions));
+                }
+                // What sits under a key whose value is an object, rather than a string. The
+                // pairing lives here and not on the object's own definition because the
+                // object is shared: `context` takes keys from every emitter, and the crate
+                // that declares the object cannot name a shape declared by a crate it has
+                // never heard of. A consumer reads the key's shape from the schema of
+                // whoever declared the key.
+                let shapes: BTreeMap<&str, Value> = reg
+                    .kind
+                    .names()
+                    .iter()
+                    .filter_map(|name| {
+                        name.shape
+                            .map(|shape| (name.text, json!({ "$ref": format!("#/$defs/{shape}") })))
+                    })
+                    .collect();
+                if !shapes.is_empty()
+                    && let Some(object) = def.as_object_mut()
+                {
+                    object.insert("x-audit-key-shapes".into(), json!(shapes));
                 }
                 let name = short_type_name((reg.type_name)());
                 claim(&name, (reg.type_name)());
@@ -515,6 +535,183 @@ pub fn assert_no_object_declares_a_key_twice() {
          one a consumer sees. Rename one of them, or have the second use the first rather \
          than declaring its own.",
         clashes.join("\n  ")
+    );
+}
+
+/// Every Rust source under `dir`, read into `out`.
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            out.push(text);
+        }
+    }
+}
+
+/// A name with its separators and case removed, so two spellings of one name compare equal.
+///
+/// The source names a variant, `DryRun`; the registry names what that variant puts on the
+/// wire, `dry_run`. Both reduce to `dryrun`. A variant the attribute renames to something
+/// else entirely still differs, which is the case worth a human reading it.
+fn normalized(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// The identifier following the first `prefix` in `block`, or `None` when there is none.
+fn identifier_after(block: &str, prefix: &str) -> Option<String> {
+    let at = block.find(prefix)? + prefix.len();
+    let identifier: String = block[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!identifier.is_empty()).then_some(identifier)
+}
+
+/// Every shape a key declares is a type that emitter registers.
+///
+/// `#[audit(holds = "...")]` names its shape as a string, so a typo compiles and publishes a
+/// `$ref` into a customer-facing schema that resolves to nothing. Nothing else looks: the
+/// generator copies the name through, and the format checker only diffs it against the last
+/// one. This is what makes the name a reference rather than a spelling.
+///
+/// # Panics
+///
+/// If a key names a shape no registration of that emitter provides.
+pub fn assert_declared_shapes_are_registered<E: super::AuditEmitter>() {
+    Registration::require_registry();
+    let known: BTreeSet<String> = registrations(|reg| reg.emitter_name == E::NAME)
+        .iter()
+        .filter(|reg| matches!(reg.kind, Kind::Part | Kind::Context | Kind::Shape { .. }))
+        .filter_map(|reg| reg.schema_name.map(|name| name().to_string()))
+        .collect();
+
+    let mut dangling = Vec::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        let Kind::Keys { object, names } = reg.kind else {
+            continue;
+        };
+        let owner = short_type_name((reg.type_name)());
+        for name in names {
+            if let Some(shape) = name.shape
+                && !known.contains(shape)
+            {
+                dangling.push(format!(
+                    "{owner}: key `{}` of `{object}` holds `{shape}`, which is not registered",
+                    name.text
+                ));
+            }
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "these keys name a shape their emitter does not declare:\n  {}\n\n\
+         `holds` is a reference to a registered type, written as its schema name. The schema \
+         points a consumer at it by `$ref`, so a name nothing provides publishes a reference \
+         that resolves to nothing. Check the spelling, and that the type carries \
+         `#[audit_part]` and belongs to this emitter.",
+        dangling.join("\n  ")
+    );
+}
+
+/// Every `context` key an emitter declares is pushed by some call under `crates_dir`.
+///
+/// A key vocabulary is pinned by the schema: rename or drop a name and the format moves, and
+/// the checker reports it. A `push_extra_context` call deleted in a refactor is invisible
+/// there. The key leaves the wire, the enum that declares it stays, the schema diff is empty,
+/// and a field a consumer reads is gone with nothing to announce it. This reads the registry
+/// for the keys and the source for the pushes.
+///
+/// The source is read rather than a record captured because these keys ride on a record their
+/// own crate does not assemble: an emitter outside Lakekeeper pushes keys onto an
+/// authorization record that Lakekeeper stamps, so that crate has no record of its own to
+/// capture them from.
+///
+/// One push site is enough to pass. A key pushed from two places passes while either remains.
+///
+/// # Panics
+///
+/// If a declared key has no push site, or if the scan finds no sources or no push sites,
+/// which means it is pointed at the wrong tree.
+pub fn assert_every_context_key_is_pushed<E: super::AuditEmitter>(crates_dir: &std::path::Path) {
+    Registration::require_registry();
+
+    let mut declared: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        let Kind::Keys { object, names } = reg.kind else {
+            continue;
+        };
+        if object != "context" {
+            continue;
+        }
+        declared
+            .entry(short_type_name((reg.type_name)()))
+            .or_default()
+            .extend(names.iter().map(|name| name.text));
+    }
+    assert!(
+        !declared.is_empty(),
+        "emitter `{}` has no `context` key vocabulary in this registry, so either it declares          none or the crate that declares one is not linked into this test binary.",
+        E::NAME
+    );
+
+    let mut sources = Vec::new();
+    rust_sources(crates_dir, &mut sources);
+    assert!(
+        sources.len() > 10,
+        "only {} Rust sources under {}, so this is scanning the wrong tree",
+        sources.len(),
+        crates_dir.display()
+    );
+
+    let mut pushed: BTreeSet<(String, String)> = BTreeSet::new();
+    for text in &sources {
+        for (at, _) in text.match_indices("push_extra_context") {
+            // The call, bounded generously: the key is its first argument, and the longest of
+            // these calls wraps over a few lines. Bounded in CHARACTERS: a byte slice that
+            // lands inside a multi-byte character panics, and these sources are full of em
+            // dashes.
+            let block: String = text[at..].chars().take(400).collect();
+            for vocabulary in declared.keys() {
+                if let Some(variant) = identifier_after(&block, &format!("{vocabulary}::")) {
+                    pushed.insert((vocabulary.clone(), normalized(&variant)));
+                }
+            }
+        }
+    }
+    assert!(
+        !pushed.is_empty(),
+        "no `push_extra_context` call under {} names a declared key, so this is scanning the \
+         wrong tree",
+        crates_dir.display()
+    );
+
+    let mut missing: Vec<String> = Vec::new();
+    for (vocabulary, keys) in &declared {
+        for key in keys {
+            if !pushed.contains(&(vocabulary.clone(), normalized(key))) {
+                missing.push(format!("{vocabulary}::{key}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these `context` keys are declared and pushed nowhere:\n  {}\n\n\
+         A key nothing pushes is a field the schema promises and no record carries. Push it, \
+         or drop it from the vocabulary and write the fragment its removal owes.",
+        missing.join("\n  ")
     );
 }
 

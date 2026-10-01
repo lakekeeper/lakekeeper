@@ -35,6 +35,7 @@ import argparse
 import json
 from collections import Counter
 import re
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -363,6 +364,44 @@ def fragments_at(rev: str) -> dict[str, str]:
     }
 
 
+def fragment_bodies_at(rev: str) -> dict[str, str]:
+    """The unreleased fragments at `rev`, as path -> a digest of the file.
+
+    Separate from the levels because a branch contributes by REWORDING a fragment as often as
+    by adding one: folding a second change into the fragment that already covers the field is
+    the documented way to keep the release note describing the final state, and it usually
+    leaves the level alone. Comparing only levels would read that as no contribution.
+    """
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", FRAGMENT_DIR)
+    return {
+        path: hashlib.sha256(_git("show", f"{rev}:{path}").encode()).hexdigest()
+        for path in fragment_paths(listing.splitlines(), rev)
+    }
+
+
+def fragment_demand(
+    base: dict[str, str],
+    head: dict[str, str],
+    base_bodies: dict[str, str],
+    head_bodies: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """What this branch contributes to the release notes, and what it withdraws.
+
+    A contribution is a fragment added, one whose level moved, or one whose text changed.
+    Adequacy is judged against these rather than against every unreleased fragment, because a
+    `major` left by an earlier pull request in the same cycle would otherwise excuse this one
+    declaring `minor` — the version would still come out right and the release notes would
+    describe this change wrongly.
+    """
+    contributed = {
+        path: level
+        for path, level in head.items()
+        if base.get(path) != level or base_bodies.get(path) != head_bodies.get(path)
+    }
+    withdrawn = {path: level for path, level in base.items() if path not in head}
+    return contributed, withdrawn
+
+
 def fixture_dirs_at(rev: str) -> list[str]:
     """The fixture directories that exist at `rev`, as path prefixes."""
     prefix = f"{AUDIT_DIR}/fixtures/"
@@ -647,6 +686,27 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
                     bump("additive", f"`{name}` gained the key `{added}`")
             elif gained:
                 reasons.append(f"`{name}` gained values (no format change)")
+            # What sits under a key. A key whose value gains, loses or changes its shape
+            # changes the type a consumer finds there, which no reader absorbs on its own —
+            # unlike a new key, which one can ignore. The shape's own fields are compared
+            # where that definition is, so only the pairing is judged here.
+            b_shapes = b.get("x-audit-key-shapes", {})
+            h_shapes = h.get("x-audit-key-shapes", {})
+            for key in sorted(set(b_shapes) | set(h_shapes)):
+                was, now = b_shapes.get(key), h_shapes.get(key)
+                if was == now:
+                    continue
+                if was is None:
+                    if key not in set(b["enum"]):
+                        # The key itself is new, already counted additive above. A key born
+                        # holding an object takes nothing away from a consumer: there was
+                        # no value there to change type.
+                        continue
+                    bump("breaking", f"`{name}`: key `{key}` now holds an object")
+                elif now is None:
+                    bump("breaking", f"`{name}`: key `{key}` no longer holds an object")
+                else:
+                    bump("breaking", f"`{name}`: key `{key}` holds a different shape")
             continue
 
         # A definition whose branches are `oneOf`/`anyOf` rather than an `enum` list: what
@@ -671,31 +731,71 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
                         reasons.append(f"`{name}` gained the value `{branch}` (no format change)")
                     else:
                         bump("additive", f"`{name}` gained the variant `{branch}`")
+            # A branch that survived on both sides is still an object a consumer reads, so
+            # its own properties are compared the same way a definition's are. Branches are
+            # paired by their discriminator, which is what a reader routes on; a branch
+            # without one is paired by its rendered type, which is all there is to go on.
+            b_by_key = {
+                k: v
+                for v in b_branches
+                if isinstance(v, dict) and (k := _branch_key(v)) is not None
+            }
+            h_by_key = {
+                k: v
+                for v in h_branches
+                if isinstance(v, dict) and (k := _branch_key(v)) is not None
+            }
+            for key in sorted(set(b_by_key) & set(h_by_key)):
+                compare_properties(f"{name}/{key}", b_by_key[key], h_by_key[key], bump)
             continue
-        b_props, h_props = b.get("properties", {}) or {}, h.get("properties", {}) or {}
-        b_req, h_req = set(b.get("required", []) or []), set(h.get("required", []) or [])
-        for prop in sorted(set(b_props) - set(h_props)):
-            bump("breaking", f"`{name}.{prop}` removed")
-        for prop in sorted(set(h_props) - set(b_props)):
-            bump("additive", f"`{name}.{prop}` added" + (" (required)" if prop in h_req else ""))
-        for prop in sorted(set(b_props) & set(h_props)):
-            if _type_of(b_props[prop]) != _type_of(h_props[prop]):
-                bump(
-                    "breaking",
-                    f"`{name}.{prop}` retyped: {_type_of(b_props[prop])} -> {_type_of(h_props[prop])}",
-                )
-            if prop in h_req and prop not in b_req:
-                bump("breaking", f"`{name}.{prop}` became required")
-            # The mirror case, and breaking for the same reason read the other way: a
-            # consumer that relied on the field always being there now meets records
-            # without it.
-            if prop in b_req and prop not in h_req:
-                bump("breaking", f"`{name}.{prop}` became optional")
-        if _type_of(b.get("additionalProperties", True)) != _type_of(
-            h.get("additionalProperties", True)
-        ):
-            bump("breaking", f"`{name}` changed what extra keys it accepts")
+        compare_properties(name, b, h, bump)
     return kind, reasons
+
+
+def _branch_key(branch: dict) -> str | None:
+    """The discriminator that identifies one branch of a `oneOf` across two revisions.
+
+    A tagged union carries one — `{"type": {"const": "policy"}}` — and it is what a consumer
+    switches on, so it is what pairs a branch with its older self. `None` for a branch
+    without one: two untagged object branches are indistinguishable, and pairing them by
+    position would report the difference between unrelated shapes.
+    """
+    const = (branch.get("properties", {}) or {}).get("type", {})
+    if isinstance(const, dict) and "const" in const:
+        return str(const["const"])
+    return None
+
+
+def compare_properties(name: str, b: dict, h: dict, bump) -> None:
+    """Property-by-property comparison of two objects, reporting through `bump`.
+
+    Used for a whole definition and for one branch of a `oneOf`. A branch is an object a
+    consumer reads like any other, so reading it by a different rule would let a rename
+    inside a union pass as no change.
+    """
+    b_props, h_props = b.get("properties", {}) or {}, h.get("properties", {}) or {}
+    b_req, h_req = set(b.get("required", []) or []), set(h.get("required", []) or [])
+    for prop in sorted(set(b_props) - set(h_props)):
+        bump("breaking", f"`{name}.{prop}` removed")
+    for prop in sorted(set(h_props) - set(b_props)):
+        bump("additive", f"`{name}.{prop}` added" + (" (required)" if prop in h_req else ""))
+    for prop in sorted(set(b_props) & set(h_props)):
+        if _type_of(b_props[prop]) != _type_of(h_props[prop]):
+            bump(
+                "breaking",
+                f"`{name}.{prop}` retyped: {_type_of(b_props[prop])} -> {_type_of(h_props[prop])}",
+            )
+        if prop in h_req and prop not in b_req:
+            bump("breaking", f"`{name}.{prop}` became required")
+        # The mirror case, and breaking for the same reason read the other way: a
+        # consumer that relied on the field always being there now meets records
+        # without it.
+        if prop in b_req and prop not in h_req:
+            bump("breaking", f"`{name}.{prop}` became optional")
+    if _type_of(b.get("additionalProperties", True)) != _type_of(
+        h.get("additionalProperties", True)
+    ):
+        bump("breaking", f"`{name}` changed what extra keys it accepts")
 
 
 # Which family a record belongs to. A record that carries `record_type` names its own; one
@@ -990,6 +1090,18 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 
     print(f"Merge base: {merge_base}")
 
+    # Everything below is read from the commit, not from the working tree, so a developer who
+    # has edited but not committed is told about the previous commit. Saying so is cheaper
+    # than reading the tree: the fixtures and the schema are generated, and comparing a
+    # half-regenerated tree against a commit reports differences that are nobody's change.
+    watched = [f"{AUDIT_DIR}/fixtures", SCHEMA_PATH, FRAGMENT_DIR, VERSION_SEARCH_PATH]
+    dirty = _git("status", "--porcelain", "--", *watched).strip()
+    if dirty:
+        print(
+            "Reading:   HEAD — these paths have uncommitted changes, which are NOT checked:\n"
+            + "\n".join(f"             {line}" for line in dirty.splitlines()[:10])
+        )
+
     # A branch from before the audit format existed has nothing to check. Kept distinct from
     # a REMOVED constant, which is the dangerous direction: `audit_format` is on every record
     # and consumers route on it, so losing it breaks them with no version left to say so.
@@ -1047,14 +1159,12 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
     # left by an earlier pull request in the same cycle would otherwise excuse this one
     # declaring `minor` — the version would still come out right, and the release notes would
     # describe this change wrongly.
-    contributed = {
-        path: level
-        for path, level in head_fragments.items()
-        if base_fragments.get(path) != level
-    }
-    withdrawn = {
-        path: level for path, level in base_fragments.items() if path not in head_fragments
-    }
+    contributed, withdrawn = fragment_demand(
+        base_fragments,
+        head_fragments,
+        fragment_bodies_at(merge_base),
+        fragment_bodies_at("HEAD"),
+    )
     declared_level = highest(head_fragments.values())
     required = required_version(baseline, declared_level)
 
@@ -1925,6 +2035,27 @@ def self_test() -> int:
         True,
     )
 
+    # What a key holds. A key whose value stops being a string is a type change where it sits,
+    # which a consumer cannot absorb the way it ignores an unknown key.
+    shaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/A"}}}
+    reshaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/B"}}}
+    check("schema: a key that starts holding an object is breaking", classify_schema(schema({"K": keys}), schema({"K": shaped}))[0], "breaking")
+    check("schema: a key that stops holding an object is breaking", classify_schema(schema({"K": shaped}), schema({"K": keys}))[0], "breaking")
+    check("schema: a key that holds a different shape is breaking", classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[0], "breaking")
+    check("schema: an unchanged key shape is no change", classify_schema(schema({"K": shaped}), schema({"K": shaped}))[0], "none")
+    born = {**keys, "enum": keys["enum"] + ["entity_id"], "x-audit-key-shapes": {"entity_id": {"$ref": "#/$defs/A"}}}
+    check("schema: a key born holding an object is a new key, not a type change", classify_schema(schema({"K": keys}), schema({"K": born}))[0], "additive")
+    check(
+        "schema: a key born holding an object is not reported as a shape change",
+        any("now holds an object" in r for r in classify_schema(schema({"K": keys}), schema({"K": born}))[1]),
+        False,
+    )
+    check(
+        "schema: the reshaped key is named",
+        any("key `queue_name` holds a different shape" in r for r in classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[1]),
+        True,
+    )
+
     # A value set written as `oneOf` of constants, which is what schemars produces for an
     # enum whose variants carry doc comments. Without the branch comparison the whole
     # definition falls through with no properties on either side and a removal reads as
@@ -1943,6 +2074,40 @@ def self_test() -> int:
     tagged_less = {"oneOf": [tagged["oneOf"][0]]}
     check("schema: one of two object variants removed is breaking", classify_schema(schema({"T": tagged}), schema({"T": tagged_less}))[0], "breaking")
     check("schema: an object variant added is additive", classify_schema(schema({"T": tagged_less}), schema({"T": tagged}))[0], "additive")
+
+    # A tagged union's branches are objects a consumer reads, so a rename inside one is a
+    # rename like any other. Pairing is by the discriminator, because that is what the
+    # consumer switches on; two untagged branches stay a multiset, above, since nothing
+    # distinguishes them.
+    factor = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}}}]}
+    renamed = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy_id": {"type": "string"}}}]}
+    widened = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}, "note": {"type": "string"}}}]}
+    check("schema: a rename inside a tagged branch is breaking", classify_schema(schema({"F": factor}), schema({"F": renamed}))[0], "breaking")
+    check(
+        "schema: the renamed branch property is named with its branch",
+        any("`F/policy.policy-id` removed" in r for r in classify_schema(schema({"F": factor}), schema({"F": renamed}))[1]),
+        True,
+    )
+    check("schema: a field added to a tagged branch is additive", classify_schema(schema({"F": factor}), schema({"F": widened}))[0], "additive")
+    check("schema: an unchanged tagged branch is no change", classify_schema(schema({"F": factor}), schema({"F": factor}))[0], "none")
+
+    # What a branch owes the release notes. Pure in its four maps, so every arrangement the
+    # gate acts on is checkable here rather than only on a real pull request.
+    none_: dict[str, str] = {}
+    one = {"a.md": "minor"}
+    one_body = {"a.md": "h1"}
+    check("demand: a fragment added is contributed", fragment_demand(none_, one, none_, one_body)[0], one)
+    check("demand: a fragment removed is withdrawn", fragment_demand(one, none_, one_body, none_)[1], one)
+    check("demand: an untouched fragment is neither", fragment_demand(one, one, one_body, one_body)[0], {})
+    check("demand: a raised level is contributed", fragment_demand(one, {"a.md": "major"}, one_body, one_body)[0], {"a.md": "major"})
+    # Folding a second change into an existing fragment is the documented way to keep the
+    # note describing the final state. It usually leaves the level alone.
+    check("demand: a reworded fragment is contributed", fragment_demand(one, one, one_body, {"a.md": "h2"})[0], one)
+    check(
+        "demand: a renamed fragment is contributed, and its old path withdrawn",
+        fragment_demand(one, {"b.md": "minor"}, one_body, {"b.md": "h1"}),
+        ({"b.md": "minor"}, one),
+    )
     check("schema: description change is none", classify_schema(schema({"A": actor}), schema({"A": {**actor, "description": "x"}}))[0], "none")
 
     # THE regression. `get_metadata` is emitted by six action enums, so renaming ONE of them is
