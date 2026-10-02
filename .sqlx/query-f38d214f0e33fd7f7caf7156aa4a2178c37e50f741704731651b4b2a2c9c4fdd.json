@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        ",
+  "query": "\n            UPDATE warehouse\n            SET tabular_expiration_seconds = $1, tabular_delete_mode = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,17 @@
       },
       {
         "ordinal": 11,
+        "name": "rollback_compaction_on_conflict",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_on_conflict"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +177,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -190,8 +201,19 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        },
+        "Uuid"
       ]
     },
     "nullable": [
@@ -207,9 +229,10 @@
       false,
       true,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "caee049c81de4ea26069a0b02ebc678b2c78e77e201e16e7879696fcb421a704"
+  "hash": "f38d214f0e33fd7f7caf7156aa4a2178c37e50f741704731651b4b2a2c9c4fdd"
 }

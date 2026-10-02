@@ -73,6 +73,14 @@ pub struct UpdateWarehouseFormatVersionPolicyEvent {
     pub request_metadata: Arc<RequestMetadata>,
 }
 
+/// Event emitted when the warehouse rollback-compaction-on-conflict policy changes
+#[derive(Clone, Debug)]
+pub struct SetWarehouseRollbackCompactionPolicyEvent {
+    pub requested_enabled: bool,
+    pub updated_warehouse: Arc<ResolvedWarehouse>,
+    pub request_metadata: Arc<RequestMetadata>,
+}
+
 /// Event emitted when warehouse storage configuration is updated
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseStorageEvent {
@@ -185,6 +193,25 @@ impl
         tokio::spawn(async move {
             let () = dispatcher
                 .warehouse_format_version_policy_updated(event)
+                .await;
+        });
+    }
+
+    /// Emit warehouse rollback-compaction policy set event
+    pub(crate) fn emit_warehouse_rollback_compaction_policy_set(
+        self,
+        requested_enabled: bool,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+    ) {
+        let event = SetWarehouseRollbackCompactionPolicyEvent {
+            requested_enabled,
+            updated_warehouse,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher
+                .warehouse_rollback_compaction_policy_set(event)
                 .await;
         });
     }

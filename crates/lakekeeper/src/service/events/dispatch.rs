@@ -240,6 +240,13 @@ impl EventDispatcher {
         dispatch_event!(self, warehouse_format_version_policy_updated, event);
     }
 
+    pub(crate) async fn warehouse_rollback_compaction_policy_set(
+        &self,
+        event: types::SetWarehouseRollbackCompactionPolicyEvent,
+    ) {
+        dispatch_event!(self, warehouse_rollback_compaction_policy_set, event);
+    }
+
     pub(crate) async fn warehouse_storage_updated(
         &self,
         event: types::UpdateWarehouseStorageEvent,
@@ -545,6 +552,15 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn warehouse_format_version_policy_updated(
         &self,
         _event: types::UpdateWarehouseFormatVersionPolicyEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after the warehouse rollback-compaction-on-conflict policy has been successfully
+    /// changed
+    async fn warehouse_rollback_compaction_policy_set(
+        &self,
+        _event: types::SetWarehouseRollbackCompactionPolicyEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }
