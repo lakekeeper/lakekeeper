@@ -61,9 +61,19 @@ async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
     stats: Vec<Arc<dyn EndpointStatisticsSink + 'static>>,
     events: EventDispatcher,
 ) -> anyhow::Result<()> {
-    // Use the upstream config-driven authenticator
-    // Supports both single-provider (OPENID_PROVIDER_URI) and multi-provider (OPENID_PROVIDERS) modes
-    let authentication = get_default_authenticator_from_config().await?;
+    // A headless worker (serve_http_api disabled) serves no authenticated
+    // requests, so it skips the authenticator. It still uses the configured
+    // authorizer (set up in `serve_default`): maintenance tasks delete
+    // authorization state (e.g. the tabular expiration queue removes relations of
+    // expired tables), so `AllowAll` would silently leak those relations.
+    //
+    // Otherwise use the upstream config-driven authenticator — supports both
+    // single-provider (OPENID_PROVIDER_URI) and multi-provider (OPENID_PROVIDERS).
+    let authentication = if lakekeeper::CONFIG.serve_http_api {
+        get_default_authenticator_from_config().await?
+    } else {
+        None
+    };
 
     match authentication {
         None => {
