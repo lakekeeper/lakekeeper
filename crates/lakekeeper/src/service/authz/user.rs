@@ -6,8 +6,9 @@ use crate::{
         UserId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogUserAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -60,6 +61,7 @@ pub enum RequireUserActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireUserActionError {
@@ -77,6 +79,7 @@ impl From<IsAllowedActionError> for RequireUserActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -85,6 +88,7 @@ delegate_authorization_failure_source!(RequireUserActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     AuthorizerValidationFailed,
 });
 

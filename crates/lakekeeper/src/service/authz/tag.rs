@@ -6,9 +6,9 @@ use crate::{
         CatalogBackendError, TagDefinition, TagDefinitionId, TagDefinitionIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogTagAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogTagAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -116,6 +116,7 @@ pub enum RequireTagActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the tag definition.
     AuthZCannotSeeTag(AuthZCannotSeeTag),
@@ -137,6 +138,7 @@ impl From<IsAllowedActionError> for RequireTagActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -145,6 +147,7 @@ delegate_authorization_failure_source!(RequireTagActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     AuthZCannotSeeTag,
     CatalogBackendError,
     AuthorizerValidationFailed
