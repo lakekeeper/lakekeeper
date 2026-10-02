@@ -62,7 +62,498 @@
       },
       "description": "An `action` object: the wire name and the action's context fields.",
       "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActionRecord"
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActionRecord",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "accept_moved_namespace"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "apply_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "deletes": {
+                "type": "string"
+              },
+              "principals": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "writes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "commit"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "removed_properties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "update_kinds": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/TableUpdateKind"
+                }
+              },
+              "updated_properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_generic_table"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "base_location": {
+                "type": "string"
+              },
+              "format": {
+                "type": "string"
+              },
+              "generic_table_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_namespace"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_project"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_role"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "requested_provider_id": {
+                "type": "string"
+              },
+              "requested_source_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_table"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "table_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_tag"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_view"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_warehouse"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "delete"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "force": {
+                "type": "string"
+              },
+              "purge": {
+                "type": "string"
+              },
+              "recursive": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "drop"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "force": {
+                "type": "string"
+              },
+              "purge": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "move"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "destination": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "force": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "read_subtree_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dry_run": {
+                "type": "string"
+              },
+              "narrowed_privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "principal": {
+                "type": "string"
+              },
+              "privilege_scope": {
+                "$ref": "#/$defs/PrivilegeScope"
+              },
+              "resource_types": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ResourceType"
+                }
+              },
+              "root_level": {
+                "$ref": "#/$defs/RootLevelGrants"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "revoke_subtree_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "allow_partial": {
+                "type": "string"
+              },
+              "created_before": {
+                "type": "string"
+              },
+              "dry_run": {
+                "type": "string"
+              },
+              "narrowed_privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "principal": {
+                "type": "string"
+              },
+              "privilege_scope": {
+                "$ref": "#/$defs/PrivilegeScope"
+              },
+              "privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "resource_types": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ResourceType"
+                }
+              },
+              "root_level": {
+                "$ref": "#/$defs/RootLevelGrants"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "update_properties"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "removed_properties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updated_properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "update_source_system"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "requested_provider_id": {
+                "type": "string"
+              },
+              "requested_source_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
     },
     "ActorRecord": {
       "type": "object",
@@ -954,7 +1445,11 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::events::context::ManagementAction"
+      "x-audit-type": "lakekeeper::service::events::context::ManagementAction",
+      "x-audit-descriptions": {
+        "apply_grants": "Context assembled by the handler from the request body: see `ApplyGrants` in\n`api::management::v1::grant`, whose fields these keys are.",
+        "revoke_subtree_grants": "Context assembled by the handler from the request body and the scope its gate is\nasked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields\nthese keys are.\n\nThe six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated\nhere rather than left to the `Catalog*Action` variants that share this wire name, so\nwhat this action carries does not depend on another vocabulary keeping its own."
+      }
     },
     "OperationRecord": {
       "type": "object",

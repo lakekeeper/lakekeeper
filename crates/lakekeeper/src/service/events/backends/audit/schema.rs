@@ -258,7 +258,299 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
         drop_null_from_optionals(schema);
     }
     link_value_sets(&mut defs, regs);
+    link_carried_keys(&mut defs, regs);
     defs
+}
+
+/// The objects whose keys sit beside the value that names them, rather than nested under it.
+///
+/// Each entry is the field carrying that value, the object it sits in, and the type its keys
+/// hold when they declare none: an entity field's value is a `String` in the type that
+/// carries it, while an action's is a three-way choice each key has to declare.
+const FLATTENED: [(&str, &str, Option<&str>); 2] = [
+    ("action_name", "ActionRecord", None),
+    ("entity_type", "EntityRecord", Some("string")),
+];
+
+fn regs_for<E: super::AuditEmitter>() -> Vec<&'static Registration> {
+    registrations(|reg| reg.emitter_name == E::NAME)
+}
+
+/// Every key a vocabulary declares for `object`.
+fn keys_of_object(regs: Vec<&'static Registration>, object: &str) -> BTreeSet<&'static str> {
+    regs.into_iter()
+        .filter_map(|reg| match reg.kind {
+            Kind::Keys { object: o, names } if o == object => Some(names),
+            _ => None,
+        })
+        .flatten()
+        .map(|name| name.text)
+        .collect()
+}
+
+/// Every `context` key is written with the type it declares.
+///
+/// The type a key holds is declared on the key — `#[audit(value = "array")]` — because no key
+/// in this log is written two ways, so saying it once is shorter and harder to get wrong than
+/// repeating it in every branch. That makes it a claim about code elsewhere, and this is what
+/// holds the claim to it: the builder a key is written with pins its type, and the two must
+/// agree.
+///
+/// Read from the source because the fact lives at the call site. A key written through
+/// `context_pairs` names its type in the `ContextValue` beside it instead.
+///
+/// # Panics
+///
+/// If a key's declared type is not the one it is written with, if a key declares none, or if
+/// the scan finds no call sites, which means it is reading the wrong tree.
+pub fn assert_declared_key_types_match_the_code<E: super::AuditEmitter>(
+    crates_dir: &std::path::Path,
+) {
+    Registration::require_registry();
+
+    let declared = declared_key_types::<E>();
+    assert_carried_keys_are_declared_keys::<E>(&declared);
+    let written = key_types_written_in_source(crates_dir);
+
+    let mut wrong = Vec::new();
+    for (key, ty) in &declared {
+        let Some(seen) = written.get(&normalized(key)) else {
+            continue; // declared but written nowhere: `every_declared_context_key_is_pushed`
+        };
+        if !seen.contains(ty) {
+            wrong.push(format!(
+                "`{key}` declares `{ty}` and is written as {}",
+                seen.iter().copied().collect::<Vec<_>>().join(" and ")
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "these keys are declared as one type and written as another:\n  {}\n\n\
+         The declared type reaches the published schema, so a consumer validates against it. \
+         Change the declaration to match the builder, or the builder to match the \
+         declaration — they describe one thing.",
+        wrong.join("\n  ")
+    );
+}
+
+/// The declared value type of every key of a flattened object, from the registry.
+///
+/// # Panics
+///
+/// If a key of an `action` declares none.
+fn declared_key_types<E: super::AuditEmitter>() -> BTreeMap<&'static str, &'static str> {
+    let mut declared: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut undeclared = Vec::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        let Kind::Keys { object, names } = reg.kind else {
+            continue;
+        };
+        for name in names {
+            match name.value_type {
+                Some(ty) => {
+                    declared.insert(name.text, ty);
+                }
+                // Only an action's keys need one. An entity field's value is a `String`
+                // in the type that carries it, so the compiler already says what it is; a
+                // `context` key carries a free-form value or a declared shape.
+                None if object == "action" => undeclared.push(name.text.to_string()),
+                None => {}
+            }
+        }
+    }
+    assert!(
+        undeclared.is_empty(),
+        "these keys declare no value type:\n  {}\n\n\
+         A key of a flattened object sits beside its action or entity on the wire, so a \
+         consumer needs its type. Add `#[audit(value = \"string\"|\"array\"|\"object\")]`, \
+         matching the builder the key is written with.",
+        undeclared.join("\n  ")
+    );
+    declared
+}
+
+/// Every key a variant says it carries is a key of the object it sits in. Checked from the
+/// registry alone, so it is complete: a name that is not a declared key — a typo, or one
+/// renamed without its declaration — reaches the published schema as a property nothing
+/// else mentions.
+///
+/// # Panics
+///
+/// If a variant carries a key the object's vocabulary does not declare.
+fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>(
+    declared: &BTreeMap<&'static str, &'static str>,
+) {
+    let mut unknown = Vec::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        let Kind::Values { field, names } = reg.kind else {
+            continue;
+        };
+        let Some((_, object, _)) = FLATTENED.iter().find(|(f, _, _)| *f == field) else {
+            continue;
+        };
+        let owner = short_type_name((reg.type_name)());
+        for name in names {
+            for key in name.carries {
+                if !declared.contains_key(key)
+                    && !keys_of_object(regs_for::<E>(), object).contains(key)
+                {
+                    unknown.push(format!("{owner}::{} carries `{key}`", name.text));
+                }
+            }
+        }
+    }
+    assert!(
+        unknown.is_empty(),
+        "these variants carry a key the object does not declare:\n  {}\n\n\
+         A key named here reaches the published schema as a property of that object, so it \
+         has to be one the object's key vocabulary declares. Check the spelling, or add the \
+         key to that vocabulary.",
+        unknown.join("\n  ")
+    );
+}
+
+/// The value types each context key is actually written with, read from the source because
+/// the fact lives at the call site.
+///
+/// # Panics
+///
+/// If the scan finds almost no call sites, which means it is reading the wrong tree.
+fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String, BTreeSet<&str>> {
+    let mut sources = Vec::new();
+    rust_sources(crates_dir, &mut sources);
+    let builders = [
+        ("context_string", "string"),
+        ("context_list", "array"),
+        ("context_map", "object"),
+    ];
+    let values = [
+        ("ContextValue::String", "string"),
+        ("ContextValue::List", "array"),
+        ("ContextValue::Map", "object"),
+    ];
+
+    let mut written: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for text in &sources {
+        for (builder, ty) in builders {
+            for (at, _) in text.match_indices(builder) {
+                let block: String = text[at..].chars().take(120).collect();
+                if let Some(variant) = identifier_after(&block, "ActionContextKey::") {
+                    written.entry(normalized(&variant)).or_default().insert(ty);
+                }
+            }
+        }
+        // A key built as a pair names its type in the value constructed beside it.
+        for (at, _) in text.match_indices("ActionContextKey::") {
+            let block: String = text[at..].chars().take(160).collect();
+            let Some(variant) = identifier_after(&block, "ActionContextKey::") else {
+                continue;
+            };
+            for (value, ty) in values {
+                if block.contains(value) {
+                    written.entry(normalized(&variant)).or_default().insert(ty);
+                }
+            }
+        }
+    }
+    assert!(
+        written.len() >= 10,
+        "only {} keys found at a call site, so this is scanning the wrong tree",
+        written.len()
+    );
+    written
+}
+
+/// Say which `context` keys each value of a flattened field can bring with it.
+///
+/// An action is one flat object — its name under `action_name`, its context keys beside it —
+/// so "`drop` carries `force` and `purge`" is a statement about that object, and `if`/`then`
+/// is how JSON Schema states it. Written as ordinary conditionals rather than an extension
+/// keyword, so a validator enforces it and a reader needs to know nothing about this log.
+///
+/// The object is left open: a branch adds `properties`, nothing forbids what no branch
+/// names. An `action_name` from a newer release than the schema matches no branch and still
+/// validates, which is the openness a value set already promises.
+fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
+    // Which object a field belongs to, for the two flattened pairs this log has.
+
+    // A key's type is a property of the key: no key in this log is written as two types, so
+    // it is declared once on the key vocabulary and looked up here rather than repeated in
+    // every branch that names it.
+    let mut key_types: BTreeMap<&str, &str> = BTreeMap::new();
+    // The closed set a key's value is drawn from, where it is drawn from one. The vocabulary
+    // already has a definition in this document, so the key points at it instead of
+    // publishing the set a second time.
+    let mut key_values: BTreeMap<&str, &str> = BTreeMap::new();
+    for reg in regs {
+        if let Kind::Keys { names, .. } = reg.kind {
+            for name in names {
+                if let Some(ty) = name.value_type {
+                    key_types.insert(name.text, ty);
+                }
+                if let Some(vocabulary) = name.values {
+                    key_values.insert(name.text, vocabulary);
+                }
+            }
+        }
+    }
+
+    for (field, owner, default_type) in FLATTENED {
+        let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        for reg in regs {
+            let Kind::Values { field: f, names } = reg.kind else {
+                continue;
+            };
+            if f != field {
+                continue;
+            }
+            for name in names {
+                branches
+                    .entry(name.text)
+                    .or_default()
+                    .extend(name.carries.iter().map(|k| (*k).to_string()));
+            }
+        }
+        let conditionals: Vec<Value> = branches
+            .into_iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(value, keys)| {
+                let properties: Map<String, Value> = keys
+                    .into_iter()
+                    .map(|key| {
+                        let ty = key_types.get(key.as_str()).copied().or(default_type);
+                        let drawn_from = key_values
+                            .get(key.as_str())
+                            .map(|name| json!({ "$ref": format!("#/$defs/{name}") }));
+                        // An array says what it holds, whether or not that is a closed set:
+                        // every one of them holds strings, and saying so costs nothing.
+                        let spec = match (ty, drawn_from) {
+                            (Some("array"), Some(item)) => {
+                                json!({ "type": "array", "items": item })
+                            }
+                            (Some("array"), None) => {
+                                json!({ "type": "array", "items": { "type": "string" } })
+                            }
+                            (_, Some(item)) => item,
+                            (Some(ty), None) => json!({ "type": ty }),
+                            (None, None) => json!({}),
+                        };
+                        (key, spec)
+                    })
+                    .collect();
+                json!({
+                    "if": { "properties": { field: { "const": value } }, "required": [field] },
+                    "then": { "properties": properties }
+                })
+            })
+            .collect();
+        if conditionals.is_empty() {
+            continue;
+        }
+        if let Some(object) = defs.get_mut(owner).and_then(Value::as_object_mut) {
+            object.insert("allOf".into(), json!(conditionals));
+        }
+    }
 }
 
 /// Pin a shape's `record_type` to the one value it carries.
@@ -570,6 +862,171 @@ fn normalized(name: &str) -> String {
         .collect()
 }
 
+/// What a scan of one source found: the body of every `fn event_actions` defined in it, and
+/// how many anchors were a trait declaration rather than a definition.
+///
+/// The counts are returned so the caller can account for every anchor. A body is found by
+/// matching braces, and an unbalanced one — a `{` inside a string literal, say — would end a
+/// body early or run off the end, dropping keys without failing anything.
+struct EventActions<'a> {
+    bodies: Vec<&'a str>,
+    declarations: usize,
+}
+
+/// The body of every `fn event_actions` defined in `text`, braces balanced.
+///
+/// Anchored on the open paren, so neither a longer name beginning the same way nor a mention
+/// of the function in prose is taken for a definition.
+fn event_actions_bodies(text: &str) -> EventActions<'_> {
+    let mut found = EventActions {
+        bodies: Vec::new(),
+        declarations: 0,
+    };
+    for (at, _) in text.match_indices("fn event_actions(") {
+        let rest = &text[at..];
+        let open = rest.find('{');
+        // A trait declaration ends at the semicolon and has no body of its own.
+        if rest
+            .find(';')
+            .is_some_and(|end| open.is_none_or(|o| end < o))
+        {
+            found.declarations += 1;
+            continue;
+        }
+        let Some(open) = open.map(|o| at + o) else {
+            found.declarations += 1;
+            continue;
+        };
+        let mut depth = 0usize;
+        for (offset, ch) in text[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        found.bodies.push(&text[open..=open + offset]);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// The action a chain names, as a registry key, from `action_name(Vocabulary::Variant`.
+///
+/// Normalised rather than converted to the wire spelling, so the variant's own case and the
+/// enum's rename rule do not have to be reproduced here.
+fn action_named_in(body: &str) -> Option<String> {
+    let at = body.find("action_name(")? + "action_name(".len();
+    let window: String = body[at..].chars().take(120).collect();
+    identifier_after(&window, "::").map(|variant| normalized(&variant))
+}
+
+/// Every `context` key an `event_actions` body writes is one its action declares.
+///
+/// An action's keys are usually the fields of the variant naming it, which the attribute
+/// reads directly. A handler that names an action and then assembles the context itself
+/// writes them in an `event_actions` body, where no attribute can see them — it declares
+/// them with `#[audit(carries = "...")]`, and this is what holds that list to the code.
+///
+/// Scoped to `event_actions` because that is the shape this covers: one chain, one action
+/// named by a literal, its keys written beside it. The other place keys are written,
+/// `action_descriptor`, spreads them across the arms of one match under a single builder,
+/// where no text scan can tell which arm a key belongs to — those keys are the variant's
+/// fields, so the attribute already has them.
+///
+/// Unlike the fixture guard this needs no fixture, so it covers an action nobody pinned.
+///
+/// # Panics
+///
+/// If a body writes a key its action does not declare, or if the scan finds no body naming a
+/// known action, which means it is reading the wrong tree.
+pub fn assert_event_actions_write_only_declared_keys<E: super::AuditEmitter>(
+    crates_dir: &std::path::Path,
+) {
+    Registration::require_registry();
+
+    // Keyed by the normalised name so a `Vocabulary::Variant` in the source matches without
+    // reproducing the enum's rename rule here; the wire spelling rides along for the message.
+    let mut declared: BTreeMap<String, (&str, BTreeSet<&str>)> = BTreeMap::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        if let Kind::Values {
+            field: "action_name",
+            names,
+        } = reg.kind
+        {
+            for name in names {
+                declared
+                    .entry(normalized(name.text))
+                    .or_insert_with(|| (name.text, BTreeSet::new()))
+                    .1
+                    .extend(name.carries.iter().copied());
+            }
+        }
+    }
+
+    let mut sources = Vec::new();
+    rust_sources(crates_dir, &mut sources);
+
+    let mut checked = 0usize;
+    let mut accounted = 0usize;
+    let mut anchors = 0usize;
+    let mut undeclared = Vec::new();
+    for text in &sources {
+        anchors += text.matches("fn event_actions(").count();
+        let found = event_actions_bodies(text);
+        accounted += found.bodies.len() + found.declarations;
+        for body in found.bodies {
+            // A body naming no action in a vocabulary names one of another emitter, or a
+            // literal a test stands up. Either way there is nothing here to hold it to.
+            let Some(action) = action_named_in(body) else {
+                continue;
+            };
+            let Some((wire, keys)) = declared.get(&action) else {
+                continue;
+            };
+            checked += 1;
+            for (at, _) in body.match_indices("ActionContextKey::") {
+                let window: String = body[at..].chars().take(80).collect();
+                let Some(variant) = identifier_after(&window, "ActionContextKey::") else {
+                    continue;
+                };
+                let written = normalized(&variant);
+                if !keys.iter().any(|key| normalized(key) == written) {
+                    undeclared.push(format!("`{wire}` writes undeclared `{variant}`"));
+                }
+            }
+        }
+    }
+
+    // A body is found by matching braces, so an unbalanced one — a `{` inside a string
+    // literal, say — would end a body early and skip the keys after it without failing.
+    // Counting the bodies against the declarations is what makes that a failure.
+    assert_eq!(
+        accounted, anchors,
+        "accounted for {accounted} of {anchors} `event_actions` in the sources, so brace \
+         matching lost one and its keys went unchecked"
+    );
+    assert!(
+        checked > 0,
+        "no `event_actions` body named an action this emitter registers, so this is \
+         scanning the wrong tree"
+    );
+    undeclared.sort_unstable();
+    undeclared.dedup();
+    assert!(
+        undeclared.is_empty(),
+        "these `event_actions` bodies write a key the action does not declare:\n  {}\n\n\
+         The schema tells a consumer which keys an action carries, so one written without \
+         being declared is invisible to them. Add it to the variant's \
+         `#[audit(carries = \"...\")]`.",
+        undeclared.join("\n  ")
+    );
+}
+
 /// The identifier following the first `prefix` in `block`, or `None` when there is none.
 fn identifier_after(block: &str, prefix: &str) -> Option<String> {
     let at = block.find(prefix)? + prefix.len();
@@ -578,6 +1035,52 @@ fn identifier_after(block: &str, prefix: &str) -> Option<String> {
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
     (!identifier.is_empty()).then_some(identifier)
+}
+
+/// Every closed set a key draws its value from is a vocabulary that emitter registers.
+///
+/// `values_of` is a reference, written as a schema name, and the branch that names the key
+/// publishes it as a `$ref`. A name nothing provides resolves to nothing, and a name that
+/// belongs to a part rather than a vocabulary would tell a consumer to expect an object
+/// where a string arrives.
+///
+/// # Panics
+///
+/// If a key names a set no value vocabulary of that emitter provides.
+pub fn assert_declared_value_sets_are_vocabularies<E: super::AuditEmitter>() {
+    Registration::require_registry();
+    let known: BTreeSet<String> = registrations(|reg| reg.emitter_name == E::NAME)
+        .iter()
+        .filter(|reg| matches!(reg.kind, Kind::Values { .. }))
+        .map(|reg| short_type_name((reg.type_name)()))
+        .collect();
+
+    let mut dangling = Vec::new();
+    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+        let Kind::Keys { object, names } = reg.kind else {
+            continue;
+        };
+        let owner = short_type_name((reg.type_name)());
+        for name in names {
+            if let Some(vocabulary) = name.values
+                && !known.contains(vocabulary)
+            {
+                dangling.push(format!(
+                    "{owner}: key `{}` of `{object}` draws its value from `{vocabulary}`, \
+                     which is no vocabulary of this emitter",
+                    name.text
+                ));
+            }
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "these keys name a value set their emitter does not declare:\n  {}\n\n\
+         `values_of` points at a value vocabulary — an enum carrying \
+         `#[audit_part(field = \"...\")]` — by its schema name. Check the spelling, and that \
+         the type is a vocabulary rather than a part.",
+        dangling.join("\n  ")
+    );
 }
 
 /// Every shape a key declares is a type that emitter registers.

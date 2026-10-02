@@ -6,7 +6,9 @@ use iceberg::{NamespaceIdent, TableIdent};
 use super::{contract::contract_fields, *};
 use crate::{
     WarehouseId,
-    api::management::v1::grant::{RevokeSubtreeGrants, RevokeSubtreeGrantsRequest},
+    api::management::v1::grant::{
+        ApplyGrants, ApplyGrantsRequest, RevokeSubtreeGrants, RevokeSubtreeGrantsRequest,
+    },
     audit::AnyWireStr,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
@@ -347,22 +349,20 @@ fn fixture_read_action() -> ActionDescriptor {
         .build()
 }
 
-/// An action carrying context, so the fixtures pin that nesting too.
+/// An action carrying context, so the fixtures pin that nesting too. Both context
+/// shapes at once: a list and a map beside the action name.
+///
+/// Built by the action's own `action_descriptor()` so this fixture and the running
+/// code cannot describe the action differently.
 fn fixture_action_with_context() -> ActionDescriptor {
-    ActionDescriptor::builder()
-        .action_name(
-            CatalogNamespaceAction::UpdateProperties {
-                removed_properties: Arc::new(Vec::new()),
-                updated_properties: Arc::new(std::collections::BTreeMap::new()),
-            }
-            .as_wire(),
-        )
-        .context_string(ActionContextKey::Name, "orders")
-        .context_list(
-            ActionContextKey::RemovedProperties,
-            vec!["stale.key".to_string()],
-        )
-        .build()
+    CatalogNamespaceAction::UpdateProperties {
+        removed_properties: Arc::new(vec!["stale.key".to_string()]),
+        updated_properties: Arc::new(std::collections::BTreeMap::from([(
+            "owner".to_string(),
+            "analytics".to_string(),
+        )])),
+    }
+    .action_descriptor()
 }
 
 /// A create action, carrying the client-requested name and id.
@@ -383,6 +383,27 @@ fn fixture_drop_action() -> ActionDescriptor {
         .context_string(ActionContextKey::Force, "true")
         .context_string(ActionContextKey::Purge, "true")
         .build()
+}
+
+/// A grant apply, built by the handler's own `event_actions()` so this fixture and the
+/// running code cannot describe the action differently.
+///
+/// Two principals of different kinds and two privileges across both lists, so the record
+/// shows the `user:`/`role:` prefixes that keep a user id and a role id apart, and shows
+/// `writes` and `deletes` as the counts they are rather than the entries themselves.
+fn fixture_apply_grants_action() -> ActionDescriptor {
+    let request: ApplyGrantsRequest = serde_json::from_value(serde_json::json!({
+        "writes": [
+            {"privilege": "select", "principal": {"user": "oidc~alice"}},
+            {"privilege": "describe", "principal": {"role": FIXTURE_ROLE_ID}},
+        ],
+        "deletes": [{"privilege": "select", "principal": {"role": FIXTURE_ROLE_ID}}],
+    }))
+    .expect("a valid apply request body");
+
+    let mut actions = ApplyGrants::of(&request).event_actions();
+    assert_eq!(actions.len(), 1, "an apply emits exactly one action");
+    actions.remove(0)
 }
 
 /// A subtree revoke, built by the handler's own `event_actions()` so this fixture and the
@@ -558,6 +579,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
+    "authz_succeeded_apply_grants",
     "grant_created",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
@@ -632,21 +654,50 @@ fn every_audit_record_example_in_the_docs_declares_the_current_format() {
 }
 
 /// Every key in a JSON tree, at any depth, as a flat list.
-fn collect_keys(value: &serde_json::Value, out: &mut Vec<String>) {
+///
+/// `opaque` names the keys whose value is a map the client supplied — table properties,
+/// say. Those are recorded as the key itself and not descended into: their keys are the
+/// request's data, not names this log chose, so documenting them is neither possible nor
+/// meaningful.
+fn collect_keys(
+    value: &serde_json::Value,
+    opaque: &std::collections::BTreeSet<&str>,
+    out: &mut Vec<String>,
+) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
                 out.push(key.clone());
-                collect_keys(child, out);
+                if !opaque.contains(key.as_str()) {
+                    collect_keys(child, opaque, out);
+                }
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                collect_keys(item, out);
+                collect_keys(item, opaque, out);
             }
         }
         _ => {}
     }
+}
+
+/// The context keys that hold a client-supplied map, from the registry rather than a
+/// list kept by hand, so a key that becomes object-valued is covered the moment it says so.
+fn client_supplied_map_keys() -> std::collections::BTreeSet<&'static str> {
+    use crate::audit::{Kind, Registration};
+
+    let mut keys = std::collections::BTreeSet::new();
+    for reg in Registration::for_emitter::<crate::Lakekeeper>() {
+        if let Kind::Keys { names, .. } = reg.kind {
+            for name in names {
+                if name.value_type == Some("object") {
+                    keys.insert(name.text);
+                }
+            }
+        }
+    }
+    keys
 }
 
 #[test]
@@ -663,9 +714,10 @@ fn every_emitted_audit_field_is_documented() {
          it at the new location and update the `#audit-logs` links in the other docs."
     );
 
+    let opaque = client_supplied_map_keys();
     let mut keys = Vec::new();
     for name in FIXTURE_NAMES {
-        collect_keys(&read_fixture(name), &mut keys);
+        collect_keys(&read_fixture(name), &opaque, &mut keys);
     }
     // The subscriber-owned fields are stripped before a fixture is written, so the walk above
     // never sees them. They are still on the wire, and `logging.md` restates the list —
@@ -847,6 +899,26 @@ fn fixture_authz_succeeded_revoke_subtree_grants() {
         "authz_succeeded_revoke_subtree_grants",
         &contract_fields(record),
     );
+}
+
+/// A grant apply, the other management action whose context the handler assembles rather
+/// than an action enum's own fields.
+///
+/// Nothing else emits `writes`, `deletes` or `principals`, so without this fixture those
+/// three keys are declared in the schema and demonstrated nowhere — and the guard that
+/// checks an action carries only what it declares never sees this action at all.
+#[test]
+fn fixture_authz_succeeded_apply_grants() {
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            vec![fixture_apply_grants_action()],
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
 }
 
 /// An authorization carrying an `Idempotency-Key`.
@@ -2083,6 +2155,221 @@ fn only_the_shapes_emit_audit_records() {
 #[test]
 fn no_object_declares_a_key_twice() {
     crate::audit::schema::assert_no_object_declares_a_key_twice();
+}
+
+/// No action in a fixture carries a key its variant did not declare.
+///
+/// The declarations reach the published schema, where they say an action carries these keys
+/// and a reader should expect no others. A variant whose keys come from its field names
+/// cannot drift — the macro reads them. One that declares them with `expands_to`, because its
+/// own type chooses them, can: the type gains a key and the attribute does not. This is what
+/// notices, against records the emitting code actually wrote.
+///
+/// Evidence, not proof: it sees the actions some fixture exercises. An action with no fixture
+/// is covered by nothing here.
+#[test]
+fn no_fixture_action_carries_an_undeclared_key() {
+    use crate::audit::{Kind, Registration};
+
+    let mut declared: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    for reg in Registration::for_emitter::<crate::Lakekeeper>() {
+        if let Kind::Values {
+            field: "action_name",
+            names,
+        } = reg.kind
+        {
+            for name in names {
+                declared
+                    .entry(name.text)
+                    .or_default()
+                    .extend(name.carries.iter().copied());
+            }
+        }
+    }
+    assert!(
+        declared.len() > 20,
+        "only {} action names in the registry, so this is checking almost nothing",
+        declared.len()
+    );
+
+    let mut checked = 0usize;
+    let mut undeclared = Vec::new();
+    for fixture in FIXTURE_NAMES {
+        let record = read_fixture(fixture);
+        let mut actions: Vec<&serde_json::Value> = record["actions"]
+            .as_array()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        if let Some(entries) = record["authorizations"].as_array() {
+            actions.extend(entries.iter().map(|entry| &entry["action"]));
+        }
+        for action in actions {
+            let Some(object) = action.as_object() else {
+                continue;
+            };
+            let Some(name) = object
+                .get("action_name")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(keys) = declared.get(name) else {
+                continue; // an action of another emitter
+            };
+            checked += 1;
+            for key in object.keys().filter(|k| k.as_str() != "action_name") {
+                if !keys.contains(key.as_str()) {
+                    undeclared.push(format!("{fixture}: `{name}` carries undeclared `{key}`"));
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no fixture action matched a registered action name"
+    );
+    assert!(
+        undeclared.is_empty(),
+        "these fixtures carry a key the action does not declare:\n  {}\n\n\
+         The schema tells a consumer which keys an action carries, so one that reaches a \
+         record without being declared is invisible to them. Add it to the variant's fields, \
+         or to its `expands_to` where its type chooses the keys.",
+        undeclared.join("\n  ")
+    );
+}
+
+/// Every value a fixture writes under a key drawn from a closed set is in that set.
+///
+/// `values_of` is a claim about what the emitting code puts under the key, and the schema
+/// publishes it as a `$ref` that a consumer validates against. Nothing in the type system
+/// ties the two: the value reaches the wire as a `String`, so a hand-written spelling, or a
+/// vocabulary that gains a variant the pushing code does not use, would publish a set the
+/// records contradict. This reads the records.
+///
+/// Evidence, not proof: it sees the values some fixture exercises.
+#[test]
+fn no_fixture_value_falls_outside_its_declared_set() {
+    use crate::audit::{Kind, Registration};
+
+    // Every string under one of those keys, at any depth: the keys sit beside an action, and
+    // an action appears both at the top level and inside `authorizations[]`.
+    fn walk(
+        value: &serde_json::Value,
+        drawn_from: &std::collections::BTreeMap<&str, &str>,
+        out: &mut Vec<(String, String)>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    if drawn_from.contains_key(key.as_str()) {
+                        match child {
+                            serde_json::Value::String(text) => {
+                                out.push((key.clone(), text.clone()));
+                            }
+                            serde_json::Value::Array(items) => out.extend(
+                                items
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(|text| (key.clone(), text.to_string())),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    walk(child, drawn_from, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, drawn_from, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // The key -> declared set, and each vocabulary's own names, both from the registry.
+    let mut drawn_from: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    let mut vocabulary: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    for reg in Registration::for_emitter::<crate::Lakekeeper>() {
+        match reg.kind {
+            Kind::Keys { names, .. } => {
+                for name in names {
+                    if let Some(set) = name.values {
+                        drawn_from.insert(name.text, set);
+                    }
+                }
+            }
+            Kind::Values { names, .. } => {
+                vocabulary
+                    .entry(crate::audit::schema::short_type_name((reg.type_name)()))
+                    .or_default()
+                    .extend(names.iter().map(|name| name.text));
+            }
+            Kind::Part | Kind::Context | Kind::Shape { .. } => {}
+        }
+    }
+    assert!(
+        !drawn_from.is_empty(),
+        "no key declares a value set, so this is checking nothing"
+    );
+
+    let mut checked = 0usize;
+    let mut outside = Vec::new();
+    for fixture in FIXTURE_NAMES {
+        let mut seen = Vec::new();
+        walk(&read_fixture(fixture), &drawn_from, &mut seen);
+        for (key, value) in seen {
+            let set = drawn_from[key.as_str()];
+            let Some(names) = vocabulary.get(set) else {
+                continue; // a vocabulary of another emitter
+            };
+            checked += 1;
+            if !names.contains(value.as_str()) {
+                outside.push(format!(
+                    "{fixture}: `{key}` is `{value}`, which `{set}` does not name"
+                ));
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no fixture wrote a value under a key that declares a set"
+    );
+    assert!(
+        outside.is_empty(),
+        "these fixture values fall outside the set their key declares:\n  {}\n\n\
+         The schema points a consumer at that vocabulary, so a value outside it is one their \
+         validator rejects. Emit the vocabulary's own `as_wire()`, or correct the \
+         `values_of` on the key.",
+        outside.join("\n  ")
+    );
+}
+
+/// Every key a handler writes beside an action is one that action declares.
+///
+/// The fixture guard above checks the same thing against emitted records, so it is limited
+/// to actions a fixture covers. This reads the source, so it covers one nobody pinned.
+#[test]
+fn every_event_actions_key_is_declared() {
+    crate::audit::schema::assert_event_actions_write_only_declared_keys::<crate::Lakekeeper>(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+    );
+}
+
+/// Every key's declared value type is the one the emitting code writes.
+#[test]
+fn every_declared_key_type_matches_the_code() {
+    crate::audit::schema::assert_declared_key_types_match_the_code::<crate::Lakekeeper>(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+    );
+}
+
+/// Every closed set a key draws its value from is a vocabulary this emitter registers.
+#[test]
+fn every_declared_value_set_is_a_vocabulary() {
+    crate::audit::schema::assert_declared_value_sets_are_vocabularies::<crate::Lakekeeper>();
 }
 
 /// Every shape a key declares names a type this emitter registers.

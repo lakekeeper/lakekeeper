@@ -23,6 +23,23 @@ pub struct WireName {
     pub text: &'static str,
     /// The doc comment on the variant, or empty when it has none.
     pub doc: &'static str,
+    /// The `context` keys a variant of this vocabulary can put beside itself.
+    ///
+    /// An action is one flat object: its wire name under `action_name`, and its context keys
+    /// alongside. Which keys an action can carry is a property of the variant — its named
+    /// fields — so the attribute reads them where it already reads the variant's name, and a
+    /// consumer is told `drop` carries `force` and `purge` and nothing else.
+    ///
+    /// A field whose own type chooses the keys, rather than lending its name to one, says so
+    /// with `#[audit(expands_to = "a, b")]`: the names cannot be read off the field, and a
+    /// test holds that declaration against what the emitting code actually writes.
+    pub carries: &'static [&'static str],
+    /// The JSON type this key's value has on the wire, or `None` where none is declared.
+    ///
+    /// A property of the key rather than of the action carrying it: no key in this log is
+    /// written as two types, so saying it once here is both shorter and harder to get wrong
+    /// than repeating it in every branch that names the key.
+    pub value_type: Option<&'static str>,
     /// For a key whose value is an object, the schema name of that object; `None` for a key
     /// whose value is a plain string.
     ///
@@ -32,6 +49,18 @@ pub struct WireName {
     /// heard of. So the key carries the name of its value's shape, and the schema of the
     /// crate that declares both puts the two together.
     pub shape: Option<&'static str>,
+    /// For a key whose value is drawn from a closed set, the schema name of the vocabulary
+    /// holding that set; `None` for a key whose value is data the request carried.
+    ///
+    /// The value is still a string on the wire — this says *which* strings. A consumer
+    /// routing on `root_level` needs to know it is `included` or `excluded` and nothing
+    /// else, and the vocabulary that settles it is already in the schema; without this the
+    /// key reaches them as an unconstrained string and the set is published beside it with
+    /// nothing joining the two.
+    ///
+    /// Distinct from `shape`, which names a whole object serialized under the key. A value
+    /// is one or the other: a name from a set, or a document.
+    pub values: Option<&'static str>,
 }
 
 impl WireName {
@@ -55,14 +84,20 @@ impl WireName {
         let mut out = [Self {
             text: "",
             doc: "",
+            carries: &[],
+            value_type: None,
             shape: None,
+            values: None,
         }; N];
         let mut i = 0;
         while i < N {
             out[i] = Self {
                 text: texts[i],
                 doc: "",
+                carries: &[],
+                value_type: None,
                 shape: None,
+                values: None,
             };
             i += 1;
         }
@@ -605,7 +640,10 @@ mod tests {
             [WireName {
                 text: "first_key",
                 doc: "The only key.",
-                shape: None
+                carries: &[],
+                value_type: None,
+                shape: None,
+                values: None
             }]
         );
 

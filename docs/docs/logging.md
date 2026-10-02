@@ -312,7 +312,7 @@ Actions are always in the `actions` array, whatever their number: a single-actio
 
 Commit actions carry two further context fields when the commit names them: `target_refs`, the branch or tag references the commit targets, and `update_kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
 
-Which context fields appear depends on the action. A field is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false.
+Which context fields appear depends on the action, and the [schema](audit/schema.json) says which ones each action can carry: `ActionRecord` holds one `if`/`then` per action, matching on `action_name` and listing that action's fields with their types. Read it if you build a reader per action rather than inferring the pairing from traffic. A field is listed there because it *can* appear: it is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false. An action the schema names in no branch is one that carries no context fields, or one newer than the schema you hold.
 
 | Context field           | Type   | Emitted by                        | Description                                             |
 |-------------------------|--------|-----------------------------------|---------------------------------------------------------|
