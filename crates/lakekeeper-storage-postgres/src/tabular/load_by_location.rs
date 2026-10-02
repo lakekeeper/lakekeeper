@@ -1,11 +1,11 @@
-use std::str::FromStr as _;
+use std::{collections::HashMap, str::FromStr as _};
 
 use iceberg::TableIdent;
 use lakekeeper::{
     WarehouseId,
     service::{
-        GenericTabularInfo, GetTabularInfoByLocationError, InternalParseLocationError, TableInfo,
-        ViewInfo, ViewOrTableInfo,
+        DatasetTabularInfo, GenericTabularInfo, GetTabularInfoByLocationError,
+        InternalParseLocationError, TableInfo, ViewInfo, ViewOrTableInfo,
         storage::{StorageProfile, join_location},
     },
 };
@@ -119,7 +119,7 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
 
     if !list_flags.include_staged
         && row.metadata_location.is_none()
-        && row.typ != TabularType::GenericTable
+        && !matches!(row.typ, TabularType::GenericTable | TabularType::Dataset)
     {
         return Ok(None);
     }
@@ -163,6 +163,20 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
             updated_at: row.updated_at,
             location,
             properties: prepare_properties(row.table_properties_keys, row.table_properties_values),
+            warehouse_version: row.warehouse_version.into(),
+            namespace_version: row.namespace_version.into(),
+        }
+        .into(),
+        TabularType::Dataset => DatasetTabularInfo {
+            namespace_id: row.namespace_id.into(),
+            tabular_ident,
+            warehouse_id,
+            tabular_id: row.tabular_id.into(),
+            protected: row.protected,
+            metadata_location,
+            updated_at: row.updated_at,
+            location,
+            properties: HashMap::new(),
             warehouse_version: row.warehouse_version.into(),
             namespace_version: row.namespace_version.into(),
         }

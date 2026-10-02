@@ -797,6 +797,13 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 if tabular_id.is_generic_table() {
                     continue;
                 }
+                // An imported dataset borrows its prefix; its objects are not
+                // Lakekeeper's to delete.
+                if let TabularId::Dataset(dataset_id) = tabular_id
+                    && drop_info.imported_datasets.contains(dataset_id)
+                {
+                    continue;
+                }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
                         project_id: project_id.clone(),
@@ -891,6 +898,18 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .inspect_err(|err| {
                             tracing::error!(
                                 "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
+                                err.error
+                            );
+                        })
+                        .ok();
+                }
+                TabularId::Dataset(dataset_id) => {
+                    authorizer
+                        .delete_dataset(warehouse.warehouse_id, dataset_id)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                "Failed to delete dataset '{tabular_ident}' with id '{dataset_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })

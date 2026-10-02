@@ -184,6 +184,8 @@ jobs:
         run: just update-management-openapi
       - name: Regenerate generic-table openapi
         run: just update-generic-table-openapi
+      - name: Regenerate dataset openapi
+        run: just update-dataset-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
@@ -196,6 +198,8 @@ jobs:
         run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
       - name: Build TS Client (generic tables)
         run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/generic-table-open-api.yaml -o src/gen/generic-tables -c @hey-api/client-fetch
+      - name: Build TS Client (datasets)
+        run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/dataset-open-api.yaml -o src/gen/datasets -c @hey-api/client-fetch
       # Smoke-test the generator the downstream SDKs actually use. hey-api above
       # exercises a different code path and has repeatedly been happy with specs
       # openapi-generator rejects. This asserts only that generation succeeds —
@@ -203,7 +207,7 @@ jobs:
       # Pinned to the version go-lakekeeper generates with.
       - name: Generate clients with openapi-generator
         run: |
-          for spec in management-open-api generic-table-open-api; do
+          for spec in management-open-api generic-table-open-api dataset-open-api; do
             for lang in go python typescript-fetch; do
               echo "=== $spec -> $lang"
               docker run --rm -v "$PWD:/local" \

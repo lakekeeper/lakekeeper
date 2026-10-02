@@ -148,6 +148,9 @@ pub(crate) async fn commit_table_transaction(
                 ViewOrTableInfo::GenericTable(_) => {
                     debug_assert!(false, "Commit should not return generic tables");
                 }
+                ViewOrTableInfo::Dataset(_) => {
+                    debug_assert!(false, "Commit should not return datasets");
+                }
             }
 
             let tabular_id = table_or_view_info.tabular_id();

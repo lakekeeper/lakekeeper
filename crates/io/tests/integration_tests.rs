@@ -348,6 +348,7 @@ test_all_storages!(
     test_writer_then_read_range_impl
 );
 test_all_storages!(test_writer_then_metadata, test_writer_then_metadata_impl);
+test_all_storages!(test_presign_get, test_presign_get_impl);
 test_all_storages!(
     test_write_then_read_single_and_read,
     test_write_then_read_single_and_read_impl
@@ -2244,4 +2245,57 @@ fn generate_test_data(size_mb: usize) -> Bytes {
     }
 
     buffer.freeze()
+}
+
+/// A presigned GET serves the file to a plain HTTP client, ranges included, for a
+/// key that needs encoding. Only S3 and GCS presign in this crate; ADLS signs in
+/// the catalog, with a SAS.
+async fn test_presign_get_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let presigns = match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => true,
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => true,
+        #[allow(unreachable_patterns)]
+        _ => false,
+    };
+    if !presigns {
+        println!("Skipping presign test: this backend does not presign in lakekeeper-io");
+        return Ok(());
+    }
+    let path = config.test_path("presign/a file+1.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+    storage.write(&path, Bytes::from(data.clone())).await?;
+    let validity = Duration::from_secs(300);
+    let url = match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(s3) => s3.presign_get(&path, None, validity).await?,
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(gcs) => gcs.presign_get(&path, None, validity).await?,
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("checked above"),
+    };
+
+    let client = reqwest::Client::new();
+    let whole = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(whole.as_ref(), data.as_slice());
+    let range = client
+        .get(&url)
+        .header(reqwest::header::RANGE, "bytes=100-199")
+        .send()
+        .await?;
+    assert_eq!(range.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range.bytes().await?.as_ref(), &data[100..200]);
+
+    storage.delete(&path).await?;
+    Ok(())
 }

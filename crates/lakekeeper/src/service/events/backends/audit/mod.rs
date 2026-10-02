@@ -3,9 +3,10 @@ use std::fmt::Display;
 use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 use crate::{
-    audit_operation,
+    WarehouseId, audit_operation,
     request_metadata::{RequestMetadata, UserAgent},
     service::{
+        DatasetAccessGrantId, DatasetId, DatasetSnapshotId,
         authn::{Actor, InternalActor},
         authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
         events::{
@@ -115,6 +116,7 @@ pub enum Decision {
 #[strum(serialize_all = "snake_case")]
 pub enum AuditOperation {
     AdmissionDecided,
+    DatasetFilesSigned,
     GrantCreated,
     GrantRevoked,
     IdempotentReplay,
@@ -129,12 +131,16 @@ pub enum AuditOperation {
 pub enum AuditOutcome {
     Success,
     Replayed,
-    /// An admission gate denied the caller authoritatively.
+    /// An admission gate denied the caller authoritatively, or a sign request was
+    /// refused by the grant it presented.
     Forbidden,
     /// An admission gate could not reach an upstream it needs and failed closed.
     /// Kept distinct from [`Forbidden`](Self::Forbidden) so an outage of that
     /// upstream reads as an outage rather than as a wave of denials.
     Unavailable,
+    /// A permitted operation did not complete: the catalog or the storage backend
+    /// returned an error.
+    Failed,
 }
 
 macro_rules! wire_value_as_str {
@@ -270,6 +276,49 @@ impl Mappable for UserOrRoleIdValue<'_> {
     }
 }
 
+/// One call signing a dataset's files, as audit context: what the grant covered
+/// and how many keys were asked for — never the URLs, which are bearer secrets.
+pub(crate) struct DatasetFilesSignedContext {
+    pub(crate) warehouse_id: WarehouseId,
+    /// `None` when the dataset named in the request does not exist.
+    pub(crate) dataset_id: Option<DatasetId>,
+    pub(crate) snapshot_id: DatasetSnapshotId,
+    pub(crate) access_grant_id: DatasetAccessGrantId,
+    pub(crate) key_count: usize,
+}
+
+/// [`DatasetFilesSignedContext`] as it reaches the log. `dataset_id` is `null`,
+/// not absent, when the request named no existing dataset.
+#[derive(Valuable)]
+struct DatasetFilesSignedRecord {
+    warehouse_id: String,
+    dataset_id: Option<String>,
+    snapshot_id: String,
+    access_grant_id: String,
+    key_count: usize,
+}
+
+/// Record one call signing a dataset's files, signed or refused.
+pub(crate) fn dataset_files_signed(
+    request_metadata: &RequestMetadata,
+    outcome: AuditOutcome,
+    context: &DatasetFilesSignedContext,
+) {
+    audit_operation!(
+        operation = AuditOperation::DatasetFilesSigned.as_str(),
+        actor = request_metadata.audit_actor(),
+        outcome = outcome.as_str(),
+        context = DatasetFilesSignedRecord {
+            warehouse_id: context.warehouse_id.to_string(),
+            dataset_id: context.dataset_id.map(|id| id.to_string()),
+            snapshot_id: context.snapshot_id.to_string(),
+            access_grant_id: context.access_grant_id.to_string(),
+            key_count: context.key_count,
+        },
+        "Dataset files signed"
+    );
+}
+
 /// A grant's full `(principal, privilege, resource)` triple, as audit context.
 ///
 /// Grants are hard-deleted and carry no history, so a revocation's triple exists
@@ -331,6 +380,7 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
         GrantResource::GenericTable {
             generic_table_id, ..
         } => Some(generic_table_id.to_string()),
+        GrantResource::Dataset { dataset_id, .. } => Some(dataset_id.to_string()),
         GrantResource::Tag(tag_definition_id) => Some(tag_definition_id.to_string()),
     }
 }

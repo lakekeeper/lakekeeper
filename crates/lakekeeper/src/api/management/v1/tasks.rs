@@ -14,18 +14,19 @@ use crate::{
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity, NoWarehouseTaskError,
-        ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId,
-        TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
+        CatalogTaskOps, CatalogWarehouseOps, DatasetId, GenericTableId, NamedEntity,
+        NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
+        TabularId, TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
         ViewOrTableInfo,
         authz::{
-            AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
-            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
-            AuthZProjectOps, AuthZTableOps as _, AuthZViewOps as _, AuthZWarehouseActionForbidden,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            AuthZCannotListAllTasks, AuthZCannotSeeDataset, AuthZCannotSeeGenericTable,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZDatasetOps,
+            AuthZError, AuthZGenericTableOps as _, AuthZProjectOps, AuthZTableOps as _,
+            AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogDatasetAction, CatalogGenericTableAction,
             CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireGenericTableActionError, RequireNamespaceActionError, RequireTableActionError,
-            RequireViewActionError, RequireWarehouseActionError,
+            RequireDatasetActionError, RequireGenericTableActionError, RequireNamespaceActionError,
+            RequireTableActionError, RequireViewActionError, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -48,10 +49,12 @@ const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::GetTas
 const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::GetTasks;
 const GET_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
     CatalogGenericTableAction::GetTasks;
+const GET_TASK_PERMISSION_DATASET: CatalogDatasetAction = CatalogDatasetAction::GetTasks;
 const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::ControlTasks;
 const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
 const CONTROL_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
     CatalogGenericTableAction::ControlTasks;
+const CONTROL_TASK_PERMISSION_DATASET: CatalogDatasetAction = CatalogDatasetAction::ControlTasks;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::ControlAllTasks;
 // `schedule` is a form of `control` over the queue for an entity, so it
@@ -60,6 +63,7 @@ const SCHEDULE_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::C
 const SCHEDULE_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
 const SCHEDULE_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
     CatalogGenericTableAction::ControlTasks;
+const SCHEDULE_TASK_PERMISSION_DATASET: CatalogDatasetAction = CatalogDatasetAction::ControlTasks;
 const SCHEDULE_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::ControlAllTasks;
 /// Maximum number of days the `task-queue/{name}/schedule` endpoint accepts
@@ -510,6 +514,12 @@ pub enum WarehouseTaskEntityFilter {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
+    /// Get tasks for a specific dataset
+    #[serde(rename_all = "kebab-case")]
+    Dataset {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        dataset_id: DatasetId,
+    },
     /// Get Warehouse-level tasks which are not associated with a specific entity
     /// inside the warehouse
     Warehouse,
@@ -916,6 +926,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ViewOrTableInfo::GenericTable(g) => WarehouseTaskEntityId::GenericTable {
                 generic_table_id: g.tabular_id,
             },
+            ViewOrTableInfo::Dataset(d) => WarehouseTaskEntityId::Dataset {
+                dataset_id: d.tabular_id,
+            },
         };
         let entity_properties = crate::service::AuthZTabularInfo::properties(&tabular_info).clone();
         let project_id = event_ctx.resolved().project_id.clone();
@@ -1144,6 +1157,9 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
                 Ok(TabularId::GenericTable(*generic_table_id))
             }
+            WarehouseTaskEntityFilter::Dataset { dataset_id } => {
+                Ok(TabularId::Dataset(*dataset_id))
+            }
             WarehouseTaskEntityFilter::Warehouse => Err(RequireWarehouseActionError::from(
                 AuthZCannotListAllTasks::new(warehouse_id),
             )),
@@ -1186,6 +1202,13 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
                     .into(),
                 );
             }
+            TabularId::Dataset(id) => {
+                return Err(crate::service::authz::AuthZCannotSeeDataset::new_not_found(
+                    warehouse_id,
+                    *id,
+                )
+                .into());
+            }
         }
     }
 
@@ -1209,6 +1232,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
                     GET_TASK_PERMISSION_VIEW,
                     GET_TASK_PERMISSION_TABLE,
                     GET_TASK_PERMISSION_GENERIC_TABLE,
+                    GET_TASK_PERMISSION_DATASET,
                     None,
                 ),
             ))
@@ -1401,6 +1425,44 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                     )
                     .await?;
             }
+            WarehouseTaskEntityId::Dataset { dataset_id } => {
+                let infos = C::get_tabular_infos_by_id(
+                    warehouse_id,
+                    &[TabularId::Dataset(*dataset_id)],
+                    TabularListFlags::all(),
+                    catalog_state.clone(),
+                )
+                .await
+                .map_err(RequireDatasetActionError::from)?;
+                let ds_info = infos
+                    .into_iter()
+                    .find_map(ViewOrTableInfo::into_dataset_info)
+                    .ok_or_else(|| {
+                        AuthZCannotSeeDataset::new_not_found(warehouse_id, *dataset_id)
+                    })?;
+
+                let namespace_id = ds_info.namespace_id;
+                let namespace = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    namespace_id,
+                    CachePolicy::RequireMinimumVersion(*ds_info.namespace_version),
+                    catalog_state,
+                )
+                .await;
+                let namespace =
+                    authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+
+                authorizer
+                    .require_dataset_action(
+                        request_metadata,
+                        warehouse,
+                        &namespace,
+                        *dataset_id,
+                        Ok::<_, RequireDatasetActionError>(Some(ds_info)),
+                        GET_TASK_PERMISSION_DATASET,
+                    )
+                    .await?;
+            }
         }
     } else {
         // Warehouse permission already checked before calling this function
@@ -1434,6 +1496,10 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
             ResolvedTaskEntity::GenericTable(tabular) => Ok((
                 TabularId::GenericTable(tabular.generic_table_id),
                 &tabular.generic_table_ident.namespace,
+            )),
+            ResolvedTaskEntity::Dataset(tabular) => Ok((
+                TabularId::Dataset(tabular.dataset_id),
+                &tabular.dataset_ident.namespace,
             )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => Err(AuthZWarehouseActionForbidden::new(
                 *warehouse_id,
@@ -1476,6 +1542,13 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::View(v) => {
                     return Err(AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, v).into());
                 }
+                TabularId::Dataset(id) => {
+                    return Err(crate::service::authz::AuthZCannotSeeDataset::new_not_found(
+                        warehouse.warehouse_id,
+                        id,
+                    )
+                    .into());
+                }
                 TabularId::GenericTable(id) => {
                     return Err(
                         crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
@@ -1498,6 +1571,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                     CONTROL_TASK_PERMISSION_VIEW,
                     CONTROL_TASK_PERMISSION_TABLE,
                     CONTROL_TASK_PERMISSION_GENERIC_TABLE,
+                    CONTROL_TASK_PERMISSION_DATASET,
                     None,
                 ),
             ))
@@ -1566,6 +1640,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
                     ResolvedTaskEntity::GenericTable(g) => {
                         Some(TabularId::GenericTable(g.generic_table_id))
                     }
+                    ResolvedTaskEntity::Dataset(d) => Some(TabularId::Dataset(d.dataset_id)),
                     ResolvedTaskEntity::Warehouse(_) | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                 }
             } else {
@@ -1666,6 +1741,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
         WarehouseTaskEntityId::GenericTable { generic_table_id } => {
             TabularId::GenericTable(generic_table_id)
         }
+        WarehouseTaskEntityId::Dataset { dataset_id } => TabularId::Dataset(dataset_id),
     };
     // Restrict to active entities only. Soft-deleted or staged tabulars
     // can't be a meaningful schedule target — the worker would either skip
@@ -1692,6 +1768,9 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
             TabularId::GenericTable(g) => {
                 AuthZError::from(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, g))
             }
+            TabularId::Dataset(d) => {
+                AuthZError::from(AuthZCannotSeeDataset::new_not_found(warehouse_id, d))
+            }
         })?;
 
     let namespaces =
@@ -1706,6 +1785,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
                 SCHEDULE_TASK_PERMISSION_VIEW,
                 SCHEDULE_TASK_PERMISSION_TABLE,
                 SCHEDULE_TASK_PERMISSION_GENERIC_TABLE,
+                SCHEDULE_TASK_PERMISSION_DATASET,
                 None,
             ),
         );

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE dataset SET constraints = $3 WHERE warehouse_id = $1 AND dataset_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6c66532bb36031dc83a22ebd5566f354ea3d7fba46285f3bb4a6113a0567bd74"
+}

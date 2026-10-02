@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM dataset_degraded_file WHERE warehouse_id = $1 AND snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d2b9e066d8501b5ae6838db5e13874b24640080a06e76d38ff4e0ea449e6cb50"
+}

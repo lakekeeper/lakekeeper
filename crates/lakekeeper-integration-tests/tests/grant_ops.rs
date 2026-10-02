@@ -11,7 +11,10 @@ use lakekeeper::{
     ProjectId,
     api::{
         ApiContext, RequestMetadata, RequestMetadataTestBuilder,
-        data::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
+        data::v1::{
+            datasets::{CreateDatasetRequest, DatasetService as _},
+            generic_tables::{GenericTableService as _, ListGenericTablesQuery},
+        },
         iceberg::{
             types::Prefix,
             v1::{
@@ -47,8 +50,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, create_generic_table, create_view, create_view_request, memory_io_profile,
-    random_request_metadata,
+    SetupTestCatalog, create_dataset, create_generic_table, create_ns, create_view,
+    create_view_request, memory_io_profile, random_request_metadata,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -999,6 +1002,7 @@ async fn grantable_privileges_publishes_the_whole_vocabulary(pool: PgPool) {
     assert_eq!(
         keys,
         vec![
+            "dataset",
             "generic-table",
             "namespace",
             "project",
@@ -1037,7 +1041,7 @@ async fn grantable_privileges_needs_no_project_or_principal(pool: PgPool) {
         Server::get_grantable_privileges(f.ctx.clone(), RequestMetadata::new_unauthenticated())
             .await
             .unwrap();
-    assert_eq!(published.privileges.len(), 8);
+    assert_eq!(published.privileges.len(), 9);
 }
 
 /// A revoke is never checked against the vocabulary: a privilege that has left it
@@ -1442,6 +1446,32 @@ async fn blocking_read_grants_denies_the_warehouse_listing(pool: PgPool) {
             f.warehouse_id
         )
     );
+}
+
+/// Reading a dataset's grants is its own visibility, as for every other tabular: a
+/// caller who may read them but not describe the dataset still gets the listing.
+#[sqlx::test]
+async fn read_grants_alone_lists_a_datasets_grants(pool: PgPool) {
+    let f = setup_denying(pool).await;
+    let prefix = f.warehouse_id.to_string();
+    create_ns(f.ctx.clone(), prefix.clone(), "grant_readers".to_string()).await;
+    let dataset_id = create_dataset(f.ctx.clone(), prefix, "grant_readers", "ds")
+        .await
+        .unwrap()
+        .dataset
+        .id;
+    f.authorizer.block_action("dataset:GetMetadata");
+
+    DenyServer::list_dataset_grants(
+        f.warehouse_id,
+        dataset_id,
+        f.ctx.clone(),
+        as_principal(&f.alice, &f.project_id),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .expect("read_grants doubles as visibility");
 }
 
 /// A warehouse the caller cannot see must read as absent, so the response never
@@ -1931,6 +1961,16 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
     .find(|i| i.name == "gt1")
     .and_then(|i| i.id)
     .unwrap();
+    let dataset_id = create_dataset(
+        f.ctx.clone(),
+        f.warehouse_id.to_string(),
+        "grant_routes",
+        "ds1",
+    )
+    .await
+    .unwrap()
+    .dataset
+    .id;
     let tag_definition_id = Server::create_tag_definition(
         CreateTagDefinitionRequest::builder()
             .name("routes".to_string())
@@ -1965,6 +2005,7 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
             .replace("{table_id}", &table_id.to_string())
             .replace("{view_id}", &view_id.to_string())
             .replace("{generic_table_id}", &generic_table_id.to_string())
+            .replace("{dataset_id}", &dataset_id.to_string())
             .replace("{tag_definition_id}", &tag_definition_id.to_string());
         // The project-scoped listing requires a principal, so the request that proves
         // its route resolves has to name one. Every other path answers without a query.
@@ -2008,10 +2049,10 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
         );
         visited += 1;
     }
-    // Two per resource level across eight levels, plus one `grantable-privileges` each,
+    // Two per resource level across nine levels, plus one `grantable-privileges` each,
     // plus the project-wide listing and the deployment vocabulary, plus a listing and a
     // revoke for each of the two subtree roots.
-    assert_eq!(visited, 30);
+    assert_eq!(visited, 33);
 }
 
 /// The per-resource vocabulary answers "what may I grant *here*", which the
@@ -2624,6 +2665,66 @@ async fn creating_a_resource_grants_ownership_to_its_creator(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(page.grants, Vec::new());
+}
+
+/// A dataset is born with the grants declared for it, like every other resource.
+#[sqlx::test]
+async fn creating_a_dataset_grants_ownership_to_its_creator(pool: PgPool) {
+    const OWNS_DATASETS: &[(ResourceType, &[&str])] = &[(ResourceType::Dataset, &["ownership"])];
+    let alice = UserId::try_from("oidc~alice").unwrap();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new().with_bootstrap_grants(OWNS_DATASETS))
+        .user_id(Some(alice.clone()))
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let metadata = as_principal(&alice, &warehouse.project_id);
+    let prefix = warehouse_id.to_string();
+    create_ns(ctx.clone(), prefix.clone(), "owned_ns".to_string()).await;
+
+    let dataset_id = CatalogServer::create_dataset(
+        NamespaceParameters {
+            namespace: NamespaceIdent::new("owned_ns".to_string()),
+            prefix: Some(prefix.into()),
+        },
+        CreateDatasetRequest {
+            name: "owned_dataset".to_string(),
+            location: None,
+            constraints: None,
+        },
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap()
+    .dataset
+    .id;
+
+    let page = DenyServer::list_dataset_grants(
+        warehouse_id,
+        dataset_id,
+        ctx,
+        metadata,
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed_grants(page.grants),
+        vec![(
+            UserOrRole::User(alice),
+            "ownership".to_string(),
+            GrantResourceResponse::Dataset {
+                warehouse_id,
+                dataset_id
+            },
+        )]
+    );
 }
 
 /// The default is off: an authorizer that declares nothing writes nothing, so upgrading

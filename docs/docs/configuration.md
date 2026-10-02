@@ -144,7 +144,28 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` | 2 | `2` | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
+| `LAKEKEEPER__TASK_DATASET_CHECKPOINT_WORKERS` | 2 | `2` | Number of workers spawned to fold a dataset branch into a checkpoint once its chain of snapshots outgrows the checkpoint interval. See [Datasets](./datasets.md). |
+| `LAKEKEEPER__TASK_DATASET_IMPORT_WORKERS` | 2 | `2` | Number of workers spawned to run queued dataset imports. A single import lists an entire prefix and can run for minutes. See [Datasets](./datasets.md#importing-objects-already-in-storage). |
+| `LAKEKEEPER__TASK_DATASET_SNAPSHOT_EXPIRY_WORKERS` | 1 | `1` | Number of workers spawned to expire dataset snapshots under a dataset's or a warehouse's retention policy. See [Datasets](./datasets.md#retention). |
+| `LAKEKEEPER__TASK_DATASET_SNAPSHOT_PURGE_WORKERS` | 1 | `1` | Number of workers spawned to purge expired dataset snapshots once their grace period is over. See [Datasets](./datasets.md#retention). |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+
+### Datasets
+
+Readers of a [dataset](./datasets.md#reading-a-version) get its bytes through signed URLs issued under an access grant. These options bound both:
+
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__DATASET_SIGNED_URL_VALIDITY_SECONDS` | `900` | `900` | How long a signed dataset file URL stays valid. A revoked grant signs nothing new, but URLs it already signed work until they expire, so this is how long revocation takes to reach bytes in flight. S3 and GCS accept at most 7 days. |
+| `LAKEKEEPER__DATASET_ACCESS_GRANT_VALIDITY_SECONDS` | `43200` | `43200` | How long an access grant can sign. The grant is authorized once, when it is issued, so this bounds how long a reader keeps signing after its permission is withdrawn without the grant itself being revoked. |
+| `LAKEKEEPER__DATASET_SIGN_MAX_KEYS` | `1000` | `1000` | The most keys one signing call accepts. |
+
+_Metrics_: Signing exposes Prometheus metrics:
+
+- `lakekeeper_dataset_sign_requests_total{outcome}`: Signing calls with a well-formed batch, by `outcome` — `success`, `forbidden` (the grant refused the call) or `failed` (the catalog or storage returned an error)
+- `lakekeeper_dataset_signed_files_total`: Files signed
+- `lakekeeper_dataset_sign_batch_size`: Keys asked for per call
+- `lakekeeper_dataset_grant_validation_seconds`: Time to check a grant and the keys it is asked to sign
 
 ### NATS
 
@@ -466,7 +487,7 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__CACHE__STC__ENABLED` | `true` | `true` | Enable or disable the short-term credentials cache. |
-| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. |
+| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of entries **per credential cache**. S3 and GCP have one cache each; Azure has two, one for SAS tokens and one for the user delegation keys that sign [dataset files](./datasets.md#signed-urls). Caches of providers not in use stay near-empty. |
 
 _Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 

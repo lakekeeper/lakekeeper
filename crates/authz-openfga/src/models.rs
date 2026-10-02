@@ -26,6 +26,7 @@ impl OpenFgaType for FgaType {
                 FgaType::Table,
                 FgaType::View,
                 FgaType::GenericTable,
+                FgaType::Dataset,
                 FgaType::Tag,
             ],
             FgaType::Project => &[FgaType::Server, FgaType::Warehouse],
@@ -36,8 +37,11 @@ impl OpenFgaType for FgaType {
                 FgaType::Table,
                 FgaType::View,
                 FgaType::GenericTable,
+                FgaType::Dataset,
             ],
-            FgaType::View | FgaType::Table | FgaType::GenericTable => &[FgaType::Namespace],
+            FgaType::View | FgaType::Table | FgaType::GenericTable | FgaType::Dataset => {
+                &[FgaType::Namespace]
+            }
             // The other direction: a tag definition is only ever the *object* of a
             // relation (project→tag, user/role→tag), never the `user` side, so — like
             // model_version — it is a user of nothing. That is why deleting a tag

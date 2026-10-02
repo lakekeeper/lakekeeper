@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT missing_files, changed_files, materialization_checked_at\n        FROM dataset_snapshot\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3 AND status = 'active'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "missing_files",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "missing_files"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_files",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "changed_files"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "materialization_checked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "materialization_checked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6890e894636e3a3649fbb029fc6785523ac8c561649d8ed7ec87d2c8ace73e96"
+}

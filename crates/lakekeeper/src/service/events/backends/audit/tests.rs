@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
@@ -10,19 +13,22 @@ use crate::{
     WarehouseId,
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
+        DatasetAccessGrantId, DatasetId, DatasetSnapshotId,
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
             GateDecision,
         },
         authn::UserId,
         authz::{
-            ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, DeterminingFactor, PolicyEffect, RoleSourceSystem,
+            ActionDescriptor, CatalogAction as _, CatalogDatasetAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, DeterminingFactor, PolicyEffect,
+            RoleSourceSystem,
         },
         events::context::{
-            ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
-            FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-            FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
+            ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_DATASET,
+            FIELD_NAME_DATASET_ID, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
+            FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID,
+            UserProvidedEntity as _, UserProvidedTable,
         },
         idempotency::IdempotencyKey,
     },
@@ -153,6 +159,9 @@ const FIXTURE_NAMESPACE_ID: &str = "019684ff-0000-7000-8000-000000000003";
 const FIXTURE_REQUEST_ID: &str = "019684ff-0000-7000-8000-000000000005";
 const FIXTURE_ERROR_ID: &str = "019684ff-0000-7000-8000-000000000006";
 const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
+const FIXTURE_DATASET_ID: &str = "019684ff-0000-7000-8000-000000000008";
+const FIXTURE_SNAPSHOT_ID: &str = "019684ff-0000-7000-8000-000000000009";
+const FIXTURE_GRANT_ID: &str = "019684ff-0000-7000-8000-00000000000a";
 
 /// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
 /// derived from [`AUDIT_FORMAT`].
@@ -467,6 +476,9 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_admission_gate",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
+    "authz_succeeded_dataset",
+    "dataset_files_signed",
+    "dataset_files_refused",
     "grant_created",
     "grant_revoked",
     "idempotent_replay",
@@ -987,6 +999,44 @@ fn fixture_authz_succeeded_create_role_source_system() {
     );
 }
 
+/// Dataset records, built from the real actions: a `dataset` entity with
+/// `dataset-id`, the `dataset_id` / `base_location` / `managed` a create carries, and the
+/// `target-refs` a versioning action names. No other fixture carries these, and the
+/// documentation test reaches only what the fixtures carry.
+#[test]
+fn fixture_authz_succeeded_dataset() {
+    let create = CatalogNamespaceAction::CreateDataset {
+        name: Some("images".to_string()),
+        dataset_id: Some(DatasetId::from(
+            FIXTURE_DATASET_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )),
+        location: Some("s3://bucket/ml/images/".to_string()),
+        managed: Some(false),
+        properties: Arc::default(),
+    };
+    let commit = CatalogDatasetAction::Commit {
+        target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::one(
+                EntityDescriptor::new(EntityType::Dataset)
+                    .field(FIELD_NAME_WAREHOUSE_ID, &FIXTURE_WAREHOUSE_ID)
+                    .field(FIELD_NAME_DATASET_ID, &FIXTURE_DATASET_ID)
+                    .field(FIELD_NAME_DATASET, &"ml.images"),
+            )),
+            actions: Arc::new(vec![create.action_descriptor(), commit.action_descriptor()]),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![fixture_plain_authorization()]),
+        })
+    });
+
+    assert_matches_fixture("authz_succeeded_dataset", &contract_fields(record));
+}
+
 /// A denied authorization. Carries `failure_reason` and `error`, which succeeded
 /// events do not, and records `decision: "denied"`.
 #[test]
@@ -1149,6 +1199,44 @@ fn fixture_grants_changed_emits_one_record_per_triple() {
 
     assert_matches_fixture("grant_revoked", &contract_fields(revoked));
     assert_matches_fixture("grant_created", &contract_fields(created));
+}
+
+fn dataset_files_signed_record(
+    outcome: AuditOutcome,
+    dataset_id: Option<&str>,
+) -> serde_json::Value {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let record = emit_and_capture_one(|| async {
+        dataset_files_signed(
+            &fixture_metadata(),
+            outcome,
+            &DatasetFilesSignedContext {
+                warehouse_id: WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+                dataset_id: dataset_id.map(|id| DatasetId::from(uuid(id))),
+                snapshot_id: DatasetSnapshotId::from(uuid(FIXTURE_SNAPSHOT_ID)),
+                access_grant_id: DatasetAccessGrantId::from(uuid(FIXTURE_GRANT_ID)),
+                key_count: 1_000,
+            },
+        );
+        Ok(())
+    });
+    contract_fields(record)
+}
+
+/// A call signing a dataset's files: an operational record naming the grant and
+/// snapshot it signed under and how many keys, never the URLs.
+#[test]
+fn fixture_dataset_files_signed() {
+    let record = dataset_files_signed_record(AuditOutcome::Success, Some(FIXTURE_DATASET_ID));
+    assert_matches_fixture("dataset_files_signed", &record);
+}
+
+/// A sign call naming a dataset that does not exist: `dataset_id` is present,
+/// as `null`.
+#[test]
+fn fixture_dataset_files_refused() {
+    let record = dataset_files_signed_record(AuditOutcome::Forbidden, None);
+    assert_matches_fixture("dataset_files_refused", &record);
 }
 
 /// Recursively collect every `.rs` file under `dir`.
@@ -1906,9 +1994,10 @@ macro_rules! variant_names_of {
 fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
     use crate::service::{
         authz::{
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
+            CatalogDatasetAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            InstanceAdminAction,
         },
         events::context::{AuthnAction, FallbackAction, ManagementAction},
     };
@@ -1916,6 +2005,7 @@ fn action_name_enums() -> Vec<(&'static str, Vec<String>, usize)> {
     variant_names_of!(
         AuthnAction,
         FallbackAction,
+        CatalogDatasetAction,
         CatalogGenericTableAction,
         CatalogNamespaceAction,
         CatalogProjectAction,

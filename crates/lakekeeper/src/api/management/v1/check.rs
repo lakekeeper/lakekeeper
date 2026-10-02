@@ -13,33 +13,36 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
-        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
-        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
-        RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
-        TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
+        ArcProjectId, ArcRole, AuthZDatasetInfo, BasicTabularInfo, CachePolicy,
+        CatalogGetNamespaceError, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, DatasetTabularInfo,
+        GenericTabularInfo, GetRoleAcrossProjectsError, NamespaceId, NamespaceVersion,
+        NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound, SecretStore, State,
+        TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId, ViewInfo,
+        ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
-            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
-            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
-            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, DeterminingFactor, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError,
-            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            ActionDescriptor, ActionOnDataset, ActionOnGenericTable, ActionOnTable,
+            ActionOnTableOrView, ActionOnView, AuthZCannotSeeDataset, AuthZCannotSeeGenericTable,
+            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogDatasetAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            DeterminingFactor, MustUse, RequireNamespaceActionError, RequireTableActionError,
+            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
             context::{
-                ENTITY_TYPE_GENERIC_TABLE, ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT,
-                ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE, ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE,
-                EntityDescriptor, FIELD_NAME_GENERIC_TABLE, FIELD_NAME_GENERIC_TABLE_ID,
-                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
-                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID,
-                FIELD_NAME_WAREHOUSE_ID, IntrospectPermissions,
+                ENTITY_TYPE_DATASET, ENTITY_TYPE_GENERIC_TABLE, ENTITY_TYPE_NAMESPACE,
+                ENTITY_TYPE_PROJECT, ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE, ENTITY_TYPE_VIEW,
+                ENTITY_TYPE_WAREHOUSE, EntityDescriptor, FIELD_NAME_DATASET, FIELD_NAME_DATASET_ID,
+                FIELD_NAME_GENERIC_TABLE, FIELD_NAME_GENERIC_TABLE_ID, FIELD_NAME_NAMESPACE,
+                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
+                FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID, FIELD_NAME_WAREHOUSE_ID,
+                IntrospectPermissions,
             },
         },
         namespace_cache::namespace_ident_to_cache_key,
@@ -200,17 +203,17 @@ impl NamespaceIdentOrUuid {
 #[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a tabular (table, view, or generic table) — either a UUID
-/// or its name and namespace. Wire format primary names are `table-id` and
-/// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
-/// accepted as input aliases for client ergonomics.
+/// Identifier for a tabular (table, view, generic table or dataset) — either a
+/// UUID or its name and namespace. Wire format primary names are `table-id` and
+/// `table`; `view_id` / `view`, `generic_table_id` / `generic_table` and
+/// `dataset_id` / `dataset` are accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidById"))]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
-        #[serde(alias = "view_id", alias = "generic_table_id")]
+        #[serde(alias = "view_id", alias = "generic_table_id", alias = "dataset_id")]
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
@@ -218,8 +221,8 @@ pub enum TabularIdentOrUuid {
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
-        /// Name of the table, view, or generic table.
-        #[serde(alias = "view", alias = "generic_table")]
+        /// Name of the table, view, generic table or dataset.
+        #[serde(alias = "view", alias = "generic_table", alias = "dataset")]
         table: String,
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
@@ -276,6 +279,11 @@ pub enum CatalogActionCheckOperation {
         action: CatalogGenericTableAction,
         #[serde(flatten)]
         generic_table: TabularIdentOrUuid,
+    },
+    Dataset {
+        action: CatalogDatasetAction,
+        #[serde(flatten)]
+        dataset: TabularIdentOrUuid,
     },
 }
 
@@ -358,6 +366,8 @@ impl CatalogActionCheckOperation {
     /// Passing it ensures every project audit entry carries
     /// `FIELD_NAME_PROJECT_ID`, matching what the actual authorization check
     /// runs against.
+    // One arm per operation kind, as the enum is laid out; listed, not merged.
+    #[allow(clippy::too_many_lines)]
     fn to_audit_entity_action(
         &self,
         ambient_project_id: Option<&ProjectId>,
@@ -459,6 +469,25 @@ impl CatalogActionCheckOperation {
                 };
                 (entity, action.action_descriptor())
             }
+            CatalogActionCheckOperation::Dataset { action, dataset } => {
+                let entity = match dataset {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_DATASET)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_DATASET_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_DATASET)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_DATASET, table),
+                };
+                (entity, action.action_descriptor())
+            }
         }
     }
 }
@@ -508,6 +537,7 @@ type TabularActionPair = (
     Option<CatalogTableAction>,
     Option<CatalogViewAction>,
     Option<CatalogGenericTableAction>,
+    Option<CatalogDatasetAction>,
 );
 type TabularChecksByIdMap =
     HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
@@ -634,7 +664,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (Some(action), None, None)));
+                            .push((i, (Some(action), None, None, None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -649,7 +679,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (Some(action), None, None)));
+                            .push((i, (Some(action), None, None, None)));
                     }
                 }
             }
@@ -667,7 +697,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (None, Some(action), None)));
+                            .push((i, (None, Some(action), None, None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -682,7 +712,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (None, Some(action), None)));
+                            .push((i, (None, Some(action), None, None)));
                     }
                 }
             }
@@ -705,7 +735,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (None, None, Some(action))));
+                            .push((i, (None, None, Some(action), None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -720,7 +750,40 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (None, None, Some(action))));
+                            .push((i, (None, None, Some(action), None)));
+                    }
+                }
+            }
+            CatalogActionCheckOperation::Dataset { action, dataset } => {
+                grouped.seen_warehouse_ids.insert(dataset.warehouse_id());
+                match dataset {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => {
+                        let tabular_id = TabularId::Dataset(table_id.into());
+                        grouped
+                            .tabular_checks_by_id
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_id)
+                            .or_default()
+                            .push((i, (None, None, None, Some(action))));
+                    }
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table: ds_name,
+                        warehouse_id,
+                    } => {
+                        let tabular_ident =
+                            TabularIdentOwned::Dataset(TableIdent::new(namespace, ds_name));
+                        grouped
+                            .tabular_checks_by_ident
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_ident)
+                            .or_default()
+                            .push((i, (None, None, None, Some(action))));
                     }
                 }
             }
@@ -874,6 +937,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::GenericTable(info) => {
                     TabularIdentOwned::GenericTable(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::Dataset(info) => {
+                    TabularIdentOwned::Dataset(info.dataset_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -974,25 +1040,28 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     Ok(warehouses)
 }
 
-/// Convert optional table/view actions into `ActionOnTableOrView`
+/// The batch action shape for a tabular of any subtype. Named because the enum
+/// carries one info/action pair per subtype and is unreadable inline.
+type TabularActionRequest<'a, 'u> = ActionOnTableOrView<
+    'a,
+    'u,
+    TableInfo,
+    ViewInfo,
+    CatalogTableAction,
+    CatalogViewAction,
+    GenericTabularInfo,
+    CatalogGenericTableAction,
+    DatasetTabularInfo,
+    CatalogDatasetAction,
+>;
+
+/// Convert the optional action matching the tabular's subtype into
+/// `ActionOnTableOrView`
 fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
-    table_action: Option<CatalogTableAction>,
-    view_action: Option<CatalogViewAction>,
-    generic_table_action: Option<CatalogGenericTableAction>,
+    (table_action, view_action, generic_table_action, dataset_action): TabularActionPair,
     user: Option<&'u AuthzUserOrRole>,
-) -> Option<
-    ActionOnTableOrView<
-        'a,
-        'u,
-        TableInfo,
-        ViewInfo,
-        CatalogTableAction,
-        CatalogViewAction,
-        GenericTabularInfo,
-        CatalogGenericTableAction,
-    >,
-> {
+) -> Option<TabularActionRequest<'a, 'u>> {
     match tabular_info {
         ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
             ActionOnTableOrView::Table(ActionOnTable {
@@ -1016,6 +1085,13 @@ fn convert_tabular_action<'a, 'u>(
                 action,
                 user,
                 is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::Dataset(ds_info) => dataset_action.map(|action| {
+            ActionOnTableOrView::Dataset(ActionOnDataset {
+                info: ds_info,
+                action,
+                user,
             })
         }),
     }
@@ -1616,6 +1692,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::GenericTable(gt_id) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
                             }
+                            TabularId::Dataset(ds_id) => {
+                                return Err(AuthZCannotSeeDataset::new_not_found(warehouse_id, *ds_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1639,8 +1718,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                for (i, actions) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, actions.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1732,6 +1811,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             TabularIdentOwned::GenericTable(gt_ident) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
                             }
+                            TabularIdentOwned::Dataset(ds_ident) => {
+                                return Err(AuthZCannotSeeDataset::new_not_found(warehouse_id, ds_ident.clone()).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1755,8 +1837,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                for (i, actions) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, actions.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }

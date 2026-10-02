@@ -258,6 +258,7 @@ pub enum TagScope {
     Table,
     View,
     GenericTable,
+    Dataset,
     Column,
 }
 
@@ -273,6 +274,7 @@ impl TagScope {
             TagScope::Table => "table",
             TagScope::View => "view",
             TagScope::GenericTable => "generic-table",
+            TagScope::Dataset => "dataset",
             TagScope::Column => "column",
         }
     }
@@ -285,6 +287,7 @@ impl TagScope {
             "table" => TagScope::Table,
             "view" => TagScope::View,
             "generic-table" => TagScope::GenericTable,
+            "dataset" => TagScope::Dataset,
             "column" => TagScope::Column,
             _ => return None,
         })
@@ -389,6 +392,7 @@ impl TagTarget {
                 TabularId::Table(_) => TagScope::Table,
                 TabularId::View(_) => TagScope::View,
                 TabularId::GenericTable(_) => TagScope::GenericTable,
+                TabularId::Dataset(_) => TagScope::Dataset,
             },
         }
     }

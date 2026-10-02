@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT managed FROM dataset WHERE warehouse_id = $1 AND dataset_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "managed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset",
+            "name": "managed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "de343bcf47b0d02f9131efad887fce3a143cd497e28c01a1761b714dfee015d0"
+}

@@ -297,7 +297,10 @@ impl std::fmt::Display for Location {
 ///   crate's table, so this covers the entire Cf category (including
 ///   the Tag block `U+E0000..U+E007F`, the canonical ASCII-smuggling
 ///   vehicle that hand-rolled subsets historically miss).
-fn check_unsafe_chars(s: &str) -> Result<(), String> {
+///
+/// # Errors
+/// Names the first such character and its byte offset.
+pub fn check_unsafe_chars(s: &str) -> Result<(), String> {
     for (idx, c) in s.char_indices() {
         if c.is_control() {
             return Err(format!(

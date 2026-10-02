@@ -1,4 +1,5 @@
 pub mod authorization;
+pub mod dataset;
 pub mod generic_table;
 pub mod grant;
 pub mod idempotency;
@@ -14,6 +15,7 @@ pub mod warehouse;
 
 // Re-export all event types for convenience
 pub use authorization::*;
+pub use dataset::*;
 pub use generic_table::*;
 pub use grant::*;
 pub use idempotency::*;

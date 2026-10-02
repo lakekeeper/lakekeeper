@@ -103,7 +103,8 @@
               "Enum": [
                 "table",
                 "view",
-                "generic-table"
+                "generic-table",
+                "dataset"
               ]
             }
           }
@@ -134,7 +135,8 @@
                     "Enum": [
                       "table",
                       "view",
-                      "generic-table"
+                      "generic-table",
+                      "dataset"
                     ]
                   }
                 }

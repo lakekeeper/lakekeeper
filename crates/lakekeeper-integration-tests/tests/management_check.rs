@@ -1209,3 +1209,116 @@ async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
     assert_eq!(response.results[0].id, Some("by-name".to_string()));
     assert_eq!(response.results[1].id, Some("by-id".to_string()));
 }
+
+#[sqlx::test]
+async fn test_check_internal_dataset_operation(pool: sqlx::PgPool) {
+    use lakekeeper::service::authz::CatalogDatasetAction;
+
+    let authz = HidingAuthorizer::new();
+    authz.block_action("dataset:UpdateSettings");
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz,
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let metadata = RequestMetadata::new_unauthenticated();
+    let prefix = test_warehouse.warehouse_id.to_string();
+    let ns_name = "ds_check_ns";
+    lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        prefix.clone(),
+        ns_name.to_string(),
+    )
+    .await;
+    let created = lakekeeper_integration_tests::create_dataset(
+        api_context.clone(),
+        prefix.clone(),
+        ns_name,
+        "images",
+    )
+    .await
+    .unwrap();
+
+    let request = CatalogActionsBatchCheckRequest {
+        checks: vec![
+            CatalogActionCheckItem {
+                id: Some("commit-by-name".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Dataset {
+                    action: CatalogDatasetAction::Commit {
+                        target_refs: Arc::default(),
+                    },
+                    dataset: TabularIdentOrUuid::Name {
+                        namespace: NamespaceIdent::new(ns_name.to_string()),
+                        table: "images".to_string(),
+                        warehouse_id: test_warehouse.warehouse_id,
+                    },
+                },
+            },
+            CatalogActionCheckItem {
+                id: Some("settings-by-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Dataset {
+                    action: CatalogDatasetAction::UpdateSettings,
+                    dataset: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id: *created.dataset.id,
+                    },
+                },
+            },
+            // An allowed action by id too: a by-id lookup that failed would deny
+            // everything, and the blocked check above would not tell.
+            CatalogActionCheckItem {
+                id: Some("metadata-by-id".to_string()),
+                identity: None,
+                operation: CatalogActionCheckOperation::Dataset {
+                    action: CatalogDatasetAction::GetMetadata,
+                    dataset: TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id: test_warehouse.warehouse_id,
+                        table_id: *created.dataset.id,
+                    },
+                },
+            },
+        ],
+        error_on_not_found: true,
+    };
+
+    let response = check_internal(api_context, metadata, request)
+        .await
+        .unwrap();
+    assert_eq!(response.results.len(), 3);
+    assert_eq!(response.results[0].id, Some("commit-by-name".to_string()));
+    assert!(response.results[0].allowed, "commit is allowed");
+    assert_eq!(response.results[1].id, Some("settings-by-id".to_string()));
+    assert!(!response.results[1].allowed, "the blocked action is denied");
+    assert_eq!(response.results[2].id, Some("metadata-by-id".to_string()));
+    assert!(
+        response.results[2].allowed,
+        "an allowed action by id is allowed"
+    );
+}
+
+#[test]
+fn test_a_dataset_check_accepts_dataset_field_names() {
+    let operation: CatalogActionCheckOperation = serde_json::from_value(serde_json::json!({
+        "dataset": {
+            "action": {"action": "read_data"},
+            "namespace": ["ns"],
+            "dataset": "images",
+            "warehouse-id": "01970000-0000-7000-8000-00000000000a",
+        }
+    }))
+    .expect("a dataset check names its dataset as `dataset`");
+
+    let CatalogActionCheckOperation::Dataset { dataset, .. } = operation else {
+        panic!("a dataset operation");
+    };
+    assert!(matches!(
+        dataset,
+        TabularIdentOrUuid::Name { ref table, .. } if table == "images"
+    ));
+}

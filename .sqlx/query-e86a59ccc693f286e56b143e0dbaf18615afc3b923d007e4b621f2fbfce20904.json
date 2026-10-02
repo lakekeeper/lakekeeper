@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM dataset_access_grant\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND expires_at < now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e86a59ccc693f286e56b143e0dbaf18615afc3b923d007e4b621f2fbfce20904"
+}

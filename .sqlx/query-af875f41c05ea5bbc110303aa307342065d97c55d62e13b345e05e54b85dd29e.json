@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_import_listing\n            (warehouse_id, snapshot_id, logical_key, physical_path, size, last_modified, etag,\n             version_id)\n        SELECT $1, $2, k, p, s, m, e, v\n        FROM unnest($3::text[], $4::text[], $5::bigint[], $6::timestamptz[], $7::text[], $8::text[])\n            AS t(k, p, s, m, e, v)\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "TimestamptzArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af875f41c05ea5bbc110303aa307342065d97c55d62e13b345e05e54b85dd29e"
+}

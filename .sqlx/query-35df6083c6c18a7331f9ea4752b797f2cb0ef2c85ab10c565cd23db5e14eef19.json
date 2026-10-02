@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM dataset_import_listing WHERE warehouse_id = $1 AND snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "35df6083c6c18a7331f9ea4752b797f2cb0ef2c85ab10c565cd23db5e14eef19"
+}

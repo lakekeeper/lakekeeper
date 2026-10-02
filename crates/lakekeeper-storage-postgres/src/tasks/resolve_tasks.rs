@@ -149,6 +149,14 @@ where
                             view_id,
                         }
                         .into(),
+                        WarehouseTaskEntityId::Dataset { dataset_id } => {
+                            lakekeeper::service::DatasetNamed {
+                                warehouse_id,
+                                dataset_ident: ident,
+                                dataset_id,
+                            }
+                            .into()
+                        }
                         WarehouseTaskEntityId::GenericTable { generic_table_id } => {
                             lakekeeper::service::GenericTableNamed {
                                 warehouse_id,
@@ -364,6 +372,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -377,6 +386,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -535,6 +545,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -547,6 +558,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -728,6 +740,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -806,6 +819,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -816,6 +830,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -879,6 +894,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -952,6 +968,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::Dataset(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
