@@ -20,10 +20,10 @@ use crate::{
         authz::{
             AuthZError, AuthZGenericTableActionForbidden, AuthZGenericTableOps,
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzBadRequest,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogTableAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
+            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -443,6 +443,7 @@ pub enum RequireTableActionError {
     AuthZTableActionForbidden(AuthZTableActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the table
@@ -500,6 +501,7 @@ impl From<IsAllowedActionError> for RequireTableActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -507,6 +509,7 @@ delegate_authorization_failure_source!(RequireTableActionError => {
     AuthZTableActionForbidden,
     AuthorizationBackendUnavailable,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CannotInspectPermissions,
     AuthZCannotSeeTable,
     CatalogBackendError,
@@ -524,6 +527,7 @@ pub enum RequireTabularActionsError {
     AuthZTableActionForbidden(AuthZTableActionForbidden),
     AuthZGenericTableActionForbidden(AuthZGenericTableActionForbidden),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
 }
@@ -533,6 +537,7 @@ delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthZTableActionForbidden,
     AuthZGenericTableActionForbidden,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CannotInspectPermissions,
     AuthorizerValidationFailed
 });
@@ -551,6 +556,7 @@ impl From<IsAllowedActionError> for RequireTabularActionsError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }

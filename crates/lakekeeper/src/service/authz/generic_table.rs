@@ -14,10 +14,10 @@ use crate::{
         UnexpectedTabularInResponse, ViewOrTableInfo,
         authz::{
             ActionOnGenericTable, AuthZError, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzBadRequest,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogGenericTableAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
+            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogGenericTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -160,6 +160,7 @@ pub enum RequireGenericTableActionError {
     AuthZGenericTableActionForbidden(AuthZGenericTableActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
     AuthZCannotSeeGenericTable(AuthZCannotSeeGenericTable),
@@ -185,6 +186,7 @@ impl From<IsAllowedActionError> for RequireGenericTableActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -203,6 +205,7 @@ delegate_authorization_failure_source!(RequireGenericTableActionError => {
     AuthZGenericTableActionForbidden,
     AuthorizationBackendUnavailable,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CannotInspectPermissions,
     AuthZCannotSeeGenericTable,
     CatalogBackendError,

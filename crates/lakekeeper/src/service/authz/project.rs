@@ -9,7 +9,7 @@ use crate::{
         ArcProjectId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
+            AuthorizationInternalError, Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -73,6 +73,7 @@ pub enum RequireProjectActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireProjectActionError {
@@ -90,6 +91,7 @@ impl From<IsAllowedActionError> for RequireProjectActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -98,6 +100,7 @@ delegate_authorization_failure_source!(RequireProjectActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     AuthorizerValidationFailed
 });
 
