@@ -14,7 +14,8 @@ use crate::{
     api::management::v1::tasks::TaskStatus,
     service::{
         ArcProjectId, CatalogStore, CatalogTaskOps, GenericTableId, GenericTableNamed, TableId,
-        TableNamed, TabularId, ViewId, ViewNamed, task_configs::TaskQueueConfigFilter,
+        TableNamed, TabularId, TaskQueueStatsRequest, ViewId, ViewNamed,
+        task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -239,6 +240,24 @@ pub trait TaskConfig:
     ) -> Result<(), ErrorModel> {
         Ok(())
     }
+
+    /// Build a [`TaskQueueStatsRequest`] for this queue straight from its config, so
+    /// callers don't hand-copy the queue's legacy aliases or its heartbeat timeout. The
+    /// canonical name, its pre-rename aliases, and the fallback timeout are resolved the
+    /// same way `pick_new_task` resolves them, so the reported backlog matches what the
+    /// worker actually picks.
+    ///
+    /// `sum_payload_field` names an optional numeric `task_data` field to sum over the
+    /// queue's due tasks (e.g. a per-task work estimate); `None` reports counts only.
+    #[must_use]
+    fn stats_request(sum_payload_field: Option<String>) -> TaskQueueStatsRequest {
+        TaskQueueStatsRequest::builder()
+            .queue_name(Self::queue_name().clone())
+            .legacy_queue_names(Self::legacy_queue_names().into_iter().cloned().collect())
+            .max_time_since_last_heartbeat(Self::max_time_since_last_heartbeat())
+            .sum_payload_field(sum_payload_field)
+            .build()
+    }
 }
 
 #[cfg(not(feature = "open-api"))]
@@ -267,6 +286,17 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
         entity: WarehouseTaskEntityId,
     ) -> Result<(), ErrorModel> {
         Ok(())
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn stats_request(sum_payload_field: Option<String>) -> TaskQueueStatsRequest {
+        TaskQueueStatsRequest::builder()
+            .queue_name(Self::queue_name().clone())
+            .legacy_queue_names(Self::legacy_queue_names().into_iter().cloned().collect())
+            .max_time_since_last_heartbeat(Self::max_time_since_last_heartbeat())
+            .sum_payload_field(sum_payload_field)
+            .build()
     }
 }
 

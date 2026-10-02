@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO task_config\n                (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)\n            VALUES ($1, $2, $3, '{}'::jsonb, interval '1 hour')\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5dae83d787b8efe2ba9e2613554e55be26125500424b0330faee43344d0f22ef"
+}
