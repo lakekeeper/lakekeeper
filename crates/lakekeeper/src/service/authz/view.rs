@@ -12,10 +12,10 @@ use crate::{
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
             ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            AuthorizationDecision, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
-            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
-            refresh_warehouse_and_namespace_if_needed,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogViewAction, IsAllowedActionError,
+            MustUse, UserOrRole, refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
             CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
@@ -163,6 +163,7 @@ pub enum RequireViewActionError {
     AuthZViewActionForbidden(AuthZViewActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the view
@@ -190,6 +191,7 @@ impl From<IsAllowedActionError> for RequireViewActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -208,6 +210,7 @@ delegate_authorization_failure_source!(RequireViewActionError => {
     AuthZViewActionForbidden,
     AuthorizationBackendUnavailable,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CannotInspectPermissions,
     AuthZCannotSeeView,
     CatalogBackendError,

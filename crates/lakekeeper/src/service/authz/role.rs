@@ -9,9 +9,9 @@ use crate::{
         RoleId, RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogRoleAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -127,6 +127,7 @@ pub enum RequireRoleActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the role
     AuthZCannotSeeRole(AuthZCannotSeeRole),
@@ -158,6 +159,7 @@ impl From<IsAllowedActionError> for RequireRoleActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -166,6 +168,7 @@ delegate_authorization_failure_source!(RequireRoleActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     AuthZCannotSeeRole,
     CatalogBackendError,
     InvalidPaginationToken,

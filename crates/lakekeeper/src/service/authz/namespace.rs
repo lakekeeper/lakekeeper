@@ -13,10 +13,10 @@ use crate::{
         NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
             AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            AuthorizationDecision, Authorizer, AuthzBadRequest, AuthzWarehouseOps as _,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogNamespaceAction, IsAllowedActionError, MustUse, RequireWarehouseActionError,
-            UserOrRole,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogNamespaceAction, IsAllowedActionError, MustUse,
+            RequireWarehouseActionError, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedNamespace,
@@ -220,6 +220,7 @@ pub enum RequireNamespaceActionError {
     AuthZNamespaceActionForbidden(AuthZNamespaceActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the namespace
@@ -237,6 +238,7 @@ impl From<IsAllowedActionError> for RequireNamespaceActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -265,6 +267,7 @@ delegate_authorization_failure_source!(RequireNamespaceActionError => {
     AuthorizerValidationFailed,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CatalogBackendError,
     InvalidNamespaceIdentifier,
     SerializationError,
