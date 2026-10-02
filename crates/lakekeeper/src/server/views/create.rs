@@ -101,7 +101,6 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     });
 
     // ------------------- BUSINESS LOGIC -------------------
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     require_active_warehouse(event_ctx.resolved().warehouse.status)?;
 
     let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7().into());
@@ -113,13 +112,6 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         &view,
         &warehouse.storage_profile,
     )?;
-
-    let unmodified_request = request.clone();
-
-    // Update the request for event
-    let mut request = request;
-    request.location = Some(view_location.to_string());
-    let request = request; // make it immutable
 
     let metadata_location = warehouse.storage_profile.default_metadata_location(
         &view_location,
@@ -152,10 +144,11 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     state
         .v1_state
         .contract_verifiers
-        .check_create_view(&unmodified_request, &metadata_build_result.metadata)
+        .check_create_view(&request, &metadata_build_result.metadata)
         .await?
         .into_result()?;
 
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let view_info = C::create_view(
         warehouse_id,
         ns_hierarchy.namespace_id(),
@@ -239,7 +232,10 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         view_metadata.clone(),
         metadata_location.clone(),
         view.name,
-        Arc::new(request),
+        Arc::new(CreateViewRequest {
+            location: Some(view_location.to_string()),
+            ..request
+        }),
     );
 
     emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
