@@ -1224,11 +1224,9 @@ impl CatalogAction for CatalogWarehouseAction {
                 if let Some(n) = name {
                     b = b.context_string(ActionContextKey::Name, n.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
-            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+            Self::AcceptMovedNamespace { source } => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
@@ -1265,7 +1263,6 @@ impl CatalogAction for CatalogWarehouseAction {
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
             | Self::ManageTags { .. }
-            | Self::AcceptMovedNamespace { .. }
             | Self::ReadGrants { .. } => {}
         }
         b.build()
@@ -1515,9 +1512,7 @@ impl CatalogAction for CatalogNamespaceAction {
                 if let Some(tid) = table_id {
                     b = b.context_string(ActionContextKey::TableId, tid.to_string());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::CreateGenericTable {
                 name,
@@ -1538,34 +1533,27 @@ impl CatalogAction for CatalogNamespaceAction {
                 if let Some(bl) = base_location {
                     b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
                     b = b.context_string(ActionContextKey::Name, n.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::UpdateProperties {
                 removed_properties,
                 updated_properties,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
             }
             Self::Delete {
                 force,
@@ -1584,15 +1572,14 @@ impl CatalogAction for CatalogNamespaceAction {
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
-            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+            Self::AcceptMovedNamespace { source } => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::Move { destination, force } => {
                 // The destination is the whole point of the decision for a policy engine:
                 // it determines which subtree's grants the moved namespace inherits.
-                if !destination.is_empty() {
-                    b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
-                }
+                b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
+
                 if *force {
                     b = b.context_string(ActionContextKey::Force, "true");
                 }
@@ -1615,7 +1602,6 @@ impl CatalogAction for CatalogNamespaceAction {
             | Self::IncludeInList { .. }
             | Self::ListGenericTables { .. }
             | Self::ManageTags { .. }
-            | Self::AcceptMovedNamespace { .. }
             | Self::ReadGrants { .. } => {}
         }
         b.build()
@@ -1723,33 +1709,28 @@ impl CatalogAction for CatalogTableAction {
                 target_refs,
                 update_kinds,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
-                if !target_refs.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::TargetRefs,
-                        target_refs.iter().cloned().collect::<Vec<_>>(),
-                    );
-                }
-                if !update_kinds.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::UpdateKinds,
-                        update_kinds
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::TargetRefs,
+                    target_refs.iter().cloned().collect::<Vec<_>>(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::UpdateKinds,
+                    update_kinds
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                );
             }
             Self::Drop { force, purge } => {
                 if *force {
@@ -1860,18 +1841,15 @@ impl CatalogAction for CatalogViewAction {
                 updated_properties,
                 removed_properties,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
             }
             Self::Drop { force, purge } => {
                 if *force {
@@ -3451,6 +3429,60 @@ pub mod tests {
                 serde_json::from_value(serialized).expect("Failed to deserialize");
             assert_eq!(deserialized, action);
         }
+    }
+
+    /// A collection the request left empty reaches the record as an empty one.
+    ///
+    /// "The caller removed no properties" and "this record does not carry that key" are
+    /// different answers. Only the second is worth omitting, and it is not what an empty
+    /// list means — so every collection field of an action is emitted whether or not it
+    /// holds anything.
+    #[test]
+    fn empty_collections_are_emitted_rather_than_omitted() {
+        let keys = |d: ActionDescriptor| -> Vec<String> {
+            d.context
+                .iter()
+                .map(|(k, _)| k.as_str().to_string())
+                .collect()
+        };
+
+        let commit = CatalogTableAction::Commit {
+            updated_properties: Arc::new(BTreeMap::new()),
+            removed_properties: Arc::new(Vec::new()),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
+        };
+        assert_eq!(
+            keys(commit.action_descriptor()),
+            vec![
+                "updated_properties",
+                "removed_properties",
+                "target_refs",
+                "update_kinds"
+            ]
+        );
+
+        let update = CatalogNamespaceAction::UpdateProperties {
+            updated_properties: Arc::new(BTreeMap::new()),
+            removed_properties: Arc::new(Vec::new()),
+        };
+        assert_eq!(
+            keys(update.action_descriptor()),
+            vec!["updated_properties", "removed_properties"]
+        );
+
+        let moved = CatalogNamespaceAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        };
+        assert_eq!(keys(moved.action_descriptor()), vec!["source"]);
+
+        // A value that is genuinely absent still says nothing: `name` is an `Option`, and
+        // `null` is not information.
+        let create = CatalogNamespaceAction::CreateNamespace {
+            name: None,
+            properties: Arc::new(BTreeMap::new()),
+        };
+        assert_eq!(keys(create.action_descriptor()), vec!["properties"]);
     }
 
     /// Every operation whose API takes a destructive override records it.

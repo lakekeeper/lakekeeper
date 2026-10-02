@@ -310,9 +310,9 @@ Each action is a structured object containing the operation name and optional co
 
 Actions are always in the `actions` array, whatever their number: a single-action check carries a one-element array.
 
-Commit actions carry two further context fields when the commit names them: `target_refs`, the branch or tag references the commit targets, and `update_kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is omitted when empty.
+Commit actions carry two further context fields when the commit names them: `target_refs`, the branch or tag references the commit targets, and `update_kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is present whether or not the commit named any — `[]` says the commit named none.
 
-Which context fields appear depends on the action, and the [schema](audit/schema.json) says which ones each action can carry: `ActionRecord` holds one `if`/`then` per action, matching on `action_name` and listing that action's fields with their types. Read it if you build a reader per action rather than inferring the pairing from traffic. A field is listed there because it *can* appear: it is omitted rather than emitted empty, and `force`, `purge` and `recursive` appear **only when true** — their absence means false. An action the schema names in no branch is one that carries no context fields, or one newer than the schema you hold.
+Which context fields appear depends on the action, and the [schema](audit/schema.json) says which ones each action can carry: `ActionRecord` holds one `if`/`then` per action, matching on `action_name` and listing that action's fields with their types. Read it if you build a reader per action rather than inferring the pairing from traffic. A field is listed there because it *can* appear. A field holding a list or a map is always present once the action has it, empty (`[]`, `{}`) when the request supplied nothing — so you read "none" from the value, not from the key being missing. A field whose value the request simply did not supply is absent instead, because there is nothing to report; and `force`, `purge` and `recursive` appear **only when true** — their absence means false. An action the schema names in no branch is one that carries no context fields, or one newer than the schema you hold.
 
 | Context field           | Type   | Emitted by                        | Description                                             |
 |-------------------------|--------|-----------------------------------|---------------------------------------------------------|
@@ -390,7 +390,7 @@ Six fields are the **scope** — the same value the authorizer is asked with, so
 | `allow_partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
 | `created_before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
 
-Only `created_before` is omitted when the request does not narrow on it. `privileges` is emitted as `[]`, and `allow_partial` is always present as `"true"` or `"false"` — both departing from the omit-when-empty rule stated above for action context. Do not infer a field's behaviour here from another field's; read each row.
+Only `created_before` is omitted, when the request does not narrow on it. `privileges` is emitted as `[]` and `allow_partial` as `"true"` or `"false"`, both always present. Do not infer a field's behaviour here from another field's; read each row.
 
 **These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry_run` requests, nothing is.
 
@@ -408,8 +408,8 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 | `for_principal` | Object  | Optional. The principal whose permission was evaluated, when different from the request actor. Shape: `{"user": "..."}` or `{"role": "..."}`. Absent means the request actor itself. |
 | `action`        | Object  | One action, in the same shape as an element of the top-level `actions` array.        |
 | `entity`        | Object  | One entity, in the same shape as an element of the top-level `entities` array.       |
-| `allowed`       | Boolean | Whether this tuple was permitted. `false` means the request was definitively refused for this tuple — by the authorizer, or by a resource-identity guard the authorizer has no say over (see [What counts as a denial](#authorization-events)); `error.type` distinguishes the two, and a guard refusal carries no `determined_by`. Absent when no definitive verdict was reached — e.g. on `internal_authorization_error`, `internal_catalog_error`, or `invalid_request_data` failures, where the system never actually evaluated the request. Definitive denials (`action_forbidden`, `resource_not_found`, `cannot_see_resource`) are recorded as `false`. |
-| `determined_by` | Array   | Optional; present only when the Authorizer surfaces per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the field is then absent). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `permit` or `forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it; or an **admission gate** (the gate's name and an optional check) recording that the gate would refuse this user at admission, so the request is denied whatever the policies say. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
+| `allowed`       | Boolean | Whether this tuple was permitted. `false` means the request was definitively refused for this tuple — by the authorizer, or by a resource-identity guard the authorizer has no say over (see [What counts as a denial](#authorization-events)); `error.type` distinguishes the two, and a guard refusal leaves `determined_by` empty. Absent when no definitive verdict was reached — e.g. on `internal_authorization_error`, `internal_catalog_error`, or `invalid_request_data` failures, where the system never actually evaluated the request. Definitive denials (`action_forbidden`, `resource_not_found`, `cannot_see_resource`) are recorded as `false`. |
+| `determined_by` | Array   | Always present, and empty when the Authorizer surfaces no per-decision diagnostics (some backends, e.g. OpenFGA and allow-all, produce none, and the array is then `[]`). Each element attributes *this* decision to a factor: a matched **policy** (carrying its identifier, an optional author-supplied name, an effect of `permit` or `forbid`, and an optional originating source), or a **system-authority override** (an optional source and human-readable reason) recording that a built-in/system authority tier — rather than a configured policy — determined the allow, e.g. a recovery grant that lets a privileged system role act despite a policy that would otherwise forbid it; or an **admission gate** (the gate's name and an optional check) recording that the gate would refuse this user at admission, so the request is denied whatever the policies say. Distinct from the top-level `privilege_source`, which classifies the caller rather than individual decisions. The same factors are returned to callers of `POST /management/v1/action/batch-check`, spelled `determined-by` there. |
 
 Each `determined_by` element is a flat object whose `type` field names the kind of factor. The same shape is returned by `POST /management/v1/action/batch-check`, where the field is spelled `determined-by`, so one parser reads both.
 
@@ -481,7 +481,8 @@ An absent field is left out rather than written as `null`, here as everywhere el
         "entity_type": "project",
         "project_id": "00000000-0000-0000-0000-000000000000"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
     }
   ]
 }
@@ -538,7 +539,8 @@ An absent field is left out rather than written as `null`, here as everywhere el
         "namespace": "production",
         "table": "sensitive_data"
       },
-      "allowed": false
+      "allowed": false,
+      "determined_by": []
     }
   ],
   "failure_reason": "action_forbidden",
@@ -546,7 +548,8 @@ An absent field is left out rather than written as `null`, here as everywhere el
     "type": "Forbidden",
     "message": "Insufficient permissions",
     "code": 403,
-    "error_id": "01234567-89ab-cdef-0123-456789abcdef"
+    "error_id": "01234567-89ab-cdef-0123-456789abcdef",
+    "stack": []
   }
 }
 ```
@@ -610,7 +613,8 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
         "entity_type": "warehouse",
         "warehouse_id": "255a8f5c-32ab-11f1-889e-4706b6f66241"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
     },
     {
       "id": "1",
@@ -626,7 +630,8 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
         "namespace": "production",
         "table": "events"
       },
-      "allowed": false
+      "allowed": false,
+      "determined_by": []
     }
   ]
 }

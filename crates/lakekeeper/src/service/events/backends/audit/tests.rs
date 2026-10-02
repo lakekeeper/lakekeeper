@@ -385,6 +385,21 @@ fn fixture_drop_action() -> ActionDescriptor {
         .build()
 }
 
+/// A commit whose every collection is empty, built from the action's own descriptor.
+///
+/// The empty forms are the point: a commit that changed no properties, targeted no refs and
+/// carried no update kinds still names all four keys, so a consumer reads "nothing" from the
+/// value rather than from the key's absence.
+fn fixture_empty_collections_action() -> ActionDescriptor {
+    CatalogTableAction::Commit {
+        updated_properties: Arc::new(std::collections::BTreeMap::new()),
+        removed_properties: Arc::new(Vec::new()),
+        target_refs: Arc::new(std::collections::BTreeSet::new()),
+        update_kinds: Arc::new(std::collections::BTreeSet::new()),
+    }
+    .action_descriptor()
+}
+
 /// A grant apply, built by the handler's own `event_actions()` so this fixture and the
 /// running code cannot describe the action differently.
 ///
@@ -580,6 +595,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
     "authz_succeeded_apply_grants",
+    "authz_succeeded_empty_collections",
     "grant_created",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
@@ -919,6 +935,27 @@ fn fixture_authz_succeeded_apply_grants() {
     });
 
     assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
+}
+
+/// A commit that changed nothing, so every collection it carries is empty.
+///
+/// Nothing else pins an empty `{}` or `[]` in an action, and the keys are what a consumer
+/// reads to tell "the request asked for none of this" from "this action has no such field".
+#[test]
+fn fixture_authz_succeeded_empty_collections() {
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            vec![fixture_empty_collections_action()],
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_empty_collections",
+        &contract_fields(record),
+    );
 }
 
 /// An authorization carrying an `Idempotency-Key`.
@@ -1702,10 +1739,18 @@ fn determined_by_emitted_when_present() {
     );
 }
 
+/// An authorizer that reports no factors says so, rather than leaving the key out.
+///
+/// "Nothing determined this" and "this record does not carry that key" are different
+/// answers, and a consumer asking why a decision went the way it did needs to tell them
+/// apart.
 #[test]
-fn determined_by_absent_when_empty() {
+fn determined_by_is_empty_rather_than_absent() {
     let auth = sample(Vec::new());
-    assert_eq!(decision_keys(&auth), vec!["action", "entity", "allowed"]);
+    assert_eq!(
+        decision_keys(&auth),
+        vec!["action", "entity", "allowed", "determined_by"]
+    );
 }
 
 /// Every rule in [`contract`] is only ever run against records that satisfy it: every

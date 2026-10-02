@@ -10,14 +10,11 @@
   ],
   "actions": [
     {
-      "action_name": "create_table",
-      "name": "orders",
-      "table_id": "019684ff-0000-7000-8000-000000000002"
-    },
-    {
-      "action_name": "drop",
-      "force": "true",
-      "purge": "true"
+      "action_name": "commit",
+      "updated_properties": {},
+      "removed_properties": [],
+      "target_refs": [],
+      "update_kinds": []
     }
   ],
   "entities": [
@@ -36,23 +33,11 @@
   "authorizations": [
     {
       "action": {
-        "action_name": "create_table",
-        "name": "orders",
-        "table_id": "019684ff-0000-7000-8000-000000000002"
-      },
-      "entity": {
-        "entity_type": "warehouse",
-        "project_id": "00000000-0000-0000-0000-000000000000",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
-      },
-      "allowed": true,
-      "determined_by": []
-    },
-    {
-      "action": {
-        "action_name": "drop",
-        "force": "true",
-        "purge": "true"
+        "action_name": "commit",
+        "updated_properties": {},
+        "removed_properties": [],
+        "target_refs": [],
+        "update_kinds": []
       },
       "entity": {
         "entity_type": "warehouse",
