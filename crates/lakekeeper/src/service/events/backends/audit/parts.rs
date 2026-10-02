@@ -205,9 +205,9 @@ pub struct DecisionRecord {
     /// The authorizer's answer. Absent when an upstream error stopped the evaluation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) allowed: Option<bool>,
-    /// The policies or rules that determined the decision, when the authorizer reports them.
+    /// The policies or rules that determined the decision. Empty when the authorizer
+    /// reports none, which is itself the answer to "what decided this".
     /// The same shape the management API returns for a check, so one parser reads both.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) determined_by: Vec<crate::service::authz::DeterminingFactor>,
 }
 
@@ -246,8 +246,7 @@ pub struct ErrorRecord {
     pub(crate) code: u16,
     /// The error message the caller received.
     pub(crate) message: String,
-    /// The error's stack of causes, innermost first. Absent when empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The error's stack of causes, innermost first. Empty when the error has none.
     pub(crate) stack: Vec<String>,
     /// The id the caller can quote to correlate with this record.
     pub(crate) error_id: String,

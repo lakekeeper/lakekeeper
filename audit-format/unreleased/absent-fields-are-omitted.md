@@ -13,7 +13,8 @@ after   {"type": "policy", "policy-id": "p-42", "effect": "permit"}
 ```
 
 The same rule holds for every optional field added in this release, so nothing a record
-carries is ever `null`.
+carries is ever `null`. An empty list or map is not such a field — it is a value, and it is
+emitted.
 
 **What to do:** tolerate these keys being absent wherever you read them unconditionally. In
 `jq`, `.name` still yields `null` for a missing key, so a query that only reads the value

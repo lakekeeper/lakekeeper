@@ -1133,12 +1133,13 @@
           "items": {
             "$ref": "#/$defs/DeterminingFactor"
           },
-          "description": "The policies or rules that determined the decision, when the authorizer reports them.\nThe same shape the management API returns for a check, so one parser reads both."
+          "description": "The policies or rules that determined the decision. Empty when the authorizer\nreports none, which is itself the answer to \"what decided this\".\nThe same shape the management API returns for a check, so one parser reads both."
         }
       },
       "required": [
         "action",
-        "entity"
+        "entity",
+        "determined_by"
       ],
       "description": "One entry of `authorizations[]`: which action on which entity was evaluated, for whom,\nwith what result.",
       "x-audit-kind": "part",
@@ -1331,7 +1332,7 @@
           "items": {
             "type": "string"
           },
-          "description": "The error's stack of causes, innermost first. Absent when empty."
+          "description": "The error's stack of causes, innermost first. Empty when the error has none."
         },
         "error_id": {
           "type": "string",
@@ -1342,6 +1343,7 @@
         "type",
         "code",
         "message",
+        "stack",
         "error_id"
       ],
       "description": "The `error` object of a denied authorization record.",

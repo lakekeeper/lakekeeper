@@ -36,7 +36,8 @@
         "table_id": "019684ff-0000-7000-8000-000000000002",
         "table": "sales.orders"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
     }
   ],
   "decision": "allowed"
