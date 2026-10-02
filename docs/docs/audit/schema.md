@@ -8,6 +8,19 @@ description: "The machine-readable JSON Schema of Lakekeeper's audit log: every 
 
 Everything a Lakekeeper audit record can carry is described there: the three record shapes, every nested object, every field with the description written on it, and every closed set of values. It is generated from the emitting code, so it cannot fall behind what the server writes, and it is the document a format change is diffed against.
 
+## One schema per product
+
+This document describes what **Lakekeeper** contributes to a record. A deployment running another product on top — Lakekeeper+ — has a second schema describing what that product contributes, downloadable beside this one:
+
+| Product           | `emitters[].name`  | Schema                                     |
+|-------------------|--------------------|--------------------------------------------|
+| Lakekeeper        | `lakekeeper`       | [`schema.json`](schema.json)               |
+| Lakekeeper+       | `lakekeeper-plus`  | [`schema-plus.json`](schema-plus.json)     |
+
+Every record lists the products it carries something of in `emitters`, each with the `format` of what that product contributes. Read the names there to know which schemas apply to the record in front of you, and each entry's `format` to know which version of that product's half you are reading. A record naming one product needs one schema; a record naming two — an authorizer supplying an action name or a `context` key on a record Lakekeeper assembled — is governed by both at once.
+
+The record's overall shape is always Lakekeeper's, and `audit_format` always governs it. See [Two version numbers](../logging.md#audit-emitter).
+
 ## Validating a record
 
 The document holds definitions only. It has no root schema, because which shape applies depends on the record — so pointing a validator at the file itself accepts anything. Route on `record_type` first, then validate against the definition that names it:
