@@ -648,7 +648,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.into(),
             context.v1_state.events.clone(),
             role_id,
-            CatalogRoleAction::Delete,
+            CatalogRoleAction::Delete { force: query.force },
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;

@@ -1178,7 +1178,10 @@ async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
                 id: Some("by-name".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::GenericTable {
-                    action: CatalogGenericTableAction::Drop,
+                    action: CatalogGenericTableAction::Drop {
+                        force: false,
+                        purge: false,
+                    },
                     generic_table: TabularIdentOrUuid::Name {
                         namespace: NamespaceIdent::new(ns_name.to_string()),
                         table: gt_name.to_string(),

@@ -668,7 +668,13 @@ pub enum CatalogRoleAction {
     // Read high level metadata about the role (name & project_id).
     // Meant for cross-project role listing of assignments.
     ReadMetadata,
-    Delete,
+    Delete {
+        /// Whether the refusal that protects a role still holding catalog-stored grants
+        /// is bypassed. Those grants go with the role, so forcing the delete revokes
+        /// them.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
     Update,
     /// Can add/remove members (user or role) of this role.
     ManageRoleAssignments,
@@ -699,7 +705,7 @@ static ROLE_ACTION_VARIANTS: LazyLock<[CatalogRoleAction; 7]> = LazyLock::new(||
     [
         CatalogRoleAction::Read,
         CatalogRoleAction::ReadMetadata,
-        CatalogRoleAction::Delete,
+        CatalogRoleAction::Delete { force: false },
         CatalogRoleAction::Update,
         CatalogRoleAction::ManageRoleAssignments,
         CatalogRoleAction::ReadRoleAssignments,
@@ -723,6 +729,9 @@ impl CatalogAction for CatalogRoleAction {
         } = self
         {
             b = b.context_pairs(target.requested_context());
+        }
+        if let Self::Delete { force: true } = self {
+            b = b.context_string(ActionContextKey::Force, "true");
         }
         b.build()
     }
@@ -1041,7 +1050,12 @@ pub enum CatalogWarehouseAction {
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
-    Delete,
+    Delete {
+        /// Whether protection is bypassed, i.e. a warehouse marked protected is deleted
+        /// with everything in it rather than the request being refused.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
     UpdateStorage,
     GetMetadata,
     GetConfig,
@@ -1118,7 +1132,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
             name: None,
             properties: Arc::new(BTreeMap::new()),
         },
-        CatalogWarehouseAction::Delete,
+        CatalogWarehouseAction::Delete { force: false },
         CatalogWarehouseAction::UpdateStorage,
         CatalogWarehouseAction::GetMetadata,
         CatalogWarehouseAction::GetConfig,
@@ -1165,7 +1179,7 @@ impl CatalogWarehouseAction {
     #[must_use]
     pub fn is_spec_mutation(&self) -> bool {
         match self {
-            CatalogWarehouseAction::Delete
+            CatalogWarehouseAction::Delete { .. }
             | CatalogWarehouseAction::UpdateStorage
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
@@ -1225,9 +1239,13 @@ impl CatalogAction for CatalogWarehouseAction {
                         .unwrap_or_default(),
                 );
             }
+            Self::Delete { force } => {
+                if *force {
+                    b = b.context_string(ActionContextKey::Force, "true");
+                }
+            }
             // Contribute no audit context. Listed, not `_` — see above.
-            Self::Delete { .. }
-            | Self::UpdateStorage { .. }
+            Self::UpdateStorage { .. }
             | Self::GetMetadata { .. }
             | Self::GetConfig { .. }
             | Self::ListNamespaces { .. }
@@ -1896,7 +1914,16 @@ impl CatalogAction for CatalogViewAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogGenericTableAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the generic
+        /// table is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     ReadData,
     WriteData,
     GetMetadata,
@@ -1914,7 +1941,10 @@ pub enum CatalogGenericTableAction {
 static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> =
     LazyLock::new(|| {
         [
-            CatalogGenericTableAction::Drop,
+            CatalogGenericTableAction::Drop {
+                force: false,
+                purge: false,
+            },
             CatalogGenericTableAction::ReadData,
             CatalogGenericTableAction::WriteData,
             CatalogGenericTableAction::GetMetadata,
@@ -1936,9 +1966,30 @@ impl CatalogGenericTableAction {
 }
 impl CatalogAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
+        match self {
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string(ActionContextKey::Force, "true");
+                }
+                if *purge {
+                    b = b.context_string(ActionContextKey::Purge, "true");
+                }
+            }
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::ReadData { .. }
+            | Self::WriteData { .. }
+            | Self::GetMetadata { .. }
+            | Self::Rename { .. }
+            | Self::IncludeInList { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
+        }
+        b.build()
     }
 }
 
@@ -2104,7 +2155,7 @@ impl From<&CatalogRoleAction> for CatalogRoleActionKind {
         match action {
             CatalogRoleAction::Read => Self::Read,
             CatalogRoleAction::ReadMetadata => Self::ReadMetadata,
-            CatalogRoleAction::Delete => Self::Delete,
+            CatalogRoleAction::Delete { .. } => Self::Delete,
             CatalogRoleAction::Update => Self::Update,
             CatalogRoleAction::ManageRoleAssignments => Self::ManageRoleAssignments,
             CatalogRoleAction::ReadRoleAssignments => Self::ReadRoleAssignments,
@@ -2150,7 +2201,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
         match action {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
             CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
-            CatalogWarehouseAction::Delete => Self::Delete,
+            CatalogWarehouseAction::Delete { .. } => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
             CatalogWarehouseAction::GetConfig => Self::GetConfig,
@@ -3110,7 +3161,7 @@ pub mod tests {
         use CatalogWarehouseAction as A;
         // Spec mutations: locked by the managed-by marker.
         for a in [
-            A::Delete,
+            A::Delete { force: false },
             A::UpdateStorage,
             A::Deactivate,
             A::Activate,
@@ -3352,7 +3403,10 @@ pub mod tests {
     fn test_catalog_generic_table_action_serde() {
         for (action, expected) in [
             (
-                CatalogGenericTableAction::Drop,
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -3397,6 +3451,71 @@ pub mod tests {
                 serde_json::from_value(serialized).expect("Failed to deserialize");
             assert_eq!(deserialized, action);
         }
+    }
+
+    /// Every operation whose API takes a destructive override records it.
+    ///
+    /// Each of these bypasses a refusal — a protected warehouse, a role still holding
+    /// grants, a table's soft-deletion window — so a record that does not name the
+    /// override describes the operation as the ordinary one it is not.
+    #[test]
+    fn test_destructive_overrides_reach_the_action_context() {
+        let forced: Vec<(&str, ActionDescriptor)> = vec![
+            (
+                "role delete",
+                CatalogRoleAction::Delete { force: true }.action_descriptor(),
+            ),
+            (
+                "warehouse delete",
+                CatalogWarehouseAction::Delete { force: true }.action_descriptor(),
+            ),
+            (
+                "generic table drop",
+                CatalogGenericTableAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "namespace delete",
+                CatalogNamespaceAction::Delete {
+                    force: true,
+                    purge: true,
+                    recursive: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "table drop",
+                CatalogTableAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "view drop",
+                CatalogViewAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+        ];
+        for (what, descriptor) in forced {
+            let log = descriptor.log_string();
+            assert!(log.contains("force=true"), "{what} lost `force`: {log}");
+        }
+
+        // And the unforced form says nothing, so the two are told apart by the key's
+        // presence rather than by its value.
+        let plain = CatalogRoleAction::Delete { force: false }.action_descriptor();
+        assert!(
+            !plain.log_string().contains("force"),
+            "{}",
+            plain.log_string()
+        );
     }
 
     #[test]
@@ -4724,7 +4843,11 @@ pub mod tests {
             }
         };
     }
-    test_block_action!(role, CatalogRoleAction::Delete, &Role::new_random());
+    test_block_action!(
+        role,
+        CatalogRoleAction::Delete { force: false },
+        &Role::new_random()
+    );
     test_block_action!(
         project,
         CatalogProjectAction::Rename,
@@ -4813,7 +4936,10 @@ pub mod tests {
 
     test_block_action!(
         generic_table,
-        CatalogGenericTableAction::Drop,
+        CatalogGenericTableAction::Drop {
+            force: false,
+            purge: false
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -4841,14 +4967,16 @@ pub mod tests {
     async fn test_instance_admin_bypasses_control_plane_actions() {
         let authz = HidingAuthorizer::new();
         // Block a control-plane role action. Without bypass, this returns false.
-        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+        authz.block_action(
+            format!("role:{:?}", CatalogRoleAction::Delete { force: false }).as_str(),
+        );
 
         let user = crate::service::UserId::try_from("oidc~admin").unwrap();
         let md = RequestMetadata::test_instance_admin(user);
         let role = Role::new_random();
 
         let allowed = authz
-            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete { force: false })
             .await
             .unwrap()
             .into_inner();
@@ -4862,14 +4990,16 @@ pub mod tests {
     #[tokio::test]
     async fn test_regular_user_does_not_bypass() {
         let authz = HidingAuthorizer::new();
-        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+        authz.block_action(
+            format!("role:{:?}", CatalogRoleAction::Delete { force: false }).as_str(),
+        );
 
         let user = crate::service::UserId::try_from("oidc~regular").unwrap();
         let md = RequestMetadata::test_user(user);
         let role = Role::new_random();
 
         let allowed = authz
-            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete { force: false })
             .await
             .unwrap()
             .into_inner();
@@ -5125,7 +5255,16 @@ pub mod tests {
 
         // Drop (control-plane) — also block it, and verify instance admin STILL
         // bypasses it. Confirms the bypass applies selectively per action.
-        authz.block_action(format!("generic_table:{:?}", CatalogGenericTableAction::Drop).as_str());
+        authz.block_action(
+            format!(
+                "generic_table:{:?}",
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }
+            )
+            .as_str(),
+        );
         let allowed = authz
             .is_allowed_generic_table_action(
                 &md,
@@ -5133,7 +5272,10 @@ pub mod tests {
                 &warehouse,
                 &hierarchy,
                 &gt_info,
-                CatalogGenericTableAction::Drop,
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
             )
             .await
             .unwrap()
