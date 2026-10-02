@@ -546,7 +546,7 @@ The following table documents the ID format used for each Cedar entity type. The
 
 See [Entity Definition Example](#entity-definition-example) below for the JSON format.
 
-In this mode a user carries the roles and parents your entities file declares, at every action, server actions included. The [server-action check](#role-scope-at-server-actions) and the `x-assume-role` rule apply the same in every mode.
+In this mode Lakekeeper builds no user or role entities: a user is exactly what your entities file declares, with its attributes (such as `project_roles` and `global_role_ids`) and its `Role` parents, at every action, server actions included. What this page says a user carries at server actions describes the default mode. The [server-action check](#role-scope-at-server-actions) and the `x-assume-role` rule apply the same in every mode.
 
 **Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
 
@@ -587,7 +587,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     **Option 2 — using `project_roles`**
-    `project_roles` matches by provider and role name, with no project ID to look up. At project actions it holds the roles of the project the request is decided in; the Role ID in Option 1 names the role of one project. At server actions only Option 2 matches, and only for groups — see [Role scope at server actions](#role-scope-at-server-actions).
+    `project_roles` matches by provider and role name, with no project ID to look up. At project actions it holds the roles of the project the request is decided in; the Role ID in Option 1 names the role of one project. At server actions only Option 2 matches, and only for groups — see [Role scope at server actions](#role-scope-at-server-actions). With externally managed users and roles, both options match what your entities file declares.
 
     ```cedar
     permit (
