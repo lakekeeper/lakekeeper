@@ -15,9 +15,9 @@ Lakekeeper delegates every access decision to one configured **Authorizer**. Thi
 | Availability | Open source | Lakekeeper Plus |
 | Extra service to run | Yes — an OpenFGA deployment with its own database | No, built in |
 | How permissions are expressed | Relationships between principals and objects, stored as data | Policies you author and deploy |
-| Who changes them | Admins **and** object owners, at runtime, through the UI or API | Whoever can deploy the policy source |
+| Who changes them | Admins **and** object owners, at runtime, through the UI or API | Whoever can deploy the policy source; `manage_grants` holders, at runtime, through the Grants API |
 | Conditions on attributes | No | Yes — time, tags, request attributes |
-| Grants API | Full vocabulary | Planned for 0.14 |
+| Grants API | Full vocabulary | Yes, enforced through policies |
 | Changing your mind later | You can switch **to** OpenFGA on a running deployment | Switching away generally needs a new Lakekeeper instance |
 
 Two further authorizers exist for narrower purposes. **AllowAll** permits every request and is meant for development and testing only — it records grants faithfully but enforces nothing. **Custom** lets you implement the `Authorizer` trait yourself; see [Customize](./customize.md).
@@ -30,7 +30,7 @@ Configuration for each is in the [Authorization configuration](./configuration.m
 
 - **Evaluating Lakekeeper?** Read the page for the authorizer you are leaning towards, and stop there.
 - **Setting one up?** The same page — each carries its own model, roles and configuration.
-- **Need Alice to read a table?** Under OpenFGA, use the UI — or the [Grants API](./grants.md) if you are automating it — and note that object owners can hand out access to their own objects. Under Cedar, access comes from your policy source, so change that instead.
+- **Need Alice to read a table?** Under OpenFGA, use the UI — or the [Grants API](./grants.md) if you are automating it — and note that object owners can hand out access to their own objects. Under Cedar, use the [Grants API](./grants.md) too: the predefined policies turn the grant into access. Conditions beyond grants go in your policy source.
 - **Operating the deployment?** See [Instance Admins](./instance-admins.md) for administrative access that does not depend on the authorizer being healthy.
 
 ## Grants, privileges and roles
