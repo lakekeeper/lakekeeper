@@ -314,6 +314,11 @@ test_all_storages!(
     test_percent_encoding_does_not_alias,
     test_percent_encoding_does_not_alias_impl
 );
+#[cfg(feature = "object-store")]
+test_all_storages!(
+    test_object_store_bridge_roundtrip,
+    test_object_store_bridge_roundtrip_impl
+);
 test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
@@ -2072,6 +2077,147 @@ async fn test_percent_encoding_does_not_alias_impl(
             failures.join("\n  ")
         );
     }
+    Ok(())
+}
+
+/// Round-trip through `ObjectStoreBridge` across every backend: keys are written
+/// verbatim through the backend (as an iceberg writer would), then listed, read
+/// and deleted through the bridge. Guards that:
+/// - listed keys carrying a literal `%` round-trip unchanged (`Path::parse`, not
+///   `Path::from`, so `a%20b` is not re-encoded to `a%2520b`);
+/// - directory-marker entries (e.g. ADLS `sub/`) never surface as objects.
+#[cfg(feature = "object-store")]
+async fn test_object_store_bridge_roundtrip_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    use std::{str::FromStr, sync::Arc};
+
+    use lakekeeper_io::{
+        Location,
+        object_store::{
+            MultipartUpload, ObjectStore, ObjectStoreExt, PutPayload, path::Path as OsPath,
+        },
+        object_store_bridge::ObjectStoreBridge,
+    };
+
+    // Root the bridge at a unique directory (no trailing slash) for this run.
+    let base_dir = config.test_dir_path("object-store-bridge");
+    let base_str = base_dir.trim_end_matches('/').to_string();
+    let base = Location::from_str(&base_str)?;
+    let io: Arc<dyn LakekeeperStorage> = Arc::new(storage.clone());
+    let bridge = ObjectStoreBridge::new(io, &base);
+
+    // Literal `%` sequences (`%20`, `%2B`) round-trip on every backend
+    // (see `test_special_characters_in_url_segments`); `sub/deep.txt` forces a
+    // sub-"directory" so backends that emit directory markers are exercised.
+    let names = ["plain.txt", "a%20b.txt", "pct%2Bplus.txt", "sub/deep.txt"];
+    for name in &names {
+        storage
+            .write(
+                &format!("{base_str}/{name}"),
+                Bytes::from(format!("content:{name}")),
+            )
+            .await?;
+    }
+
+    // List through the bridge: exactly the written keys, verbatim, no markers.
+    let listed: Vec<OsPath> = bridge
+        .list(None)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|m| m.map(|meta| meta.location))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut listed_str: Vec<String> = listed.iter().map(|p| p.as_ref().to_string()).collect();
+    listed_str.sort();
+    let mut expected: Vec<String> = names.iter().map(ToString::to_string).collect();
+    expected.sort();
+    assert_eq!(
+        listed_str, expected,
+        "bridge listing must match written keys verbatim"
+    );
+
+    // Each listed path must resolve back to its own object via `get`, and the
+    // full get must report the same metadata as `head` — a real `last_modified`
+    // (sourced from the read, not the epoch fallback) and the same `e_tag`.
+    for path in &listed {
+        let name = path.as_ref();
+        let head_meta = bridge.head(path).await?;
+        let got = bridge.get(path).await?;
+        assert_eq!(
+            got.meta.last_modified, head_meta.last_modified,
+            "get and head last_modified must agree for `{name}`"
+        );
+        assert_ne!(
+            got.meta.last_modified.timestamp(),
+            0,
+            "full get must report a real last_modified for `{name}`, not the epoch"
+        );
+        assert_eq!(
+            got.meta.e_tag, head_meta.e_tag,
+            "get and head e_tag must agree for `{name}`"
+        );
+        let bytes = got.bytes().await?;
+        assert_eq!(
+            &bytes[..],
+            format!("content:{name}").as_bytes(),
+            "round-trip get for `{name}`"
+        );
+    }
+
+    // Batch delete via `delete_stream`, then confirm nothing remains.
+    let del = futures::stream::iter(listed.clone().into_iter().map(Ok)).boxed();
+    let deleted: Vec<OsPath> = bridge
+        .delete_stream(del)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    // `delete_stream` yields one result per input path, in input order, so the
+    // echoed paths must equal the input exactly.
+    assert_eq!(
+        deleted, listed,
+        "delete_stream must echo the input paths in order"
+    );
+
+    let remaining = bridge.list(None).collect::<Vec<_>>().await;
+    assert!(
+        remaining.is_empty(),
+        "all objects deleted, listing must be empty: {remaining:?}"
+    );
+
+    // Multipart upload exercises `GatedMultipartUpload` over the real backend
+    // writer — the path compaction uses for files above the single-request
+    // threshold. Three 10 MiB parts exceed every backend's threshold (25 MiB on
+    // S3/GCS, 7 MiB on ADLS), so this is a genuine multi-part write. Each part
+    // carries a distinct byte so the read-back pins the parts' order (the gate
+    // chain's whole purpose), not just the total length.
+    const PART_SIZE: usize = 10 * 1024 * 1024;
+    let part_bytes = [0xaa_u8, 0xbb, 0xcc];
+    let mp_path = OsPath::from("multipart/big.bin");
+    let mut upload = bridge.put_multipart(&mp_path).await?;
+    for &b in &part_bytes {
+        upload
+            .put_part(PutPayload::from(Bytes::from(vec![b; PART_SIZE])))
+            .await?;
+    }
+    upload.complete().await?;
+    let got = bridge.get(&mp_path).await?.bytes().await?;
+    assert_eq!(
+        got.len(),
+        part_bytes.len() * PART_SIZE,
+        "multipart object size"
+    );
+    for (i, &b) in part_bytes.iter().enumerate() {
+        let slice = &got[i * PART_SIZE..(i + 1) * PART_SIZE];
+        assert!(
+            slice.iter().all(|&x| x == b),
+            "multipart part {i} must read back in order as {b:#x}"
+        );
+    }
+    bridge.delete(&mp_path).await?;
+
     Ok(())
 }
 

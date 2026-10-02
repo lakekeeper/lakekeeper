@@ -19,6 +19,10 @@ pub use error::{
 };
 use futures::{TryStreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
+// Re-exported so consumers can drive `object_store_bridge::ObjectStoreBridge`
+// through the `ObjectStore` trait without pinning their own `object_store` version.
+#[cfg(feature = "object-store")]
+pub use object_store;
 pub use tokio;
 pub use tryhard;
 use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
@@ -30,6 +34,9 @@ pub mod gcs;
 mod location;
 #[cfg(feature = "storage-in-memory")]
 pub mod memory;
+
+#[cfg(feature = "object-store")]
+pub mod object_store_bridge;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
