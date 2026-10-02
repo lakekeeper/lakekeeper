@@ -1518,7 +1518,11 @@ pub struct ApplyGrants {
 }
 
 impl ApplyGrants {
-    fn of(request: &ApplyGrantsRequest) -> Self {
+    /// The event action for an apply, from the request body.
+    ///
+    /// Crate-visible so the audit fixture for this action is produced by the same code the
+    /// handler runs, rather than by a second assembly that can drift from it.
+    pub(crate) fn of(request: &ApplyGrantsRequest) -> Self {
         let mut privileges: Vec<String> = request
             .entries()
             .map(|entry| entry.privilege.clone())

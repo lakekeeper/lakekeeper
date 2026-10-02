@@ -498,6 +498,7 @@ pub enum CatalogProjectAction {
         /// to. Absent when the request names none, in which case the role is created
         /// in the `lakekeeper` provider with a generated source id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[audit(expands_to = "requested_provider_id, requested_source_id")]
         source_system: Option<RoleSourceSystem>,
     },
     ListRoles,
@@ -687,6 +688,7 @@ pub enum CatalogRoleAction {
     /// gates that destination and never matches `any`, and a `/check` caller picks between
     /// the two deliberately.
     UpdateSourceSystem {
+        #[audit(expands_to = "requested_provider_id, requested_source_id")]
         target: SourceSystemTarget,
     },
 }
@@ -1090,6 +1092,9 @@ pub enum CatalogWarehouseAction {
     /// refusing the base question drops the action from
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
@@ -1098,6 +1103,9 @@ pub enum CatalogWarehouseAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
 }
@@ -1390,6 +1398,9 @@ pub enum CatalogNamespaceAction {
     /// refusing the base question drops the action from
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
@@ -1398,6 +1409,9 @@ pub enum CatalogNamespaceAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
 }

@@ -14,7 +14,9 @@
     },
     {
       "action_name": "update_properties",
-      "name": "orders",
+      "updated_properties": {
+        "owner": "analytics"
+      },
       "removed_properties": [
         "stale.key"
       ]
@@ -50,7 +52,9 @@
     {
       "action": {
         "action_name": "update_properties",
-        "name": "orders",
+        "updated_properties": {
+          "owner": "analytics"
+        },
         "removed_properties": [
           "stale.key"
         ]

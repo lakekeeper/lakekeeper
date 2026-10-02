@@ -340,6 +340,9 @@ fn expand_vocabulary(
     let mut names = Vec::new();
     let mut docs = Vec::new();
     let mut shapes = Vec::new();
+    let mut value_sets = Vec::new();
+    let mut carries = Vec::new();
+    let mut value_types = Vec::new();
     for v in &data.variants {
         if strum_disabled(&v.attrs)? {
             continue;
@@ -366,8 +369,49 @@ fn expand_vocabulary(
                  holds, and that name is the value itself.",
             ));
         }
+        // Which strings a key's value is drawn from, where it is drawn from a closed set.
+        let drawn_from = nested_str(&v.attrs, "audit", "values_of")?;
+        if drawn_from.is_some() && !matches!(vocabulary, Vocabulary::Keys(_)) {
+            return Err(Error::new_spanned(
+                v,
+                "`values_of` says which closed set a key's value comes from, so it belongs \
+                 on a vocabulary declared with `keys_of = \"<object>\"`. A value vocabulary \
+                 is itself such a set.",
+            ));
+        }
+        if drawn_from.is_some() && holds.is_some() {
+            return Err(Error::new_spanned(
+                v,
+                "a value is a name from a set or a document, not both. `values_of` names the \
+                 set its value is drawn from; `holds` names the object serialized under it.",
+            ));
+        }
+        value_sets.push(match drawn_from {
+            Some(name) => quote!(::core::option::Option::Some(#name)),
+            None => quote!(::core::option::Option::None),
+        });
         shapes.push(match holds {
             Some(name) => quote!(::core::option::Option::Some(#name)),
+            None => quote!(::core::option::Option::None),
+        });
+        // Context sits beside a value of a flattened field, so only a value vocabulary has
+        // any. On a key vocabulary the declaration would reach no schema and say nothing.
+        if nested_str(&v.attrs, "audit", "carries")?.is_some()
+            && !matches!(vocabulary, Vocabulary::Values { .. })
+        {
+            return Err(Error::new_spanned(
+                v,
+                "`carries` says which `context` keys sit beside a value on the wire, so it \
+                 belongs on a vocabulary declared with `field = \"<wire field>\"`. A key \
+                 vocabulary names the keys themselves; nothing sits beside them.",
+            ));
+        }
+        // A field name is already in the enum's own spelling, so it takes the same rule the
+        // variant names take: `rename_all` moves both together.
+        let carried = variant_context(v, rule.as_deref())?;
+        carries.push(quote!(&[#(#carried),*]));
+        value_types.push(match variant_value_type(&v.attrs)? {
+            Some(ty) => quote!(::core::option::Option::Some(#ty)),
             None => quote!(::core::option::Option::None),
         });
     }
@@ -415,7 +459,10 @@ fn expand_vocabulary(
                         #(::lakekeeper::audit::WireName {
                             text: #names,
                             doc: #docs,
+                            carries: #carries,
+                            value_type: #value_types,
                             shape: #shapes,
+                            values: #value_sets,
                         }),*
                     ];
                     #kind_of
@@ -600,6 +647,85 @@ fn rename_all_rule(attrs: &[Attribute]) -> Result<Option<String>> {
     nested_str(attrs, "serde", "rename_all")
 }
 
+/// A comma-separated key list, as `expands_to` and `carries` both write one. Empty entries
+/// are dropped, so a trailing comma or a stray space declares no key.
+fn split_keys(declared: &str) -> Vec<String> {
+    declared
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// The `context` keys a variant can put beside itself.
+///
+/// A variant's named fields are its context keys: `Drop { force, purge }` carries `force` and
+/// `purge`, under the enum's own rename rule so the names match the wire.
+///
+/// A field whose own type decides the keys lends its name to none of them, so it lists them
+/// literally: `#[audit(expands_to = "a, b")]` carries `a` and `b` in place of the field. The
+/// list is read as written — nothing resolves a vocabulary name here — and a test holds it
+/// against the keys the emitting code actually writes.
+///
+/// A variant with no fields at all can still reach a record with context beside it, when the
+/// handler that names the action assembles the context itself. It lists those keys the same
+/// way, with `#[audit(carries = "a, b")]` on the variant.
+///
+/// # Errors
+///
+/// If a variant both has fields and declares `carries`, which would say the same thing twice
+/// and let the two drift apart.
+fn variant_context(variant: &syn::Variant, rule: Option<&str>) -> Result<Vec<String>> {
+    let declared = nested_str(&variant.attrs, "audit", "carries")?;
+    if let Some(declared) = declared {
+        if !matches!(variant.fields, Fields::Unit) {
+            return Err(Error::new_spanned(
+                variant,
+                "this variant has fields, which are already its context keys, so `carries` \
+                 would say it a second way. `carries` is for a variant whose context is \
+                 assembled by the handler that names the action; a field whose type picks \
+                 the keys takes `expands_to` instead.",
+            ));
+        }
+        return Ok(split_keys(&declared));
+    }
+    let Fields::Named(named) = &variant.fields else {
+        return Ok(Vec::new());
+    };
+    let mut carries = Vec::new();
+    for field in &named.named {
+        // A field whose own type decides the keys cannot lend its name to one, so it names
+        // them. A test holds this against what the emitting code writes.
+        if let Some(declared) = nested_str(&field.attrs, "audit", "expands_to")? {
+            carries.extend(split_keys(&declared));
+            continue;
+        }
+        let Some(ident) = field.ident.as_ref() else {
+            continue;
+        };
+        carries.push(apply_rule(rule, &ident.to_string())?);
+    }
+    Ok(carries)
+}
+
+/// The JSON type a key's value has, from `#[audit(value = "string"|"array"|"object")]`.
+fn variant_value_type(attrs: &[Attribute]) -> Result<Option<String>> {
+    let Some(declared) = nested_str(attrs, "audit", "value")? else {
+        return Ok(None);
+    };
+    if !matches!(declared.as_str(), "string" | "array" | "object") {
+        return Err(Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "`value` is the JSON type this key holds on the wire: `string`, `array` or \
+                 `object`. `{declared}` is none of those."
+            ),
+        ));
+    }
+    Ok(Some(declared))
+}
+
 /// The schema name a key's value carries, from `#[audit(holds = "TypeName")]`.
 ///
 /// Only a key vocabulary takes it: a key names a slot in an object, and this says what shape
@@ -760,8 +886,8 @@ mod tests {
         assert_eq!(
             squash(&wire),
             squash(
-                r#"WireName { text : "Success" , doc : "The operation completed." , shape : :: core :: option :: Option :: None , } ,
-                   WireName { text : "Other" , doc : "" , shape : :: core :: option :: Option :: None , }"#
+                r#"WireName { text : "Success" , doc : "The operation completed." , carries : & [] , value_type : :: core :: option :: Option :: None , shape : :: core :: option :: Option :: None , values : :: core :: option :: Option :: None , } ,
+                   WireName { text : "Other" , doc : "" , carries : & [] , value_type : :: core :: option :: Option :: None , shape : :: core :: option :: Option :: None , values : :: core :: option :: Option :: None , }"#
             ),
             "{expansion}"
         );
@@ -829,6 +955,92 @@ mod tests {
         // Every field of a part is a field of the schema, and a field with no description is
         // a field a consumer cannot act on.
         assert!(rejection("", "struct S { undocumented: u8 }").contains("needs a doc comment"));
+        // A variant's fields are already its context keys, so `carries` beside them would say
+        // it twice.
+        assert!(
+            rejection(
+                r#"field = "action_name""#,
+                r#"enum E { #[audit(carries = "a")] V { /// A field.
+                     a: u8 } }"#
+            )
+            .contains("say it a second way")
+        );
+        // Nothing sits beside a key, so a key vocabulary has no context to declare.
+        assert!(
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[audit(carries = "a")] V }"#
+            )
+            .contains("nothing sits beside them")
+        );
+        // A value vocabulary is itself a closed set, so it draws from no other.
+        assert!(
+            rejection(
+                r#"field = "outcome""#,
+                r#"enum E { #[audit(values_of = "Other")] V }"#
+            )
+            .contains("itself such a set")
+        );
+        // A value is a name from a set or a document, never both.
+        assert!(
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[audit(values_of = "Other", holds = "Thing")] V }"#
+            )
+            .contains("not both")
+        );
+    }
+
+    #[test]
+    fn a_key_declares_the_closed_set_its_value_comes_from() {
+        let expansion = expand_str(
+            r#"keys_of = "context""#,
+            r#"
+            enum K {
+                /// A key whose value is one of a closed set.
+                #[audit(values_of = "RootLevelGrants")]
+                RootLevel,
+                /// A key whose value is data the request carried.
+                Name,
+            }"#,
+        )
+        .expect("`values_of` is allowed on a key");
+        assert!(
+            expansion
+                .contains(r#"values : :: core :: option :: Option :: Some ("RootLevelGrants")"#),
+            "{expansion}"
+        );
+        assert!(
+            expansion.contains(r#"text : "Name""#)
+                && expansion.contains("values : :: core :: option :: Option :: None"),
+            "{expansion}"
+        );
+    }
+
+    #[test]
+    fn a_variant_declares_the_context_a_handler_assembles() {
+        let expansion = expand_str(
+            r#"field = "action_name""#,
+            r#"
+            enum E {
+                /// An action whose context the handler assembles.
+                #[audit(carries = "second_key, first_key")]
+                Assembled,
+                /// An action that carries nothing.
+                Bare,
+            }"#,
+        )
+        .expect("`carries` is allowed on a variant with no fields");
+        // Declared verbatim and in the order written: nothing resolves or sorts these.
+        assert!(expansion.contains(r#""second_key""#), "{expansion}");
+        assert!(expansion.contains(r#""first_key""#), "{expansion}");
+        // A variant that declares nothing still registers, carrying nothing.
+        assert!(
+            expansion.contains(
+                r#"text : "Bare" , doc : "An action that carries nothing." , carries : & []"#
+            ),
+            "{expansion}"
+        );
     }
 
     #[test]

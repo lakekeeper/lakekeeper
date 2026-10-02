@@ -216,35 +216,65 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 #[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
+    #[audit(value = "string")]
     AllowPartial,
+    #[audit(value = "string")]
     BaseLocation,
+    #[audit(value = "string")]
     CreatedBefore,
+    #[audit(value = "string")]
     Deletes,
+    #[audit(value = "array")]
     Destination,
+    #[audit(value = "string")]
     DryRun,
+    #[audit(value = "string")]
     Force,
+    #[audit(value = "string")]
     Format,
+    #[audit(value = "string")]
     GenericTableId,
+    #[audit(value = "string")]
     Name,
+    #[audit(value = "array")]
     NarrowedPrivileges,
+    #[audit(value = "string")]
     Principal,
+    #[audit(value = "array")]
     Principals,
+    #[audit(value = "string", values_of = "PrivilegeScope")]
     PrivilegeScope,
+    #[audit(value = "array")]
     Privileges,
+    #[audit(value = "string")]
     ProjectId,
+    #[audit(value = "object")]
     Properties,
+    #[audit(value = "string")]
     Purge,
+    #[audit(value = "string")]
     Recursive,
+    #[audit(value = "array")]
     RemovedProperties,
+    #[audit(value = "string")]
     RequestedProviderId,
+    #[audit(value = "string")]
     RequestedSourceId,
+    #[audit(value = "array", values_of = "ResourceType")]
     ResourceTypes,
+    #[audit(value = "string", values_of = "RootLevelGrants")]
     RootLevel,
+    #[audit(value = "array")]
     Source,
+    #[audit(value = "string")]
     TableId,
+    #[audit(value = "array")]
     TargetRefs,
+    #[audit(value = "array", values_of = "TableUpdateKind")]
     UpdateKinds,
+    #[audit(value = "object")]
     UpdatedProperties,
+    #[audit(value = "string")]
     Writes,
 }
 
@@ -721,7 +751,21 @@ pub enum ManagementAction {
     ListTasks,
     ControlTasks,
     ScheduleTask,
+    /// Context assembled by the handler from the request body: see `ApplyGrants` in
+    /// `api::management::v1::grant`, whose fields these keys are.
+    #[audit(carries = "deletes, principals, privileges, writes")]
     ApplyGrants,
+    /// Context assembled by the handler from the request body and the scope its gate is
+    /// asked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields
+    /// these keys are.
+    ///
+    /// The six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated
+    /// here rather than left to the `Catalog*Action` variants that share this wire name, so
+    /// what this action carries does not depend on another vocabulary keeping its own.
+    #[audit(
+        carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
+                   privilege_scope, privileges, resource_types, root_level"
+    )]
     RevokeSubtreeGrants,
 }
 
