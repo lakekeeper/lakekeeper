@@ -2190,17 +2190,32 @@ async fn test_object_store_bridge_roundtrip_impl(
     // Multipart upload exercises `GatedMultipartUpload` over the real backend
     // writer — the path compaction uses for files above the single-request
     // threshold. Three 10 MiB parts exceed every backend's threshold (25 MiB on
-    // S3/GCS, 7 MiB on ADLS), so this is a genuine multi-part write.
+    // S3/GCS, 7 MiB on ADLS), so this is a genuine multi-part write. Each part
+    // carries a distinct byte so the read-back pins the parts' order (the gate
+    // chain's whole purpose), not just the total length.
+    const PART_SIZE: usize = 10 * 1024 * 1024;
+    let part_bytes = [0xaa_u8, 0xbb, 0xcc];
     let mp_path = OsPath::from("multipart/big.bin");
     let mut upload = bridge.put_multipart(&mp_path).await?;
-    let part = Bytes::from(vec![0xab_u8; 10 * 1024 * 1024]);
-    for _ in 0..3 {
-        upload.put_part(PutPayload::from(part.clone())).await?;
+    for &b in &part_bytes {
+        upload
+            .put_part(PutPayload::from(Bytes::from(vec![b; PART_SIZE])))
+            .await?;
     }
     upload.complete().await?;
     let got = bridge.get(&mp_path).await?.bytes().await?;
-    assert_eq!(got.len(), 3 * 10 * 1024 * 1024, "multipart object size");
-    assert!(got.iter().all(|&b| b == 0xab), "multipart content");
+    assert_eq!(
+        got.len(),
+        part_bytes.len() * PART_SIZE,
+        "multipart object size"
+    );
+    for (i, &b) in part_bytes.iter().enumerate() {
+        let slice = &got[i * PART_SIZE..(i + 1) * PART_SIZE];
+        assert!(
+            slice.iter().all(|&x| x == b),
+            "multipart part {i} must read back in order as {b:#x}"
+        );
+    }
     bridge.delete(&mp_path).await?;
 
     Ok(())

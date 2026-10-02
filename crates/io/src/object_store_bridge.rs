@@ -9,11 +9,11 @@
 //!
 //! ## Multipart uploads
 //!
-//! [`object_store::WriteMultipart`] (used by `BufWriter` and the parquet writers)
+//! `object_store::WriteMultipart` (used by `BufWriter` and the parquet writers)
 //! submits parts in order via `put_part(&mut self)` but spawns the returned
 //! `'static` futures onto a `JoinSet`, so they run concurrently and may *complete*
 //! out of order. [`LakekeeperFileWrite`], however, is a strictly sequential append
-//! stream. [`GatedMultipartUpload`] bridges the two with a oneshot "gate chain":
+//! stream. `GatedMultipartUpload` bridges the two with a oneshot "gate chain":
 //! each part captures its submission order and waits for the previous part to finish
 //! before writing, then releases the next. This preserves ordering, streams without
 //! buffering the whole object, and is naturally back-pressured (a part future only

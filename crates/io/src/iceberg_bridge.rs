@@ -64,8 +64,9 @@ impl IcebergStorageBridge {
     ///
     /// Lets callers recover the native storage abstraction from an iceberg
     /// [`iceberg::io::FileIO`] (via [`iceberg::io::Storage::as_any`]) — e.g. to
-    /// build an [`crate::object_store_bridge::ObjectStoreBridge`] over the same
-    /// backend so that a reader and a `DataFusion` writer share one storage.
+    /// build an `object_store_bridge::ObjectStoreBridge` over the same backend
+    /// (under the `object-store` feature) so that a reader and a `DataFusion`
+    /// writer share one storage.
     #[must_use]
     pub fn lakekeeper_io(&self) -> Arc<dyn LakekeeperStorage> {
         self.lakekeeper_io.clone()
