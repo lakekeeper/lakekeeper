@@ -53,7 +53,10 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         state.v1_state.events.clone(),
         warehouse_id,
         table_ident.clone(),
-        CatalogGenericTableAction::Drop,
+        CatalogGenericTableAction::Drop {
+            force,
+            purge: purge_requested,
+        },
     );
 
     // ------------------- IDEMPOTENCY CHECK -------------------
@@ -79,7 +82,10 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
             warehouse_id,
             namespace.clone(),
             &table_name,
-            CatalogGenericTableAction::Drop,
+            CatalogGenericTableAction::Drop {
+                force,
+                purge: purge_requested,
+            },
             state.v1_state.catalog.clone(),
         )
         .await,

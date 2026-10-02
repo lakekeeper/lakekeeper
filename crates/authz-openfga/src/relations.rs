@@ -274,7 +274,7 @@ impl ReducedRelation for CatalogRoleAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogRoleAction::Delete => RoleRelation::CanDelete,
+            CatalogRoleAction::Delete { .. } => RoleRelation::CanDelete,
             CatalogRoleAction::Update => RoleRelation::CanUpdate,
             CatalogRoleAction::Read => RoleRelation::CanRead,
             CatalogRoleAction::ReadMetadata => RoleRelation::CanReadMetadata,
@@ -1278,7 +1278,7 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::AcceptMovedNamespace { .. } => {
                 WarehouseRelation::CanAcceptMovedNamespace
             }
-            CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
+            CatalogWarehouseAction::Delete { .. } => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
@@ -2383,7 +2383,7 @@ impl ReducedRelation for CatalogGenericTableAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogGenericTableAction::Drop => GenericTableRelation::CanDrop,
+            CatalogGenericTableAction::Drop { .. } => GenericTableRelation::CanDrop,
             CatalogGenericTableAction::Undrop => GenericTableRelation::CanUndrop,
             CatalogGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
             CatalogGenericTableAction::ReadData => GenericTableRelation::CanReadData,

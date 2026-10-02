@@ -1170,7 +1170,7 @@ pub mod test {
                 .unwrap();
             PostgresBackend::ensure_warehouse_spec_mutable(
                 warehouse_id,
-                &CatalogWarehouseAction::Delete,
+                &CatalogWarehouseAction::Delete { force: false },
                 false,
                 t.transaction(),
             )
@@ -1214,7 +1214,7 @@ pub mod test {
                 .unwrap();
             let err = PostgresBackend::ensure_warehouse_spec_mutable(
                 warehouse_id,
-                &CatalogWarehouseAction::Delete,
+                &CatalogWarehouseAction::Delete { force: false },
                 false,
                 t.transaction(),
             )
@@ -1233,7 +1233,7 @@ pub mod test {
                 .unwrap();
             PostgresBackend::ensure_warehouse_spec_mutable(
                 warehouse_id,
-                &CatalogWarehouseAction::Delete,
+                &CatalogWarehouseAction::Delete { force: false },
                 true,
                 t.transaction(),
             )
@@ -1279,7 +1279,7 @@ pub mod test {
                 .unwrap();
             PostgresBackend::ensure_warehouse_spec_mutable(
                 warehouse_id,
-                &CatalogWarehouseAction::Delete,
+                &CatalogWarehouseAction::Delete { force: false },
                 false,
                 t.transaction(),
             )

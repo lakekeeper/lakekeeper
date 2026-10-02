@@ -503,7 +503,10 @@ async fn test_generic_table_actions_all_allowed(pool: PgPool) {
                 make(CatalogGenericTableAction::GetMetadata),
                 make(CatalogGenericTableAction::ReadData),
                 make(CatalogGenericTableAction::WriteData),
-                make(CatalogGenericTableAction::Drop),
+                make(CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }),
                 make(CatalogGenericTableAction::IncludeInList),
             ],
         )
@@ -564,7 +567,10 @@ async fn test_generic_table_actions_hidden(pool: PgPool) {
             &parents,
             &[
                 make(CatalogGenericTableAction::GetMetadata),
-                make(CatalogGenericTableAction::Drop),
+                make(CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }),
             ],
         )
         .await
@@ -598,7 +604,10 @@ async fn test_generic_table_actions_blocked(pool: PgPool) {
     // Block Drop but not GetMetadata
     authz.block_action(&format!(
         "generic_table:{:?}",
-        CatalogGenericTableAction::Drop
+        CatalogGenericTableAction::Drop {
+            force: false,
+            purge: false,
+        }
     ));
 
     let parents = ns_hierarchy
@@ -625,7 +634,10 @@ async fn test_generic_table_actions_blocked(pool: PgPool) {
             &parents,
             &[
                 make(CatalogGenericTableAction::GetMetadata),
-                make(CatalogGenericTableAction::Drop),
+                make(CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }),
             ],
         )
         .await
