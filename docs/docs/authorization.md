@@ -43,7 +43,15 @@ Three words are used consistently across the authorizers and the API:
 
 ### Provider-managed roles { .lkp }
 
-A role's `provider-id` says who owns it. `lakekeeper` roles are yours to manage through the API; roles in a [role provider's](./configuration.md#role-provider) namespace belong to that provider, so create, rename, delete and member (un)assignment are rejected with `400 ManagedRoleImmutable` — change them in the identity provider instead. They are still ordinary grant principals: grant privileges to them like any other role.
+A role's `provider-id` says who owns it. `lakekeeper` roles are yours to manage through the API; roles in a [role provider's](./configuration.md#role-provider) namespace belong to that provider, so create, rename, source-system rebind and member (un)assignment are rejected with `400 ManagedRoleImmutable` — change them in the identity provider instead. They are still ordinary grant principals: grant privileges to them like any other role.
+
+You can delete a provider-managed role, for example one whose group was deleted in the directory. Each member's next request in that project then asks the provider again: if the provider still reports the group, the role is created again under a new id, without the deleted role's grants. Other Lakekeeper instances follow once the member's entry in the [user assignments cache](./configuration.md#caching) expires. [Persisted token roles](./configuration.md#token-role-provider) used for DEFINER views regain the group at the view owner's own next request. If the provider is unreachable, the newest stored groups from another project are served; a member with none gets errors until the provider is reachable again.
+
+Deleting any role also removes its grants. Where Lakekeeper stores grants in its database (every built-in authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; without it the request fails with `409 RoleHasGrants`.
+
+Under [Cedar](./authorization-cedar.md) the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. `system` is rejected with `400 RoleProviderIdReserved`, a configured role provider's namespace with `400 ManagedRoleImmutable`, and any other namespace with `400 RoleProviderNotApiManaged`. Roles left in the namespace of a provider removed from the configuration can still be renamed and deleted.
+
+A role provider adopts existing roles whose `provider-id` and `source-id` match its groups, including roles created through the API before the provider was configured, and their grants with them. Review the roles in a namespace before configuring a role provider with that id.
 
 Membership is synced per user at login. A provider-managed role therefore appears once its first member authenticates, and lists only the members Lakekeeper has seen so far — not the full group. A group nobody has logged in from does not exist as a role yet and cannot be granted to; under Cedar, match on `principal.project_roles` instead, which needs no catalog role.
 

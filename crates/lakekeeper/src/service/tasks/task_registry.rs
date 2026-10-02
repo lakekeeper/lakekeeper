@@ -504,6 +504,19 @@ impl TaskQueueRegistry {
         self.registered_queues.read().await.is_empty()
     }
 
+    /// Total number of workers across all registered queues. A queue registers
+    /// even with `num_workers = 0`, so this differs from `is_empty`: the registry
+    /// can be non-empty yet schedule no workers (e.g. every `TASK_*_WORKERS=0`).
+    #[must_use]
+    pub async fn total_workers(&self) -> usize {
+        self.task_workers
+            .read()
+            .await
+            .values()
+            .map(|w| w.num_workers)
+            .sum()
+    }
+
     /// Creates a [`TaskQueuesRunner`] that can be used to start the task queue workers
     #[must_use]
     pub async fn task_queues_runner(
@@ -773,6 +786,53 @@ mod test {
             later_queue_names,
             vec![&*SECOND_QUEUE_NAME, &*FIRST_QUEUE_NAME]
         );
+    }
+
+    #[tokio::test]
+    async fn test_total_workers_counts_configured_workers_not_registrations() {
+        static ZERO_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "zero-worker-queue".into());
+        static BUSY_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "busy-queue".into());
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Cfg {}
+        impl TaskConfig for Cfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &ZERO_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+        }
+
+        let registry = TaskQueueRegistry::new();
+        assert_eq!(registry.total_workers().await, 0);
+
+        // A queue registered with zero workers: the registry is non-empty, yet no
+        // workers will run. This is the state that `TASK_*_WORKERS=0` produces and
+        // that the worker-monitor gate must detect.
+        registry
+            .register_queue::<Cfg, TestPayload>(QueueRegistration {
+                queue_name: &ZERO_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+        assert!(!registry.is_empty().await);
+        assert_eq!(registry.total_workers().await, 0);
+
+        registry
+            .register_queue::<Cfg, TestPayload>(QueueRegistration {
+                queue_name: &BUSY_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 3,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+        assert_eq!(registry.total_workers().await, 3);
     }
 
     #[tokio::test]

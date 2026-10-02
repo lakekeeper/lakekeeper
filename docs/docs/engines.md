@@ -21,6 +21,8 @@ We are tracking open issues and missing features in query engines in a [Tracking
 
 All Apache Iceberg REST clients are compatible with Lakekeeper, as Lakekeeper fully implements the standard Iceberg REST Catalog API specification. This page only contains some exemplary tools and configurations to help you get started. For tools not listed here, please refer to their documentation for specific configuration details and best practices when connecting to an Iceberg REST Catalog. Always check with your tool provider for the most up-to-date information regarding supported features and configuration options.
 
+A request is decided in the project that `x-project-id` names. A catalog request that sends no `x-project-id` is decided in the project of the warehouse it addresses, and a request that addresses no warehouse in the default project. Requests that address a warehouse therefore need no header. The config request `GET /catalog/v1/config?warehouse=<name>` for a warehouse outside the default project needs `x-project-id` — for example `header.x-project-id` in PyIceberg and in Spark's `spark.sql.catalog.<name>.header.x-project-id` — or a warehouse argument that names the project: `warehouse=<project-id>/<name>`. Under Cedar, a request whose `x-project-id` names a project other than the warehouse's is refused.
+
 When using Lakekeeper with authentication enabled, remember that you can follow the approaches described at the beginning of this page: either use credentials specific to individual users or leverage OAuth2 token exchange for shared query engines. The authentication parameters typically include credential pairs, OAuth2 server URIs, and scopes as shown in the examples above.
 
 <!-- Alias for the section's former id. Released docs and anything already
@@ -36,7 +38,7 @@ When using Lakekeeper with authentication enabled, remember that you can follow 
   <figcaption>LoQE: browse namespaces and tables, run SQL, then view the result as a table or chart — or export it as CSV.</figcaption>
 </figure>
 
-Because the queries execute in your browser rather than on the server, your S3 storage must return a CORS policy that allows requests from the Lakekeeper origin. See the [CORS Configuration guide](storage.md#cors-configuration) for setup instructions.
+Because the queries execute in your browser rather than on the server, your object storage (S3, STACKIT, Google Cloud Storage or ADLS) must return a CORS policy that allows requests from the Lakekeeper origin. LoQE reads and writes S3, STACKIT and Google Cloud Storage, and only reads ADLS. It needs vended credentials, because DuckDB does not support remote signing. See [CORS](storage.md#cors) for setup instructions.
 
 ## DuckDB { .engine data-icon="duckdb" }
 

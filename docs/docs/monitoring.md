@@ -27,7 +27,7 @@ Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Members, and Role Ancestors. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Ancestors. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
@@ -35,7 +35,15 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+
+The user-assignments cache also counts the entries it leaves uncached because a change or another role provider sync overlapped the load or the sync that read them:
+
+| Metric                                                              | Type    | Labels       | Description |
+|---------------------------------------------------------------------|---------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>fenced_total</code>  | Counter | `cache_type` | Loaded or synced entries left uncached after an overlapping change |
+
+Its only `cache_type` is `user_assignments`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total{cache_type="user_assignments"}` points to frequent role changes or syncs overlapping the same users.
 
 Role-membership cache invalidation emits one additional metric:
 
@@ -116,7 +124,6 @@ The Postgres connection differs. If Postgres becomes unreachable, the pod **will
 | <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>call_duration_seconds</code> | Histogram | `check`, `outcome`                    | Duration of one `POST` to your enforce endpoint |
 | <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>decisions_total</code>       | Counter   | `check`, `kind`, `decision`, `source` | One per check per answered request, cache replays included |
 | <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>fail_closed_total</code>     | Counter   | `reason` | No verdict obtainable for a check |
-| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>roles_dropped_total</code>   | Counter   | `reason` | Roles resolved, then dropped |
 
 Label values:
 
@@ -126,12 +133,11 @@ Label values:
 | `decision`                            | `allow`, `deny` |
 | `source`                              | `cache`, `upstream` |
 | `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
-| `reason` on `fail_closed_total`       | `upstream`, `no_bearer_token`, `no_principal` |
-| `reason` on `roles_dropped_total`     | `no_project` |
+| `reason` on `fail_closed_total`       | `upstream` |
 
 Buckets stop at 10s. Cached decisions make no call, so `_count` measures load on your endpoint, not the request rate.
 
-A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times. `no_bearer_token` and `no_principal` (a `403`, not a `503`) are unreachable on the shipped server. Nonzero means a [custom build](./customize.md) runs the gate unauthenticated. `no_project` means the request named no project to scope roles to, so the caller ran with fewer privileges than your endpoint granted.
+A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times.
 
 A `role_granting` `deny` withholds a role but still admits the request, so no error series moves. These metrics name no principal. To find who lost a role, read the audit record `operation="admission_enforce_check"` (see [Logging](./logging.md#operational-audit-events)).
 

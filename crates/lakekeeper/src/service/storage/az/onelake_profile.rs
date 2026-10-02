@@ -592,6 +592,61 @@ impl OneLakeProfile {
             other.directory_rel_path.as_deref(),
         )
     }
+
+    /// Rewrite a failed read/write probe with vended credentials into advice.
+    ///
+    /// Vended credentials are user-delegated SAS tokens. `OneLake` answers
+    /// 401 `Access token validation failed` to a request signed with one for
+    /// several causes, and the raw 401 names none of them. A `%` in the path
+    /// is one: `OneLake` collapses `%XX` escapes, so the signature never
+    /// matches. Otherwise the usual cause is the Fabric setting
+    /// `Authenticate with OneLake user-delegated SAS tokens` being off.
+    /// What `OneLake` answered moves to the error's details. Other answers
+    /// pass through unchanged.
+    pub(crate) fn explain_vended_access_failure(&self, error: ValidationError) -> ValidationError {
+        let ValidationError::IoOperationFailed(io_error) = &error else {
+            return error;
+        };
+        let token_validation_failed = io_error
+            .context()
+            .iter()
+            .any(|context| context.contains("Access token validation failed"));
+        if io_error.http_status() != Some(401) || !token_validation_failed {
+            return error;
+        }
+        let location = io_error.location();
+        let answered = match location {
+            Some(location) => format!("OneLake answered HTTP 401 at `{location}`"),
+            None => "OneLake answered HTTP 401".to_string(),
+        };
+        let details = std::iter::once(answered)
+            .chain(io_error.context().iter().cloned())
+            .collect();
+        let path_has_percent = location
+            .and_then(|location| Location::from_str(location).ok())
+            .is_some_and(|location| location.path().is_some_and(|path| path.contains('%')));
+        // Clients often show only the message, so it carries the advice.
+        let message = if path_has_percent {
+            "OneLake rejected the vended SAS token (HTTP 401) for a path that contains `%`. \
+             OneLake rejects SAS-signed requests to paths with percent-encoded characters: use \
+             a `directory-rel-path` without `%`."
+                .to_string()
+        } else {
+            format!(
+                "OneLake rejected the vended SAS token (HTTP 401). The usual cause is that the \
+                 Fabric setting \"Authenticate with OneLake user-delegated SAS tokens\" is off: \
+                 enable it tenant-wide or, when the tenant admin delegates it, for workspace \
+                 `{}`.",
+                self.workspace_id
+            )
+        };
+        ValidationError::TableConfig(Box::new(TableConfigError::ExplainedMisconfiguration {
+            message,
+            error_type: "OneLakeSasRejected",
+            details,
+            source: Some(Box::new(error)),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1193,5 +1248,123 @@ mod tests {
         let mut p2 = sample_profile();
         p2.authority_host = Some("https://login.microsoftonline.us".parse().unwrap());
         assert!(p1.is_overlapping_location(&p2));
+    }
+
+    const VENDED_PROBE_LOCATION: &str = "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@onelake.dfs.fabric.microsoft.com/9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04/Files/my_warehouse/vended-test/metadata/test";
+    const VENDED_PROBE_PERCENT_LOCATION: &str = "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@onelake.dfs.fabric.microsoft.com/9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04/Files/my%20warehouse/vended-test/metadata/test";
+
+    const ACCESS_TOKEN_VALIDATION_FAILED: &str =
+        "Authentication Failed with Access token validation failed.";
+
+    /// The error the vended read/write probe at `location` produces when
+    /// `OneLake` answers `status` with `http_message`.
+    fn vended_probe_error(
+        location: &str,
+        status: Option<u16>,
+        http_message: &str,
+    ) -> ValidationError {
+        let mut io_error = lakekeeper_io::IOError::new(
+            lakekeeper_io::ErrorKind::PermissionDenied,
+            "Unauthorized - server returned error status which will not be retried",
+            location.to_string(),
+        )
+        .with_context(format!("HTTP Error Message: {http_message}"))
+        .with_context("Failed to create ADLS file.");
+        if let Some(status) = status {
+            io_error = io_error.with_http_status(status);
+        }
+        ValidationError::IoOperationFailed(Box::new(io_error))
+    }
+
+    /// The error the vended read/write probe at `location` produces when
+    /// `OneLake` answers `status` with `Access token validation failed`.
+    fn vended_probe_failure(location: &str, status: Option<u16>) -> ValidationError {
+        vended_probe_error(location, status, ACCESS_TOKEN_VALIDATION_FAILED)
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_names_the_sas_setting_on_401() {
+        let explained = sample_profile()
+            .explain_vended_access_failure(vended_probe_failure(VENDED_PROBE_LOCATION, Some(401)));
+        let model = iceberg_ext::catalog::rest::ErrorModel::from(explained);
+
+        assert_eq!(model.r#type, "OneLakeSasRejected");
+        assert_eq!(model.code, 400);
+        assert!(
+            model.message.contains(
+                "The usual cause is that the Fabric setting \"Authenticate with OneLake \
+                 user-delegated SAS tokens\" is off"
+            ),
+            "{}",
+            model.message
+        );
+        assert!(
+            model.message.contains(SAMPLE_WORKSPACE),
+            "{}",
+            model.message
+        );
+        assert_eq!(
+            model.stack,
+            vec![
+                format!("OneLake answered HTTP 401 at `{VENDED_PROBE_LOCATION}`"),
+                format!("HTTP Error Message: {ACCESS_TOKEN_VALIDATION_FAILED}"),
+                "Failed to create ADLS file.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_gives_path_advice_on_401_for_percent_paths() {
+        let explained = sample_profile().explain_vended_access_failure(vended_probe_failure(
+            VENDED_PROBE_PERCENT_LOCATION,
+            Some(401),
+        ));
+        let model = iceberg_ext::catalog::rest::ErrorModel::from(explained);
+
+        assert_eq!(model.r#type, "OneLakeSasRejected");
+        assert_eq!(model.code, 400);
+        assert!(
+            model.message.contains("`directory-rel-path` without `%`"),
+            "{}",
+            model.message
+        );
+        assert!(
+            !model.message.contains("Fabric setting"),
+            "{}",
+            model.message
+        );
+        assert_eq!(
+            model.stack.first(),
+            Some(&format!(
+                "OneLake answered HTTP 401 at `{VENDED_PROBE_PERCENT_LOCATION}`"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_keeps_other_answers() {
+        // A 403 is an authorization failure, e.g. a missing workspace role;
+        // `None` is an error without a recorded HTTP status.
+        for status in [Some(403), None] {
+            let explained = sample_profile()
+                .explain_vended_access_failure(vended_probe_failure(VENDED_PROBE_LOCATION, status));
+            assert!(
+                matches!(explained, ValidationError::IoOperationFailed(_)),
+                "{status:?}: {explained:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_vended_access_failure_keeps_401_with_another_message() {
+        let explained = sample_profile().explain_vended_access_failure(vended_probe_error(
+            VENDED_PROBE_LOCATION,
+            Some(401),
+            "Some other authentication failure.",
+        ));
+        assert!(
+            matches!(explained, ValidationError::IoOperationFailed(_)),
+            "{explained:?}"
+        );
     }
 }

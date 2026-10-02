@@ -486,6 +486,11 @@ pub enum CatalogProjectAction {
         /// Name of the role to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// External identity (provider + source id) the request binds the new role
+        /// to. Absent when the request names none, in which case the role is created
+        /// in the `lakekeeper` provider with a generated source id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_system: Option<RoleSourceSystem>,
     },
     ListRoles,
     SearchRoles,
@@ -513,7 +518,10 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock:
         CatalogProjectAction::GetMetadata,
         CatalogProjectAction::ListWarehouses,
         CatalogProjectAction::IncludeInList,
-        CatalogProjectAction::CreateRole { name: None },
+        CatalogProjectAction::CreateRole {
+            name: None,
+            source_system: None,
+        },
         CatalogProjectAction::ListRoles,
         CatalogProjectAction::SearchRoles,
         CatalogProjectAction::GetEndpointStatistics,
@@ -540,10 +548,19 @@ impl CatalogAction for CatalogProjectAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
-            Self::CreateWarehouse { name: Some(n) }
-            | Self::CreateRole { name: Some(n) }
-            | Self::CreateTag { name: Some(n) } => {
+            Self::CreateWarehouse { name: Some(n) } | Self::CreateTag { name: Some(n) } => {
                 b = b.context_string(ActionContextKey::Name, n.clone());
+            }
+            Self::CreateRole {
+                name,
+                source_system,
+            } => {
+                if let Some(n) = name {
+                    b = b.context_string(ActionContextKey::Name, n.clone());
+                }
+                if let Some(source_system) = source_system {
+                    b = b.context_pairs(source_system.requested_context());
+                }
             }
             // Actions that contribute no audit context. Listed explicitly rather than
             // matched with `_`, so that adding an action forces a decision about what
@@ -555,7 +572,6 @@ impl CatalogAction for CatalogProjectAction {
             | Self::GetMetadata { .. }
             | Self::ListWarehouses { .. }
             | Self::IncludeInList { .. }
-            | Self::CreateRole { .. }
             | Self::ListRoles { .. }
             | Self::SearchRoles { .. }
             | Self::GetEndpointStatistics { .. }
@@ -570,11 +586,12 @@ impl CatalogAction for CatalogProjectAction {
     }
 }
 
-/// The external identity (source system) a role is bound to: a `(provider_id,
-/// source_id)` pair. An external identity is always both parts together, so this
-/// type makes a partial binding unrepresentable. Used as the rebind destination
-/// in [`CatalogRoleAction::UpdateSourceSystem`].
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Both parts in one type make a partial binding unrepresentable. Used as the
+// requested identity in `CatalogProjectAction::CreateRole` and as the rebind
+// destination in `CatalogRoleAction::UpdateSourceSystem`.
+/// The external identity (source system) a role is bound to: a provider and the
+/// role's identifier within that provider, always given together.
+#[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub struct RoleSourceSystem {
@@ -584,6 +601,24 @@ pub struct RoleSourceSystem {
     /// Identifier of the role within the provider.
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub source_id: RoleSourceId,
+}
+
+impl RoleSourceSystem {
+    /// The action context this identity contributes as a client-requested value:
+    /// `requested_provider_id` and `requested_source_id`.
+    #[must_use]
+    pub fn requested_context(&self) -> [(ActionContextKey, ContextValue); 2] {
+        [
+            (
+                ActionContextKey::RequestedProviderId,
+                ContextValue::String(self.provider_id.to_string()),
+            ),
+            (
+                ActionContextKey::RequestedSourceId,
+                ContextValue::String(self.source_id.to_string()),
+            ),
+        ]
+    }
 }
 
 /// The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
@@ -678,14 +713,7 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string(
-                ActionContextKey::RequestedProviderId,
-                target.provider_id.to_string(),
-            );
-            b = b.context_string(
-                ActionContextKey::RequestedSourceId,
-                target.source_id.to_string(),
-            );
+            b = b.context_pairs(target.requested_context());
         }
         b.build()
     }
@@ -2321,6 +2349,17 @@ impl MustUse<Vec<AuthorizationDecision>> {
     }
 }
 
+/// Provider namespaces the management API may create roles in and rebind roles
+/// into or out of. See [`Authorizer::api_role_providers`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiRoleProviders {
+    /// `lakekeeper`, plus every namespace other than `system` that no configured
+    /// role provider owns.
+    AnyUnmanaged,
+    /// `lakekeeper` only.
+    LakekeeperOnly,
+}
+
 #[async_trait::async_trait]
 /// Interface to provide Authorization functions to the catalog.
 /// For metadata passed into all methods except `check_actor`, the `actor()` in `RequestMetadata`
@@ -2388,6 +2427,19 @@ where
         &EMPTY
     }
 
+    /// Which provider namespaces the management API may create roles in, and rebind
+    /// roles into or out of. [`Self::managed_role_provider_ids`] and the reserved
+    /// `system` namespace are refused either way.
+    ///
+    /// The default, [`ApiRoleProviders::AnyUnmanaged`], suits authorizers that treat a
+    /// role's provider and source id as a label, so external provisioning can name
+    /// roles in its own namespace. An authorizer that reads role rows of other
+    /// providers as that provider's roles returns [`ApiRoleProviders::LakekeeperOnly`],
+    /// so a role made through the API can never pass for a directory group.
+    fn api_role_providers(&self) -> ApiRoleProviders {
+        ApiRoleProviders::AnyUnmanaged
+    }
+
     /// API Doc
     #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi;
@@ -2410,14 +2462,34 @@ where
     /// Perform bootstrapping, including granting the provided user the highest level of access.
     async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
-    /// Return Err only for internal errors.
-    /// If unsupported is returned, Lakekeeper will run checks for every project individually using
-    /// `are_allowed_project_actions`.
+    /// The projects the caller may see in a project listing. Return Err only for
+    /// internal errors. An authorizer that cannot enumerate them returns
+    /// [`ListProjectsResponse::Unsupported`]; Lakekeeper then reads every project and
+    /// asks [`Self::are_projects_included_in_list_impl`] about each.
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
     ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::Unsupported)
+    }
+
+    /// Whether the caller may see each of `projects` in a project listing, one decision
+    /// per project, in order. Asked only after [`Self::list_projects_impl`] returned
+    /// [`ListProjectsResponse::Unsupported`], with every project the catalog holds.
+    ///
+    /// The default asks [`CatalogProjectAction::IncludeInList`] for every project in one
+    /// batch.
+    async fn are_projects_included_in_list_impl(
+        &self,
+        metadata: &RequestMetadata,
+        projects: &[&ArcProjectId],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let batch: Vec<(&ArcProjectId, Self::ProjectAction)> = projects
+            .iter()
+            .map(|project_id| (*project_id, CatalogProjectAction::IncludeInList.into()))
+            .collect();
+        self.are_allowed_project_actions_impl(metadata, None, &batch)
+            .await
     }
 
     /// Search users
@@ -2532,8 +2604,9 @@ where
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
 
-    /// Hook that is called when a new project is created.
-    /// This is used to set up the initial permissions for the project.
+    /// Hook that is called when a new role is created, inside the transaction that
+    /// inserts it. This is used to set up the initial permissions for the role. An
+    /// error rolls the role back and reaches the caller with its own status.
     async fn create_role(
         &self,
         metadata: &RequestMetadata,
@@ -2541,12 +2614,14 @@ where
         parent_project_id: ArcProjectId,
     ) -> Result<()>;
 
-    /// Hook that is called when a role is deleted.
-    /// This is used to clean up permissions for the role.
+    /// Hook that is called after a role delete commits. This is used to clean up
+    /// permissions for the role. An error is logged; the role stays deleted.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
 
-    /// Hook that is called when a new tag definition is created.
-    /// Sets up its parent (project) and ownership permissions.
+    /// Hook that is called when a new tag definition is created, inside the
+    /// transaction that inserts it. Sets up its parent (project) and ownership
+    /// permissions. An error rolls the tag definition back and reaches the caller
+    /// with its own status.
     async fn create_tag(
         &self,
         metadata: &RequestMetadata,
@@ -3770,9 +3845,24 @@ pub mod tests {
         // CreateRole with name
         let action = CatalogProjectAction::CreateRole {
             name: Some("admin".to_string()),
+            source_system: None,
         };
         let log = action.as_log_str();
         assert!(log.contains("name=admin"), "got: {log}");
+        assert!(!log.contains("requested_provider_id"), "got: {log}");
+
+        // CreateRole with name and a requested source system
+        let action = CatalogProjectAction::CreateRole {
+            name: Some("admin".to_string()),
+            source_system: Some(RoleSourceSystem {
+                provider_id: "ldap".parse().unwrap(),
+                source_id: "admins".parse().unwrap(),
+            }),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=admin"), "got: {log}");
+        assert!(log.contains("requested_provider_id=ldap"), "got: {log}");
+        assert!(log.contains("requested_source_id=admins"), "got: {log}");
 
         // CreateNamespace in warehouse with name
         let action = CatalogWarehouseAction::CreateNamespace {
@@ -3855,6 +3945,56 @@ pub mod tests {
         /// the non-empty path, which OSS otherwise cannot reach (no role providers
         /// ship here, so the production set is always empty).
         managed_role_providers: HashSet<RoleProviderId>,
+        /// Reported from [`Authorizer::api_role_providers`]. The trait default unless a
+        /// test narrows it.
+        api_role_providers: ApiRoleProviders,
+        /// Error type the `create_role` hook fails with, as a 409. `None` lets it pass.
+        create_role_rejection: Option<&'static str>,
+        /// Report an empty grant store of its own from [`Authorizer::grants`], as
+        /// OpenFGA does. `false` keeps grants in the catalog.
+        own_grant_store: bool,
+        /// Answer [`Authorizer::list_projects_impl`] with `Unsupported`, as Cedar does,
+        /// so the listing asks about each project.
+        unsupported_project_listing: bool,
+        /// Awaited by every catalog object check. See [`Self::with_check_hook`].
+        check_hook: Option<CheckHook>,
+        /// The admission roles each assume-role check saw. See
+        /// [`Self::assume_role_checks`].
+        assume_role_checks: Arc<std::sync::Mutex<Vec<Option<Vec<String>>>>>,
+    }
+
+    /// A future run by each check, as `HidingAuthorizer` holds it.
+    #[derive(Clone)]
+    struct CheckHook(Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>);
+
+    impl std::fmt::Debug for CheckHook {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("CheckHook")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ManagesGrants for HidingAuthorizer {
+        async fn apply_grants(
+            &self,
+            _metadata: &RequestMetadata,
+            _writes: &[GrantSpec],
+            _deletes: &[GrantSpec],
+        ) -> std::result::Result<AppliedGrants, ApplyGrantsError> {
+            Ok(AppliedGrants::default())
+        }
+
+        async fn list_grants(
+            &self,
+            _metadata: &RequestMetadata,
+            _filter: GrantFilter,
+            _pagination: PaginationQuery,
+        ) -> std::result::Result<ListGrantsResultPage, ListGrantsError> {
+            Ok(ListGrantsResultPage {
+                grants: Vec::new(),
+                next_page_token: None,
+            })
+        }
     }
 
     impl Default for HidingAuthorizer {
@@ -3874,7 +4014,23 @@ pub mod tests {
                 bootstrap: &[],
                 grant_ops: &[],
                 managed_role_providers: HashSet::new(),
+                api_role_providers: ApiRoleProviders::AnyUnmanaged,
+                create_role_rejection: None,
+                own_grant_store: false,
+                unsupported_project_listing: false,
+                check_hook: None,
+                assume_role_checks: Arc::default(),
             }
+        }
+
+        /// One entry per assume-role check, in call order: the admission roles on
+        /// the request it decided, sorted. `None` when the request carried none.
+        ///
+        /// # Panics
+        /// Panics if the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn assume_role_checks(&self) -> Vec<Option<Vec<String>>> {
+            self.assume_role_checks.lock().unwrap().clone()
         }
 
         /// Report `providers` as provider-managed, so a test can exercise the
@@ -3885,6 +4041,36 @@ pub mod tests {
             providers: impl IntoIterator<Item = RoleProviderId>,
         ) -> Self {
             self.managed_role_providers = providers.into_iter().collect();
+            self
+        }
+
+        /// Report `providers` from [`Authorizer::api_role_providers`].
+        #[must_use]
+        pub fn with_api_role_providers(mut self, providers: ApiRoleProviders) -> Self {
+            self.api_role_providers = providers;
+            self
+        }
+
+        /// Answer the project listing with `Unsupported`, so the handler asks about
+        /// each project.
+        #[must_use]
+        pub fn with_unsupported_project_listing(mut self) -> Self {
+            self.unsupported_project_listing = true;
+            self
+        }
+
+        /// Make the `create_role` hook fail with a 409 of type `error_type`.
+        #[must_use]
+        pub fn with_create_role_rejection(mut self, error_type: &'static str) -> Self {
+            self.create_role_rejection = Some(error_type);
+            self
+        }
+
+        /// Act as the source of truth for grants, with a store that holds none, so a
+        /// test can exercise the paths an authorizer like OpenFGA takes.
+        #[must_use]
+        pub fn with_own_grant_store(mut self) -> Self {
+            self.own_grant_store = true;
             self
         }
 
@@ -3905,6 +4091,23 @@ pub mod tests {
         ) -> Self {
             self.bootstrap = privileges;
             self
+        }
+
+        /// Await `hook` in every server, project, warehouse, namespace and tabular check,
+        /// so a test can stand in for an authorizer that reads the catalog while deciding.
+        #[must_use]
+        pub fn with_check_hook(
+            mut self,
+            hook: impl Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync + 'static,
+        ) -> Self {
+            self.check_hook = Some(CheckHook(Arc::new(hook)));
+            self
+        }
+
+        async fn run_check_hook(&self) {
+            if let Some(CheckHook(hook)) = &self.check_hook {
+                hook().await;
+            }
         }
 
         fn check_available(&self, object: &str) -> bool {
@@ -4016,6 +4219,14 @@ pub mod tests {
             &self.managed_role_providers
         }
 
+        fn api_role_providers(&self) -> ApiRoleProviders {
+            self.api_role_providers
+        }
+
+        fn grants(&self) -> Option<&dyn ManagesGrants> {
+            self.own_grant_store.then_some(self as &dyn ManagesGrants)
+        }
+
         fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
             self.bootstrap
                 .iter()
@@ -4059,8 +4270,17 @@ pub mod tests {
             &self,
             _principal: &UserId,
             _assumed_role: &Role,
-            _request_metadata: &RequestMetadata,
+            request_metadata: &RequestMetadata,
         ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
+            let admission_roles = request_metadata.admission_roles().map(|roles| {
+                let mut roles: Vec<String> = roles.iter().map(ToString::to_string).collect();
+                roles.sort();
+                roles
+            });
+            self.assume_role_checks
+                .lock()
+                .unwrap()
+                .push(admission_roles);
             Ok(true)
         }
 
@@ -4076,7 +4296,11 @@ pub mod tests {
             &self,
             _metadata: &RequestMetadata,
         ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
-            Ok(ListProjectsResponse::All)
+            Ok(if self.unsupported_project_listing {
+                ListProjectsResponse::Unsupported
+            } else {
+                ListProjectsResponse::All
+            })
         }
 
         async fn can_search_users_impl(
@@ -4146,6 +4370,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             actions: &[Self::ServerAction],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // The server itself is never hidden, so only `block_action` applies here.
             Ok(actions
                 .iter()
@@ -4163,6 +4388,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = projects_with_actions
                 .iter()
                 .map(|(project_id, action)| {
@@ -4184,6 +4410,7 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = warehouses_with_actions
                 .iter()
                 .map(|(warehouse, action)| {
@@ -4208,6 +4435,7 @@ pub mod tests {
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(namespace, action)| {
@@ -4236,6 +4464,7 @@ pub mod tests {
                 ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -4270,6 +4499,7 @@ pub mod tests {
                 ActionOnView<'_, '_, impl AuthZViewInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -4305,6 +4535,7 @@ pub mod tests {
                 ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            self.run_check_hook().await;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -4337,7 +4568,15 @@ pub mod tests {
             _role_id: RoleId,
             _parent_project_id: ArcProjectId,
         ) -> Result<()> {
-            Ok(())
+            match self.create_role_rejection {
+                Some(error_type) => Err(iceberg_ext::catalog::rest::ErrorModel::conflict(
+                    "Rejected by the test authorizer",
+                    error_type,
+                    None,
+                )
+                .into()),
+                None => Ok(()),
+            }
         }
 
         async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {
