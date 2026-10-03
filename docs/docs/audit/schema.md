@@ -10,12 +10,14 @@ Everything a Lakekeeper audit record can carry is described there: the three rec
 
 ## One schema per product
 
-This document describes what **Lakekeeper** contributes to a record. A deployment running another product on top — Lakekeeper+ — has a second schema describing what that product contributes, downloadable beside this one:
+This document describes what **Lakekeeper** contributes to a record. A deployment running another product on top — Lakekeeper+ — has a second schema describing what that product contributes, published beside this one:
 
-| Product           | `emitters[].name`  | Schema                                     |
-|-------------------|--------------------|--------------------------------------------|
-| Lakekeeper        | `lakekeeper`       | [`schema.json`](schema.json)               |
-| Lakekeeper+       | `lakekeeper-plus`  | [`schema-plus.json`](schema-plus.json)     |
+| Product           | `emitters[].name`  | Schema              |
+|-------------------|--------------------|---------------------|
+| Lakekeeper        | `lakekeeper`       | `schema.json`       |
+| Lakekeeper+       | `lakekeeper-plus`  | `schema-plus.json`  |
+
+Both sit in this directory, each published by its own product's release, so `schema-plus.json` is present from the first Lakekeeper+ release that carries an audit format.
 
 Every record lists the products it carries something of in `emitters`, each with the `format` of what that product contributes. Read the names there to know which schemas apply to the record in front of you, and each entry's `format` to know which version of that product's half you are reading. A record naming one product needs one schema; a record naming two — an authorizer supplying an action name or a `context` key on a record Lakekeeper assembled — is governed by both at once.
 
