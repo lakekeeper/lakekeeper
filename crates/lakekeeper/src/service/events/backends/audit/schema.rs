@@ -421,13 +421,18 @@ fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String,
     rust_sources(crates_dir, &mut sources);
     let builders = [
         ("context_string", "string"),
+        ("context_bool", "boolean"),
+        ("context_integer", "integer"),
         ("context_list", "array"),
         ("context_map", "object"),
     ];
     let values = [
         ("ContextValue::String", "string"),
+        ("ContextValue::Bool", "boolean"),
+        ("ContextValue::Integer", "integer"),
         ("ContextValue::List", "array"),
         ("ContextValue::Map", "object"),
+        ("ContextValue::Object", "object"),
     ];
 
     let mut written: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();

@@ -11,8 +11,8 @@
   "actions": [
     {
       "action_name": "drop",
-      "force": "true",
-      "purge": "true"
+      "force": true,
+      "purge": true
     }
   ],
   "entities": [

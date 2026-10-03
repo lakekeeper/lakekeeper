@@ -196,7 +196,7 @@ Discriminate on `record_type`, which every record carries and which is the only 
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `idempotency_key`      | String          | The request's `Idempotency-Key`. Absent when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
-| `context`              | Object          | Optional. Additional request context, keyed by the handler. A value is a string unless the key declares a shape. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
+| `context`              | Object          | Optional. Additional request context, keyed by the handler. A value is a string, a flag, a count, a list, a map, or the object a shaped key declares. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
 | `failure_reason`       | String          | Only on failed events. One of `action_forbidden`, `resource_not_found`, `cannot_see_resource`, `internal_authorization_error`, `internal_catalog_error`, `invalid_request_data`. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
@@ -257,8 +257,8 @@ The `context` object on an authorization event is keyed by the handler, which ad
 | Key                        | Description                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------------|
 | `invoked_by`               | The higher-level operation this authorization was performed on behalf of, when the check is not directly caused by the API call — currently `register_table_overwrite`, for the drop authorized as part of overwriting a registered table |
-| `self_provisioning`        | `"true"` when a user record was created by the authenticated caller for themselves rather than by an administrator. Always present on that endpoint, `"true"` or `"false"` — do not read its presence as `true` |
-| `self_read`                | `"true"` when the caller is reading their own grants rather than another principal's. Always present on the endpoints that set it, `"true"` or `"false"` — do not read its presence as `true` |
+| `self_provisioning`        | `true` when a user record was created by the authenticated caller for themselves rather than by an administrator. A boolean, always present on that endpoint — do not read its presence as `true` |
+| `self_read`                | `true` when the caller is reading their own grants rather than another principal's. A boolean, always present on the endpoints that set it — do not read its presence as `true` |
 | `queue_name`               | The task queue the request addressed                                                          |
 | `entity_id`                | Identifier of the entity the task acts on                                                     |
 
@@ -312,7 +312,7 @@ Actions are always in the `actions` array, whatever their number: a single-actio
 
 Commit actions carry two further context fields when the commit names them: `target_refs`, the branch or tag references the commit targets, and `update_kinds`, the kinds of update the commit contains. Both are arrays of strings, and each is present whether or not the commit named any — `[]` says the commit named none.
 
-Which context fields appear depends on the action, and the [schema](audit/schema.json) says which ones each action can carry: `ActionRecord` holds one `if`/`then` per action, matching on `action_name` and listing that action's fields with their types. Read it if you build a reader per action rather than inferring the pairing from traffic. A field is listed there because it *can* appear. A field holding a list or a map is always present once the action has it, empty (`[]`, `{}`) when the request supplied nothing — so you read "none" from the value, not from the key being missing. A field whose value the request simply did not supply is absent instead, because there is nothing to report; and `force`, `purge` and `recursive` appear **only when true** — their absence means false. An action the schema names in no branch is one that carries no context fields, or one newer than the schema you hold.
+Which context fields appear depends on the action, and the [schema](audit/schema.json) says which ones each action can carry: `ActionRecord` holds one `if`/`then` per action, matching on `action_name` and listing that action's fields with their types. Read it if you build a reader per action rather than inferring the pairing from traffic. A field is listed there because it *can* appear. A field holding a list or a map is always present once the action has it, empty (`[]`, `{}`) when the request supplied nothing — so you read "none" from the value, not from the key being missing. A field whose value the request simply did not supply is absent instead, because there is nothing to report; and a flag — `force`, `purge`, `recursive`, `dry_run`, `allow_partial` — is a JSON **boolean** that is always present once the action has it, so you branch on its value and never on its presence. An action the schema names in no branch is one that carries no context fields, or one newer than the schema you hold.
 
 | Context field           | Type   | Emitted by                        | Description                                             |
 |-------------------------|--------|-----------------------------------|---------------------------------------------------------|
@@ -325,9 +325,9 @@ Which context fields appear depends on the action, and the [schema](audit/schema
 | `format`                | String | generic-table creation            | The requested table format                              |
 | `base_location`         | String | generic-table creation            | The requested storage location                          |
 | `project_id`            | String | project creation                  | The project id the client requested                     |
-| `force`                 | String | delete and drop actions           | `"true"` when the client asked to force the operation   |
-| `purge`                 | String | delete and drop actions           | `"true"` when the client asked to purge the data        |
-| `recursive`             | String | delete actions                    | `"true"` when the client asked for a recursive delete   |
+| `force`                 | Boolean | delete and drop actions          | `true` when the client asked to force the operation     |
+| `purge`                 | Boolean | delete and drop actions          | `true` when the client asked to purge the data          |
+| `recursive`             | Boolean | delete actions                   | `true` when the client asked for a recursive delete     |
 | `target_refs`           | Array  | commits                           | The branch or tag references the commit targets         |
 | `source`                | Array  | accepting a moved namespace       | The namespace path the entity is being moved from        |
 | `destination`           | Array  | move actions                      | The namespace path the entity is being moved to          |
@@ -345,8 +345,8 @@ Applying a grant diff is authorized once for the whole request, so a single `app
 |---------------|--------|-----------------------------------------------------------------------------|
 | `principals`  | Array  | The distinct principals the grants were destined for, each prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
 | `privileges`  | Array  | The distinct privilege names named anywhere in the diff                     |
-| `writes`      | String | Number of entries requested as grants, before deduplication                 |
-| `deletes`     | String | Number of entries requested as revocations, before deduplication            |
+| `writes`      | Integer | Number of entries requested as grants, before deduplication                |
+| `deletes`     | Integer | Number of entries requested as revocations, before deduplication           |
 
 The resource the grants apply to is the event's `entities` entry, not part of the action.
 
@@ -362,8 +362,8 @@ Because the event records the attempt, a *denied* apply is logged with the same 
   "action_name": "apply_grants",
   "principals": ["role:1f7b…", "user:oidc~alice"],
   "privileges": ["modify"],
-  "writes": "2",
-  "deletes": "0"
+  "writes": 2,
+  "deletes": 0
 }
 ```
 
@@ -375,7 +375,7 @@ Six fields are the **scope** — the same value the authorizer is asked with, so
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
-| `dry_run`        | String | `"true"` when the call only reports what it would do. A dry run changes nothing, so a record carrying `"true"` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` carrying `"true"`; a `read_subtree_grants` record from a subtree listing reads `"false"` |
+| `dry_run`        | Boolean | `true` when the call only reports what it would do. A dry run changes nothing, so a record carrying `true` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` carrying `true`; a `read_subtree_grants` record from a subtree listing reads `false` |
 | `resource_types` | Array  | The resource kinds the request reaches. Always at least one, and always a subset of the kinds the addressed resource covers |
 | `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are. Open, like the other value sets — see [Format version and stability](#audit-format) |
 | `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
@@ -387,10 +387,10 @@ Six fields are the **scope** — the same value the authorizer is asked with, so
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
 | `privileges`     | Array  | The distinct privilege names the revocation was narrowed to. Emitted as `[]` when the request named none, which means every privilege |
-| `allow_partial`  | String | `"true"` when the client asked the revocation to proceed despite grants it could not revoke |
+| `allow_partial`  | Boolean | `true` when the client asked the revocation to proceed despite grants it could not revoke |
 | `created_before` | String | Optional. RFC 3339 timestamp; only grants created before it were in range   |
 
-Only `created_before` is omitted, when the request does not narrow on it. `privileges` is emitted as `[]` and `allow_partial` as `"true"` or `"false"`, both always present. Do not infer a field's behaviour here from another field's; read each row.
+Only `created_before` is omitted, when the request does not narrow on it. `privileges` is emitted as `[]` and `allow_partial` as a boolean, both always present. Do not infer a field's behaviour here from another field's; read each row.
 
 **These are the filters, not the outcome.** The action records what the caller asked for and whether they were allowed it; it does not say which grants matched. What actually changed is recorded separately, one record per grant, under `operation = "grant_revoked"` — and for `dry_run` requests, nothing is.
 

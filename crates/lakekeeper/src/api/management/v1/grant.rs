@@ -1556,8 +1556,14 @@ impl APIEventActions for ApplyGrants {
                 .action_name(ManagementAction::ApplyGrants.as_wire())
                 .context_list(ActionContextKey::Principals, self.principals.clone())
                 .context_list(ActionContextKey::Privileges, self.privileges.clone())
-                .context_string(ActionContextKey::Writes, self.writes.to_string())
-                .context_string(ActionContextKey::Deletes, self.deletes.to_string())
+                .context_integer(
+                    ActionContextKey::Writes,
+                    i64::try_from(self.writes).unwrap_or(i64::MAX),
+                )
+                .context_integer(
+                    ActionContextKey::Deletes,
+                    i64::try_from(self.deletes).unwrap_or(i64::MAX),
+                )
                 .build(),
         ]
     }
@@ -1820,10 +1826,7 @@ impl APIEventActions for RevokeSubtreeGrants {
         let mut descriptor = ActionDescriptor::builder()
             .action_name(ManagementAction::RevokeSubtreeGrants.as_wire())
             .context_pairs(self.scope.context())
-            .context_string(
-                ActionContextKey::AllowPartial,
-                self.allow_partial.to_string(),
-            )
+            .context_bool(ActionContextKey::AllowPartial, self.allow_partial)
             .context_list(ActionContextKey::Privileges, self.privileges.clone());
         if let Some(created_before) = &self.created_before {
             descriptor =
@@ -1884,10 +1887,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             warehouse_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
@@ -2256,10 +2256,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         // Record which path was taken. Without this an auditor cannot tell which action
         // the check actually required.
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = authorizer
             .require_project_action(event_ctx.request_metadata(), &project_id, required)
@@ -2304,10 +2301,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             CatalogServerAction::ReadGrants,
             authorizer.server_id(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             // The server has no can-see action — every caller reaches it — so a
@@ -2409,10 +2403,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             (*project_id).clone(),
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = authorizer
             .require_project_action(event_ctx.request_metadata(), &project_id, required)
@@ -2506,10 +2497,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             namespace_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _) = authorizer
@@ -2642,10 +2630,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag_definition_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             // Fetched within the request's project, so a definition in another
@@ -2782,10 +2767,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             table_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer
@@ -2919,10 +2901,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             view_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer
@@ -3054,10 +3033,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             generic_table_id,
             required.clone(),
         );
-        event_ctx.push_extra_context(
-            HandlerContextKey::SelfRead,
-            if is_self { "true" } else { "false" },
-        );
+        event_ctx.push_extra_context_bool(HandlerContextKey::SelfRead, is_self);
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer

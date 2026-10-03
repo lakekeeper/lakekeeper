@@ -19,8 +19,8 @@
         "describe",
         "select"
       ],
-      "writes": "2",
-      "deletes": "1"
+      "writes": 2,
+      "deletes": 1
     }
   ],
   "entities": [
@@ -48,8 +48,8 @@
           "describe",
           "select"
         ],
-        "writes": "2",
-        "deletes": "1"
+        "writes": 2,
+        "deletes": 1
       },
       "entity": {
         "entity_type": "warehouse",
