@@ -16,8 +16,8 @@
     },
     {
       "action_name": "drop",
-      "force": "true",
-      "purge": "true"
+      "force": true,
+      "purge": true
     }
   ],
   "entities": [
@@ -51,8 +51,8 @@
     {
       "action": {
         "action_name": "drop",
-        "force": "true",
-        "purge": "true"
+        "force": true,
+        "purge": true
       },
       "entity": {
         "entity_type": "warehouse",

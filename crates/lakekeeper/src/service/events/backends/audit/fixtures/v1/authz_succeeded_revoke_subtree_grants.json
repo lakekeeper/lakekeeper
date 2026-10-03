@@ -11,7 +11,7 @@
   "actions": [
     {
       "action_name": "revoke_subtree_grants",
-      "dry_run": "false",
+      "dry_run": false,
       "resource_types": [
         "table",
         "view"
@@ -23,7 +23,7 @@
         "describe",
         "select"
       ],
-      "allow_partial": "true",
+      "allow_partial": true,
       "privileges": [
         "describe",
         "select"
@@ -48,7 +48,7 @@
     {
       "action": {
         "action_name": "revoke_subtree_grants",
-        "dry_run": "false",
+        "dry_run": false,
         "resource_types": [
           "table",
           "view"
@@ -60,7 +60,7 @@
           "describe",
           "select"
         ],
-        "allow_partial": "true",
+        "allow_partial": true,
         "privileges": [
           "describe",
           "select"

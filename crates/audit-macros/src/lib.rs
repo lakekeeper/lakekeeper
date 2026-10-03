@@ -709,17 +709,21 @@ fn variant_context(variant: &syn::Variant, rule: Option<&str>) -> Result<Vec<Str
     Ok(carries)
 }
 
-/// The JSON type a key's value has, from `#[audit(value = "string"|"array"|"object")]`.
+/// The JSON type a key's value has, from
+/// `#[audit(value = "string"|"boolean"|"integer"|"array"|"object")]`.
 fn variant_value_type(attrs: &[Attribute]) -> Result<Option<String>> {
     let Some(declared) = nested_str(attrs, "audit", "value")? else {
         return Ok(None);
     };
-    if !matches!(declared.as_str(), "string" | "array" | "object") {
+    if !matches!(
+        declared.as_str(),
+        "string" | "boolean" | "integer" | "array" | "object"
+    ) {
         return Err(Error::new(
             proc_macro2::Span::call_site(),
             format!(
-                "`value` is the JSON type this key holds on the wire: `string`, `array` or \
-                 `object`. `{declared}` is none of those."
+                "`value` is the JSON type this key holds on the wire: `string`, `boolean`, \
+                 `integer`, `array` or `object`. `{declared}` is none of those."
             ),
         ));
     }
@@ -988,6 +992,32 @@ mod tests {
                 r#"enum K { #[audit(values_of = "Other", holds = "Thing")] V }"#
             )
             .contains("not both")
+        );
+    }
+
+    #[test]
+    fn a_key_declares_the_json_type_its_value_reaches_the_wire_as() {
+        for ty in ["string", "boolean", "integer", "array", "object"] {
+            let src = format!(
+                r#"enum K {{ /// A key.
+                     #[audit(value = "{ty}")] K1 }}"#
+            );
+            let expansion = expand_str(r#"keys_of = "context""#, &src)
+                .unwrap_or_else(|e| panic!("`{ty}` is a JSON type a key may declare: {e}"));
+            assert!(
+                expansion.contains(&format!(
+                    r#"value_type : :: core :: option :: Option :: Some ("{ty}")"#
+                )),
+                "{expansion}"
+            );
+        }
+        // Anything else names a type this log does not put on the wire.
+        assert!(
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[audit(value = "number")] K1 }"#
+            )
+            .contains("is none of those")
         );
     }
 

@@ -17,7 +17,7 @@ use crate::{
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationSucceededEvent, IdempotentReplayEvent,
-            context::{ContextEntry, ContextPayload, EntityDescriptor, EventEntities},
+            context::{ContextEntry, EntityDescriptor, EventEntities},
         },
     },
 };
@@ -92,12 +92,12 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     }
 }
 
-/// A context value as it reaches the wire: a string, or the object a shaped key carries.
-fn payload(value: &ContextPayload) -> serde_json::Value {
-    match value {
-        ContextPayload::Text(text) => serde_json::Value::String(text.clone()),
-        ContextPayload::Object(json) => json.value().clone(),
-    }
+/// A context value as it reaches the wire, in the JSON type it declares.
+///
+/// `ContextValue` is `untagged`, so each variant serializes as the bare value: a flag is a
+/// JSON `true`, a count a JSON number, a shaped key's part the object itself.
+fn payload(value: &crate::service::authz::ContextValue) -> serde_json::Value {
+    serde_json::to_value(value).expect("a context value serializes to JSON")
 }
 
 /// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.

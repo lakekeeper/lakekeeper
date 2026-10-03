@@ -15,6 +15,11 @@
       "removed_properties": [],
       "target_refs": [],
       "update_kinds": []
+    },
+    {
+      "action_name": "drop",
+      "force": false,
+      "purge": false
     }
   ],
   "entities": [
@@ -38,6 +43,20 @@
         "removed_properties": [],
         "target_refs": [],
         "update_kinds": []
+      },
+      "entity": {
+        "entity_type": "warehouse",
+        "project_id": "00000000-0000-0000-0000-000000000000",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+      },
+      "allowed": true,
+      "determined_by": []
+    },
+    {
+      "action": {
+        "action_name": "drop",
+        "force": false,
+        "purge": false
       },
       "entity": {
         "entity_type": "warehouse",

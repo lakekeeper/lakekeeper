@@ -99,7 +99,7 @@
           "then": {
             "properties": {
               "deletes": {
-                "type": "string"
+                "type": "integer"
               },
               "principals": {
                 "type": "array",
@@ -114,7 +114,7 @@
                 }
               },
               "writes": {
-                "type": "string"
+                "type": "integer"
               }
             }
           }
@@ -355,13 +355,13 @@
           "then": {
             "properties": {
               "force": {
-                "type": "string"
+                "type": "boolean"
               },
               "purge": {
-                "type": "string"
+                "type": "boolean"
               },
               "recursive": {
-                "type": "string"
+                "type": "boolean"
               }
             }
           }
@@ -380,10 +380,10 @@
           "then": {
             "properties": {
               "force": {
-                "type": "string"
+                "type": "boolean"
               },
               "purge": {
-                "type": "string"
+                "type": "boolean"
               }
             }
           }
@@ -408,7 +408,7 @@
                 }
               },
               "force": {
-                "type": "string"
+                "type": "boolean"
               }
             }
           }
@@ -427,7 +427,7 @@
           "then": {
             "properties": {
               "dry_run": {
-                "type": "string"
+                "type": "boolean"
               },
               "narrowed_privileges": {
                 "type": "array",
@@ -467,13 +467,13 @@
           "then": {
             "properties": {
               "allow_partial": {
-                "type": "string"
+                "type": "boolean"
               },
               "created_before": {
                 "type": "string"
               },
               "dry_run": {
-                "type": "string"
+                "type": "boolean"
               },
               "narrowed_privileges": {
                 "type": "array",
@@ -1104,10 +1104,25 @@
           "description": "A list of plain strings (e.g. `removed_properties`)."
         },
         {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "A whole audit part, serialized. The key that carries it names its shape with\n`#[audit(holds = \"...\")]`."
+        },
+        {
+          "type": "boolean",
+          "description": "A flag the request either set or did not (e.g. `force`, `dry_run`)."
+        },
+        {
+          "type": "integer",
+          "format": "int64",
+          "description": "A count (e.g. `writes`, `deletes`)."
+        },
+        {
           "type": "string",
           "description": "A single string value (e.g. resource name, ID)."
         }
       ],
+      "description": "What a `context` key carries, in the JSON type it reaches the wire as.\n\nA record holds context keys in two places: inside each entry of `actions`, flattened\nbeside `action_name`, and in the record's own `context` object. One type serves both, so\nwhat a value may be does not depend on which of the two the key sits in. Which of these a\ngiven key carries is declared on the key with `#[audit(value = \"...\")]` and published in\nthe schema.",
       "x-audit-kind": "part",
       "x-audit-type": "lakekeeper::service::authz::ContextValue"
     },

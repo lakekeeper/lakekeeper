@@ -90,27 +90,6 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
-/// What a `context` entry holds.
-///
-/// Most keys carry a string the handler chose, and nothing describes it beyond the key's own
-/// doc comment. A key whose value has a shape declares that shape with `#[audit(holds =
-/// "...")]`, and carries the serialized part instead: the fields then reach the schema, the
-/// format check and the case check like any other part, rather than being a JSON document
-/// hidden inside a string.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ContextPayload {
-    /// A string the handler recorded.
-    Text(String),
-    /// An audit part, serialized. The key that carries it names its shape.
-    Object(crate::audit::AuditJson),
-}
-
-impl From<String> for ContextPayload {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-
 /// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
 /// key vocabulary the key came from.
 ///
@@ -120,7 +99,7 @@ impl From<String> for ContextPayload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextEntry {
     /// What the handler recorded.
-    pub value: ContextPayload,
+    pub value: crate::service::authz::ContextValue,
     /// `AuditEmitter::NAME` of the emitter that declared the key.
     pub emitter: &'static str,
     /// `AuditEmitter::FORMAT` of that emitter.
@@ -216,19 +195,19 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 #[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
-    #[audit(value = "string")]
+    #[audit(value = "boolean")]
     AllowPartial,
     #[audit(value = "string")]
     BaseLocation,
     #[audit(value = "string")]
     CreatedBefore,
-    #[audit(value = "string")]
+    #[audit(value = "integer")]
     Deletes,
     #[audit(value = "array")]
     Destination,
-    #[audit(value = "string")]
+    #[audit(value = "boolean")]
     DryRun,
-    #[audit(value = "string")]
+    #[audit(value = "boolean")]
     Force,
     #[audit(value = "string")]
     Format,
@@ -250,9 +229,9 @@ pub enum ActionContextKey {
     ProjectId,
     #[audit(value = "object")]
     Properties,
-    #[audit(value = "string")]
+    #[audit(value = "boolean")]
     Purge,
-    #[audit(value = "string")]
+    #[audit(value = "boolean")]
     Recursive,
     #[audit(value = "array")]
     RemovedProperties,
@@ -274,7 +253,7 @@ pub enum ActionContextKey {
     UpdateKinds,
     #[audit(value = "object")]
     UpdatedProperties,
-    #[audit(value = "string")]
+    #[audit(value = "integer")]
     Writes,
 }
 
@@ -1353,7 +1332,26 @@ where
         self.extra_context.insert(
             key.into().text().to_string(),
             ContextEntry {
-                value: ContextPayload::Text(value.into()),
+                value: crate::service::authz::ContextValue::String(value.into()),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
+    }
+
+    /// Record a key on this event's `context` object whose value is a flag.
+    ///
+    /// A flag is a `bool` on the wire, not the word `"true"`: a consumer branches on it
+    /// rather than comparing it against a spelling.
+    pub fn push_extra_context_bool<E: crate::audit::AuditEmitter>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: bool,
+    ) {
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: crate::service::authz::ContextValue::Bool(value),
                 emitter: E::NAME,
                 emitter_format: E::FORMAT,
             },
@@ -1379,7 +1377,9 @@ where
         self.extra_context.insert(
             key.into().text().to_string(),
             ContextEntry {
-                value: ContextPayload::Object(crate::audit::AuditJson::of(&value)),
+                value: crate::service::authz::ContextValue::Object(crate::audit::AuditJson::of(
+                    &value,
+                )),
                 emitter: E::NAME,
                 emitter_format: E::FORMAT,
             },

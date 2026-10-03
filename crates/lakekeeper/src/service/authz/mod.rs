@@ -266,14 +266,29 @@ where
     fn action_descriptor(&self) -> ActionDescriptor;
 }
 
+/// What a `context` key carries, in the JSON type it reaches the wire as.
+///
+/// A record holds context keys in two places: inside each entry of `actions`, flattened
+/// beside `action_name`, and in the record's own `context` object. One type serves both, so
+/// what a value may be does not depend on which of the two the key sits in. Which of these a
+/// given key carries is declared on the key with `#[audit(value = "...")]` and published in
+/// the schema.
 #[audit_part]
 #[serde(untagged)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ContextValue {
     /// A set of key-value pairs (e.g. properties, `updated_properties`).
     Map(BTreeMap<String, String>),
     /// A list of plain strings (e.g. `removed_properties`).
     List(Vec<String>),
+    /// A whole audit part, serialized. The key that carries it names its shape with
+    /// `#[audit(holds = "...")]`.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
+    Object(crate::audit::AuditJson),
+    /// A flag the request either set or did not (e.g. `force`, `dry_run`).
+    Bool(bool),
+    /// A count (e.g. `writes`, `deletes`).
+    Integer(i64),
     /// A single string value (e.g. resource name, ID).
     String(String),
 }
@@ -292,6 +307,9 @@ impl std::fmt::Display for ContextValue {
             Self::List(list) => {
                 write!(f, "[{}]", list.join(", "))
             }
+            Self::Object(json) => write!(f, "{}", json.value()),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Integer(n) => write!(f, "{n}"),
             Self::String(s) => write!(f, "{s}"),
         }
     }
@@ -310,6 +328,14 @@ impl std::fmt::Display for ContextValue {
     #[allow(unreachable_pub)]
     pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_bool(&mut self, key: ActionContextKey, value: bool) {
+        self.context.push((key, ContextValue::Bool(value)));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_integer(&mut self, key: ActionContextKey, value: impl Into<i64>) {
+        self.context.push((key, ContextValue::Integer(value.into())));
     }
     /// Append the context a value describes about itself.
     #[allow(unreachable_pub)]
@@ -730,8 +756,8 @@ impl CatalogAction for CatalogRoleAction {
         {
             b = b.context_pairs(target.requested_context());
         }
-        if let Self::Delete { force: true } = self {
-            b = b.context_string(ActionContextKey::Force, "true");
+        if let Self::Delete { force } = self {
+            b = b.context_bool(ActionContextKey::Force, *force);
         }
         b.build()
     }
@@ -984,10 +1010,7 @@ impl SubtreeGrantScope {
             }
         };
         vec![
-            (
-                ActionContextKey::DryRun,
-                ContextValue::String(self.dry_run.to_string()),
-            ),
+            (ActionContextKey::DryRun, ContextValue::Bool(self.dry_run)),
             (
                 ActionContextKey::ResourceTypes,
                 ContextValue::List(
@@ -1238,9 +1261,7 @@ impl CatalogAction for CatalogWarehouseAction {
                 );
             }
             Self::Delete { force } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::UpdateStorage { .. }
@@ -1560,15 +1581,9 @@ impl CatalogAction for CatalogNamespaceAction {
                 purge,
                 recursive,
             } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
-                if *recursive {
-                    b = b.context_string(ActionContextKey::Recursive, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
+                b = b.context_bool(ActionContextKey::Recursive, *recursive);
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
@@ -1580,9 +1595,7 @@ impl CatalogAction for CatalogNamespaceAction {
                 // it determines which subtree's grants the moved namespace inherits.
                 b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
 
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
                 b = b.context_pairs(
@@ -1733,12 +1746,8 @@ impl CatalogAction for CatalogTableAction {
                 );
             }
             Self::Drop { force, purge } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::WriteData { .. }
@@ -1852,12 +1861,8 @@ impl CatalogAction for CatalogViewAction {
                 );
             }
             Self::Drop { force, purge } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
@@ -1947,12 +1952,8 @@ impl CatalogAction for CatalogGenericTableAction {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Drop { force, purge } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::ReadData { .. }
@@ -3540,14 +3541,12 @@ pub mod tests {
             assert!(log.contains("force=true"), "{what} lost `force`: {log}");
         }
 
-        // And the unforced form says nothing, so the two are told apart by the key's
-        // presence rather than by its value.
+        // And the unforced form carries the flag too, set to `false`. The two are told
+        // apart by the value, not by whether the key is there: an absent `force` means the
+        // operation has no such override, which is a different statement.
         let plain = CatalogRoleAction::Delete { force: false }.action_descriptor();
-        assert!(
-            !plain.log_string().contains("force"),
-            "{}",
-            plain.log_string()
-        );
+        let log = plain.log_string();
+        assert!(log.contains("force=false"), "{log}");
     }
 
     #[test]

@@ -374,15 +374,17 @@ fn fixture_create_table_action() -> ActionDescriptor {
         .build()
 }
 
-/// A drop action. `force` and `purge` are emitted only when the client asked for
-/// them, so their presence here pins the "true" form and their absence elsewhere
-/// pins the other.
+/// A drop that asked for both overrides, built from the action's own descriptor.
+///
+/// `force` and `purge` are flags the request either set or did not, so both are on the wire
+/// whichever way they went; this pins the `true` form and
+/// `authz_succeeded_empty_collections` the other.
 fn fixture_drop_action() -> ActionDescriptor {
-    ActionDescriptor::builder()
-        .action_name(AnyWireStr::literal_for_tests("drop"))
-        .context_string(ActionContextKey::Force, "true")
-        .context_string(ActionContextKey::Purge, "true")
-        .build()
+    CatalogTableAction::Drop {
+        force: true,
+        purge: true,
+    }
+    .action_descriptor()
 }
 
 /// A commit whose every collection is empty, built from the action's own descriptor.
@@ -548,9 +550,7 @@ fn fixture_context(
                 (
                     (*key).to_string(),
                     crate::service::events::context::ContextEntry {
-                        value: crate::service::events::context::ContextPayload::Text(
-                            (*value).to_string(),
-                        ),
+                        value: crate::service::authz::ContextValue::String((*value).to_string()),
                         emitter: <crate::Lakekeeper as crate::audit::AuditEmitter>::NAME,
                         emitter_format: <crate::Lakekeeper as crate::audit::AuditEmitter>::FORMAT,
                     },
@@ -937,17 +937,26 @@ fn fixture_authz_succeeded_apply_grants() {
     assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
 }
 
-/// A commit that changed nothing, so every collection it carries is empty.
+/// A request that asked for nothing: a commit that changed nothing, and a drop that forced
+/// nothing.
 ///
-/// Nothing else pins an empty `{}` or `[]` in an action, and the keys are what a consumer
-/// reads to tell "the request asked for none of this" from "this action has no such field".
+/// Every form a "none" takes is here — an empty `{}`, an empty `[]`, and a `false` flag —
+/// because each is what a consumer reads to tell "the request asked for none of this" from
+/// "this action has no such field". Nothing else pins them.
 #[test]
 fn fixture_authz_succeeded_empty_collections() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_warehouse_entity()),
-            vec![fixture_empty_collections_action()],
+            vec![
+                fixture_empty_collections_action(),
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }
+                .action_descriptor(),
+            ],
             fixture_context(&[]),
         ))
     });
@@ -2029,14 +2038,14 @@ fn a_replay_records_the_actor_action_and_target_but_no_decision() {
     assert_eq!(
         event
             .pointer("/actions/0/force")
-            .and_then(serde_json::Value::as_str),
-        Some("true"),
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
     );
     assert_eq!(
         event
             .pointer("/actions/0/purge")
-            .and_then(serde_json::Value::as_str),
-        Some("true"),
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
     );
 
     // Against what, as the caller named it.
