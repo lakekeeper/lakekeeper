@@ -10391,6 +10391,15 @@ components:
           type: string
           enum:
             - drop
+        force:
+          type: boolean
+          description: |-
+            Whether the warehouse-configured soft-deletion is bypassed, i.e. the generic
+            table is hard-deleted immediately instead of being recoverable for the
+            configured grace period. Extra destructive — irreversible right away.
+        purge:
+          type: boolean
+          description: Whether the underlying data files are physically purged from storage.
     LakekeeperGenericTableActionGetMetadata:
       type: object
       required:
@@ -10420,6 +10429,7 @@ components:
             - include_in_list
     LakekeeperGenericTableActionManageTags:
       type: object
+      description: Attach/detach governance tags on this generic table.
       required:
         - action
       properties:
@@ -10438,6 +10448,7 @@ components:
             - read_data
     LakekeeperGenericTableActionReadGrants:
       type: object
+      description: Can list the grants held on this generic table.
       required:
         - action
       properties:
@@ -12634,6 +12645,11 @@ components:
           type: string
           enum:
             - delete
+        force:
+          type: boolean
+          description: |-
+            Whether protection is bypassed, i.e. a warehouse marked protected is deleted
+            with everything in it rather than the request being refused.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -14226,10 +14242,10 @@ components:
         this doc comment is published verbatim in the `OpenAPI` description, where an
         intra-doc link would render as a raw Rust module path.
 
-        This is the vocabulary the API speaks. A store is free to persist a coarser one —
-        tables, views and generic tables are one kind to a catalog that already records
-        which of the three an id refers to — so this deliberately carries no storage
-        mapping.
+        This is the vocabulary the API speaks, and the audit log spells these kinds the same way.
+        A store is free to persist a coarser one — tables, views and generic tables are one kind
+        to a catalog that already records which of the three an id refers to — so this
+        deliberately carries no storage mapping.
       enum:
         - server
         - project
