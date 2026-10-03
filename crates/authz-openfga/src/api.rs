@@ -304,19 +304,13 @@ struct GetTagAssignmentsResponse {
 
 /// The `action_name` values the assignment endpoints emit.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
 #[strum(serialize_all = "snake_case")]
 // The shared `Update` prefix is not redundant naming: each variant's wire value is the
 // full `update_<resource>_assignments` string a consumer matches on, so trimming the
 // prefix would rename nine audit log values.
+#[lakekeeper::audit::audit_part(field = "action_name")]
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum AssignmentAction {
     UpdateTagAssignments,
@@ -343,7 +337,7 @@ impl APIEventActions for UpdateTagAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateTagAssignments.into())
+                .action_name(AssignmentAction::UpdateTagAssignments.as_wire())
                 .build(),
         ]
     }
@@ -362,7 +356,7 @@ impl APIEventActions for UpdateServerAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateServerAssignments.into())
+                .action_name(AssignmentAction::UpdateServerAssignments.as_wire())
                 .build(),
         ]
     }
@@ -381,7 +375,7 @@ impl APIEventActions for UpdateProjectAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateProjectAssignments.into())
+                .action_name(AssignmentAction::UpdateProjectAssignments.as_wire())
                 .build(),
         ]
     }
@@ -400,7 +394,7 @@ impl APIEventActions for UpdateWarehouseAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateWarehouseAssignments.into())
+                .action_name(AssignmentAction::UpdateWarehouseAssignments.as_wire())
                 .build(),
         ]
     }
@@ -419,7 +413,7 @@ impl APIEventActions for UpdateNamespaceAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateNamespaceAssignments.into())
+                .action_name(AssignmentAction::UpdateNamespaceAssignments.as_wire())
                 .build(),
         ]
     }
@@ -438,7 +432,7 @@ impl APIEventActions for UpdateTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateTableAssignments.into())
+                .action_name(AssignmentAction::UpdateTableAssignments.as_wire())
                 .build(),
         ]
     }
@@ -457,7 +451,7 @@ impl APIEventActions for UpdateViewAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateViewAssignments.into())
+                .action_name(AssignmentAction::UpdateViewAssignments.as_wire())
                 .build(),
         ]
     }
@@ -476,7 +470,7 @@ impl APIEventActions for UpdateGenericTableAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateGenericTableAssignments.into())
+                .action_name(AssignmentAction::UpdateGenericTableAssignments.as_wire())
                 .build(),
         ]
     }
@@ -495,7 +489,7 @@ impl APIEventActions for UpdateRoleAssignmentsRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(AssignmentAction::UpdateRoleAssignments.into())
+                .action_name(AssignmentAction::UpdateRoleAssignments.as_wire())
                 .build(),
         ]
     }

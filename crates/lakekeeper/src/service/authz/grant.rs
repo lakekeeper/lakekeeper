@@ -50,10 +50,11 @@ use crate::{
 /// this doc comment is published verbatim in the `OpenAPI` description, where an
 /// intra-doc link would render as a raw Rust module path.
 ///
-/// This is the vocabulary the API speaks. A store is free to persist a coarser one —
-/// tables, views and generic tables are one kind to a catalog that already records
-/// which of the three an id refers to — so this deliberately carries no storage
-/// mapping.
+/// This is the vocabulary the API speaks, which is why its values reach the audit log
+/// marked `external_values`. A store is free to persist a coarser one — tables, views and
+/// generic tables are one kind to a catalog that already records which of the three an id
+/// refers to — so this deliberately carries no storage mapping.
+#[crate::audit::audit_part(field = "resource_type", external_values)]
 #[derive(
     Debug,
     Clone,
@@ -67,7 +68,6 @@ use crate::{
     Deserialize,
     strum::VariantArray,
     strum::EnumString,
-    strum::IntoStaticStr,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -89,15 +89,6 @@ pub enum ResourceType {
 }
 
 impl ResourceType {
-    /// The label used on the wire.
-    ///
-    /// Derived from the variant names, so this spelling and `serde`'s cannot drift apart
-    /// silently — the round-trip test below pins that they agree.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
-    }
-
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         <Self as std::str::FromStr>::from_str(s).ok()

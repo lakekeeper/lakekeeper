@@ -306,7 +306,7 @@ LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
 
 #### Required Claims
 
-Audience validation proves a token was issued *for* Lakekeeper, not that the caller belongs to your tenant — a shared identity provider mints the right `aud` for every user it knows. Required-claim rules add a check Lakekeeper enforces itself: after signature, issuer and audience are verified, every rule must hold, or the request gets a generic `401 AuthenticationFailed` that reveals nothing about the rule.
+Audience validation proves a token was issued _for_ Lakekeeper, not that the caller belongs to your tenant — a shared identity provider mints the right `aud` for every user it knows. Required-claim rules add a check Lakekeeper enforces itself: after signature, issuer and audience are verified, every rule must hold, or the request gets a generic `401 AuthenticationFailed` that reveals nothing about the rule.
 
 ```bash
 # Only tokens of one organization, carrying the `catalog` scope.

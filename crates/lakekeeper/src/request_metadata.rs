@@ -101,27 +101,18 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
+#[crate::audit::audit_part(field = "privilege_source")]
+#[audit(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
-    /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
-    /// Full bypass including data-plane actions.
+    /// A call the catalog made to itself, with no client request behind it. Full bypass,
+    /// including data-plane actions.
     Internal,
     /// Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass
     /// only; data-plane actions still route through the configured authorizer.
     InstanceAdmin,
     /// Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).
     Authorizer,
-}
-
-impl PrivilegeSource {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Internal => "internal",
-            Self::InstanceAdmin => "instance_admin",
-            Self::Authorizer => "authorizer",
-        }
-    }
 }
 
 /// A struct to hold metadata about a request.
@@ -531,15 +522,6 @@ impl RequestMetadata {
     #[must_use]
     pub(crate) fn internal_actor(&self) -> &InternalActor {
         &self.actor
-    }
-
-    /// The request's actor, rendered for an audit event.
-    ///
-    /// The one way to put this request's actor on a record, so every record
-    /// raised while serving it agrees on who the caller is.
-    #[must_use]
-    pub fn audit_actor(&self) -> crate::service::events::backends::audit::AuditActor<'_> {
-        crate::service::events::backends::audit::AuditActor(&self.actor)
     }
 
     #[must_use]

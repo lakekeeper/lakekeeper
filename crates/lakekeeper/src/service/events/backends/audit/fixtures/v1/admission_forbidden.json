@@ -1,9 +1,16 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "operation": "admission_decided",
   "actor": {
-    "actor_type": "assumed-role",
+    "actor_type": "assumed_role",
     "principal": "oidc~alice",
     "assumed_role": {
       "role_id": "019684ff-0000-7000-8000-000000000007",

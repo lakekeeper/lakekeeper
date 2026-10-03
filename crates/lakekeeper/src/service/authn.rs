@@ -854,7 +854,7 @@ async fn admit_then_check_actor<A: super::authz::Authorizer>(
         impl CatalogAction for AssumeRoleAction {
             fn action_descriptor(&self) -> ActionDescriptor {
                 ActionDescriptor::builder()
-                    .action_name(AuthnAction::AssumeRole.into())
+                    .action_name(AuthnAction::AssumeRole.as_wire())
                     .build()
             }
         }

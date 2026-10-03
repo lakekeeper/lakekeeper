@@ -23,6 +23,8 @@ Check a branch:  python3 .github/scripts/check-audit-format.py <base-ref> [--bas
 Write the version: python3 .github/scripts/check-audit-format.py --write-version
 Release notes:   python3 .github/scripts/check-audit-format.py --release-notes
 Cut a release:   python3 .github/scripts/check-audit-format.py --release <lakekeeper-version>
+Record shapes:   python3 .github/scripts/check-audit-format.py --summarise-records DIR OUT.json
+Compare schemas: python3 .github/scripts/check-audit-format.py --compare-schemas A.json B.json
 Self-test:       python3 .github/scripts/check-audit-format.py --self-test
 Read version:    python3 .github/scripts/check-audit-format.py --print-version <rev>
 """
@@ -31,20 +33,86 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 import re
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
 
 AUDIT_DIR = "crates/lakekeeper/src/service/events/backends/audit"
+
+# The committed schema of the emitter this repository owns: what the registry generates,
+# committed by `just update-audit-schema`. Diffed across the merge base like the fixtures.
+SCHEMA_PATH = "audit-format/schema.json"
+
+# Optional per-repository overrides of the paths above, so a crate outside this repository
+# runs the same checker against its own schema and declaration. Read once, from the working
+# tree, before anything else.
+CONFIG_PATH = "audit-format/config.json"
+
+# The Rust constant every record's version is read from, and the tree searched for its
+# declaration. Both are configurable because another repository names and places its own.
+VERSION_CONST = "AUDIT_FORMAT"
+VERSION_SEARCH_PATH = "crates/"
+
+# The copy of the schema published to the documentation site: the file customers download.
+# Written beside the schema by the same command, so a schema that moved without it means one
+# of the two was not regenerated.
+PUBLISHED_SCHEMA_PATH = "docs/docs/audit/schema.json"
+
+
+def load_config() -> None:
+    """Override the path constants from `CONFIG_PATH`, if the file exists.
+
+    Everything this checker needs to find is named here, so the script runs unchanged in a
+    repository laid out differently: the declaration it reads the version from, the tree it
+    searches for that declaration, the schema, its published copy, the baseline and the
+    fragments. The defaults are Lakekeeper's, so this repository needs no config file.
+    """
+    global AUDIT_DIR, SCHEMA_PATH, BASELINE_PATH, FRAGMENT_DIR
+    global VERSION_CONST, VERSION_SEARCH_PATH, PUBLISHED_SCHEMA_PATH
+    global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
+    path = Path(CONFIG_PATH)
+    if not path.is_file():
+        return
+    try:
+        config = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"::error::{CONFIG_PATH} is not valid JSON: {error}") from error
+    if not isinstance(config, dict):
+        raise SystemExit(f"::error::{CONFIG_PATH} must hold a JSON object.")
+    AUDIT_DIR = config.get("audit_dir", AUDIT_DIR)
+    SCHEMA_PATH = config.get("schema", SCHEMA_PATH)
+    BASELINE_PATH = config.get("baseline", BASELINE_PATH)
+    FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
+    PUBLISHED_SCHEMA_PATH = config.get("published_schema", PUBLISHED_SCHEMA_PATH)
+    VERSION_CONST = config.get("version_const", VERSION_CONST)
+    VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
+    GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
 # Two patterns for the same thing: `git grep -E` is POSIX ERE, which has no `\s`.
 #
 # Both are anchored to a `pub const` DECLARATION rather than to any occurrence of the text.
 # Without the anchor, prose that merely quotes the constant — a doc comment explaining the
 # format, say — counts as a second declaration and fails the build, while a commented-out
 # declaration would count as a real one.
-GIT_PATTERN = r'^[[:space:]]*pub const AUDIT_FORMAT: &str = "[0-9]+\.[0-9]+"'
-VERSION_RE = re.compile(r'^\s*pub const AUDIT_FORMAT:\s*&str\s*=\s*"(\d+)\.(\d+)"')
+def version_patterns(const: str) -> tuple[str, re.Pattern[str], re.Pattern[str]]:
+    """The three patterns that find, read and rewrite the version declaration of `const`.
+
+    Built from the constant's name rather than written out, so naming it in the config file
+    changes all three together and they cannot disagree.
+    """
+    name = re.escape(const)
+    return (
+        rf'^[[:space:]]*pub const {const}: &str = "[0-9]+\.[0-9]+"',
+        re.compile(rf'^\s*pub const {name}:\s*&str\s*=\s*"(\d+)\.(\d+)"'),
+        re.compile(
+            rf'(^[ \t]*pub const {name}:[ \t]*&str[ \t]*=[ \t]*")\d+\.\d+(")', re.MULTILINE
+        ),
+    )
+
+
+GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
 
 
 # ── git plumbing ────────────────────────────────────────────────────────────────
@@ -83,7 +151,7 @@ def declared_versions(rev: str) -> dict[str, tuple[int, int]]:
     Searched tree-wide so moving the module does not read as the version disappearing;
     keyed by path because a second match must be an error, not a silent pick.
     """
-    out = _git_grep("-E", GIT_PATTERN, rev, "--", "crates/")
+    out = _git_grep("-E", GIT_PATTERN, rev, "--", VERSION_SEARCH_PATH)
     if out is None:
         return {}
     found: dict[str, tuple[int, int]] = {}
@@ -132,18 +200,13 @@ FRAGMENT_DIR = "audit-format/unreleased/"
 LEVELS = ("none", "minor", "major")
 LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 
-# What a fixture or manifest verdict says a fragment must AT LEAST declare. `values` and
+# What a fixture or schema verdict says a fragment must AT LEAST declare. `values` and
 # `unknown` are deliberately absent: both hand the question to a human (see `DEFERRALS`),
 # so neither can demand a fragment without taxing every change that merely makes a test
 # input more realistic.
 REQUIRED_LEVEL = {"breaking": "major", "additive": "minor"}
 
 FRAGMENT_LEVEL_RE = re.compile(r"^level:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
-# Anchored to the declaration, like `VERSION_RE`, and capturing everything either side of
-# the value so a rewrite cannot disturb the rest of the line.
-VERSION_WRITE_RE = re.compile(
-    r'(^[ \t]*pub const AUDIT_FORMAT:[ \t]*&str[ \t]*=[ \t]*")\d+\.\d+(")', re.MULTILINE
-)
 
 
 def parse_baseline(text: str, where: str) -> tuple[int, int] | None:
@@ -271,7 +334,7 @@ def fragment_paths(paths, where: str) -> list[str]:
     recipe could clear the failure.
 
     Nesting is an error rather than a quiet skip, which is the same choice `single_version`
-    and `read_manifest` make. A skipped fragment reads as "no fragment recorded" while its
+    makes. A skipped fragment reads as "no fragment recorded" while its
     author is looking at the file they just wrote, its prose never reaches the release notes,
     and `do_release` leaves it behind to raise some later release's version instead.
     """
@@ -299,6 +362,44 @@ def fragments_at(rev: str) -> dict[str, str]:
         path: parse_fragment(_git("show", f"{rev}:{path}"), f"{path} at {rev}")
         for path in fragment_paths(listing.splitlines(), rev)
     }
+
+
+def fragment_bodies_at(rev: str) -> dict[str, str]:
+    """The unreleased fragments at `rev`, as path -> a digest of the file.
+
+    Separate from the levels because a branch contributes by REWORDING a fragment as often as
+    by adding one: folding a second change into the fragment that already covers the field is
+    the documented way to keep the release note describing the final state, and it usually
+    leaves the level alone. Comparing only levels would read that as no contribution.
+    """
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", FRAGMENT_DIR)
+    return {
+        path: hashlib.sha256(_git("show", f"{rev}:{path}").encode()).hexdigest()
+        for path in fragment_paths(listing.splitlines(), rev)
+    }
+
+
+def fragment_demand(
+    base: dict[str, str],
+    head: dict[str, str],
+    base_bodies: dict[str, str],
+    head_bodies: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """What this branch contributes to the release notes, and what it withdraws.
+
+    A contribution is a fragment added, one whose level moved, or one whose text changed.
+    Adequacy is judged against these rather than against every unreleased fragment, because a
+    `major` left by an earlier pull request in the same cycle would otherwise excuse this one
+    declaring `minor` — the version would still come out right and the release notes would
+    describe this change wrongly.
+    """
+    contributed = {
+        path: level
+        for path, level in head.items()
+        if base.get(path) != level or base_bodies.get(path) != head_bodies.get(path)
+    }
+    withdrawn = {path: level for path, level in base.items() if path not in head}
+    return contributed, withdrawn
 
 
 def fixture_dirs_at(rev: str) -> list[str]:
@@ -388,117 +489,6 @@ def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
 
 # ── action names ────────────────────────────────────────────────────────────────
 
-MANIFEST_NAME = "wire_values.json"
-
-def manifest_paths(rev: str) -> list[str]:
-    """Every committed wire-value manifest at `rev`.
-
-    Discovered rather than listed, because the vocabulary is not all in one crate.
-    `CatalogAction` is a public trait, so an authorizer contributes `action_name` values
-    Lakekeeper cannot enumerate; each such crate commits its own manifest next to the types
-    that produce it, and every one of them is compared here by the same rule.
-    """
-    listing = _git("ls-tree", "-r", "--name-only", rev)
-    return sorted(
-        path for path in listing.splitlines() if path.rsplit("/", 1)[-1] == MANIFEST_NAME
-    )
-
-
-def read_manifest(rev: str, path: str) -> dict:
-    """One committed manifest at `rev`.
-
-    Only ever called for a path `manifest_paths` just reported at the same revision, so a
-    failure here is a real git failure and is left to propagate. Reading it as "no manifest"
-    would turn the whole comparison off without printing a word.
-    """
-    raw = _git("show", f"{rev}:{path}")
-    try:
-        manifest = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise SystemExit(
-            f"::error::{path} at {rev} is not valid JSON: {error}. A wire-value manifest is "
-            f"generated by a test — regenerate it with `just update-audit-fixtures` rather "
-            f"than editing it by hand."
-        ) from error
-    if not isinstance(manifest, dict):
-        # Discovery is by filename, so an unrelated file of the same name lands here. Name it
-        # rather than failing later with an AttributeError nobody can trace back to a path.
-        raise SystemExit(
-            f"::error::{path} at {rev} is named like a wire-value manifest but is a "
-            f"{type(manifest).__name__}, not an object. Either it is one and is malformed, or "
-            f"it is something else that needs a different name — discovery matches any file "
-            f"called {MANIFEST_NAME}."
-        )
-    return manifest
-
-
-def manifest_entries(manifest: dict) -> set[tuple[str, str, str]]:
-    """A manifest flattened to `(wire field, owning type, value)` triples.
-
-    The shape is `{"<field>": {"<owner>": ["<value>", ...]}}`. Flattened with the owner kept,
-    never to bare values: most verbs are shared — six action enums emit `get_metadata` — so a
-    comparison that dropped the owner would not notice one of them renaming it.
-    """
-    entries: set[tuple[str, str, str]] = set()
-    for field, owners in (manifest or {}).items():
-        if not isinstance(owners, dict):
-            continue
-        for owner, values in owners.items():
-            if not isinstance(values, list):
-                continue
-            entries.update(
-                (field, owner, value) for value in values if isinstance(value, str)
-            )
-    return entries
-
-
-def losses_by_path(
-    base: dict[str, set[tuple[str, str, str]]], head: dict[str, set[tuple[str, str, str]]]
-) -> dict[str, list[str]]:
-    """Values present at base and emitted by nothing at head, keyed by the manifest that held
-    them.
-
-    The pure half of `lost_wire_values`, split out so the rule this whole check rests on is
-    testable without a repository — and so a rewrite of it cannot pass the self-test by virtue
-    of never being called.
-
-    An entry is `(field, owner, value)` and is lost only when it is absent from EVERY head
-    manifest, not merely from the one it used to live in. The owner is part of the key, so
-    that distinction does the right thing in both directions: moving a manifest to a new path,
-    or moving an owner from one crate's manifest to another's, changes where a value is
-    recorded but not whether it is emitted, and is not a loss. Renaming one owner's value
-    while a DIFFERENT owner keeps the same string still is — six action enums emit
-    `get_metadata`, and one of them dropping it must not be masked by the other five.
-
-    Additions are not losses; see the audit log section of `docs/docs/developer-guide.md`.
-    """
-    still_emitted: set[tuple[str, str, str]] = set()
-    for entries in head.values():
-        still_emitted |= entries
-
-    lost: dict[str, list[str]] = {}
-    for path, before in base.items():
-        gone = before - still_emitted
-        if gone:
-            lost[path] = [
-                f"{field}: {owner} -> {value}" for field, owner, value in sorted(gone)
-            ]
-    return lost
-
-
-def lost_wire_values(rev_base: str, rev_head: str) -> dict[str, list[str]]:
-    """Values emitted at `rev_base` and no longer emittable at `rev_head`, by manifest.
-
-    These reach the log as strings consumers switch on, so losing one breaks them while the
-    record's shape stays byte-identical — which is exactly what the fixture comparison cannot
-    see. The git reads live here; the comparison itself is `losses_by_path`.
-    """
-    return losses_by_path(
-        {path: manifest_entries(read_manifest(rev_base, path)) for path in manifest_paths(rev_base)},
-        {path: manifest_entries(read_manifest(rev_head, path)) for path in manifest_paths(rev_head)},
-    )
-
-
 def content(record: object) -> object:
     """A record with the version field removed, for comparing values.
 
@@ -547,14 +537,417 @@ DEFERRALS = {
 }
 
 
+def schema_at(rev: str) -> dict | None:
+    """The committed schema at `rev`, or `None` when the file does not exist there."""
+    listing = _git("ls-tree", "-r", "--name-only", rev, "--", SCHEMA_PATH).strip()
+    if not listing:
+        return None
+    text = _git("show", f"{rev}:{SCHEMA_PATH}")
+    try:
+        schema = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise CheckFailed(f"::error::{SCHEMA_PATH} at {rev} is not valid JSON: {error}") from error
+    if not isinstance(schema, dict) or not isinstance(schema.get("$defs"), dict):
+        raise CheckFailed(f"::error::{SCHEMA_PATH} at {rev} has no `$defs` object.")
+    return schema
+
+
+def file_at(rev: str, path: str) -> str | None:
+    """The contents of `path` at `rev`, or `None` when it does not exist there."""
+    if not _git("ls-tree", "-r", "--name-only", rev, "--", path).strip():
+        return None
+    return _git("show", f"{rev}:{path}")
+
+
+def require_published_schema_regenerated(merge_base: str, head_ref: str) -> None:
+    """Refuse a schema change whose published copy did not move with it.
+
+    Both are written by the same command, so one changing without the other means one was
+    regenerated and committed and the other was not. The stale half is the one customers
+    download.
+
+    Silent when the repository publishes no copy: not every emitter does.
+    """
+    base = file_at(merge_base, PUBLISHED_SCHEMA_PATH)
+    head = file_at(head_ref, PUBLISHED_SCHEMA_PATH)
+    if base is None or head is None or base != head:
+        return
+    raise CheckFailed(
+        f"::error::{SCHEMA_PATH} changed and {PUBLISHED_SCHEMA_PATH} did not. The published "
+        f"copy is written from it; run `just update-audit-schema` and commit both."
+    )
+
+
+def emitter_of(schema: dict) -> tuple[str | None, str | None]:
+    """The emitter a schema document names, as `(name, format)`.
+
+    `(None, None)` when the document carries no stamp, which is not an error: a record-shape
+    summary has none, because it describes what was observed rather than what one emitter
+    declares.
+    """
+    stamp = schema.get("x-audit-emitter")
+    if not isinstance(stamp, dict):
+        return (None, None)
+    name, version = stamp.get("name"), stamp.get("format")
+    return (
+        name if isinstance(name, str) else None,
+        version if isinstance(version, str) else None,
+    )
+
+
+def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str | None, str, str]:
+    """Refuse to compare two schemas that describe different emitters.
+
+    A verdict across emitters is meaningless: they carry different vocabularies, are governed
+    by whoever ships them, and move on their own release cycles. Every definition of the one
+    would read as removed and every definition of the other as added. Returns the emitter's
+    name and the two formats, for printing.
+    """
+    base_name, base_format = emitter_of(base)
+    head_name, head_format = emitter_of(head)
+    if base_name and head_name and base_name != head_name:
+        raise CheckFailed(
+            f"::error::{whence} was given schemas of two different emitters, `{base_name}` "
+            f"and `{head_name}`. Compare a schema with its own predecessor."
+        )
+    return (head_name or base_name, base_format or "?", head_format or "?")
+
+
+def _type_of(spec: object) -> str:
+    """The comparable type of a property: its JSON type, `$ref`, or the shape of its variants."""
+    if not isinstance(spec, dict):
+        return json.dumps(spec, sort_keys=True)
+    if "$ref" in spec:
+        return f"ref:{spec['$ref']}"
+    if "enum" in spec:
+        return "enum"
+    if "const" in spec:
+        return f"const:{json.dumps(spec['const'], sort_keys=True)}"
+    for key in ("anyOf", "oneOf"):
+        if key in spec:
+            return key + "[" + ",".join(sorted(_type_of(v) for v in spec[key])) + "]"
+    kind = spec.get("type", "any")
+    if isinstance(kind, list):
+        kind = "|".join(sorted(str(k) for k in kind))
+    if kind == "array":
+        return f"array[{_type_of(spec.get('items', {}))}]"
+    return str(kind)
+
+
+def _branches(spec: dict) -> list | None:
+    """The `oneOf`/`anyOf` branches of a definition, or `None` when it has neither."""
+    for key in ("oneOf", "anyOf"):
+        if isinstance(spec.get(key), list):
+            return spec[key]
+    return None
+
+
+def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
+    """`none`, `additive` or `breaking` for the change from `base` to `head`, with the reasons.
+
+    Definitions are the unit: a definition removed, a property removed or retyped, a property
+    made required, or a name removed from a set breaks a parser. A definition or an optional
+    property added, or a value added to a value set, does not. Descriptions carry no shape and
+    are ignored. So is every `x-audit-*` annotation but one: `x-audit-kind` says whether a list
+    of names holds a field's values or an object's keys, and an addition means different things
+    for the two.
+    """
+    reasons: list[str] = []
+    kind = "none"
+
+    def bump(level: str, reason: str) -> None:
+        nonlocal kind
+        reasons.append(reason)
+        if LEVEL_RANK.get(REQUIRED_LEVEL.get(level, "none"), 0) > LEVEL_RANK.get(
+            REQUIRED_LEVEL.get(kind, "none"), 0
+        ):
+            kind = level
+
+    base_defs, head_defs = base["$defs"], head["$defs"]
+    for name in sorted(set(base_defs) - set(head_defs)):
+        bump("breaking", f"definition `{name}` removed")
+    for name in sorted(set(head_defs) - set(base_defs)):
+        bump("additive", f"definition `{name}` added")
+    for name in sorted(set(base_defs) & set(head_defs)):
+        b, h = base_defs[name], head_defs[name]
+        if isinstance(b.get("enum"), list) and isinstance(h.get("enum"), list):
+            # Two kinds of name list, and they differ in what an addition means. A value
+            # vocabulary lists what one field can hold, and the format promises that set is
+            # open, so a new value changes nothing for a consumer. A key vocabulary lists the
+            # KEYS of an object, so its names are field names: one more is one more field,
+            # which is exactly what `minor` is for.
+            keys = "keys" in (h.get("x-audit-kind"), b.get("x-audit-kind"))
+            noun = "key" if keys else "value"
+            for gone in sorted(set(b["enum"]) - set(h["enum"])):
+                bump("breaking", f"`{name}` lost the {noun} `{gone}`")
+            gained = sorted(set(h["enum"]) - set(b["enum"]))
+            if gained and keys:
+                for added in gained:
+                    bump("additive", f"`{name}` gained the key `{added}`")
+            elif gained:
+                reasons.append(f"`{name}` gained values (no format change)")
+            # What sits under a key. A key whose value gains, loses or changes its shape
+            # changes the type a consumer finds there, which no reader absorbs on its own —
+            # unlike a new key, which one can ignore. The shape's own fields are compared
+            # where that definition is, so only the pairing is judged here.
+            b_shapes = b.get("x-audit-key-shapes", {})
+            h_shapes = h.get("x-audit-key-shapes", {})
+            for key in sorted(set(b_shapes) | set(h_shapes)):
+                was, now = b_shapes.get(key), h_shapes.get(key)
+                if was == now:
+                    continue
+                if was is None:
+                    if key not in set(b["enum"]):
+                        # The key itself is new, already counted additive above. A key born
+                        # holding an object takes nothing away from a consumer: there was
+                        # no value there to change type.
+                        continue
+                    bump("breaking", f"`{name}`: key `{key}` now holds an object")
+                elif now is None:
+                    bump("breaking", f"`{name}`: key `{key}` no longer holds an object")
+                else:
+                    bump("breaking", f"`{name}`: key `{key}` holds a different shape")
+            continue
+
+        # A definition whose branches are `oneOf`/`anyOf` rather than an `enum` list: what
+        # schemars writes for an enum whose variants carry doc comments, and for a tagged
+        # union. Without this the whole definition falls through to the property comparison
+        # with no properties on either side, and a removed branch reads as no change at all.
+        # Compared as a MULTISET: two object branches both render as `object`, so a set would
+        # collapse them and hide the loss of one.
+        b_branches, h_branches = _branches(b), _branches(h)
+        if b_branches is not None and h_branches is not None:
+            b_rendered = Counter(_type_of(v) for v in b_branches)
+            h_rendered = Counter(_type_of(v) for v in h_branches)
+            for branch in sorted((b_rendered - h_rendered).elements()):
+                bump("breaking", f"`{name}` lost the variant `{branch}`")
+            gained = sorted((h_rendered - b_rendered).elements())
+            if gained:
+                # All-constant branches are a value set, where the format promises openness;
+                # anything else is a new object shape a consumer has to be ready for.
+                values_only = all("const" in v for v in b_branches + h_branches if isinstance(v, dict))
+                for branch in gained:
+                    if values_only:
+                        reasons.append(f"`{name}` gained the value `{branch}` (no format change)")
+                    else:
+                        bump("additive", f"`{name}` gained the variant `{branch}`")
+            # A branch that survived on both sides is still an object a consumer reads, so
+            # its own properties are compared the same way a definition's are. Branches are
+            # paired by their discriminator, which is what a reader routes on; a branch
+            # without one is paired by its rendered type, which is all there is to go on.
+            b_by_key = {
+                k: v
+                for v in b_branches
+                if isinstance(v, dict) and (k := _branch_key(v)) is not None
+            }
+            h_by_key = {
+                k: v
+                for v in h_branches
+                if isinstance(v, dict) and (k := _branch_key(v)) is not None
+            }
+            for key in sorted(set(b_by_key) & set(h_by_key)):
+                compare_properties(f"{name}/{key}", b_by_key[key], h_by_key[key], bump)
+            continue
+        compare_properties(name, b, h, bump)
+    return kind, reasons
+
+
+def _branch_key(branch: dict) -> str | None:
+    """The discriminator that identifies one branch of a `oneOf` across two revisions.
+
+    A tagged union carries one — `{"type": {"const": "policy"}}` — and it is what a consumer
+    switches on, so it is what pairs a branch with its older self. `None` for a branch
+    without one: two untagged object branches are indistinguishable, and pairing them by
+    position would report the difference between unrelated shapes.
+    """
+    const = (branch.get("properties", {}) or {}).get("type", {})
+    if isinstance(const, dict) and "const" in const:
+        return str(const["const"])
+    return None
+
+
+def compare_properties(name: str, b: dict, h: dict, bump) -> None:
+    """Property-by-property comparison of two objects, reporting through `bump`.
+
+    Used for a whole definition and for one branch of a `oneOf`. A branch is an object a
+    consumer reads like any other, so reading it by a different rule would let a rename
+    inside a union pass as no change.
+    """
+    b_props, h_props = b.get("properties", {}) or {}, h.get("properties", {}) or {}
+    b_req, h_req = set(b.get("required", []) or []), set(h.get("required", []) or [])
+    for prop in sorted(set(b_props) - set(h_props)):
+        bump("breaking", f"`{name}.{prop}` removed")
+    for prop in sorted(set(h_props) - set(b_props)):
+        bump("additive", f"`{name}.{prop}` added" + (" (required)" if prop in h_req else ""))
+    for prop in sorted(set(b_props) & set(h_props)):
+        if _type_of(b_props[prop]) != _type_of(h_props[prop]):
+            bump(
+                "breaking",
+                f"`{name}.{prop}` retyped: {_type_of(b_props[prop])} -> {_type_of(h_props[prop])}",
+            )
+        if prop in h_req and prop not in b_req:
+            bump("breaking", f"`{name}.{prop}` became required")
+        # The mirror case, and breaking for the same reason read the other way: a
+        # consumer that relied on the field always being there now meets records
+        # without it.
+        if prop in b_req and prop not in h_req:
+            bump("breaking", f"`{name}.{prop}` became optional")
+    if _type_of(b.get("additionalProperties", True)) != _type_of(
+        h.get("additionalProperties", True)
+    ):
+        bump("breaking", f"`{name}` changed what extra keys it accepts")
+
+
+# Which family a record belongs to. A record that carries `record_type` names its own; one
+# that does not is read off which fields are present, which is what lets this summarise a
+# revision from before the field existed.
+FAMILY_BY_RECORD_TYPE = {
+    "authorization": "AuthorizationRecord",
+    "replay": "ReplayRecord",
+    "operation": "OperationRecord",
+}
+
+
+def record_family(record: dict) -> str:
+    """Which record family `record` belongs to."""
+    declared = record.get("record_type")
+    if isinstance(declared, str):
+        return FAMILY_BY_RECORD_TYPE.get(declared, declared)
+    if "decision" in record:
+        return "AuthorizationRecord"
+    if any(key in record for key in ("action", "actions", "entity", "entities")):
+        return "ReplayRecord"
+    return "OperationRecord"
+
+
+def json_type(value: object) -> str:
+    """The JSON type name of `value`. `bool` is checked first: in Python it is an `int`."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    return "object"
+
+
+def _property_spec(types: set[str], item_types: set[str]) -> dict:
+    """One property, as the comparison reads it: its type, and an array's item type."""
+    kinds = sorted(types)
+    spec: dict = {"type": kinds[0] if len(kinds) == 1 else kinds}
+    if "array" in types and item_types:
+        items = sorted(item_types)
+        spec["items"] = {"type": items[0] if len(items) == 1 else items}
+    return spec
+
+
+def summarise_records(records_dir: str, out_path: str) -> int:
+    """Describe the TOP-LEVEL shape of committed records, as a schema document.
+
+    The generated schema describes the objects a record is assembled from, not the record
+    itself, because the record shapes are not registered types. This reads emitted records
+    instead and states, per family, which top-level keys appear, with which JSON types, and
+    which appear in every sample. A key that is sometimes `null` is typed as such, so losing
+    the `null` reads as a retype rather than passing unnoticed.
+
+    Sampled, not exhaustive: a key no committed record carries is not here. The output is a
+    schema document, so `--compare-schemas` reads it like any other.
+    """
+    directory = Path(records_dir)
+    files = sorted(directory.glob("*.json"))
+    if not files:
+        print(f"::error::no records found in {records_dir}")
+        return 1
+
+    seen: dict[str, dict] = {}
+    for path in files:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"::error::{path} is not readable JSON: {error}")
+            return 1
+        if not isinstance(record, dict):
+            print(f"::error::{path} is not a JSON object")
+            return 1
+        family = seen.setdefault(
+            record_family(record), {"types": {}, "items": {}, "count": 0, "always": None}
+        )
+        family["count"] += 1
+        for key, value in record.items():
+            family["types"].setdefault(key, set()).add(json_type(value))
+            if isinstance(value, list):
+                for item in value:
+                    family["items"].setdefault(key, set()).add(json_type(item))
+        keys = set(record)
+        family["always"] = keys if family["always"] is None else family["always"] & keys
+
+    defs = {}
+    for name in sorted(seen):
+        family = seen[name]
+        defs[name] = {
+            "type": "object",
+            "x-audit-kind": "shape",
+            "x-audit-samples": family["count"],
+            "properties": {
+                key: _property_spec(family["types"][key], family["items"].get(key, set()))
+                for key in sorted(family["types"])
+            },
+            "required": sorted(family["always"] or set()),
+        }
+
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Top-level shape of the audit records committed under " + records_dir,
+        "x-audit-source": records_dir,
+        "$defs": defs,
+    }
+    Path(out_path).write_text(json.dumps(document, indent=2) + "\n")
+    total = sum(family["count"] for family in seen.values())
+    print(f"{out_path}: {len(defs)} record families from {total} record(s) in {records_dir}")
+    return 0
+
+
+def compare_schemas(base_path: str, head_path: str) -> int:
+    """Classify the difference between two committed schema documents.
+
+    The same comparison the pull request check runs across the merge base, pointed at two
+    files instead. A change that spans many commits, or one whose "before" lives in a frozen
+    snapshot rather than in a parent revision, is read in one go — which is what the release
+    note is written from.
+    """
+    try:
+        base = json.loads(Path(base_path).read_text())
+        head = json.loads(Path(head_path).read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"::error::cannot read the schemas: {error}")
+        return 1
+    name, base_format, head_format = require_same_emitter(base, head, "--compare-schemas")
+    kind, reasons = classify_schema(base, head)
+    print(f"Comparing:  {base_path} -> {head_path}")
+    if name:
+        moved = "" if base_format == head_format else f" -> {head_format}"
+        print(f"Emitter:    `{name}`, format {base_format}{moved}")
+    for reason in reasons:
+        print(f"  {reason}")
+    if not reasons:
+        print("  no difference")
+    required = REQUIRED_LEVEL.get(kind, "none")
+    print(f"Verdict:    {kind}; a fragment must declare at least `{required}`")
+    return 0
+
+
 def classify_change(merge_base: str, head_ref: str) -> str:
     """`none`, `additive`, `breaking`, `values` or `unknown` for the change between the two
     revisions, printing how it was reached.
 
-    This half did not change with the move to derived versions: fixtures still pin shape by
-    example and the manifests still pin values exhaustively. What changed is what the verdict
-    is used FOR. It no longer demands a version bump — it demands a fragment that does not
-    understate it.
+    Fixtures pin shape by example and the schema pins every declared field and value. The
+    verdict does not demand a version bump; it demands a fragment that does not understate it.
     """
     base_dirs, head_dirs = fixture_dirs_at(merge_base), fixture_dirs_at(head_ref)
     # More than one is ambiguous and none at head means the checker has nothing to work with.
@@ -598,37 +991,43 @@ def classify_change(merge_base: str, head_ref: str) -> str:
         f"({len(base_shapes)} before, {len(head_shapes)} after), shapes say {shape_kind}"
     )
 
-    # The fixture shapes above see the record's KEYS. Its VALUES — `action_name`,
-    # `entity_type`, `decision` and the rest — are strings, so renaming one leaves every shape
-    # identical, and a value no fixture happens to carry changes nothing at all. The committed
-    # manifests are what make those visible. Only losses matter: a rename or a removal breaks
-    # every consumer switching on the value, while a new value leaves the format unchanged.
-    base_manifests = manifest_paths(merge_base)
-    if not base_manifests:
-        # Said out loud on purpose: a skipped check that prints nothing is indistinguishable
-        # from a check that ran and found nothing.
-        print(
-            f"Values:     SKIPPED — no {MANIFEST_NAME} at {merge_base}, so there is nothing to "
-            f"compare. A renamed or removed wire value is NOT checked in this run; check by "
-            f"hand."
-        )
-        return shape_kind
+    # The fixture shapes above see the record's KEYS. Its VALUES are strings, so renaming one
+    # leaves every shape identical and a value no fixture happens to carry changes nothing at
+    # all. The schema is what makes those visible: it lists every value of every vocabulary
+    # enum, keyed by the type that owns it.
+    return merge_schema_verdict(shape_kind, merge_base, head_ref)
 
-    lost = lost_wire_values(merge_base, head_ref)
-    for path, entries in sorted(lost.items()):
-        for entry in entries:
-            print(f"Values:     {path} no longer emits {entry}")
-    if lost:
-        # A string consumers switch on is gone. That breaks them whatever the fixtures showed,
-        # so it decides the verdict.
-        return "breaking"
-    total = sum(
-        len(manifest_entries(read_manifest(merge_base, path))) for path in base_manifests
+def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str:
+    """Fold the schema comparison into the fixture verdict: the stronger statement wins.
+
+    The schema is a declaration of every registered type, so it sees a field on a path no
+    fixture exercises. Where both exist, a `breaking` from either side is the verdict; an
+    `additive` from the schema raises a `none`; the schema never lowers a fixture verdict.
+    """
+    base_schema, head_schema = schema_at(merge_base), schema_at(head_ref)
+    if head_schema is None:
+        print(f"Schema:     no {SCHEMA_PATH} at HEAD; shape is checked by fixtures alone")
+        return shape_kind
+    if base_schema is None:
+        print(f"Schema:     {SCHEMA_PATH} introduced on this branch; nothing to compare it with")
+        return shape_kind
+    name, base_format, head_format = require_same_emitter(
+        base_schema, head_schema, "the schema comparison"
     )
+    if name:
+        moved = "" if base_format == head_format else f" -> {head_format}"
+        print(f"Schema:     emitter `{name}`, format {base_format}{moved}")
+    schema_kind, reasons = classify_schema(base_schema, head_schema)
+    if reasons:
+        require_published_schema_regenerated(merge_base, head_ref)
+    for reason in reasons:
+        print(f"Schema:     {reason}")
     print(
-        f"Values:     {total} value(s) across {len(base_manifests)} manifest(s) compared, "
-        f"none lost"
+        f"Schema:     {len(head_schema['$defs'])} definition(s) compared, says {schema_kind}"
     )
+    rank = lambda k: LEVEL_RANK.get(REQUIRED_LEVEL.get(k, "none"), 0)
+    if rank(schema_kind) > rank(shape_kind):
+        return schema_kind
     return shape_kind
 
 
@@ -691,6 +1090,18 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 
     print(f"Merge base: {merge_base}")
 
+    # Everything below is read from the commit, not from the working tree, so a developer who
+    # has edited but not committed is told about the previous commit. Saying so is cheaper
+    # than reading the tree: the fixtures and the schema are generated, and comparing a
+    # half-regenerated tree against a commit reports differences that are nobody's change.
+    watched = [f"{AUDIT_DIR}/fixtures", SCHEMA_PATH, FRAGMENT_DIR, VERSION_SEARCH_PATH]
+    dirty = _git("status", "--porcelain", "--", *watched).strip()
+    if dirty:
+        print(
+            "Reading:   HEAD — these paths have uncommitted changes, which are NOT checked:\n"
+            + "\n".join(f"             {line}" for line in dirty.splitlines()[:10])
+        )
+
     # A branch from before the audit format existed has nothing to check. Kept distinct from
     # a REMOVED constant, which is the dangerous direction: `audit_format` is on every record
     # and consumers route on it, so losing it breaks them with no version left to say so.
@@ -748,14 +1159,12 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
     # left by an earlier pull request in the same cycle would otherwise excuse this one
     # declaring `minor` — the version would still come out right, and the release notes would
     # describe this change wrongly.
-    contributed = {
-        path: level
-        for path, level in head_fragments.items()
-        if base_fragments.get(path) != level
-    }
-    withdrawn = {
-        path: level for path, level in base_fragments.items() if path not in head_fragments
-    }
+    contributed, withdrawn = fragment_demand(
+        base_fragments,
+        head_fragments,
+        fragment_bodies_at(merge_base),
+        fragment_bodies_at("HEAD"),
+    )
     declared_level = highest(head_fragments.values())
     required = required_version(baseline, declared_level)
 
@@ -768,6 +1177,18 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
         f"this branch adds {len(contributed)}, withdraws {len(withdrawn)}"
     )
     print(f"Version:    {show(head_version)} declared, {show(required)} required")
+
+    # The schema is generated from the constant, so the two disagree only when the file was
+    # hand-edited or never regenerated. Either way a consumer would read a format the records
+    # do not carry.
+    committed_schema = schema_at("HEAD")
+    if committed_schema is not None and head_version is not None:
+        _, stamped = emitter_of(committed_schema)
+        if stamped is not None and stamped != show(head_version):
+            raise CheckFailed(
+                f"::error::{SCHEMA_PATH} is stamped format {stamped}, but AUDIT_FORMAT is "
+                f"{show(head_version)}. Run `just update-audit-schema`."
+            )
 
     shape_kind = classify_change(merge_base, "HEAD")
     detected_level = REQUIRED_LEVEL.get(shape_kind)
@@ -800,18 +1221,17 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             base_branch, shape_kind, head_fragments, head_version, baseline
         )
 
-    # The bootstrap. Nothing has been released carrying an audit format, so there is no
-    # format to have changed and nothing for a fragment to describe. Rejected rather than
-    # ignored: a fragment here reads as a change that a reader would go looking for in the
-    # previous release notes, and there are none.
+    # The bootstrap. No release has carried an audit FORMAT VERSION, so the version derives
+    # to the first one whatever the fragments say and none is demanded. Fragments are still
+    # allowed, and usually wanted: released builds have emitted audit records for some time
+    # without a version field, so a consumer may well be parsing them already, and a change
+    # to what they receive is a change to describe whether or not a number moves.
     if baseline is None and head_fragments:
         print(
-            f"::error::{BASELINE_PATH} records no released version, so the first release "
-            f"declares {show(required)} rather than changing anything — but "
-            f"{len(head_fragments)} fragment(s) are present: {', '.join(sorted(head_fragments))}. "
-            f"Delete them and describe the audit log in the release notes as a new feature."
+            f"Bootstrap:  {len(head_fragments)} fragment(s) present with no released "
+            f"baseline. The version derives to {show(required)} regardless; the fragments "
+            f"are the release note for consumers already parsing these records."
         )
-        return 1
 
     # A pull request that only WITHDRAWS fragments is undoing a change no release has
     # carried, so the comparison's verdict describes the removal of something consumers never
@@ -905,7 +1325,7 @@ def worktree_fragments() -> dict[str, str]:
 def worktree_declaration() -> tuple[str, tuple[int, int]]:
     """The file declaring AUDIT_FORMAT in the working tree, and its value."""
     found: dict[str, tuple[int, int]] = {}
-    for line in (_git_grep("-E", GIT_PATTERN, "--", "crates/") or "").splitlines():
+    for line in (_git_grep("-E", GIT_PATTERN, "--", VERSION_SEARCH_PATH) or "").splitlines():
         # No revision, so `git grep` prefixes `path:` only — and a path cannot contain a
         # colon in git, so partitioning from the left is exact.
         path, _, body = line.partition(":")
@@ -949,13 +1369,6 @@ def write_version() -> int:
     """Compute the required version from the working tree and write it into the constant."""
     baseline = worktree_baseline()
     fragments = worktree_fragments()
-    if baseline is None and fragments:
-        raise SystemExit(
-            f"::error::{BASELINE_PATH} records no released version, so the first release "
-            f"declares {show(required_version(None, None))} rather than changing anything — "
-            f"but {len(fragments)} fragment(s) are present. Delete them and describe the audit "
-            f"log in the release notes as a new feature."
-        )
     level = highest(fragments.values())
     required = required_version(baseline, level)
     path, current = worktree_declaration()
@@ -1397,205 +1810,6 @@ def self_test() -> int:
         False,
     )
 
-    # Wire values, flattened per (field, owner). Pure dict comparisons on purpose: the git
-    # lookups live in `read_manifest`, so the comparison stays testable without a repository.
-    #
-    # THE regression. `get_metadata` is emitted by six enums, so renaming ONE of them is
-    # invisible to any comparison over the flattened union of all the names: the union
-    # still contains `get_metadata` from the other five. This is the real case that got
-    # through — `CatalogTableAction::GetMetadata` renamed to `FetchMetadata`, the wire
-    # value for every table event changed, CI green. Reintroduce a flattened comparison
-    # and this check is the one that fails.
-    masking_base = {
-        "action_name": {
-            "CatalogTableAction": ["get_metadata", "drop"],
-            "CatalogViewAction": ["get_metadata"],
-        }
-    }
-    masking_head = {
-        "action_name": {
-            "CatalogTableAction": ["fetch_metadata", "drop"],
-            "CatalogViewAction": ["get_metadata"],
-        }
-    }
-    check(
-        "a rename is a loss even while another owner still emits that name",
-        manifest_entries(masking_base) - manifest_entries(masking_head),
-        {("action_name", "CatalogTableAction", "get_metadata")},
-    )
-    check(
-        "the flattened union is what cannot see it",
-        {value for _, _, value in manifest_entries(masking_base)}
-        - {value for _, _, value in manifest_entries(masking_head)},
-        set(),
-    )
-    # The same masking applies ACROSS fields, which is why the field is part of the key:
-    # `read` is both an action name and, hypothetically, some other field's value.
-    check(
-        "a rename is a loss even while another FIELD carries that value",
-        manifest_entries({"action_name": {"A": ["read"]}, "decision": {"D": ["read"]}})
-        - manifest_entries({"action_name": {"A": ["fetch"]}, "decision": {"D": ["read"]}}),
-        {("action_name", "A", "read")},
-    )
-    check(
-        "an added value is not a loss",
-        manifest_entries({"action_name": {"A": ["x"]}})
-        - manifest_entries({"action_name": {"A": ["x", "y"]}}),
-        set(),
-    )
-    check(
-        "an added owner is not a loss",
-        manifest_entries({"action_name": {"A": ["x"]}})
-        - manifest_entries({"action_name": {"A": ["x"], "B": ["z"]}}),
-        set(),
-    )
-    check(
-        "an added field is not a loss",
-        manifest_entries({"action_name": {"A": ["x"]}})
-        - manifest_entries({"action_name": {"A": ["x"]}, "entity_type": {"E": ["t"]}}),
-        set(),
-    )
-    check(
-        "an owner removed entirely loses every one of its values",
-        manifest_entries({"action_name": {"A": ["x"], "B": ["y", "z"]}})
-        - manifest_entries({"action_name": {"A": ["x"]}}),
-        {("action_name", "B", "y"), ("action_name", "B", "z")},
-    )
-    check(
-        "a field removed entirely loses every one of its values",
-        manifest_entries({"action_name": {"A": ["x"]}, "entity_type": {"E": ["tag"]}})
-        - manifest_entries({"action_name": {"A": ["x"]}}),
-        {("entity_type", "E", "tag")},
-    )
-    identical = {"action_name": {"A": ["x", "y"], "B": ["y"]}, "decision": {"D": ["allowed"]}}
-    check(
-        "identical manifests lose nothing",
-        manifest_entries(identical) - manifest_entries(dict(identical)),
-        set(),
-    )
-    check(
-        "a malformed manifest yields no entries rather than raising",
-        manifest_entries({"action_name": "not-an-object", "entity_type": {"E": "not-a-list"}}),
-        set(),
-    )
-
-    # `losses_by_path` is the function `run()` actually calls, so the checks below target it
-    # rather than the set arithmetic it happens to use. A rewrite that never calls it — or
-    # that reintroduces a flattened comparison inside it — fails here.
-    def entries(manifest):
-        return manifest_entries(manifest)
-
-    lake = "crates/lakekeeper/src/service/events/backends/audit/wire_values.json"
-    fga = "crates/authz-openfga/wire_values.json"
-
-    # THE regression. `get_metadata` is emitted by six enums, so renaming ONE of them is
-    # invisible to any comparison over the flattened union: the union still contains
-    # `get_metadata` from the other five. This is the real case that got through —
-    # `CatalogTableAction::GetMetadata` renamed to `FetchMetadata`, the wire value for every
-    # table event changed, CI green.
-    check(
-        "a rename is a loss even while another owner still emits that name",
-        losses_by_path(
-            {lake: entries({"action_name": {"A": ["get_metadata", "drop"], "B": ["get_metadata"]}})},
-            {lake: entries({"action_name": {"A": ["fetch_metadata", "drop"], "B": ["get_metadata"]}})},
-        ),
-        {lake: ["action_name: A -> get_metadata"]},
-    )
-    check(
-        "a rename is a loss even while another FIELD carries that value",
-        losses_by_path(
-            {lake: entries({"action_name": {"A": ["read"]}, "decision": {"D": ["read"]}})},
-            {lake: entries({"action_name": {"A": ["fetch"]}, "decision": {"D": ["read"]}})},
-        ),
-        {lake: ["action_name: A -> read"]},
-    )
-    # Every manifest is compared, not just the first: the whole point of the cross-crate
-    # seam is that an authorizer's own vocabulary is checked too.
-    check(
-        "a loss in a second crate's manifest is reported",
-        losses_by_path(
-            {lake: entries({"action_name": {"A": ["x"]}}),
-             fga: entries({"action_name": {"R": ["can_assume", "can_read"]}})},
-            {lake: entries({"action_name": {"A": ["x"]}}),
-             fga: entries({"action_name": {"R": ["can_assume"]}})},
-        ),
-        {fga: ["action_name: R -> can_read"]},
-    )
-    check(
-        "a manifest deleted outright loses everything it held",
-        losses_by_path(
-            {lake: entries({"action_name": {"A": ["x"]}}),
-             fga: entries({"action_name": {"R": ["can_assume"]}})},
-            {lake: entries({"action_name": {"A": ["x"]}})},
-        ),
-        {fga: ["action_name: R -> can_assume"]},
-    )
-    # A directory rename is not a wire change. Without this the checker demands a MAJOR bump
-    # for moving a file.
-    check(
-        "a manifest MOVED to a new path loses nothing",
-        losses_by_path(
-            {fga: entries({"action_name": {"R": ["can_assume", "can_read"]}})},
-            {"crates/renamed/wire_values.json": entries(
-                {"action_name": {"R": ["can_assume", "can_read"]}}
-            )},
-        ),
-        {},
-    )
-    check(
-        "a move that also drops a value still reports the drop",
-        losses_by_path(
-            {fga: entries({"action_name": {"R": ["can_assume", "can_read"]}})},
-            {"crates/renamed/wire_values.json": entries({"action_name": {"R": ["can_assume"]}})},
-        ),
-        {fga: ["action_name: R -> can_read"]},
-    )
-    for label, added in (
-        ("an added value", {"action_name": {"A": ["x", "y"]}}),
-        ("an added owner", {"action_name": {"A": ["x"], "B": ["z"]}}),
-        ("an added field", {"action_name": {"A": ["x"]}, "entity_type": {"E": ["t"]}}),
-    ):
-        check(
-            f"{label} is not a loss",
-            losses_by_path({lake: entries({"action_name": {"A": ["x"]}})}, {lake: entries(added)}),
-            {},
-        )
-    check(
-        "identical manifests lose nothing",
-        losses_by_path(
-            {lake: entries({"action_name": {"A": ["x", "y"]}})},
-            {lake: entries({"action_name": {"A": ["x", "y"]}})},
-        ),
-        {},
-    )
-    # The two relocation cases. A value still emitted SOMEWHERE has not been lost to a
-    # consumer, whichever manifest happens to record it — but "somewhere" must mean the same
-    # OWNER, or the masking regression comes back.
-    check(
-        "an owner moving between two existing manifests is not a loss",
-        losses_by_path(
-            {lake: entries({"action_name": {"Shared": ["x"]}}),
-             fga: entries({"action_name": {"R": ["y"]}})},
-            {lake: entries({"action_name": {}}),
-             fga: entries({"action_name": {"R": ["y"], "Shared": ["x"]}})},
-        ),
-        {},
-    )
-    check(
-        "a deleted manifest is not masked by an unrelated one appearing",
-        losses_by_path(
-            {fga: entries({"action_name": {"R": ["can_assume"]}})},
-            {"crates/other/wire_values.json": entries({"action_name": {"Other": ["x"]}})},
-        ),
-        {fga: ["action_name: R -> can_assume"]},
-    )
-
-    check(
-        "a malformed manifest yields no entries rather than raising",
-        manifest_entries({"action_name": "not-an-object", "entity_type": {"E": "not-a-list"}}),
-        set(),
-    )
-
     # Exactly one declaration is required, and agreeing values do not excuse a second one.
     def ambiguity(found):
         try:
@@ -1773,6 +1987,226 @@ def self_test() -> int:
         "none",
     )
 
+    # ── the schema comparison ──
+    def schema(defs: dict) -> dict:
+        return {"$schema": "x", "$defs": defs}
+
+    actor = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}}, "required": ["actor_type"]}
+    actor_email = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}, "email": {"type": "string"}}, "required": ["actor_type"]}
+    actor_req = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}}, "required": ["actor_type", "principal"]}
+    actor_retyped = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "integer"}}, "required": ["actor_type"]}
+    decision = {"type": "string", "enum": ["allowed", "denied"]}
+    decision_more = {"type": "string", "enum": ["allowed", "denied", "deferred"]}
+    decision_less = {"type": "string", "enum": ["allowed"]}
+    check("schema: identical is none", classify_schema(schema({"A": actor}), schema({"A": actor}))[0], "none")
+    check("schema: optional property added is additive", classify_schema(schema({"A": actor}), schema({"A": actor_email}))[0], "additive")
+    check("schema: property removed is breaking", classify_schema(schema({"A": actor_email}), schema({"A": actor}))[0], "breaking")
+    check("schema: property made required is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_req}))[0], "breaking")
+    # The mirror of the case above, and breaking for the same reason read the other way: a
+    # consumer that relied on the field always being there now meets records without it.
+    check("schema: property made optional is breaking", classify_schema(schema({"A": actor_req}), schema({"A": actor}))[0], "breaking")
+    check(
+        "schema: property made optional is named",
+        any("became optional" in r for r in classify_schema(schema({"A": actor_req}), schema({"A": actor}))[1]),
+        True,
+    )
+    check("schema: property retyped is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_retyped}))[0], "breaking")
+    check("schema: definition added is additive", classify_schema(schema({"A": actor}), schema({"A": actor, "B": actor}))[0], "additive")
+    check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
+    check("schema: enum value added is none", classify_schema(schema({"D": decision}), schema({"D": decision_more}))[0], "none")
+    check("schema: enum value removed is breaking", classify_schema(schema({"D": decision}), schema({"D": decision_less}))[0], "breaking")
+
+    # A key vocabulary. Its names are the keys of an object, so the same edit that is no
+    # change on a value vocabulary adds a field here. Reading the two alike reported a new
+    # audit field as no format change at all.
+    keys = {"type": "string", "enum": ["queue_name", "self_read"], "x-audit-kind": "keys", "x-audit-keys-of": "context"}
+    keys_more = {**keys, "enum": keys["enum"] + ["entity_id"]}
+    keys_less = {**keys, "enum": ["queue_name"]}
+    check("schema: a new key is a new field", classify_schema(schema({"K": keys}), schema({"K": keys_more}))[0], "additive")
+    check(
+        "schema: the new key is named",
+        any("gained the key `entity_id`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_more}))[1]),
+        True,
+    )
+    check("schema: a key removed is breaking", classify_schema(schema({"K": keys}), schema({"K": keys_less}))[0], "breaking")
+    check(
+        "schema: the lost key is named as a key",
+        any("lost the key `self_read`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_less}))[1]),
+        True,
+    )
+
+    # What a key holds. A key whose value stops being a string is a type change where it sits,
+    # which a consumer cannot absorb the way it ignores an unknown key.
+    shaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/A"}}}
+    reshaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/B"}}}
+    check("schema: a key that starts holding an object is breaking", classify_schema(schema({"K": keys}), schema({"K": shaped}))[0], "breaking")
+    check("schema: a key that stops holding an object is breaking", classify_schema(schema({"K": shaped}), schema({"K": keys}))[0], "breaking")
+    check("schema: a key that holds a different shape is breaking", classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[0], "breaking")
+    check("schema: an unchanged key shape is no change", classify_schema(schema({"K": shaped}), schema({"K": shaped}))[0], "none")
+    born = {**keys, "enum": keys["enum"] + ["entity_id"], "x-audit-key-shapes": {"entity_id": {"$ref": "#/$defs/A"}}}
+    check("schema: a key born holding an object is a new key, not a type change", classify_schema(schema({"K": keys}), schema({"K": born}))[0], "additive")
+    check(
+        "schema: a key born holding an object is not reported as a shape change",
+        any("now holds an object" in r for r in classify_schema(schema({"K": keys}), schema({"K": born}))[1]),
+        False,
+    )
+    check(
+        "schema: the reshaped key is named",
+        any("key `queue_name` holds a different shape" in r for r in classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[1]),
+        True,
+    )
+
+    # A value set written as `oneOf` of constants, which is what schemars produces for an
+    # enum whose variants carry doc comments. Without the branch comparison the whole
+    # definition falls through with no properties on either side and a removal reads as
+    # no change.
+    effect = {"oneOf": [{"type": "string", "const": "permit"}, {"type": "string", "const": "forbid"}]}
+    effect_less = {"oneOf": [{"type": "string", "const": "permit"}]}
+    effect_more = {"oneOf": effect["oneOf"] + [{"type": "string", "const": "defer"}]}
+    check("schema: a constant lost from a oneOf is breaking", classify_schema(schema({"E": effect}), schema({"E": effect_less}))[0], "breaking")
+    check("schema: the lost constant is named",
+          any('const:"forbid"' in r for r in classify_schema(schema({"E": effect}), schema({"E": effect_less}))[1]), True)
+    check("schema: a constant added to a oneOf is not a format change", classify_schema(schema({"E": effect}), schema({"E": effect_more}))[0], "none")
+
+    # Two object branches render alike, so the comparison must be a multiset: a set would
+    # collapse them and hide the loss of one.
+    tagged = {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}, {"type": "object", "properties": {"b": {"type": "string"}}}]}
+    tagged_less = {"oneOf": [tagged["oneOf"][0]]}
+    check("schema: one of two object variants removed is breaking", classify_schema(schema({"T": tagged}), schema({"T": tagged_less}))[0], "breaking")
+    check("schema: an object variant added is additive", classify_schema(schema({"T": tagged_less}), schema({"T": tagged}))[0], "additive")
+
+    # A tagged union's branches are objects a consumer reads, so a rename inside one is a
+    # rename like any other. Pairing is by the discriminator, because that is what the
+    # consumer switches on; two untagged branches stay a multiset, above, since nothing
+    # distinguishes them.
+    factor = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}}}]}
+    renamed = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy_id": {"type": "string"}}}]}
+    widened = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}, "note": {"type": "string"}}}]}
+    check("schema: a rename inside a tagged branch is breaking", classify_schema(schema({"F": factor}), schema({"F": renamed}))[0], "breaking")
+    check(
+        "schema: the renamed branch property is named with its branch",
+        any("`F/policy.policy-id` removed" in r for r in classify_schema(schema({"F": factor}), schema({"F": renamed}))[1]),
+        True,
+    )
+    check("schema: a field added to a tagged branch is additive", classify_schema(schema({"F": factor}), schema({"F": widened}))[0], "additive")
+    check("schema: an unchanged tagged branch is no change", classify_schema(schema({"F": factor}), schema({"F": factor}))[0], "none")
+
+    # What a branch owes the release notes. Pure in its four maps, so every arrangement the
+    # gate acts on is checkable here rather than only on a real pull request.
+    none_: dict[str, str] = {}
+    one = {"a.md": "minor"}
+    one_body = {"a.md": "h1"}
+    check("demand: a fragment added is contributed", fragment_demand(none_, one, none_, one_body)[0], one)
+    check("demand: a fragment removed is withdrawn", fragment_demand(one, none_, one_body, none_)[1], one)
+    check("demand: an untouched fragment is neither", fragment_demand(one, one, one_body, one_body)[0], {})
+    check("demand: a raised level is contributed", fragment_demand(one, {"a.md": "major"}, one_body, one_body)[0], {"a.md": "major"})
+    # Folding a second change into an existing fragment is the documented way to keep the
+    # note describing the final state. It usually leaves the level alone.
+    check("demand: a reworded fragment is contributed", fragment_demand(one, one, one_body, {"a.md": "h2"})[0], one)
+    check(
+        "demand: a renamed fragment is contributed, and its old path withdrawn",
+        fragment_demand(one, {"b.md": "minor"}, one_body, {"b.md": "h1"}),
+        ({"b.md": "minor"}, one),
+    )
+    check("schema: description change is none", classify_schema(schema({"A": actor}), schema({"A": {**actor, "description": "x"}}))[0], "none")
+
+    # THE regression. `get_metadata` is emitted by six action enums, so renaming ONE of them is
+    # invisible to any comparison over the flattened union of every name: the union still holds
+    # `get_metadata` from the other five. This is the real case that got through —
+    # `CatalogTableAction::GetMetadata` renamed to `FetchMetadata`, the wire value for every
+    # table event changed, CI green. Definitions are keyed by the type that owns the values,
+    # which is what makes it visible. A comparison that flattens them cannot see it.
+    masking_base = schema({
+        "CatalogTableAction": {"type": "string", "enum": ["get_metadata", "drop"]},
+        "CatalogViewAction": {"type": "string", "enum": ["get_metadata"]},
+    })
+    masking_head = schema({
+        "CatalogTableAction": {"type": "string", "enum": ["fetch_metadata", "drop"]},
+        "CatalogViewAction": {"type": "string", "enum": ["get_metadata"]},
+    })
+    masking_kind, masking_reasons = classify_schema(masking_base, masking_head)
+    check("schema: a rename is breaking while another owner still emits the name", masking_kind, "breaking")
+
+    # ── the emitter stamp ──
+    stamped = {"x-audit-emitter": {"name": "lakekeeper", "format": "1.0"}, "$defs": {}}
+    other = {"x-audit-emitter": {"name": "lakekeeper-plus", "format": "1.0"}, "$defs": {}}
+    unstamped = {"$defs": {}}
+    check("stamp: read", emitter_of(stamped), ("lakekeeper", "1.0"))
+    check("stamp: absent is not an error", emitter_of(unstamped), (None, None))
+    check("stamp: a malformed stamp reads as absent",
+          emitter_of({"x-audit-emitter": "lakekeeper"}), (None, None))
+    check("stamp: the same emitter compares",
+          require_same_emitter(stamped, stamped, "t"), ("lakekeeper", "1.0", "1.0"))
+    # An unstamped document is a record summary; it claims no emitter, so it blocks nothing.
+    check("stamp: one side unstamped still compares",
+          require_same_emitter(unstamped, stamped, "t"), ("lakekeeper", "?", "1.0"))
+    refused = False
+    try:
+        require_same_emitter(stamped, other, "t")
+    except CheckFailed:
+        refused = True
+    check("stamp: two emitters are refused", refused, True)
+    # The check that the committed schema agrees with the constant it was generated from.
+    # The three version patterns are built from one name, so a repository that names its
+    # constant differently changes all three at once and they cannot disagree.
+    git_pattern, read_re, write_re = version_patterns("PLUS_AUDIT_FORMAT")
+    line = '    pub const PLUS_AUDIT_FORMAT: &str = "2.1";'
+    check("const: the reader finds a renamed constant",
+          read_re.search(line).groups() if read_re.search(line) else None, ("2", "1"))
+    check("const: the writer rewrites only the value",
+          write_re.sub(r"\g<1>3.0\g<2>", line),
+          '    pub const PLUS_AUDIT_FORMAT: &str = "3.0";')
+    check("const: the grep pattern names it", "PLUS_AUDIT_FORMAT" in git_pattern, True)
+    check("const: the reader ignores another constant",
+          version_patterns("AUDIT_FORMAT")[1].search(line), None)
+
+    check("stamp: a format the constant does not declare is caught",
+          emitter_of({"x-audit-emitter": {"name": "lakekeeper", "format": "2.0"}})[1] != show((1, 0)),
+          True)
+
+    # ── record families and the shape summary ──
+    check("family: decision names an authorization record",
+          record_family({"decision": "allowed", "action": {}}), "AuthorizationRecord")
+    check("family: action without decision is a replay",
+          record_family({"action": {}, "operation": "idempotent_replay"}), "ReplayRecord")
+    check("family: neither is an operation record",
+          record_family({"operation": "grant_created", "outcome": "success"}), "OperationRecord")
+    check("family: record_type wins once the shapes carry one",
+          record_family({"record_type": "operation", "decision": "allowed"}), "OperationRecord")
+    check("family: an unknown record_type is kept verbatim",
+          record_family({"record_type": "something_new"}), "something_new")
+
+    # `bool` before `int`: in Python `True` is an `int`, and a boolean typed as an integer
+    # would make a real type change invisible.
+    check("json type: boolean is not integer", json_type(True), "boolean")
+    check("json type: null", json_type(None), "null")
+    check("json type: object", json_type({"a": 1}), "object")
+
+    check("property: one observed type", _property_spec({"string"}, set()), {"type": "string"})
+    check("property: a sometimes-null field keeps both",
+          _property_spec({"string", "null"}, set()), {"type": ["null", "string"]})
+    check("property: an array records its item type",
+          _property_spec({"array"}, {"object"}), {"type": "array", "items": {"type": "object"}})
+    # The whole point of typing a null: losing it must read as a change.
+    check("a field that stops being null is a retype",
+          _type_of(_property_spec({"string", "null"}, set())) != _type_of(_property_spec({"string"}, set())),
+          True)
+    check(
+        "schema: the owner that lost the value is named",
+        any("CatalogTableAction" in reason and "get_metadata" in reason for reason in masking_reasons),
+        True,
+    )
+    # The same masking applies across fields, which is why the owning type is the key: `read`
+    # can be an action name and another field's value at once.
+    check(
+        "schema: a rename is breaking while another field carries that value",
+        classify_schema(
+            schema({"A": {"type": "string", "enum": ["read"]}, "D": {"type": "string", "enum": ["read"]}}),
+            schema({"A": {"type": "string", "enum": ["fetch"]}, "D": {"type": "string", "enum": ["read"]}}),
+        )[0],
+        "breaking",
+    )
+
     for line in failures:
         print(f"FAIL {line}")
     print(
@@ -1808,6 +2242,18 @@ def main(argv: list[str]) -> int:
         "--base-branch",
         help="the branch the pull request targets. A `rel-*` branch freezes the format.",
     )
+    parser.add_argument(
+        "--summarise-records",
+        nargs=2,
+        metavar=("RECORDS_DIR", "OUT"),
+        help="write the top-level shape of the records in RECORDS_DIR as a schema document",
+    )
+    parser.add_argument(
+        "--compare-schemas",
+        nargs=2,
+        metavar=("BASE", "HEAD"),
+        help="classify the difference between two schema documents and list every change",
+    )
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
     parser.add_argument("--print-version", metavar="REV", help="print AUDIT_FORMAT at REV")
     parser.add_argument(
@@ -1827,6 +2273,11 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
+    load_config()
+    if args.summarise_records is not None:
+        return summarise_records(*args.summarise_records)
+    if args.compare_schemas is not None:
+        return compare_schemas(*args.compare_schemas)
     if args.self_test:
         return self_test()
     if args.print_version is not None:

@@ -7,6 +7,7 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 ## Unreleased
 
 ### Features
+
 - **Cedar: grants decide access.** Privileges granted through the catalog are now visible to your Cedar policies. Each resource carries its own grants as `direct_privileges` and everything granted above it as `inherited_privileges`, so a policy can simply check `resource.direct_privileges.select`. Grant-administration actions carry the privilege in question as the typed `context.privilege`, so a policy can condition on exactly which privilege is being handed out.
 - **Cedar: predefined policies turn grants into access.** Lakekeeper Plus now ships ready-made policies that turn recorded grants into access, so permissions can be handed out at runtime without redeploying a policy file. Every project and warehouse chooses which of these policies apply to it, through the new `predefined-policies` endpoints. The feature is on by default and can be switched off for the whole deployment with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false`. Policies added by a future release start out disabled for scopes you have already curated, so an upgrade never widens access on its own.
 - **Cedar: manage a project's or warehouse's own policies through the API.** Each project and warehouse can now store its own Cedar policies, managed through the new `…/policies` endpoints. Changes are applied as a single transaction that is validated up front and reports back what actually changed. You can preview a change with `dry-run`, protect against concurrent edits with `if-scope-version`, and send your complete desired state with `replace: true`, which removes every policy you did not include. A scope holds up to 1000 policies by default (`LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE`).
@@ -16,10 +17,12 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Cedar: two endpoints have new names.** `policy-sources` and `policy-list` are now called `server-policy-sources` and `server-policy-list`, which tells these server-level listings apart from the new per-scope policy endpoints. The old paths still work but are marked deprecated.
 
 ### Bug Fixes
+
 - **Okta role provider: people who sign in with an email address now resolve to their groups.** The user identifier was escaped for a query string rather than for a URL path, so the `@` in a login like `alice@example.com` reached Okta as `%40` and every such lookup came back as a bare `400`. Deployments whose OIDC subject is a raw Okta user id were unaffected, which is why service principals kept working while people did not.
 - **Okta role provider: a retried token request no longer replays its client assertion.** Okta accepts each assertion once, so a DPoP nonce challenge or a throttled token request could fail with `invalid_client`. Every attempt is now signed afresh.
 
 ### Breaking Changes
+
 - **Cedar: reading the server's policy sources now counts as policy administration.** The actions for listing and evaluating server policy sources moved out of `ServerActions` into the new `ServerCedarPolicyActions` and `CedarPolicyReadActions` groups. A policy that permits `ServerActions` no longer covers them, so name the new groups where you want these reads allowed.
 - **Admission gate: `idp_id` must name a provider the server authenticates.** The server now refuses to start when `idp_id` matches none of the configured authenticators, and tells you which ones are available. Such an id never enforced anything, so this turns a silent misconfiguration into a clear startup error.
 - **Admission gate: unknown configuration keys are refused.** A misspelled key under `admission_enforce` used to fall back to its default silently. The server now names the unknown key and stops.
@@ -33,25 +36,28 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Cedar: with externally managed identity, the entity file must declare every principal a request names.** A request that names a user or role missing from your file is now refused instead of answered. Cedar skips policies about entities it cannot find, which could otherwise turn a `forbid` into an allow.
 
 ### Upgrade Notes
+
 - **Run `lakekeeper-plus migrate` to completion before rolling any new pod.** This release adds database tables for Cedar policy management, and a new replica refuses to serve while they are missing. Note that `wait-for-db -m` does not check for these tables. Rolling back is safe.
 - **Grants that already exist begin granting access.** The predefined policies are on by default, so every grant recorded in your deployment starts deciding requests after the upgrade. Review your grants beforehand, or start with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false` and curate each scope before switching it on.
 - **Multi-project Cedar deployments: check that clients send `x-project-id`.** Before this release a request could be answered using another project's roles. If your clients omitted the header, treat past cross-project decisions as unreliable.
 - **Cedar with externally managed identity: grant to users, not roles.** A grant held by a user applies. One held by a role does not, because role membership lives in your entity file.
-
 
 ## v0.13.6 (2026-09-18)
 
 _Based on Lakekeeper OSS v0.13.5._
 
 ### Bug Fixes
+
 - **Okta role provider: people who sign in with an email address now resolve to their groups.** The user identifier was escaped for a query string rather than for a URL path, so the `@` in a login like `alice@example.com` reached Okta as `%40` and every such lookup came back as a bare `400`. Deployments whose OIDC subject is a raw Okta user id were unaffected, which is why service principals kept working while people did not.
 - **Okta role provider: a retried token request no longer replays its client assertion.** Okta accepts each assertion once, so a DPoP nonce challenge or a throttled token request could fail with `invalid_client`. Every attempt is now signed afresh.
 - **Security: TLS handshake handling (RUSTSEC-2026-0285).** `rustls` is updated to 0.23.45, which rejects handshake messages spanning a key change instead of accepting them. The handshake transcript stayed authenticated, so this could not be used to alter or complete a handshake.
 
 ### Upgrade Notes
+
 - **OpenFGA deployments that have renamed a table, view or generic table across namespaces should run `lakekeeper openfga reconcile --mode add-and-delete-drift` once after upgrading.** The upstream fix below stops the leak but cannot remove a permission edge already recorded, and the default `add-missing` mode does not repair it.
 
 ### Upstream Lakekeeper changes (bump to v0.13.5)
+
 - **GovCloud, China and ISO region support.** Vended-credential policies now carry the correct ARN partition, derived automatically from the region, endpoint or role ARN, so `AssumeRole` succeeds for buckets outside the commercial partition ([lakekeeper#1928](https://github.com/lakekeeper/lakekeeper/pull/1928)).
 - **S3 request signing for generic tables** ([lakekeeper#1910](https://github.com/lakekeeper/lakekeeper/pull/1910)).
 - Fixed a permissions leak: a table, view or generic table renamed into another namespace kept inheriting grants from the namespace it left ([lakekeeper#2013](https://github.com/lakekeeper/lakekeeper/pull/2013)).
@@ -62,19 +68,23 @@ _Based on Lakekeeper OSS v0.13.5._
 _Based on Lakekeeper OSS v0.13.3._
 
 ### Highlights
+
 - **Improved memory behaviour on long-running instances.** Conditions that could, under some circumstances, prevent freed memory from being returned to the OS are addressed.
 
 ### Features
+
 - **New memory metrics.** `lakekeeper_jemalloc_*` separates live heap from memory the allocator is holding back; `lakekeeper_http_connections` reports open connections.
 - **The table maintenance cache reports what it holds:** `lakekeeper_cache_weighted_bytes{cache_type="table_metadata"}` and `lakekeeper_cache_instances`, with hits and misses in the shared `lakekeeper_cache_*` series.
 
 ### Bug Fixes
+
 - **Transparent huge pages could prevent freed memory from being returned to the OS.** On nodes with `THP=always`, the default on common EKS AMIs, resident memory could grow for the life of the process.
 - **The manifest cache under-counted its entries**, so under some circumstances its 128 MiB budget did not bind during table maintenance.
 - **The UI asset cache keyed on an unvalidated header**, so variants of `x-forwarded-prefix` could each add an entry to a cache with no expiry.
 - **Allocator metrics now report on every serving path**, including `LAKEKEEPER__DEBUG__AUTO_SERVE`. Memory behaviour itself was unaffected.
 
 ### Upgrade Notes
+
 - **Idle HTTP connections now close after 75 seconds** and carry TCP keepalive probes. Standard Iceberg and S3 clients retry; previously a connection whose peer had vanished could be held for the life of the process.
 - **Request headers above 64 KiB are rejected with 431.** Request bodies are unaffected.
 - **Shutdown drains for at most 10 seconds** before abandoning connections still open.

@@ -1,6 +1,13 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "operation",
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "operation": "grant_revoked",
   "actor": {
     "actor_type": "principal",

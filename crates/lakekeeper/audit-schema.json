@@ -1,0 +1,1742 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Audit types declared by crate lakekeeper",
+  "x-audit-emitter": {
+    "name": "lakekeeper",
+    "format": "1.0"
+  },
+  "x-audit-crate": "lakekeeper",
+  "$defs": {
+    "ActionContextKey": {
+      "type": "string",
+      "enum": [
+        "allow_partial",
+        "base_location",
+        "created_before",
+        "deletes",
+        "destination",
+        "dry_run",
+        "force",
+        "format",
+        "generic_table_id",
+        "name",
+        "narrowed_privileges",
+        "principal",
+        "principals",
+        "privilege_scope",
+        "privileges",
+        "project_id",
+        "properties",
+        "purge",
+        "recursive",
+        "removed_properties",
+        "requested_provider_id",
+        "requested_source_id",
+        "resource_types",
+        "root_level",
+        "source",
+        "table_id",
+        "target_refs",
+        "update_kinds",
+        "updated_properties",
+        "writes"
+      ],
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "action",
+      "x-audit-type": "lakekeeper::service::events::context::ActionContextKey"
+    },
+    "ActionRecord": {
+      "type": "object",
+      "properties": {
+        "action_name": {
+          "type": "string",
+          "x-audit-open": true,
+          "description": "What was attempted. One of the action names this schema lists; a product that plugs\ninto Lakekeeper may contribute its own."
+        }
+      },
+      "required": [
+        "action_name"
+      ],
+      "additionalProperties": {
+        "$ref": "#/$defs/ContextValue"
+      },
+      "description": "An `action` object: the wire name and the action's context fields.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActionRecord",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "accept_moved_namespace"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "apply_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "deletes": {
+                "type": "integer"
+              },
+              "principals": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "writes": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "commit"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "removed_properties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "update_kinds": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/TableUpdateKind"
+                }
+              },
+              "updated_properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_generic_table"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "base_location": {
+                "type": "string"
+              },
+              "format": {
+                "type": "string"
+              },
+              "generic_table_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_namespace"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_project"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_role"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "requested_provider_id": {
+                "type": "string"
+              },
+              "requested_source_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_table"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "table_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_tag"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_view"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_warehouse"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "delete"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "force": {
+                "type": "boolean"
+              },
+              "purge": {
+                "type": "boolean"
+              },
+              "recursive": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "drop"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "force": {
+                "type": "boolean"
+              },
+              "purge": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "move"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "destination": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "force": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "read_subtree_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dry_run": {
+                "type": "boolean"
+              },
+              "narrowed_privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "principal": {
+                "type": "string"
+              },
+              "privilege_scope": {
+                "$ref": "#/$defs/PrivilegeScope"
+              },
+              "resource_types": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ResourceType"
+                }
+              },
+              "root_level": {
+                "$ref": "#/$defs/RootLevelGrants"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "revoke_subtree_grants"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "allow_partial": {
+                "type": "boolean"
+              },
+              "created_before": {
+                "type": "string"
+              },
+              "dry_run": {
+                "type": "boolean"
+              },
+              "narrowed_privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "principal": {
+                "type": "string"
+              },
+              "privilege_scope": {
+                "$ref": "#/$defs/PrivilegeScope"
+              },
+              "privileges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "resource_types": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ResourceType"
+                }
+              },
+              "root_level": {
+                "$ref": "#/$defs/RootLevelGrants"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "update_properties"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "removed_properties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updated_properties": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "update_source_system"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "requested_provider_id": {
+                "type": "string"
+              },
+              "requested_source_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ActorRecord": {
+      "type": "object",
+      "properties": {
+        "actor_type": {
+          "description": "One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`.",
+          "$ref": "#/$defs/ActorType"
+        },
+        "principal": {
+          "type": "string",
+          "description": "The authenticated principal. Present for `principal` and `assumed_role`."
+        },
+        "assumed_role": {
+          "description": "The role acted as. Present for `assumed_role`; `principal` is still the human.",
+          "$ref": "#/$defs/AssumedRoleRecord"
+        }
+      },
+      "required": [
+        "actor_type"
+      ],
+      "description": "The `actor` object: who made the request, as authentication established it.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActorRecord"
+    },
+    "ActorType": {
+      "type": "string",
+      "enum": [
+        "anonymous",
+        "assumed_role",
+        "lakekeeper_internal",
+        "principal"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "actor_type",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::ActorType"
+    },
+    "AdmissionRejectedContext": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "string",
+          "description": "The gate that rejected the request."
+        },
+        "denied_by": {
+          "type": "string",
+          "description": "The rule of the gate that decided, when the gate names one."
+        },
+        "status": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "The HTTP status the caller received."
+        },
+        "error_type": {
+          "type": "string",
+          "description": "The error type the caller received."
+        },
+        "message": {
+          "type": "string",
+          "description": "The gate's own wording. Suppressing the error-response line takes this\nwith it, and it is what separates two rejections that share a type —\na gate failing closed on a missing precondition from the same gate\nfailing closed on an unreachable upstream."
+        },
+        "error_id": {
+          "type": "string",
+          "description": "The id the caller can quote to correlate with this record."
+        },
+        "request_id": {
+          "type": "string",
+          "description": "The request this rejection belongs to, repeated out of the span so the record stands\nalone."
+        }
+      },
+      "required": [
+        "gate",
+        "status",
+        "error_type",
+        "message",
+        "error_id",
+        "request_id"
+      ],
+      "description": "Context for the admission-rejection audit record: which gate refused the request, on what\ngrounds, and what the caller was told.\n\n`error_id` is the id the caller was handed, so a user's report resolves to this record.\n`request_id` is repeated out of the span, so the record stands alone.",
+      "x-audit-kind": "context",
+      "x-audit-type": "lakekeeper::service::admission::AdmissionRejectedContext<'_>"
+    },
+    "AssumedRoleRecord": {
+      "type": "object",
+      "properties": {
+        "role_id": {
+          "type": "string",
+          "description": "The role's id in this catalog."
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that supplied the role."
+        },
+        "source_id": {
+          "type": "string",
+          "description": "The role's id at the provider."
+        }
+      },
+      "required": [
+        "role_id",
+        "provider_id",
+        "source_id"
+      ],
+      "description": "The role an `assumed_role` actor acts as.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::AssumedRoleRecord"
+    },
+    "AuditOperation": {
+      "type": "string",
+      "enum": [
+        "admission_decided",
+        "grant_created",
+        "grant_revoked"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "operation",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOperation"
+    },
+    "AuditOutcome": {
+      "type": "string",
+      "enum": [
+        "forbidden",
+        "success",
+        "unavailable"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "outcome",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOutcome",
+      "x-audit-descriptions": {
+        "forbidden": "An admission gate denied the caller authoritatively.",
+        "success": "The operation completed.",
+        "unavailable": "An admission gate could not reach an upstream it needs and failed closed.\nSeparate from `forbidden` so an outage of that upstream reads as an outage\nrather than as a wave of denials."
+      }
+    },
+    "AuthnAction": {
+      "type": "string",
+      "enum": [
+        "assume_role"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::events::context::AuthnAction"
+    },
+    "AuthorizationFailureReason": {
+      "type": "string",
+      "enum": [
+        "action_forbidden",
+        "cannot_see_resource",
+        "internal_authorization_error",
+        "internal_catalog_error",
+        "invalid_request_data",
+        "resource_not_found"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "failure_reason",
+      "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason",
+      "x-audit-descriptions": {
+        "action_forbidden": "Action is not allowed for the user",
+        "cannot_see_resource": "Resource exists but user lacks permission to see it",
+        "internal_authorization_error": "Authorization backend service is unavailable",
+        "internal_catalog_error": "An internal Catalog error occurred before authorization check could be completed",
+        "invalid_request_data": "Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)",
+        "resource_not_found": "Resource does not exist"
+      }
+    },
+    "AuthorizationRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "description": "Names this record's shape. Always `authorization`.",
+          "const": "authorization"
+        },
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionRecord"
+          },
+          "description": "The actions evaluated, always a list however many there are."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityRecord"
+          },
+          "description": "The entities they were evaluated against, always a list."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "privilege_source": {
+          "description": "Which authority answered: the authorizer, or a bypass.",
+          "$ref": "#/$defs/PrivilegeSource"
+        },
+        "user_agent": {
+          "type": "string",
+          "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
+        },
+        "break_glass": {
+          "type": "string",
+          "description": "The stated break-glass reason. Absent unless the caller claimed one."
+        },
+        "context": {
+          "description": "Handler-supplied detail about the request. Absent when the handler added none.",
+          "$ref": "#/$defs/HandlerContext"
+        },
+        "authorizations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionRecord"
+          },
+          "description": "One entry per permission evaluated."
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "The request's `Idempotency-Key`. Absent when the caller sent none."
+        },
+        "decision": {
+          "description": "Whether the request was permitted.",
+          "$ref": "#/$defs/Decision"
+        },
+        "failure_reason": {
+          "description": "Why a denied record was denied, as the vocabulary spells it.",
+          "$ref": "#/$defs/AuthorizationFailureReason"
+        },
+        "error": {
+          "description": "The error the caller received. Present only on a denial that produced one.",
+          "$ref": "#/$defs/ErrorRecord"
+        }
+      },
+      "required": [
+        "record_type",
+        "emitters",
+        "actions",
+        "entities",
+        "actor",
+        "privilege_source",
+        "authorizations",
+        "decision"
+      ],
+      "description": "An authorization record: was this caller permitted to do these actions on these entities?",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::AuthorizationRecord",
+      "x-audit-record-type": "authorization"
+    },
+    "CatalogGenericTableAction": {
+      "type": "string",
+      "enum": [
+        "control_tasks",
+        "drop",
+        "get_metadata",
+        "get_tasks",
+        "include_in_list",
+        "manage_tags",
+        "read_data",
+        "read_grants",
+        "rename",
+        "set_protection",
+        "undrop",
+        "write_data"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogGenericTableAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this generic table.",
+        "read_grants": "Can list the grants held on this generic table."
+      }
+    },
+    "CatalogNamespaceAction": {
+      "type": "string",
+      "enum": [
+        "accept_moved_namespace",
+        "create_generic_table",
+        "create_namespace",
+        "create_table",
+        "create_view",
+        "delete",
+        "get_metadata",
+        "include_in_list",
+        "list_everything",
+        "list_generic_tables",
+        "list_namespaces",
+        "list_tables",
+        "list_views",
+        "manage_tags",
+        "move",
+        "read_grants",
+        "read_subtree_grants",
+        "revoke_subtree_grants",
+        "set_protection",
+        "update_properties"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogNamespaceAction",
+      "x-audit-descriptions": {
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "manage_tags": "Attach/detach governance tags on this namespace.",
+        "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
+        "read_grants": "Can list the grants held on this namespace.",
+        "read_subtree_grants": "Can list and read every grant in the subtree rooted here: the namespace's own and\nthose on every descendant namespace and tabular. Strictly stronger than\n`ReadGrants`, which covers this one resource; granted separately because it\nenumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the subtree rooted here, asked once at this namespace for\nthe whole batch. An authorizer must answer it as authority over everything\nbeneath — or refuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+      }
+    },
+    "CatalogProjectAction": {
+      "type": "string",
+      "enum": [
+        "control_project_tasks",
+        "create_role",
+        "create_tag",
+        "create_warehouse",
+        "delete",
+        "get_endpoint_statistics",
+        "get_metadata",
+        "get_project_tasks",
+        "get_task_queue_config",
+        "include_in_list",
+        "list_roles",
+        "list_tags",
+        "list_warehouses",
+        "modify_task_queue_config",
+        "read_grants",
+        "rename",
+        "search_roles"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogProjectAction",
+      "x-audit-descriptions": {
+        "create_tag": "Create a new governance tag definition in this project.",
+        "list_tags": "List tag definitions in this project.",
+        "read_grants": "Can list the grants held on this project."
+      }
+    },
+    "CatalogRoleAction": {
+      "type": "string",
+      "enum": [
+        "delete",
+        "manage_role_assignments",
+        "read",
+        "read_metadata",
+        "read_role_assignments",
+        "update",
+        "update_source_system"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogRoleAction",
+      "x-audit-descriptions": {
+        "manage_role_assignments": "Can add/remove members (user or role) of this role.",
+        "read_role_assignments": "Can list members / parents / assignments of this role.",
+        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The catalog backend treats this the same as\n`ManageRoleAssignments`.\n\nThe destination is explicit. A real rebind names the target provider and source id;\nthe permission enumeration behind `GET /role/{id}/actions`, and any \"may this\nprincipal rebind at all?\" query, name `any` instead. `any` is a base-capability\nmarker, not a permissive default: a policy written against a concrete destination\ngates that destination and never matches `any`, and a `/check` caller picks between\nthe two deliberately."
+      }
+    },
+    "CatalogServerAction": {
+      "type": "string",
+      "enum": [
+        "create_project",
+        "delete_users",
+        "list_users",
+        "provision_users",
+        "read_grants",
+        "update_users"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogServerAction",
+      "x-audit-descriptions": {
+        "create_project": "Can create items inside the server (can create Warehouses).",
+        "delete_users": "Can delete all users on this server.",
+        "list_users": "Can List all users on this server.",
+        "provision_users": "Can provision user",
+        "read_grants": "Can list the grants held on this server.",
+        "update_users": "Can update all users on this server."
+      }
+    },
+    "CatalogTableAction": {
+      "type": "string",
+      "enum": [
+        "commit",
+        "control_tasks",
+        "drop",
+        "get_metadata",
+        "get_tasks",
+        "include_in_list",
+        "manage_tags",
+        "read_data",
+        "read_grants",
+        "rename",
+        "set_protection",
+        "undrop",
+        "write_data"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogTableAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this table.",
+        "read_grants": "Can list the grants held on this table."
+      }
+    },
+    "CatalogTagAction": {
+      "type": "string",
+      "enum": [
+        "apply",
+        "delete",
+        "read",
+        "read_attachments",
+        "read_grants",
+        "remove",
+        "update"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogTagAction",
+      "x-audit-descriptions": {
+        "apply": "Attach this tag to a target. Also requires `manage_tags` on the target.",
+        "delete": "Delete the tag definition.",
+        "read": "Read the tag definition (name, description, value kind, allowed values).",
+        "read_attachments": "List the targets this tag is attached to (reverse lookup). Broader disclosure\nthan `Read`, so restricted to tag owners / project security admins. Distinct\nfrom `can_read_assignments`, which reads who holds apply/ownership (grants).",
+        "read_grants": "Can list the grants held on this tag definition.",
+        "remove": "Detach this tag from a target. Also requires `manage_tags` on the target.",
+        "update": "Update the tag definition (name/description, widen scope, add allowed values)."
+      }
+    },
+    "CatalogUserAction": {
+      "type": "string",
+      "enum": [
+        "delete",
+        "read",
+        "read_role_assignments",
+        "update"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogUserAction",
+      "x-audit-descriptions": {
+        "delete": "Can delete this user",
+        "read": "Can get all details of the user given its id",
+        "read_role_assignments": "Can list the role assignments held by this user.",
+        "update": "Can update the user."
+      }
+    },
+    "CatalogViewAction": {
+      "type": "string",
+      "enum": [
+        "commit",
+        "control_tasks",
+        "drop",
+        "get_metadata",
+        "get_tasks",
+        "include_in_list",
+        "manage_tags",
+        "read_grants",
+        "rename",
+        "select",
+        "set_protection",
+        "undrop"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogViewAction",
+      "x-audit-descriptions": {
+        "manage_tags": "Attach/detach governance tags on this view.",
+        "read_grants": "Can list the grants held on this view."
+      }
+    },
+    "CatalogWarehouseAction": {
+      "type": "string",
+      "enum": [
+        "accept_moved_namespace",
+        "activate",
+        "control_all_tasks",
+        "create_namespace",
+        "deactivate",
+        "delete",
+        "get_all_tasks",
+        "get_config",
+        "get_endpoint_statistics",
+        "get_metadata",
+        "get_task_queue_config",
+        "include_in_list",
+        "list_deleted_tabulars",
+        "list_everything",
+        "list_namespaces",
+        "manage_tags",
+        "modify_soft_deletion",
+        "modify_task_queue_config",
+        "read_grants",
+        "read_subtree_grants",
+        "rename",
+        "revoke_subtree_grants",
+        "set_format_version_policy",
+        "set_protection",
+        "update_storage",
+        "use"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::CatalogWarehouseAction",
+      "x-audit-descriptions": {
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "manage_tags": "Attach/detach governance tags on this warehouse.",
+        "read_grants": "Can list the grants held on this warehouse.",
+        "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `ReadGrants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+      }
+    },
+    "ContextValue": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A set of key-value pairs (e.g. properties, `updated_properties`)."
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A list of plain strings (e.g. `removed_properties`)."
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "An object. The key that carries one names its shape, which this schema defines."
+        },
+        {
+          "type": "boolean",
+          "description": "A flag the request either set or did not (e.g. `force`, `dry_run`)."
+        },
+        {
+          "type": "integer",
+          "format": "int64",
+          "description": "A count (e.g. `writes`, `deletes`)."
+        },
+        {
+          "type": "string",
+          "description": "A single string value (e.g. resource name, ID)."
+        }
+      ],
+      "description": "What a `context` key carries.\n\nA record holds context keys in two places: inside each entry of `actions`, beside\n`action_name`, and in the record's own `context` object. A key carries the same type in\neither, and which type that is is stated for that key in this schema.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::authz::ContextValue"
+    },
+    "Decision": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "denied"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "decision",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::Decision"
+    },
+    "DecisionRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The client's id for this check in a batch, or its index. Absent for single checks."
+        },
+        "for_principal": {
+          "description": "The principal whose permission was evaluated, when it is not the request's actor.",
+          "$ref": "#/$defs/SubjectRecord"
+        },
+        "action": {
+          "$ref": "#/$defs/ActionRecord",
+          "description": "The action evaluated."
+        },
+        "entity": {
+          "$ref": "#/$defs/EntityRecord",
+          "description": "The entity the action was evaluated against."
+        },
+        "allowed": {
+          "type": "boolean",
+          "description": "The authorizer's answer. Absent when an upstream error stopped the evaluation."
+        },
+        "determined_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeterminingFactor"
+          },
+          "description": "The policies or rules that determined the decision. Empty when the authorizer\nreports none, which is itself the answer to \"what decided this\".\nThe same shape the management API returns for a check, so one parser reads both."
+        }
+      },
+      "required": [
+        "action",
+        "entity",
+        "determined_by"
+      ],
+      "description": "One entry of `authorizations[]`: which action on which entity was evaluated, for whom,\nwith what result.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::DecisionRecord"
+    },
+    "DeterminingFactor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "policy-id": {
+              "type": "string",
+              "description": "Stable, authorizer-assigned identifier of the policy (e.g. the Cedar\n`PolicyId`). Always present."
+            },
+            "name": {
+              "type": "string",
+              "description": "Human-facing name the author gave the policy (e.g. a `@name` or\n`@id` annotation). Neither required nor guaranteed unique; absent\nwhen the author provided none."
+            },
+            "effect": {
+              "$ref": "#/$defs/PolicyEffect",
+              "description": "Whether the policy permits or forbids."
+            },
+            "source": {
+              "type": "string",
+              "description": "Opaque origin of the policy (e.g. a policy-source identifier).\nAbsent when the authorizer cannot attribute a source."
+            },
+            "type": {
+              "type": "string",
+              "const": "policy"
+            }
+          },
+          "required": [
+            "type",
+            "policy-id",
+            "effect"
+          ],
+          "description": "A policy that determined the decision, surfaced by a policy-based\nauthorizer."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "description": "Opaque, authorizer-assigned identifier of the built-in authority\ntier that granted the action. Absent when none can be attributed."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Human-facing reason the tier applied (e.g. an administrator\nlockout-recovery grant). Absent when the authorizer gives none."
+            },
+            "type": {
+              "type": "string",
+              "const": "system-authority"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "An allow contributed by a built-in/system authority tier that takes\nprecedence over normal authored policy — e.g. a recovery mechanism that\nlets a privileged system role act despite a policy that would otherwise\nforbid it. Its presence means the verdict rested on built-in authority\nrather than on a configured policy."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gate": {
+              "type": "string",
+              "description": "Name of the admission gate that would refuse the user."
+            },
+            "check": {
+              "type": "string",
+              "description": "The gate's check that refused the user. Absent when the gate names\nnone."
+            },
+            "type": {
+              "type": "string",
+              "const": "admission-gate"
+            }
+          },
+          "required": [
+            "type",
+            "gate"
+          ],
+          "description": "The user would be refused at admission by this gate, so the request is\ndenied whatever the policies say."
+        }
+      ],
+      "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched,\n`system-authority` records that a built-in authority tier decided the request, and\n`admission-gate` records that an admission gate would refuse the user. The schema is\na closed `oneOf` over those three, so a further kind is a schema change that generated\nclients have to be rebuilt for.",
+      "x-audit-kind": "part"
+    },
+    "EmitterRecord": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The emitter's name, unique across the products that write to this log."
+        },
+        "format": {
+          "type": "string",
+          "description": "The `MAJOR.MINOR` version of what this emitter contributes."
+        }
+      },
+      "required": [
+        "name",
+        "format"
+      ],
+      "description": "One entry of `emitters`: a product that contributed to this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything an emitter owns — its\n`context` keys, its vocabulary, any shape it defines — on the entry naming it.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EmitterRecord"
+    },
+    "EntityField": {
+      "type": "string",
+      "enum": [
+        "generic_table",
+        "generic_table_id",
+        "namespace",
+        "namespace_id",
+        "project_id",
+        "role_id",
+        "role_provider_id",
+        "role_source_id",
+        "server_id",
+        "table",
+        "table_id",
+        "table_location",
+        "tag_definition_id",
+        "task_id",
+        "user_id",
+        "view",
+        "view_id",
+        "warehouse_id"
+      ],
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "entity",
+      "x-audit-type": "lakekeeper::service::events::context::EntityField"
+    },
+    "EntityRecord": {
+      "type": "object",
+      "properties": {
+        "entity_type": {
+          "description": "The kind of resource: `table`, `namespace`, `warehouse`, …",
+          "$ref": "#/$defs/EntityType"
+        }
+      },
+      "required": [
+        "entity_type"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "An `entity` object: the kind of resource and its identifying fields.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EntityRecord"
+    },
+    "EntityType": {
+      "type": "string",
+      "enum": [
+        "generic-table",
+        "namespace",
+        "project",
+        "role",
+        "server",
+        "table",
+        "tag",
+        "task",
+        "unknown",
+        "user",
+        "view",
+        "warehouse"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "entity_type",
+      "x-audit-type": "lakekeeper::service::events::context::EntityType"
+    },
+    "ErrorRecord": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The error type the caller received."
+        },
+        "code": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "The HTTP status the caller received."
+        },
+        "message": {
+          "type": "string",
+          "description": "The error message the caller received."
+        },
+        "stack": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The error's stack of causes, innermost first. Empty when the error has none."
+        },
+        "error_id": {
+          "type": "string",
+          "description": "The id the caller can quote to correlate with this record."
+        }
+      },
+      "required": [
+        "type",
+        "code",
+        "message",
+        "stack",
+        "error_id"
+      ],
+      "description": "The `error` object of a denied authorization record.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ErrorRecord"
+    },
+    "FallbackAction": {
+      "type": "string",
+      "enum": [
+        "unknown"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::events::context::FallbackAction"
+    },
+    "GrantContextRecord": {
+      "type": "object",
+      "properties": {
+        "principal": {
+          "$ref": "#/$defs/SubjectRecord",
+          "description": "Who holds the grant."
+        },
+        "privilege": {
+          "type": "string",
+          "description": "The privilege name, verbatim from the authorizer's vocabulary."
+        },
+        "resource_type": {
+          "description": "The kind of resource the grant is on.",
+          "$ref": "#/$defs/ResourceType"
+        },
+        "resource_id": {
+          "type": "string",
+          "description": "The exact resource. Absent for server grants, whose type is their whole identity."
+        },
+        "warehouse_id": {
+          "type": "string",
+          "description": "The containing warehouse, for warehouse-scoped resources."
+        }
+      },
+      "required": [
+        "principal",
+        "privilege",
+        "resource_type"
+      ],
+      "description": "The `context` of a grant record: the full `(principal, privilege, resource)` triple. Grants\nare hard-deleted and keep no history, so a revocation's triple exists nowhere else once the\nrow is gone.",
+      "x-audit-kind": "context",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::GrantContextRecord"
+    },
+    "HandlerContext": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The `context` object of an authorization record: what the handler recorded about the\nrequest beyond its action and its entity.\n\nOnly the keys relevant to that request appear. What a given key carries is stated for that\nkey, not here, because a product that plugs into Lakekeeper contributes keys of its own.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::HandlerContext"
+    },
+    "HandlerContextKey": {
+      "type": "string",
+      "enum": [
+        "entity_id",
+        "invoked_by",
+        "queue_name",
+        "self_provisioning",
+        "self_read"
+      ],
+      "x-audit-kind": "keys",
+      "x-audit-keys-of": "context",
+      "x-audit-type": "lakekeeper::service::events::context::HandlerContextKey",
+      "x-audit-descriptions": {
+        "entity_id": "The id of the entity a task operation addressed.",
+        "invoked_by": "Which operation invoked this one, when a handler acts on behalf of another.",
+        "queue_name": "The task queue an operation addressed.",
+        "self_provisioning": "Whether the user creation was the caller provisioning itself.",
+        "self_read": "Whether a grant read asked about the caller's own grants."
+      }
+    },
+    "InstanceAdminAction": {
+      "type": "string",
+      "enum": [
+        "set_warehouse_managed_by"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::authz::instance_admin::InstanceAdminAction",
+      "x-audit-descriptions": {
+        "set_warehouse_managed_by": "Set or clear a warehouse's managed-by marker."
+      }
+    },
+    "ManagementAction": {
+      "type": "string",
+      "enum": [
+        "apply_grants",
+        "control_tasks",
+        "get_task_details",
+        "introspect_permissions",
+        "list_projects",
+        "list_tasks",
+        "revoke_subtree_grants",
+        "schedule_task",
+        "search_tabulars",
+        "search_users"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-type": "lakekeeper::service::events::context::ManagementAction",
+      "x-audit-descriptions": {
+        "apply_grants": "Context assembled by the handler from the request body: see `ApplyGrants` in\n`api::management::v1::grant`, whose fields these keys are.",
+        "revoke_subtree_grants": "Context assembled by the handler from the request body and the scope its gate is\nasked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields\nthese keys are.\n\nThe six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated\nhere rather than left to the `Catalog*Action` variants that share this wire name, so\nwhat this action carries does not depend on another vocabulary keeping its own."
+      }
+    },
+    "OperationRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "description": "Names this record's shape. Always `operation`.",
+          "const": "operation"
+        },
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+        },
+        "operation": {
+          "type": "string",
+          "x-audit-open": true,
+          "description": "What was done, from the emitter's own vocabulary."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "outcome": {
+          "type": "string",
+          "x-audit-open": true,
+          "description": "How it ended, from the emitter's own vocabulary."
+        },
+        "context": {
+          "description": "The operation's own detail. One shape per operation kind, each declared by its\nemitter; absent for an operation that carries none."
+        }
+      },
+      "required": [
+        "record_type",
+        "emitters",
+        "operation",
+        "actor",
+        "outcome"
+      ],
+      "description": "An operation record: something the system did that touches identity or access, with no\npermission decision of its own. Any emitter can produce one.",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::OperationWire",
+      "x-audit-record-type": "operation"
+    },
+    "PolicyEffect": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "permit",
+          "description": "The policy grants the action."
+        },
+        {
+          "type": "string",
+          "const": "forbid",
+          "description": "The policy denies the action."
+        }
+      ],
+      "description": "Whether a determining policy permits or forbids.",
+      "x-audit-kind": "enum"
+    },
+    "PrivilegeScope": {
+      "type": "string",
+      "enum": [
+        "every",
+        "only"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "privilege_scope",
+      "x-audit-type": "lakekeeper::service::authz::PrivilegeScope"
+    },
+    "PrivilegeSource": {
+      "type": "string",
+      "enum": [
+        "authorizer",
+        "instance_admin",
+        "internal"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "privilege_source",
+      "x-audit-type": "lakekeeper::request_metadata::PrivilegeSource",
+      "x-audit-descriptions": {
+        "authorizer": "Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).",
+        "instance_admin": "Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass\nonly; data-plane actions still route through the configured authorizer.",
+        "internal": "A call the catalog made to itself, with no client request behind it. Full bypass,\nincluding data-plane actions."
+      }
+    },
+    "RecordType": {
+      "type": "string",
+      "enum": [
+        "authorization",
+        "operation",
+        "replay"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "record_type",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType",
+      "x-audit-descriptions": {
+        "authorization": "Was this caller permitted to do these actions on these entities?",
+        "operation": "Something the system did that touches identity or access.",
+        "replay": "A retry answered from an idempotency record, so no authorization ran."
+      }
+    },
+    "ReplayRecord": {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "description": "Names this record's shape. Always `replay`.",
+          "const": "replay"
+        },
+        "emitters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmitterRecord"
+          },
+          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionRecord"
+          },
+          "description": "The actions the replayed request named, always a list."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityRecord"
+          },
+          "description": "The entities it named, always a list. As the caller wrote them: a replay resolves\nnothing."
+        },
+        "actor": {
+          "$ref": "#/$defs/ActorRecord",
+          "description": "Who made the request, as authentication established it."
+        },
+        "privilege_source": {
+          "description": "Which authority would have answered, had one been asked.",
+          "$ref": "#/$defs/PrivilegeSource"
+        },
+        "user_agent": {
+          "type": "string",
+          "description": "The `User-Agent` header, verbatim and unverified. Absent when none was sent."
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "The key whose stored response was served. Always present: it is what makes this a\nreplay."
+        }
+      },
+      "required": [
+        "record_type",
+        "emitters",
+        "actions",
+        "entities",
+        "actor",
+        "privilege_source",
+        "idempotency_key"
+      ],
+      "description": "A replay record: a retry answered from an idempotency record, so no authorization ran.",
+      "x-audit-kind": "shape",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::ReplayRecord",
+      "x-audit-record-type": "replay"
+    },
+    "ResourceType": {
+      "type": "string",
+      "enum": [
+        "generic-table",
+        "namespace",
+        "project",
+        "server",
+        "table",
+        "tag-definition",
+        "view",
+        "warehouse"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "resource_type",
+      "x-audit-type": "lakekeeper::service::authz::grant::ResourceType",
+      "x-audit-descriptions": {
+        "tag-definition": "Spelled `tag-definition` on the wire, matching the path segment tag definitions\nare addressed by, so every key of the vocabulary map names its own URL segment.\nThe only spelling `kebab-case` does not already produce."
+      }
+    },
+    "RoleSubjectRecord": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "The role's id."
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "description": "A role named as a target.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::RoleSubjectRecord"
+    },
+    "RootLevelGrants": {
+      "type": "string",
+      "enum": [
+        "excluded",
+        "included"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "root_level",
+      "x-audit-type": "lakekeeper::service::authz::RootLevelGrants",
+      "x-audit-descriptions": {
+        "excluded": "Only grants held below the addressed resource are in range.",
+        "included": "The request's range extends to the addressed resource itself. The kinds it\nactually reaches are in `resource_types`; a kind filter can still exclude the\nroot's own kind."
+      }
+    },
+    "SubjectRecord": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UserSubjectRecord",
+          "description": "A user."
+        },
+        {
+          "$ref": "#/$defs/RoleSubjectRecord",
+          "description": "A role."
+        }
+      ],
+      "description": "A principal named as a target: `for_principal` on a decision entry, `principal` on a grant\nrecord. `{\"user\": …}` or `{\"role\": …}`.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::SubjectRecord"
+    },
+    "TableUpdateKind": {
+      "type": "string",
+      "enum": [
+        "add-encryption-key",
+        "add-schema",
+        "add-snapshot",
+        "add-sort-order",
+        "add-spec",
+        "assign-uuid",
+        "remove-encryption-key",
+        "remove-partition-specs",
+        "remove-partition-statistics",
+        "remove-properties",
+        "remove-schemas",
+        "remove-snapshot-ref",
+        "remove-snapshots",
+        "remove-statistics",
+        "set-current-schema",
+        "set-default-sort-order",
+        "set-default-spec",
+        "set-location",
+        "set-partition-statistics",
+        "set-properties",
+        "set-snapshot-ref",
+        "set-statistics",
+        "upgrade-format-version"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "update_kinds",
+      "x-audit-type": "iceberg_ext::catalog::table_update_kind::TableUpdateKind"
+    },
+    "UserSubjectRecord": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "The user's principal id."
+        }
+      },
+      "required": [
+        "user"
+      ],
+      "description": "A user named as a target.",
+      "x-audit-kind": "part",
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::UserSubjectRecord"
+    }
+  }
+}

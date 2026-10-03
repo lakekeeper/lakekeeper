@@ -20,7 +20,7 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
 //! the plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for-principal`/`determined_by`, which need a batch-style check;
+//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! the operational family, which grant changes emit; and a real authorizer with an
 //! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
 //! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
@@ -279,8 +279,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // Property updates carry `updated-properties` and `removed-properties`, the two
-    // hyphenated action context fields.
+    // Property updates carry `updated_properties` and `removed_properties`.
     let _ = CatalogServer::update_namespace_properties(
         namespace_params.clone(),
         iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest {
@@ -392,8 +391,20 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     }
     let records = settled;
 
+    let committed_schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../audit-format/schema.json"),
+        )
+        .expect("the committed audit schema; generate it with `just update-audit-schema`"),
+    )
+    .expect("the committed schema is JSON");
     for (index, record) in records.iter().enumerate() {
         contract::assert_satisfies(record, &format!("record {index}"));
+        lakekeeper::audit::validate::assert_valid_record(
+            &committed_schema,
+            record,
+            &format!("record {index}"),
+        );
     }
 
     eprintln!("audit corpus: {} record(s) checked", records.len());
@@ -413,8 +424,12 @@ fn describe(records: &[serde_json::Value]) -> String {
                     .unwrap_or("-")
                     .to_string()
             };
+            // The first of the `actions` list: every record carries the list, and one name is
+            // enough to recognise which call the record came from.
             let action = record
-                .get("action")
+                .get("actions")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|actions| actions.first())
                 .and_then(|action| action.get("action_name"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("-");

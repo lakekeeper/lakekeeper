@@ -40,7 +40,7 @@ use crate::{
     service::{
         Actor, RoleIdent, UserId,
         authn::InternalActor,
-        events::backends::audit::{AuditActor, AuditOperation, AuditOutcome},
+        events::backends::audit::{AuditOperation, AuditOutcome},
     },
 };
 
@@ -233,16 +233,29 @@ impl AdmissionRejection {
 
     /// Render the response body for this rejection.
     ///
-    /// `skip_log` is set because [`AdmissionGates::admit`] has already recorded
-    /// the decision, naming the principal the generic error-response line cannot.
+    /// `skip_log` suppresses the generic error-response line, which repeats the rejection
+    /// without the principal. Whether that is safe depends on the kind, because the two have
+    /// different fallbacks:
+    ///
+    /// A fail-closed rejection is logged at WARN by [`AdmissionGates::admit`] whatever the
+    /// audit configuration, so it is never the audit record alone. Letting the response line
+    /// through as well would add a `5xx` at ERROR that this server did not have.
+    ///
+    /// A forbidden rejection has no such fallback: the audit record is the only place it
+    /// appears. Suppressing the response line is a saving only while that record reaches the
+    /// log, so with the audit trail switched off or filtered out this line is kept.
     #[cfg(feature = "router")]
     pub(crate) fn into_error(self) -> ErrorModel {
+        let recorded_elsewhere = match self.kind {
+            RejectionKind::Unavailable { .. } => true,
+            RejectionKind::Forbidden => crate::audit::enabled(),
+        };
         ErrorModel::builder()
             .message(self.message.into_owned())
             .r#type(self.error_type)
             .code(self.kind.status())
             .error_id(self.error_id)
-            .skip_log(true)
+            .skip_log(recorded_elsewhere)
             .build()
     }
 }
@@ -406,11 +419,10 @@ impl<'a> AdmissionTrigger<'a> {
         }
     }
 
-    /// The triggering request's actor, rendered for an audit event exactly as
-    /// [`RequestMetadata::audit_actor`] renders it, assumed role included.
+    /// The triggering request's actor as an audit record carries it, assumed role included.
     #[must_use]
-    pub fn audit_actor(&self) -> AuditActor<'a> {
-        AuditActor(self.actor)
+    pub fn actor_record(&self) -> crate::audit::ActorRecord {
+        crate::audit::ActorRecord::from_internal_actor(self.actor)
     }
 
     /// The triggering request's id.
@@ -497,18 +509,24 @@ impl AdmissionGates {
                 }
                 Ok(GateDecision::NotApplicable) => {}
                 Err(rejection) => {
-                    // The one record of the rejection. It names the principal,
-                    // so it belongs in the audit stream: a denial nothing can
+                    // The record of the rejection that names the principal, so
+                    // it belongs in the audit stream: a denial nothing can
                     // attribute answers "someone was refused" and never "who".
-                    // Rendering the response then suppresses the generic
-                    // error-response line, which would otherwise repeat this
-                    // without the actor — and, for a fail-closed `503`, repeat
-                    // it at ERROR as an internal error this server did not have.
-                    crate::audit_operation!(
-                        operation = AuditOperation::AdmissionDecided.as_str(),
-                        actor = ctx.triggered_by.audit_actor(),
-                        outcome = rejection.kind.label().as_str(),
-                        context = AdmissionRejectedContext {
+                    // Rendering the response suppresses the generic
+                    // error-response line, which repeats this without the actor;
+                    // `Rejection::into_error` decides when that is safe, and the
+                    // answer differs by kind.
+                    //
+                    // Gated here as well as inside `emit()`, because the context
+                    // is serialized as it is attached: asking first is what makes
+                    // a rejection cost nothing when the audit trail is off.
+                    if crate::audit::enabled() {
+                        crate::audit::OperationRecord::new(
+                            AuditOperation::AdmissionDecided.as_wire(),
+                            ctx.triggered_by.actor_record(),
+                            rejection.kind.label().as_wire(),
+                        )
+                        .context(AdmissionRejectedContext {
                             gate: gate.name(),
                             denied_by: rejection.deciding_rule(),
                             status: rejection.kind.status(),
@@ -516,17 +534,21 @@ impl AdmissionGates {
                             message: rejection.message.as_ref(),
                             error_id: rejection.error_id.to_string(),
                             request_id: ctx.triggered_by.request_id().to_string(),
-                        },
-                        "Request rejected by admission gate"
-                    );
+                        })
+                        .message("Request rejected by admission gate")
+                        .emit();
+                    }
                     // A gate failing closed is an outage of something this
                     // server depends on, not a decision about the caller, and
                     // it needs a level that survives `RUST_LOG=warn` — which
                     // the audit record above does not have. Carries no
                     // principal, so it stays on the general stream: the same
                     // pairing the role providers use, warning here and
-                    // auditing there. `cause` is the only place the gate's
-                    // `source` is rendered; it never reaches the caller.
+                    // auditing there. It is also unconditional, which is what
+                    // lets `Rejection::into_error` suppress the response line
+                    // for this kind whatever the audit configuration. `cause`
+                    // is the only place the gate's `source` is rendered; it
+                    // never reaches the caller.
                     if matches!(rejection.kind, RejectionKind::Unavailable { .. }) {
                         let cause = rejection.source.as_deref().map(|e| cause_chain(e));
                         tracing::warn!(
@@ -555,24 +577,31 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
     }
 }
 
-/// Context for the admission-rejection audit record.
+/// Context for the admission-rejection audit record: which gate refused the request, on what
+/// grounds, and what the caller was told.
 ///
-/// The operation-specific fields live here rather than at the top level,
-/// because that is the shape every `event_source="audit"` operational record
-/// promises. `error_id` correlates with what the caller was handed, and
-/// `request_id` is repeated out of the span so the record stands alone.
-#[derive(valuable::Valuable)]
+/// `error_id` is the id the caller was handed, so a user's report resolves to this record.
+/// `request_id` is repeated out of the span, so the record stands alone.
+#[crate::audit::audit_part(context)]
 struct AdmissionRejectedContext<'a> {
+    /// The gate that rejected the request.
     gate: &'a str,
+    /// The rule of the gate that decided, when the gate names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     denied_by: Option<&'a str>,
+    /// The HTTP status the caller received.
     status: u16,
+    /// The error type the caller received.
     error_type: &'a str,
     /// The gate's own wording. Suppressing the error-response line takes this
     /// with it, and it is what separates two rejections that share a type —
     /// a gate failing closed on a missing precondition from the same gate
     /// failing closed on an unreachable upstream.
     message: &'a str,
+    /// The id the caller can quote to correlate with this record.
     error_id: String,
+    /// The request this rejection belongs to, repeated out of the span so the record stands
+    /// alone.
     request_id: String,
 }
 
@@ -865,7 +894,7 @@ mod tests {
             .iter()
             .find(|l| l["operation"] == "admission_decided")
             .unwrap_or_else(|| panic!("no admission_decided record in {lines:#?}"));
-        assert_eq!(record["actor"]["actor_type"], "assumed-role");
+        assert_eq!(record["actor"]["actor_type"], "assumed_role");
         assert_eq!(record["actor"]["principal"], user_id.to_string());
         assert_eq!(
             record["actor"]["assumed_role"]["role_id"],
@@ -1011,22 +1040,54 @@ mod tests {
         }
     }
 
+    /// `into_error().skip_log` as decided under one `RUST_LOG`-style filter.
+    #[cfg(feature = "router")]
+    fn suppresses_the_error_line(filter: &str, rejection: AdmissionRejection) -> bool {
+        use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(filter))
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink));
+        tracing::subscriber::with_default(subscriber, || rejection.into_error().skip_log)
+    }
+
+    /// The rejection is logged once, and never nowhere.
+    ///
+    /// Rendering the response suppresses the generic error-response line because the audit
+    /// record says the same thing and names the principal as well. What happens when the
+    /// audit record is filtered out depends on the kind, because only one of them has a
+    /// second trace: a fail-closed rejection is warned about unconditionally, a forbidden one
+    /// is not. So dropping the audit target must bring the response line back for a denial
+    /// and must not bring back the ERROR-level `5xx` for an outage.
     #[cfg(feature = "router")]
     #[tokio::test]
-    async fn a_rejection_suppresses_the_duplicate_error_log() {
+    async fn a_rejection_is_suppressed_only_where_something_else_records_it() {
         let md = RequestMetadata::new_unauthenticated();
-        for gate in [
-            Arc::new(DenyGate) as Arc<dyn AdmissionGate>,
-            Arc::new(UnavailableGate) as Arc<dyn AdmissionGate>,
+        let audit_off = "info,lakekeeper::audit=warn";
+        for (gate, suppressed_without_audit) in [
+            (Arc::new(DenyGate) as Arc<dyn AdmissionGate>, false),
+            (Arc::new(UnavailableGate) as Arc<dyn AdmissionGate>, true),
         ] {
-            let rejection = gates(vec![gate])
-                .admit(context_for(&md))
-                .await
-                .expect_err("gate rejects");
-            let error_type = rejection.error_type();
+            let reject = async || {
+                gates(vec![Arc::clone(&gate)])
+                    .admit(context_for(&md))
+                    .await
+                    .expect_err("gate rejects")
+            };
+            let error_type = reject().await.error_type();
             assert!(
-                rejection.into_error().skip_log,
-                "{error_type} must not be logged twice"
+                suppresses_the_error_line("info", reject().await),
+                "{error_type} must not be logged twice while the audit record carries it"
+            );
+            assert_eq!(
+                suppresses_the_error_line(audit_off, reject().await),
+                suppressed_without_audit,
+                "with the audit target filtered out, {error_type} must {} the generic error \
+                 line",
+                if suppressed_without_audit {
+                    "still suppress"
+                } else {
+                    "fall back to"
+                }
             );
         }
     }

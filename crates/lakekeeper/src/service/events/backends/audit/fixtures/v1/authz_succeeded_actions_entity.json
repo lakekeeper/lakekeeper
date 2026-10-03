@@ -1,24 +1,35 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "actions": [
     {
       "action_name": "read_data"
     },
     {
       "action_name": "update_properties",
-      "name": "orders",
-      "removed-properties": [
+      "updated_properties": {
+        "owner": "analytics"
+      },
+      "removed_properties": [
         "stale.key"
       ]
     }
   ],
-  "entity": {
-    "entity_type": "table",
-    "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-    "table-id": "019684ff-0000-7000-8000-000000000002",
-    "table": "sales.orders"
-  },
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
+      "table": "sales.orders"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~alice"
@@ -32,13 +43,32 @@
       },
       "entity": {
         "entity_type": "table",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
         "table": "sales.orders"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
+    },
+    {
+      "action": {
+        "action_name": "update_properties",
+        "updated_properties": {
+          "owner": "analytics"
+        },
+        "removed_properties": [
+          "stale.key"
+        ]
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true,
+      "determined_by": []
     }
   ],
-  "idempotency_key": null,
   "decision": "allowed"
 }

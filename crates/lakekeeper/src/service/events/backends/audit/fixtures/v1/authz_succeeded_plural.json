@@ -1,14 +1,23 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
   "actions": [
     {
       "action_name": "read_data"
     },
     {
       "action_name": "update_properties",
-      "name": "orders",
-      "removed-properties": [
+      "updated_properties": {
+        "owner": "analytics"
+      },
+      "removed_properties": [
         "stale.key"
       ]
     }
@@ -16,14 +25,14 @@
   "entities": [
     {
       "entity_type": "table",
-      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-      "table-id": "019684ff-0000-7000-8000-000000000002",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
       "table": "sales.orders"
     },
     {
       "entity_type": "namespace",
-      "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-      "namespace-id": "019684ff-0000-7000-8000-000000000003",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace_id": "019684ff-0000-7000-8000-000000000003",
       "namespace": "sales"
     }
   ],
@@ -34,7 +43,7 @@
   "privilege_source": "authorizer",
   "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
   "context": {
-    "invoked-by": "maintenance-task"
+    "invoked_by": "maintenance-task"
   },
   "authorizations": [
     {
@@ -43,41 +52,44 @@
       },
       "entity": {
         "entity_type": "table",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
         "table": "sales.orders"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
     },
     {
       "id": "check-0",
-      "for-principal": {
+      "for_principal": {
         "user": "oidc~bob"
       },
       "action": {
-        "action_name": "read_data"
+        "action_name": "update_properties",
+        "updated_properties": {
+          "owner": "analytics"
+        },
+        "removed_properties": [
+          "stale.key"
+        ]
       },
       "entity": {
         "entity_type": "namespace",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "namespace-id": "019684ff-0000-7000-8000-000000000003",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
         "namespace": "sales"
       },
       "allowed": false,
       "determined_by": [
         {
-          "Policy": {
-            "policy_id": "policy-42",
-            "name": "deny-stale-namespaces",
-            "effect": {
-              "Forbid": []
-            },
-            "source": "cedar"
-          }
+          "type": "policy",
+          "policy-id": "policy-42",
+          "name": "deny-stale-namespaces",
+          "effect": "forbid",
+          "source": "cedar"
         }
       ]
     }
   ],
-  "idempotency_key": null,
   "decision": "allowed"
 }

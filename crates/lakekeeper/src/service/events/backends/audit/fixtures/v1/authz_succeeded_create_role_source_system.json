@@ -1,16 +1,27 @@
 {
   "event_source": "audit",
   "audit_format": "1.0",
-  "action": {
-    "action_name": "create_role",
-    "name": "analysts",
-    "requested_provider_id": "ldap",
-    "requested_source_id": "analysts"
-  },
-  "entity": {
-    "entity_type": "project",
-    "project-id": "00000000-0000-0000-0000-000000000000"
-  },
+  "record_type": "authorization",
+  "emitters": [
+    {
+      "name": "lakekeeper",
+      "format": "1.0"
+    }
+  ],
+  "actions": [
+    {
+      "action_name": "create_role",
+      "name": "analysts",
+      "requested_provider_id": "ldap",
+      "requested_source_id": "analysts"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "project",
+      "project_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~alice"
@@ -20,17 +31,18 @@
   "authorizations": [
     {
       "action": {
-        "action_name": "read_data"
+        "action_name": "create_role",
+        "name": "analysts",
+        "requested_provider_id": "ldap",
+        "requested_source_id": "analysts"
       },
       "entity": {
-        "entity_type": "table",
-        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
-        "table-id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "entity_type": "project",
+        "project_id": "00000000-0000-0000-0000-000000000000"
       },
-      "allowed": true
+      "allowed": true,
+      "determined_by": []
     }
   ],
-  "idempotency_key": null,
   "decision": "allowed"
 }

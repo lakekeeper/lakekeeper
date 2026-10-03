@@ -1,0 +1,19 @@
+[package]
+name = "lakekeeper-audit-macros"
+description = "The `#[audit_part]` attribute: declares a type as part of the Lakekeeper audit log"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+heck = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+

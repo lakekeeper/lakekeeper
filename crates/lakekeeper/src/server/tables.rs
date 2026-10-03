@@ -24,6 +24,8 @@ use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
+
+use crate::service::events::context::HandlerContextKey;
 pub mod authorize_load;
 pub mod create_table;
 pub(crate) mod etag;
@@ -450,7 +452,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         purge: false,
                     },
                 );
-                drop_tbl_event_ctx.push_extra_context("invoked-by", "register_table_overwrite");
+                drop_tbl_event_ctx
+                    .push_extra_context(HandlerContextKey::InvokedBy, "register_table_overwrite");
 
                 let authz_result = authorizer
                     .require_table_action(

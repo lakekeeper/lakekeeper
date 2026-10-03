@@ -7,7 +7,7 @@ use axum::Router;
 use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
-use strum_macros::{EnumString, IntoStaticStr};
+use strum_macros::EnumString;
 
 use super::{
     CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
@@ -19,6 +19,7 @@ use crate::{
         iceberg::v1::{PaginationQuery, Result},
         management::v1::check::UserOrRole as AuthzUserOrRole,
     },
+    audit::{AnyWireStr, audit_part},
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
@@ -265,12 +266,29 @@ where
     fn action_descriptor(&self) -> ActionDescriptor;
 }
 
-#[derive(Clone, Debug)]
+/// What a `context` key carries.
+///
+/// A record holds context keys in two places: inside each entry of `actions`, beside
+/// `action_name`, and in the record's own `context` object. A key carries the same type in
+/// either, and which type that is is stated for that key in this schema.
+// One type for both so a key's legal values do not depend on which object it sits in. Declare
+// a key's type with `#[audit(value = "...")]`; `every_declared_key_type_matches_the_code`
+// holds the declaration to the builder the value is written with.
+#[audit_part]
+#[serde(untagged)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ContextValue {
     /// A set of key-value pairs (e.g. properties, `updated_properties`).
     Map(BTreeMap<String, String>),
     /// A list of plain strings (e.g. `removed_properties`).
     List(Vec<String>),
+    /// An object. The key that carries one names its shape, which this schema defines.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
+    Object(crate::audit::AuditJson),
+    /// A flag the request either set or did not (e.g. `force`, `dry_run`).
+    Bool(bool),
+    /// A count (e.g. `writes`, `deletes`).
+    Integer(i64),
     /// A single string value (e.g. resource name, ID).
     String(String),
 }
@@ -289,6 +307,9 @@ impl std::fmt::Display for ContextValue {
             Self::List(list) => {
                 write!(f, "[{}]", list.join(", "))
             }
+            Self::Object(json) => write!(f, "{}", json.value()),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Integer(n) => write!(f, "{n}"),
             Self::String(s) => write!(f, "{s}"),
         }
     }
@@ -308,6 +329,14 @@ impl std::fmt::Display for ContextValue {
     pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
         self.context.push((key, ContextValue::String(value.into())));
     }
+    #[allow(unreachable_pub)]
+    pub fn context_bool(&mut self, key: ActionContextKey, value: bool) {
+        self.context.push((key, ContextValue::Bool(value)));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_integer(&mut self, key: ActionContextKey, value: impl Into<i64>) {
+        self.context.push((key, ContextValue::Integer(value.into())));
+    }
     /// Append the context a value describes about itself.
     #[allow(unreachable_pub)]
     pub fn context_pairs(
@@ -318,7 +347,10 @@ impl std::fmt::Display for ContextValue {
     }
 ))]
 pub struct ActionDescriptor {
-    pub action_name: &'static str,
+    /// The wire value of the action: a variant of a vocabulary enum declared with
+    /// `#[audit_part(field = "action_name")]`, from any emitter.
+    #[builder(setter(into))]
+    pub action_name: AnyWireStr,
     #[builder(via_mutators)]
     pub context: Vec<(ActionContextKey, ContextValue)>,
 }
@@ -346,6 +378,7 @@ impl ActionDescriptor {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -355,7 +388,6 @@ impl ActionDescriptor {
     strum_macros::Display,
     EnumIter,
     EnumString,
-    IntoStaticStr,
     Serialize,
     Deserialize,
     VariantArray,
@@ -379,10 +411,13 @@ pub enum CatalogUserAction {
 
 impl CatalogAction for CatalogUserAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -392,7 +427,6 @@ impl CatalogAction for CatalogUserAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -442,7 +476,7 @@ impl CatalogServerAction {
 }
 impl CatalogAction for CatalogServerAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
                 b = b.context_string(ActionContextKey::Name, n.clone());
@@ -455,6 +489,7 @@ impl CatalogAction for CatalogServerAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -464,7 +499,6 @@ impl CatalogAction for CatalogServerAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -490,6 +524,7 @@ pub enum CatalogProjectAction {
         /// to. Absent when the request names none, in which case the role is created
         /// in the `lakekeeper` provider with a generated source id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[audit(expands_to = "requested_provider_id, requested_source_id")]
         source_system: Option<RoleSourceSystem>,
     },
     ListRoles,
@@ -546,7 +581,7 @@ impl CatalogAction for CatalogProjectAction {
     // left to review: see the audit log section of docs/docs/developer-guide.md.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateWarehouse { name: Some(n) } | Self::CreateTag { name: Some(n) } => {
                 b = b.context_string(ActionContextKey::Name, n.clone());
@@ -639,6 +674,7 @@ pub enum SourceSystemTarget {
     Any,
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -646,7 +682,6 @@ pub enum SourceSystemTarget {
     PartialEq,
     Serialize,
     Deserialize,
-    IntoStaticStr,
     strum_macros::EnumCount,
     strum_macros::VariantNames,
 )]
@@ -659,7 +694,13 @@ pub enum CatalogRoleAction {
     // Read high level metadata about the role (name & project_id).
     // Meant for cross-project role listing of assignments.
     ReadMetadata,
-    Delete,
+    Delete {
+        /// Whether the refusal that protects a role still holding catalog-stored grants
+        /// is bypassed. Those grants go with the role, so forcing the delete revokes
+        /// them.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
     Update,
     /// Can add/remove members (user or role) of this role.
     ManageRoleAssignments,
@@ -672,14 +713,14 @@ pub enum CatalogRoleAction {
     /// provider). The catalog backend treats this the same as
     /// `ManageRoleAssignments`.
     ///
-    /// The destination is explicit: [`SourceSystemTarget::To`] on the actual write
-    /// (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
-    /// the `GET /role/{id}/actions` introspection enumeration / any "may this
-    /// principal rebind at all?" query. `Any` is a named base-capability marker, not
-    /// a permissive default: a per-destination policy gates the concrete `To` target
-    /// and never matches `Any`, and a `/check` caller chooses `To`/`Any`
-    /// deliberately.
+    /// The destination is explicit. A real rebind names the target provider and source id;
+    /// the permission enumeration behind `GET /role/{id}/actions`, and any "may this
+    /// principal rebind at all?" query, name `any` instead. `any` is a base-capability
+    /// marker, not a permissive default: a policy written against a concrete destination
+    /// gates that destination and never matches `any`, and a `/check` caller picks between
+    /// the two deliberately.
     UpdateSourceSystem {
+        #[audit(expands_to = "requested_provider_id, requested_source_id")]
         target: SourceSystemTarget,
     },
 }
@@ -690,7 +731,7 @@ static ROLE_ACTION_VARIANTS: LazyLock<[CatalogRoleAction; 7]> = LazyLock::new(||
     [
         CatalogRoleAction::Read,
         CatalogRoleAction::ReadMetadata,
-        CatalogRoleAction::Delete,
+        CatalogRoleAction::Delete { force: false },
         CatalogRoleAction::Update,
         CatalogRoleAction::ManageRoleAssignments,
         CatalogRoleAction::ReadRoleAssignments,
@@ -708,12 +749,15 @@ impl CatalogRoleAction {
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::UpdateSourceSystem {
             target: SourceSystemTarget::To(target),
         } = self
         {
             b = b.context_pairs(target.requested_context());
+        }
+        if let Self::Delete { force } = self {
+            b = b.context_bool(ActionContextKey::Force, *force);
         }
         b.build()
     }
@@ -735,6 +779,7 @@ impl CatalogAction for CatalogRoleAction {
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[crate::audit::audit_part(field = "root_level")]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum RootLevelGrants {
@@ -753,18 +798,6 @@ impl From<bool> for RootLevelGrants {
         } else {
             Self::Excluded
         }
-    }
-}
-
-impl RootLevelGrants {
-    /// The label used on the wire and in action context.
-    ///
-    /// Derived through `strum`, not spelled out: the value is committed to a wire-value
-    /// manifest, and a hand-written arm would let a renamed variant keep the old literal
-    /// while the manifest recorded the new one.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
     }
 }
 
@@ -885,9 +918,9 @@ pub enum SubtreeGrantPrivileges {
 /// The `privilege_scope` label: whether a subtree request reaches every privilege or only
 /// the ones it narrows to.
 ///
-/// Its own enum rather than a literal at the emission site so the two values reach the
-/// wire-value manifest and a rename fails `check-audit-format`, as `RootLevelGrants` does
-/// for `root_level`.
+/// Its own enum rather than a literal at the emission site so the two values reach the audit
+/// schema and a rename fails `check-audit-format`, as `RootLevelGrants` does for
+/// `root_level`.
 #[derive(
     Debug,
     Clone,
@@ -898,18 +931,11 @@ pub enum SubtreeGrantPrivileges {
     strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
+#[crate::audit::audit_part(field = "privilege_scope")]
 #[strum(serialize_all = "snake_case")]
 pub enum PrivilegeScope {
     Every,
     Only,
-}
-
-impl PrivilegeScope {
-    /// The label as it reaches the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
-    }
 }
 
 impl SubtreeGrantPrivileges {
@@ -984,10 +1010,7 @@ impl SubtreeGrantScope {
             }
         };
         vec![
-            (
-                ActionContextKey::DryRun,
-                ContextValue::String(self.dry_run.to_string()),
-            ),
+            (ActionContextKey::DryRun, ContextValue::Bool(self.dry_run)),
             (
                 ActionContextKey::ResourceTypes,
                 ContextValue::List(
@@ -1025,6 +1048,7 @@ impl SubtreeGrantScope {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1034,7 +1058,6 @@ impl SubtreeGrantScope {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1050,7 +1073,12 @@ pub enum CatalogWarehouseAction {
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
-    Delete,
+    Delete {
+        /// Whether protection is bypassed, i.e. a warehouse marked protected is deleted
+        /// with everything in it rather than the request being refused.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
     UpdateStorage,
     GetMetadata,
     GetConfig,
@@ -1101,6 +1129,9 @@ pub enum CatalogWarehouseAction {
     /// refusing the base question drops the action from
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the warehouse, asked once at the warehouse for the whole
@@ -1109,6 +1140,9 @@ pub enum CatalogWarehouseAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
 }
@@ -1121,7 +1155,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
             name: None,
             properties: Arc::new(BTreeMap::new()),
         },
-        CatalogWarehouseAction::Delete,
+        CatalogWarehouseAction::Delete { force: false },
         CatalogWarehouseAction::UpdateStorage,
         CatalogWarehouseAction::GetMetadata,
         CatalogWarehouseAction::GetConfig,
@@ -1168,7 +1202,7 @@ impl CatalogWarehouseAction {
     #[must_use]
     pub fn is_spec_mutation(&self) -> bool {
         match self {
-            CatalogWarehouseAction::Delete
+            CatalogWarehouseAction::Delete { .. }
             | CatalogWarehouseAction::UpdateStorage
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
@@ -1207,17 +1241,15 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
                     b = b.context_string(ActionContextKey::Name, n.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
-            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+            Self::AcceptMovedNamespace { source } => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
@@ -1228,9 +1260,11 @@ impl CatalogAction for CatalogWarehouseAction {
                         .unwrap_or_default(),
                 );
             }
+            Self::Delete { force } => {
+                b = b.context_bool(ActionContextKey::Force, *force);
+            }
             // Contribute no audit context. Listed, not `_` — see above.
-            Self::Delete { .. }
-            | Self::UpdateStorage { .. }
+            Self::UpdateStorage { .. }
             | Self::GetMetadata { .. }
             | Self::GetConfig { .. }
             | Self::ListNamespaces { .. }
@@ -1250,13 +1284,13 @@ impl CatalogAction for CatalogWarehouseAction {
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
             | Self::ManageTags { .. }
-            | Self::AcceptMovedNamespace { .. }
             | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1266,7 +1300,6 @@ impl CatalogAction for CatalogWarehouseAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1401,6 +1434,9 @@ pub enum CatalogNamespaceAction {
     /// refusing the base question drops the action from
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
     /// Can revoke any grant in the subtree rooted here, asked once at this namespace for
@@ -1409,6 +1445,9 @@ pub enum CatalogNamespaceAction {
     ///
     /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
     RevokeSubtreeGrants {
+        #[audit(
+            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+        )]
         scope: Option<SubtreeGrantScope>,
     },
 }
@@ -1481,7 +1520,7 @@ impl CatalogAction for CatalogNamespaceAction {
     // signal to split the function.
     #[allow(clippy::too_many_lines)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateTable {
                 name,
@@ -1494,9 +1533,7 @@ impl CatalogAction for CatalogNamespaceAction {
                 if let Some(tid) = table_id {
                     b = b.context_string(ActionContextKey::TableId, tid.to_string());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::CreateGenericTable {
                 name,
@@ -1517,64 +1554,48 @@ impl CatalogAction for CatalogNamespaceAction {
                 if let Some(bl) = base_location {
                     b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
                     b = b.context_string(ActionContextKey::Name, n.clone());
                 }
-                if !properties.is_empty() {
-                    b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
-                }
+                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
             }
             Self::UpdateProperties {
                 removed_properties,
                 updated_properties,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
             }
             Self::Delete {
                 force,
                 purge,
                 recursive,
             } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
-                if *recursive {
-                    b = b.context_string(ActionContextKey::Recursive, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
+                b = b.context_bool(ActionContextKey::Recursive, *recursive);
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
-            Self::AcceptMovedNamespace { source } if !source.is_empty() => {
+            Self::AcceptMovedNamespace { source } => {
                 b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
             }
             Self::Move { destination, force } => {
                 // The destination is the whole point of the decision for a policy engine:
                 // it determines which subtree's grants the moved namespace inherits.
-                if !destination.is_empty() {
-                    b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
-                }
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
+                b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
+
+                b = b.context_bool(ActionContextKey::Force, *force);
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
                 b = b.context_pairs(
@@ -1594,13 +1615,13 @@ impl CatalogAction for CatalogNamespaceAction {
             | Self::IncludeInList { .. }
             | Self::ListGenericTables { .. }
             | Self::ManageTags { .. }
-            | Self::AcceptMovedNamespace { .. }
             | Self::ReadGrants { .. } => {}
         }
         b.build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1610,7 +1631,6 @@ impl CatalogAction for CatalogNamespaceAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1694,7 +1714,7 @@ impl CatalogTableAction {
 impl CatalogAction for CatalogTableAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Commit {
                 updated_properties,
@@ -1702,41 +1722,32 @@ impl CatalogAction for CatalogTableAction {
                 target_refs,
                 update_kinds,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
-                if !target_refs.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::TargetRefs,
-                        target_refs.iter().cloned().collect::<Vec<_>>(),
-                    );
-                }
-                if !update_kinds.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::UpdateKinds,
-                        update_kinds
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::TargetRefs,
+                    target_refs.iter().cloned().collect::<Vec<_>>(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::UpdateKinds,
+                    update_kinds
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                );
             }
             Self::Drop { force, purge } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::WriteData { .. }
@@ -1755,6 +1766,7 @@ impl CatalogAction for CatalogTableAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1764,7 +1776,6 @@ impl CatalogAction for CatalogTableAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1833,32 +1844,25 @@ impl CatalogViewAction {
 impl CatalogAction for CatalogViewAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
-        let mut b = ActionDescriptor::builder().action_name(self.into());
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Commit {
                 updated_properties,
                 removed_properties,
             } => {
-                if !updated_properties.is_empty() {
-                    b = b.context_map(
-                        ActionContextKey::UpdatedProperties,
-                        updated_properties.as_ref().clone(),
-                    );
-                }
-                if !removed_properties.is_empty() {
-                    b = b.context_list(
-                        ActionContextKey::RemovedProperties,
-                        removed_properties.as_ref().clone(),
-                    );
-                }
+                b = b.context_map(
+                    ActionContextKey::UpdatedProperties,
+                    updated_properties.as_ref().clone(),
+                );
+
+                b = b.context_list(
+                    ActionContextKey::RemovedProperties,
+                    removed_properties.as_ref().clone(),
+                );
             }
             Self::Drop { force, purge } => {
-                if *force {
-                    b = b.context_string(ActionContextKey::Force, "true");
-                }
-                if *purge {
-                    b = b.context_string(ActionContextKey::Purge, "true");
-                }
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
@@ -1876,6 +1880,7 @@ impl CatalogAction for CatalogViewAction {
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Hash,
@@ -1885,7 +1890,6 @@ impl CatalogAction for CatalogViewAction {
     Serialize,
     Deserialize,
     strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -1893,7 +1897,16 @@ impl CatalogAction for CatalogViewAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogGenericTableAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the generic
+        /// table is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     ReadData,
     WriteData,
     GetMetadata,
@@ -1911,7 +1924,10 @@ pub enum CatalogGenericTableAction {
 static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> =
     LazyLock::new(|| {
         [
-            CatalogGenericTableAction::Drop,
+            CatalogGenericTableAction::Drop {
+                force: false,
+                purge: false,
+            },
             CatalogGenericTableAction::ReadData,
             CatalogGenericTableAction::WriteData,
             CatalogGenericTableAction::GetMetadata,
@@ -1933,10 +1949,30 @@ impl CatalogGenericTableAction {
 }
 impl CatalogAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.as_wire());
+        match self {
+            Self::Drop { force, purge } => {
+                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context_bool(ActionContextKey::Purge, *purge);
+            }
+            // Contribute no audit context. Listed, not `_` — see above.
+            Self::ReadData { .. }
+            | Self::WriteData { .. }
+            | Self::GetMetadata { .. }
+            | Self::Rename { .. }
+            | Self::IncludeInList { .. }
+            | Self::Undrop { .. }
+            | Self::GetTasks { .. }
+            | Self::ControlTasks { .. }
+            | Self::SetProtection { .. }
+            | Self::ManageTags { .. }
+            | Self::ReadGrants { .. } => {}
+        }
+        b.build()
     }
 }
 
+#[audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -1944,7 +1980,6 @@ impl CatalogAction for CatalogGenericTableAction {
     PartialEq,
     Serialize,
     Deserialize,
-    IntoStaticStr,
     strum_macros::EnumCount,
     strum_macros::VariantNames,
 )]
@@ -1989,7 +2024,9 @@ impl CatalogTagAction {
 }
 impl CatalogAction for CatalogTagAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 
@@ -2097,7 +2134,7 @@ impl From<&CatalogRoleAction> for CatalogRoleActionKind {
         match action {
             CatalogRoleAction::Read => Self::Read,
             CatalogRoleAction::ReadMetadata => Self::ReadMetadata,
-            CatalogRoleAction::Delete => Self::Delete,
+            CatalogRoleAction::Delete { .. } => Self::Delete,
             CatalogRoleAction::Update => Self::Update,
             CatalogRoleAction::ManageRoleAssignments => Self::ManageRoleAssignments,
             CatalogRoleAction::ReadRoleAssignments => Self::ReadRoleAssignments,
@@ -2143,7 +2180,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
         match action {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
             CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
-            CatalogWarehouseAction::Delete => Self::Delete,
+            CatalogWarehouseAction::Delete { .. } => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
             CatalogWarehouseAction::GetConfig => Self::GetConfig,
@@ -3103,7 +3140,7 @@ pub mod tests {
         use CatalogWarehouseAction as A;
         // Spec mutations: locked by the managed-by marker.
         for a in [
-            A::Delete,
+            A::Delete { force: false },
             A::UpdateStorage,
             A::Deactivate,
             A::Activate,
@@ -3345,7 +3382,10 @@ pub mod tests {
     fn test_catalog_generic_table_action_serde() {
         for (action, expected) in [
             (
-                CatalogGenericTableAction::Drop,
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -3390,6 +3430,123 @@ pub mod tests {
                 serde_json::from_value(serialized).expect("Failed to deserialize");
             assert_eq!(deserialized, action);
         }
+    }
+
+    /// A collection the request left empty reaches the record as an empty one.
+    ///
+    /// "The caller removed no properties" and "this record does not carry that key" are
+    /// different answers. Only the second is worth omitting, and it is not what an empty
+    /// list means — so every collection field of an action is emitted whether or not it
+    /// holds anything.
+    #[test]
+    fn empty_collections_are_emitted_rather_than_omitted() {
+        let keys = |d: ActionDescriptor| -> Vec<String> {
+            d.context
+                .iter()
+                .map(|(k, _)| k.as_str().to_string())
+                .collect()
+        };
+
+        let commit = CatalogTableAction::Commit {
+            updated_properties: Arc::new(BTreeMap::new()),
+            removed_properties: Arc::new(Vec::new()),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
+        };
+        assert_eq!(
+            keys(commit.action_descriptor()),
+            vec![
+                "updated_properties",
+                "removed_properties",
+                "target_refs",
+                "update_kinds"
+            ]
+        );
+
+        let update = CatalogNamespaceAction::UpdateProperties {
+            updated_properties: Arc::new(BTreeMap::new()),
+            removed_properties: Arc::new(Vec::new()),
+        };
+        assert_eq!(
+            keys(update.action_descriptor()),
+            vec!["updated_properties", "removed_properties"]
+        );
+
+        let moved = CatalogNamespaceAction::AcceptMovedNamespace {
+            source: Arc::new(Vec::new()),
+        };
+        assert_eq!(keys(moved.action_descriptor()), vec!["source"]);
+
+        // A value that is genuinely absent still says nothing: `name` is an `Option`, and
+        // `null` is not information.
+        let create = CatalogNamespaceAction::CreateNamespace {
+            name: None,
+            properties: Arc::new(BTreeMap::new()),
+        };
+        assert_eq!(keys(create.action_descriptor()), vec!["properties"]);
+    }
+
+    /// Every operation whose API takes a destructive override records it.
+    ///
+    /// Each of these bypasses a refusal — a protected warehouse, a role still holding
+    /// grants, a table's soft-deletion window — so a record that does not name the
+    /// override describes the operation as the ordinary one it is not.
+    #[test]
+    fn test_destructive_overrides_reach_the_action_context() {
+        let forced: Vec<(&str, ActionDescriptor)> = vec![
+            (
+                "role delete",
+                CatalogRoleAction::Delete { force: true }.action_descriptor(),
+            ),
+            (
+                "warehouse delete",
+                CatalogWarehouseAction::Delete { force: true }.action_descriptor(),
+            ),
+            (
+                "generic table drop",
+                CatalogGenericTableAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "namespace delete",
+                CatalogNamespaceAction::Delete {
+                    force: true,
+                    purge: true,
+                    recursive: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "table drop",
+                CatalogTableAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+            (
+                "view drop",
+                CatalogViewAction::Drop {
+                    force: true,
+                    purge: true,
+                }
+                .action_descriptor(),
+            ),
+        ];
+        for (what, descriptor) in forced {
+            let log = descriptor.log_string();
+            assert!(log.contains("force=true"), "{what} lost `force`: {log}");
+        }
+
+        // And the unforced form carries the flag too, set to `false`. The two are told
+        // apart by the value, not by whether the key is there: an absent `force` means the
+        // operation has no such override, which is a different statement.
+        let plain = CatalogRoleAction::Delete { force: false }.action_descriptor();
+        let log = plain.log_string();
+        assert!(log.contains("force=false"), "{log}");
     }
 
     #[test]
@@ -3600,9 +3757,9 @@ pub mod tests {
             .map(|(k, v)| (k.as_str(), v.to_string()))
             .collect();
         // Ordering is deterministic: refs sort lexically, kinds sort by variant.
-        assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
+        assert_eq!(context.get("target_refs"), Some(&"[dev, main]".to_string()));
         assert_eq!(
-            context.get("update-kinds"),
+            context.get("update_kinds"),
             Some(&"[add-schema, set-snapshot-ref]".to_string())
         );
     }
@@ -4717,7 +4874,11 @@ pub mod tests {
             }
         };
     }
-    test_block_action!(role, CatalogRoleAction::Delete, &Role::new_random());
+    test_block_action!(
+        role,
+        CatalogRoleAction::Delete { force: false },
+        &Role::new_random()
+    );
     test_block_action!(
         project,
         CatalogProjectAction::Rename,
@@ -4806,7 +4967,10 @@ pub mod tests {
 
     test_block_action!(
         generic_table,
-        CatalogGenericTableAction::Drop,
+        CatalogGenericTableAction::Drop {
+            force: false,
+            purge: false
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -4834,14 +4998,16 @@ pub mod tests {
     async fn test_instance_admin_bypasses_control_plane_actions() {
         let authz = HidingAuthorizer::new();
         // Block a control-plane role action. Without bypass, this returns false.
-        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+        authz.block_action(
+            format!("role:{:?}", CatalogRoleAction::Delete { force: false }).as_str(),
+        );
 
         let user = crate::service::UserId::try_from("oidc~admin").unwrap();
         let md = RequestMetadata::test_instance_admin(user);
         let role = Role::new_random();
 
         let allowed = authz
-            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete { force: false })
             .await
             .unwrap()
             .into_inner();
@@ -4855,14 +5021,16 @@ pub mod tests {
     #[tokio::test]
     async fn test_regular_user_does_not_bypass() {
         let authz = HidingAuthorizer::new();
-        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+        authz.block_action(
+            format!("role:{:?}", CatalogRoleAction::Delete { force: false }).as_str(),
+        );
 
         let user = crate::service::UserId::try_from("oidc~regular").unwrap();
         let md = RequestMetadata::test_user(user);
         let role = Role::new_random();
 
         let allowed = authz
-            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete { force: false })
             .await
             .unwrap()
             .into_inner();
@@ -5118,7 +5286,16 @@ pub mod tests {
 
         // Drop (control-plane) — also block it, and verify instance admin STILL
         // bypasses it. Confirms the bypass applies selectively per action.
-        authz.block_action(format!("generic_table:{:?}", CatalogGenericTableAction::Drop).as_str());
+        authz.block_action(
+            format!(
+                "generic_table:{:?}",
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }
+            )
+            .as_str(),
+        );
         let allowed = authz
             .is_allowed_generic_table_action(
                 &md,
@@ -5126,7 +5303,10 @@ pub mod tests {
                 &warehouse,
                 &hierarchy,
                 &gt_info,
-                CatalogGenericTableAction::Drop,
+                CatalogGenericTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
             )
             .await
             .unwrap()

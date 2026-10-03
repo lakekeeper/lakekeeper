@@ -7,7 +7,7 @@ use strum::VariantArray;
 use tracing::Instrument;
 
 use crate::{
-    CONFIG, ProjectId, WarehouseId,
+    ProjectId, WarehouseId,
     api::{
         RequestMetadata,
         management::v1::{
@@ -19,6 +19,7 @@ use crate::{
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
+    audit::audit_part,
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
@@ -42,9 +43,10 @@ use crate::{
 /// A field that can appear on an `entity` object in an audit record.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// that require every field to be documented, and `#[audit_part]` derives every wire name
+/// from the variant, so a new variant cannot reach the wire unnamed.
+#[audit_part(keys_of = "entity")]
+#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
     ServerId,
@@ -65,37 +67,6 @@ pub enum EntityField {
     GenericTable,
     GenericTableId,
     TagDefinitionId,
-}
-
-impl EntityField {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ServerId => "server-id",
-            Self::ProjectId => "project-id",
-            Self::WarehouseId => "warehouse-id",
-            Self::Namespace => "namespace",
-            Self::NamespaceId => "namespace-id",
-            Self::Table => "table",
-            Self::TableId => "table-id",
-            Self::TableLocation => "table-location",
-            Self::View => "view",
-            Self::ViewId => "view-id",
-            Self::TaskId => "task-id",
-            Self::RoleId => "role-id",
-            Self::RoleSourceId => "role-source-id",
-            Self::RoleProviderId => "role-provider-id",
-            Self::UserId => "user-id",
-            Self::GenericTable => "generic-table",
-            Self::GenericTableId => "generic-table-id",
-            Self::TagDefinitionId => "tag-definition-id",
-        }
-    }
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
@@ -119,6 +90,45 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
+/// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
+/// key vocabulary the key came from.
+///
+/// The emitter is kept because a record names every product that contributed to it, and a key
+/// pushed by a crate outside this one is such a contribution. `push_extra_context` is the only
+/// way an entry is made, and it knows the emitter from its type parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextEntry {
+    /// What the handler recorded.
+    pub value: crate::service::authz::ContextValue,
+    /// `AuditEmitter::NAME` of the emitter that declared the key.
+    pub emitter: &'static str,
+    /// `AuditEmitter::FORMAT` of that emitter.
+    pub emitter_format: &'static str,
+}
+
+/// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
+///
+/// A value is a string the handler chooses, unless the key declares a shape. A key declared
+/// here is declared in Lakekeeper's audit schema; another emitter declares its own enum with
+/// `#[audit_part(keys_of = "context")]`. One key of the map means one thing: a second
+/// vocabulary declaring the same key would put two meanings at one path, and a test rejects
+/// that.
+#[audit_part(keys_of = "context")]
+#[audit(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
+pub enum HandlerContextKey {
+    /// Whether the user creation was the caller provisioning itself.
+    SelfProvisioning,
+    /// Which operation invoked this one, when a handler acts on behalf of another.
+    InvokedBy,
+    /// The task queue an operation addressed.
+    QueueName,
+    /// The id of the entity a task operation addressed.
+    EntityId,
+    /// Whether a grant read asked about the caller's own grants.
+    SelfRead,
+}
+
 /// The `action_name` of the defensive row emitted when an event reaches the audit log
 /// with no action at all.
 ///
@@ -127,34 +137,24 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
 /// names the same condition on the entity side of the same row.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum FallbackAction {
     Unknown,
 }
 
-impl FallbackAction {
-    /// The value as it reaches the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
-    }
-}
-
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// that require every field to be documented, and `#[audit_part]` derives every wire name
+/// from the variant, so a new variant cannot reach the wire unnamed.
+///
+/// The values are the management API's: it spells the same resource kinds in its own
+/// `ResourceType`, hyphens and all, so they are marked `external_values`.
+#[audit_part(field = "entity_type", external_values)]
+#[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityType {
     Server,
@@ -169,31 +169,6 @@ pub enum EntityType {
     GenericTable,
     Tag,
     Unknown,
-}
-
-impl EntityType {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Server => "server",
-            Self::Project => "project",
-            Self::Warehouse => "warehouse",
-            Self::Namespace => "namespace",
-            Self::Table => "table",
-            Self::View => "view",
-            Self::Task => "task",
-            Self::Role => "role",
-            Self::User => "user",
-            Self::GenericTable => "generic-table",
-            Self::Tag => "tag",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
@@ -214,83 +189,72 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 ///
 /// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
 /// space enumerable, so the tests can require every field to be documented and covered,
-/// and the wildcard-free match below makes a new field a build failure rather than an
-/// undocumented field in the log.
+/// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
+/// unnamed.
+#[audit_part(keys_of = "action")]
+#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum ActionContextKey {
+    #[audit(value = "boolean")]
     AllowPartial,
+    #[audit(value = "string")]
     BaseLocation,
+    #[audit(value = "string")]
     CreatedBefore,
+    #[audit(value = "integer")]
     Deletes,
+    #[audit(value = "array")]
     Destination,
+    #[audit(value = "boolean")]
     DryRun,
+    #[audit(value = "boolean")]
     Force,
+    #[audit(value = "string")]
     Format,
+    #[audit(value = "string")]
     GenericTableId,
+    #[audit(value = "string")]
     Name,
+    #[audit(value = "array")]
     NarrowedPrivileges,
+    #[audit(value = "string")]
     Principal,
+    #[audit(value = "array")]
     Principals,
+    #[audit(value = "string", values_of = "PrivilegeScope")]
     PrivilegeScope,
+    #[audit(value = "array")]
     Privileges,
+    #[audit(value = "string")]
     ProjectId,
+    #[audit(value = "object")]
     Properties,
+    #[audit(value = "boolean")]
     Purge,
+    #[audit(value = "boolean")]
     Recursive,
+    #[audit(value = "array")]
     RemovedProperties,
+    #[audit(value = "string")]
     RequestedProviderId,
+    #[audit(value = "string")]
     RequestedSourceId,
+    #[audit(value = "array", values_of = "ResourceType")]
     ResourceTypes,
+    #[audit(value = "string", values_of = "RootLevelGrants")]
     RootLevel,
+    #[audit(value = "array")]
     Source,
+    #[audit(value = "string")]
     TableId,
+    #[audit(value = "array")]
     TargetRefs,
+    #[audit(value = "array", values_of = "TableUpdateKind")]
     UpdateKinds,
+    #[audit(value = "object")]
     UpdatedProperties,
+    #[audit(value = "integer")]
     Writes,
-}
-
-impl ActionContextKey {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AllowPartial => "allow-partial",
-            Self::BaseLocation => "base_location",
-            Self::CreatedBefore => "created-before",
-            Self::Deletes => "deletes",
-            Self::Destination => "destination",
-            Self::DryRun => "dry-run",
-            Self::Force => "force",
-            Self::Format => "format",
-            Self::GenericTableId => "generic_table_id",
-            Self::Name => "name",
-            Self::NarrowedPrivileges => "narrowed_privileges",
-            Self::Principal => "principal",
-            Self::Principals => "principals",
-            Self::PrivilegeScope => "privilege_scope",
-            Self::Privileges => "privileges",
-            Self::ProjectId => "project_id",
-            Self::Properties => "properties",
-            Self::Purge => "purge",
-            Self::Recursive => "recursive",
-            Self::RemovedProperties => "removed-properties",
-            Self::RequestedProviderId => "requested_provider_id",
-            Self::RequestedSourceId => "requested_source_id",
-            Self::ResourceTypes => "resource_types",
-            Self::RootLevel => "root_level",
-            Self::Source => "source",
-            Self::TableId => "table_id",
-            Self::TargetRefs => "target-refs",
-            Self::UpdateKinds => "update-kinds",
-            Self::UpdatedProperties => "updated-properties",
-            Self::Writes => "writes",
-        }
-    }
 }
 
 impl std::fmt::Display for ActionContextKey {
@@ -304,7 +268,7 @@ impl std::fmt::Display for ActionContextKey {
 // Marker trait to indicate resolution state
 pub trait ResolutionState: Clone + Send + Sync {}
 
-/// A single key-value descriptor for an entity (e.g. "warehouse-id" = "abc-123")
+/// A single key-value descriptor for an entity: `warehouse_id` = `abc-123`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptorField {
     pub key: EntityField,
@@ -320,7 +284,8 @@ impl EntityDescriptorField {
     }
 }
 
-/// All fields describing one logical entity (e.g. one table: warehouse-id + namespace + name)
+/// All fields describing one logical entity — for a table, `warehouse_id`, `namespace`
+/// and `name`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptor {
     pub fields: Vec<EntityDescriptorField>,
@@ -344,8 +309,7 @@ impl EntityDescriptor {
 }
 
 /// The full set of entities involved in an event
-#[derive(Clone, Debug, valuable::Valuable)]
-#[valuable(transparent)]
+#[derive(Clone, Debug)]
 pub struct EventEntities {
     pub entities: Vec<EntityDescriptor>,
 }
@@ -753,15 +717,9 @@ impl_user_provided_entity!(
 /// Actions named per endpoint rather than per resource permission, for the handlers that
 /// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum ManagementAction {
     SearchUsers,
@@ -772,22 +730,30 @@ pub enum ManagementAction {
     ListTasks,
     ControlTasks,
     ScheduleTask,
+    /// Context assembled by the handler from the request body: see `ApplyGrants` in
+    /// `api::management::v1::grant`, whose fields these keys are.
+    #[audit(carries = "deletes, principals, privileges, writes")]
     ApplyGrants,
+    /// Context assembled by the handler from the request body and the scope its gate is
+    /// asked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields
+    /// these keys are.
+    ///
+    /// The six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated
+    /// here rather than left to the `Catalog*Action` variants that share this wire name, so
+    /// what this action carries does not depend on another vocabulary keeping its own.
+    #[audit(
+        carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
+                   privilege_scope, privileges, resource_types, root_level"
+    )]
     RevokeSubtreeGrants,
 }
 
 /// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
 /// enum rather than a literal.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum AuthnAction {
     AssumeRole,
@@ -798,7 +764,7 @@ impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchUsers.into())
+                .action_name(ManagementAction::SearchUsers.as_wire())
                 .build(),
         ]
     }
@@ -810,7 +776,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListProjects.into())
+                .action_name(ManagementAction::ListProjects.as_wire())
                 .build(),
         ]
     }
@@ -822,7 +788,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchTabulars.into())
+                .action_name(ManagementAction::SearchTabulars.as_wire())
                 .build(),
         ]
     }
@@ -834,7 +800,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::IntrospectPermissions.into())
+                .action_name(ManagementAction::IntrospectPermissions.as_wire())
                 .build(),
         ]
     }
@@ -846,7 +812,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::GetTaskDetails.into())
+                .action_name(ManagementAction::GetTaskDetails.as_wire())
                 .build(),
         ]
     }
@@ -856,7 +822,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListTasks.into())
+                .action_name(ManagementAction::ListTasks.as_wire())
                 .build(),
         ]
     }
@@ -866,7 +832,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ControlTasks.into())
+                .action_name(ManagementAction::ControlTasks.as_wire())
                 .build(),
         ]
     }
@@ -876,7 +842,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ScheduleTask.into())
+                .action_name(ManagementAction::ScheduleTask.as_wire())
                 .build(),
         ]
     }
@@ -951,7 +917,7 @@ where
     pub(super) action: Arc<A>,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
-    pub(super) extra_context: HashMap<String, String>,
+    pub(super) extra_context: HashMap<String, ContextEntry>,
     /// When `Some`, replaces the per-(entity, action) default that
     /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
     /// Used by batch-style call sites (e.g. `introspect_permissions`) to
@@ -1351,8 +1317,73 @@ where
         &self.dispatcher
     }
 
-    pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.extra_context.insert(key.into(), value.into());
+    /// Record a key on this event's `context` object.
+    ///
+    /// The key comes from a key enum declared with `#[audit_part(keys_of = "context")]`, so it
+    /// is declared in its emitter's schema and cannot be a literal. Lakekeeper's own keys are
+    /// [`HandlerContextKey`]; the emitter is free, so a crate outside this one supplies its
+    /// own. A value enum is not accepted here: its variants name what a field holds, not where
+    /// it goes.
+    pub fn push_extra_context<E: crate::audit::AuditEmitter>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: impl Into<String>,
+    ) {
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: crate::service::authz::ContextValue::String(value.into()),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
+    }
+
+    /// Record a key on this event's `context` object whose value is a flag.
+    ///
+    /// A flag is a `bool` on the wire, not the word `"true"`: a consumer branches on it
+    /// rather than comparing it against a spelling.
+    pub fn push_extra_context_bool<E: crate::audit::AuditEmitter>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: bool,
+    ) {
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: crate::service::authz::ContextValue::Bool(value),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
+    }
+
+    /// Record a key on this event's `context` object whose value is an object.
+    ///
+    /// The part and the key belong to one emitter, which is what ties the value to the shape
+    /// the key declares with `#[audit(holds = "...")]`. A key that declares no shape takes
+    /// [`EventContext::push_extra_context`] and a string.
+    /// Taken by value like every other part of a record, so a caller can hand over one it
+    /// built on the spot; it is serialized here and the entry carries the tree, not the type.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn push_extra_context_object<E, C>(
+        &mut self,
+        key: impl Into<crate::audit::WireKey<E>>,
+        value: C,
+    ) where
+        E: crate::audit::AuditEmitter,
+        C: crate::audit::AuditPart<Emitter = E>,
+    {
+        self.extra_context.insert(
+            key.into().text().to_string(),
+            ContextEntry {
+                value: crate::service::authz::ContextValue::Object(crate::audit::AuditJson::of(
+                    &value,
+                )),
+                emitter: E::NAME,
+                emitter_format: E::FORMAT,
+            },
+        );
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to
@@ -1388,7 +1419,7 @@ where
     }
 
     #[must_use]
-    pub fn extra_context(&self) -> &HashMap<String, String> {
+    pub fn extra_context(&self) -> &HashMap<String, ContextEntry> {
         &self.extra_context
     }
 }
@@ -1527,8 +1558,12 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         let failure_reason = error.to_failure_reason();
         let mut error = error.into_error_model();
 
-        if CONFIG.audit.tracing.enabled {
-            error.skip_log = true; // Already emitted in more detail by audit logger
+        // The audit record below carries the same denial with the actor and the entities,
+        // so the plain error line would only repeat it with less. Suppressed only when that
+        // record reaches the log: with the audit trail switched off or filtered out, this
+        // line is the one place the denial appears.
+        if crate::audit::enabled() {
+            error.skip_log = true;
         }
 
         let entities = Arc::new(self.user_provided_entity.event_entities());
@@ -1607,7 +1642,11 @@ where
 /// is empty (shouldn't happen for real events) we still emit a single entry
 /// describing whatever is available, since downstream consumers expect at
 /// least one row.
-fn synthesise_authorizations(
+///
+/// Crate-visible so the audit fixtures pair their entries the way this does, and a fixture
+/// cannot describe a record whose per-decision entries name an action or an entity its own
+/// lists do not carry.
+pub(crate) fn synthesise_authorizations(
     entities: &EventEntities,
     actions: &[ActionDescriptor],
     for_principal: Option<&UserOrRoleId>,
@@ -1637,7 +1676,7 @@ fn synthesise_authorizations(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| ActionDescriptor {
-                    action_name: FallbackAction::Unknown.as_str(),
+                    action_name: FallbackAction::Unknown.as_wire().into(),
                     context: Vec::new(),
                 }),
             entity: entities
