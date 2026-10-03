@@ -266,13 +266,14 @@ where
     fn action_descriptor(&self) -> ActionDescriptor;
 }
 
-/// What a `context` key carries, in the JSON type it reaches the wire as.
+/// What a `context` key carries.
 ///
-/// A record holds context keys in two places: inside each entry of `actions`, flattened
-/// beside `action_name`, and in the record's own `context` object. One type serves both, so
-/// what a value may be does not depend on which of the two the key sits in. Which of these a
-/// given key carries is declared on the key with `#[audit(value = "...")]` and published in
-/// the schema.
+/// A record holds context keys in two places: inside each entry of `actions`, beside
+/// `action_name`, and in the record's own `context` object. A key carries the same type in
+/// either, and which type that is is stated for that key in this schema.
+// One type for both so a key's legal values do not depend on which object it sits in. Declare
+// a key's type with `#[audit(value = "...")]`; `every_declared_key_type_matches_the_code`
+// holds the declaration to the builder the value is written with.
 #[audit_part]
 #[serde(untagged)]
 #[derive(Clone, Debug, PartialEq)]
@@ -281,8 +282,7 @@ pub enum ContextValue {
     Map(BTreeMap<String, String>),
     /// A list of plain strings (e.g. `removed_properties`).
     List(Vec<String>),
-    /// A whole audit part, serialized. The key that carries it names its shape with
-    /// `#[audit(holds = "...")]`.
+    /// An object. The key that carries one names its shape, which this schema defines.
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     Object(crate::audit::AuditJson),
     /// A flag the request either set or did not (e.g. `force`, `dry_run`).

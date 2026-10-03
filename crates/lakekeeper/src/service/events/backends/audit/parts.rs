@@ -215,7 +215,8 @@ pub struct DecisionRecord {
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActionRecord {
-    /// The action's wire name, from a vocabulary enum of any emitter.
+    /// What was attempted. One of the action names this schema lists; a product that plugs
+    /// into Lakekeeper may contribute its own.
     pub(crate) action_name: AnyWireStr,
     /// The action's context, keyed by `ActionContextKey` wire names, in the order the action
     /// recorded them.
@@ -312,12 +313,13 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
     }
 }
 
-/// The `context` map of an authorization record: the keys a handler recorded.
+/// The `context` object of an authorization record: what the handler recorded about the
+/// request beyond its action and its entity.
 ///
-/// A value is a string unless the key declares a shape with `#[audit(holds = "...")]`, in
-/// which case it is that object. What sits under a key is said by the key vocabulary that
-/// declares it, not here: this object takes keys from every emitter, and the crate that
-/// defines it cannot name a shape declared by a crate it has never heard of.
+/// Only the keys relevant to that request appear. What a given key carries is stated for that
+/// key, not here, because a product that plugs into Lakekeeper contributes keys of its own.
+// Typed as a free map: the keys come from every emitter's own vocabulary, so this type cannot
+// name them. `x-audit-key-shapes` on each key vocabulary is where a shaped key's schema is.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandlerContext(pub(crate) BTreeMap<String, serde_json::Value>);
