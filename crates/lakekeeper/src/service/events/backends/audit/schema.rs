@@ -267,9 +267,12 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
 /// Each entry is the field carrying that value, the object it sits in, and the type its keys
 /// hold when they declare none: an entity field's value is a `String` in the type that
 /// carries it, while an action's is a three-way choice each key has to declare.
-const FLATTENED: [(&str, &str, Option<&str>); 2] = [
-    ("action_name", "ActionRecord", None),
-    ("entity_type", "EntityRecord", Some("string")),
+/// The flattened pairs: the wire field naming the thing, the schema definition it sits in,
+/// the `keys_of` vocabulary holding that object's keys, and the type a key takes when it
+/// declares none.
+const FLATTENED: [(&str, &str, &str, Option<&str>); 2] = [
+    ("action_name", "ActionRecord", "action", None),
+    ("entity_type", "EntityRecord", "entity", Some("string")),
 ];
 
 fn regs_for<E: super::AuditEmitter>() -> Vec<&'static Registration> {
@@ -309,7 +312,7 @@ pub fn assert_declared_key_types_match_the_code<E: super::AuditEmitter>(
     Registration::require_registry();
 
     let declared = declared_key_types::<E>();
-    assert_carried_keys_are_declared_keys::<E>(&declared);
+    assert_carried_keys_are_declared_keys::<E>();
     let written = key_types_written_in_source(crates_dir);
 
     let mut wrong = Vec::new();
@@ -378,23 +381,22 @@ fn declared_key_types<E: super::AuditEmitter>() -> BTreeMap<&'static str, &'stat
 /// # Panics
 ///
 /// If a variant carries a key the object's vocabulary does not declare.
-fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>(
-    declared: &BTreeMap<&'static str, &'static str>,
-) {
+fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
     let mut unknown = Vec::new();
     for reg in registrations(|reg| reg.emitter_name == E::NAME) {
         let Kind::Values { field, names } = reg.kind else {
             continue;
         };
-        let Some((_, object, _)) = FLATTENED.iter().find(|(f, _, _)| *f == field) else {
+        let Some((_, _, vocabulary, _)) = FLATTENED.iter().find(|(f, _, _, _)| *f == field) else {
             continue;
         };
+        // Scoped to the vocabulary holding this object's keys: a key of some other object is
+        // not a key of this one, however well declared it is over there.
+        let object_keys = keys_of_object(regs_for::<E>(), vocabulary);
         let owner = short_type_name((reg.type_name)());
         for name in names {
             for key in name.carries {
-                if !declared.contains_key(key)
-                    && !keys_of_object(regs_for::<E>(), object).contains(key)
-                {
+                if !object_keys.contains(key) {
                     unknown.push(format!("{owner}::{} carries `{key}`", name.text));
                 }
             }
@@ -500,7 +502,7 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
         }
     }
 
-    for (field, owner, default_type) in FLATTENED {
+    for (field, owner, _, default_type) in FLATTENED {
         let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for reg in regs {
             let Kind::Values { field: f, names } = reg.kind else {
