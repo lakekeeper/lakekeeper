@@ -496,6 +496,12 @@ pub struct DynAppConfig {
     /// Bind IP the server listens on.
     /// Defaults to 0.0.0.0
     pub bind_ip: IpAddr,
+    /// Serve the main HTTP API (default: true). When false, the process runs
+    /// headless: metrics, health checks, background services and task-queue
+    /// workers still run, and the listener serves only `/health` for probes;
+    /// the catalog and management API is not exposed. Enables headless worker
+    /// deployments that execute task-queue work without serving the API.
+    pub serve_http_api: bool,
     /// If x-forwarded-x headers should be respected.
     /// Defaults to true
     pub use_x_forwarded_headers: bool,
@@ -1323,6 +1329,7 @@ impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
             base_uri: None,
+            serve_http_api: true,
             enable_default_project: true,
             default_project_id: None,
             use_x_forwarded_headers: true,

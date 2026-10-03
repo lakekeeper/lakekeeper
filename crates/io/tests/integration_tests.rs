@@ -314,6 +314,11 @@ test_all_storages!(
     test_percent_encoding_does_not_alias,
     test_percent_encoding_does_not_alias_impl
 );
+#[cfg(feature = "object-store")]
+test_all_storages!(
+    test_object_store_bridge_roundtrip,
+    test_object_store_bridge_roundtrip_impl
+);
 test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
@@ -347,6 +352,7 @@ test_all_storages!(
     test_write_then_read_single_and_read,
     test_write_then_read_single_and_read_impl
 );
+test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
 
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
@@ -418,7 +424,7 @@ where
     let first_write_duration = start_first_write.elapsed();
 
     // Verify the write worked
-    let read_data = storage1.read(&test_path).await?;
+    let read_data = storage1.read(&test_path).await?.bytes;
     assert_eq!(test_data, read_data);
     storage1.delete(&test_path).await?;
 
@@ -435,7 +441,7 @@ where
     let second_write_duration = start_second_write.elapsed();
 
     // Verify the write worked
-    let read_data2 = storage2.read(&test_path2).await?;
+    let read_data2 = storage2.read(&test_path2).await?.bytes;
     assert_eq!(test_data, read_data2);
     storage2.delete(&test_path2).await?;
 
@@ -486,7 +492,7 @@ async fn test_write_read_impl(storage: &StorageBackend, config: &TestConfig) -> 
     storage.write(&test_path, test_data.clone()).await?;
 
     // Read data back
-    let read_data = storage.read(&test_path).await?;
+    let read_data = storage.read(&test_path).await?.bytes;
     assert_eq!(test_data, read_data, "Read data should match written data");
 
     // Clean up
@@ -524,7 +530,7 @@ async fn test_multiple_files_impl(
 
     // Read all files back and verify content
     for (i, (_, expected_content)) in test_files.iter().enumerate() {
-        let read_data = storage.read(&written_paths[i]).await?;
+        let read_data = storage.read(&written_paths[i]).await?.bytes;
         let read_content = String::from_utf8(read_data.to_vec())?;
         assert_eq!(read_content, *expected_content);
     }
@@ -1063,7 +1069,7 @@ async fn test_empty_files_impl(
     storage.write(&test_path, empty_data.clone()).await?;
 
     // Read empty file back
-    let read_data = storage.read(&test_path).await?;
+    let read_data = storage.read(&test_path).await?.bytes;
     assert_eq!(read_data.len(), 0, "Empty file should have zero length");
     assert_eq!(read_data, empty_data, "Empty file content should match");
 
@@ -1087,7 +1093,7 @@ async fn test_large_files_impl(
     storage.write(&test_path, large_data.clone()).await?;
 
     // Read large file back
-    let read_data = storage.read(&test_path).await?;
+    let read_data = storage.read(&test_path).await?.bytes;
     let read_single = storage.read_single(&test_path).await?;
 
     assert_eq!(
@@ -1149,7 +1155,7 @@ async fn test_special_characters_impl(
 
     // Read all files back
     for (i, filename) in special_files.iter().enumerate() {
-        let read_data = storage.read(&written_paths[i]).await?;
+        let read_data = storage.read(&written_paths[i]).await?.bytes;
         let read_content = String::from_utf8(read_data.to_vec())?;
         assert_eq!(read_content, format!("Content of {filename}"));
     }
@@ -1250,7 +1256,7 @@ async fn test_special_characters_in_url_segments_impl(
     for (seg, path) in &written_paths {
         match storage.read(path).await {
             Ok(read) => {
-                let s = String::from_utf8(read.to_vec())?;
+                let s = String::from_utf8(read.bytes.to_vec())?;
                 if s != format!("Content for {seg}") {
                     failures.push(format!("read({seg}): mismatch (got {s:?})"));
                 }
@@ -1610,7 +1616,7 @@ async fn test_writer_basic_impl(
     writer.write(data.clone()).await?;
     writer.close().await?;
 
-    let read_back = storage.read(&path).await?;
+    let read_back = storage.read(&path).await?.bytes;
     assert_eq!(read_back, data);
 
     storage.delete(&path).await?;
@@ -1637,7 +1643,7 @@ async fn test_writer_multi_chunks_impl(
     }
     writer.close().await?;
 
-    let read_back = storage.read(&path).await?;
+    let read_back = storage.read(&path).await?.bytes;
     assert_eq!(read_back, expected);
 
     storage.delete(&path).await?;
@@ -1655,7 +1661,7 @@ async fn test_writer_large_streaming_impl(
 
     writer_write_in_chunks(storage, &path, &data, 8 * 1024 * 1024).await?;
 
-    let read_back = storage.read(&path).await?;
+    let read_back = storage.read(&path).await?.bytes;
     assert_eq!(read_back.len(), data.len());
     assert!(
         read_back == data,
@@ -1820,6 +1826,59 @@ async fn test_metadata_basic_impl(
     Ok(())
 }
 
+/// `read` returns the object bytes together with metadata that matches a
+/// standalone `metadata` call — callers get `size`/`last_modified` without a
+/// second round-trip.
+async fn test_read_returns_metadata_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("read-metadata.bin");
+    let data = Bytes::from(vec![0xcd; 8192]);
+    storage.write(&path, data.clone()).await?;
+
+    let read = storage.read(&path).await?;
+    assert_eq!(read.bytes, data, "read bytes should match written data");
+    assert_eq!(
+        read.info.size(),
+        Some(data.len() as u64),
+        "read should report the object size"
+    );
+    assert!(
+        read.info
+            .location()
+            .to_string()
+            .ends_with("read-metadata.bin"),
+        "read location {} does not end with expected suffix",
+        read.info.location()
+    );
+
+    // The in-memory backend has no ETag; every cloud backend must surface one,
+    // so the agreement check below can't pass vacuously via `None == None`.
+    // The `Memory` variant only exists when `storage-in-memory` is enabled, so
+    // gate the arm by its feature (every other build is cloud-only).
+    let is_memory = match storage {
+        #[cfg(feature = "storage-in-memory")]
+        StorageBackend::Memory(_) => true,
+        _ => false,
+    };
+    if !is_memory {
+        assert!(
+            read.info.e_tag().is_some(),
+            "cloud backend should surface an ETag on read",
+        );
+    }
+
+    // The metadata surfaced by `read` matches a standalone `metadata` call.
+    let meta = storage.metadata(&path).await?;
+    assert_eq!(read.info.size(), meta.size());
+    assert_eq!(read.info.last_modified(), meta.last_modified());
+    assert_eq!(read.info.e_tag(), meta.e_tag());
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
 /// `metadata` on a missing path surfaces `ErrorKind::NotFound`.
 async fn test_metadata_not_found_impl(
     storage: &StorageBackend,
@@ -1905,7 +1964,7 @@ async fn test_write_then_read_single_and_read_impl(
     storage.write(&path, data.clone()).await?;
 
     let read_single = storage.read_single(&path).await?;
-    let read_multi = storage.read(&path).await?;
+    let read_multi = storage.read(&path).await?.bytes;
 
     assert_eq!(read_single.len(), data.len());
     assert_eq!(read_multi.len(), data.len());
@@ -1975,7 +2034,7 @@ async fn test_percent_encoding_does_not_alias_impl(
         // Read back from the originally-written paths. If the backend
         // aliases the two, the decoded-path read returns the encoded-path
         // payload (or vice versa, depending on which write "won").
-        match storage.read(&path_decoded).await {
+        match storage.read(&path_decoded).await.map(|r| r.bytes) {
             Ok(got) if got == payload_decoded => {} // expected — distinct
             Ok(got) if got == payload_encoded => {
                 failures.push(format!(
@@ -1990,7 +2049,7 @@ async fn test_percent_encoding_does_not_alias_impl(
             Err(e) => failures.push(format!("{label}: read decoded `{decoded}` failed: {e}")),
         }
 
-        match storage.read(&path_encoded).await {
+        match storage.read(&path_encoded).await.map(|r| r.bytes) {
             Ok(got) if got == payload_encoded => {} // expected — distinct
             Ok(got) if got == payload_decoded => {
                 failures.push(format!(
@@ -2018,6 +2077,147 @@ async fn test_percent_encoding_does_not_alias_impl(
             failures.join("\n  ")
         );
     }
+    Ok(())
+}
+
+/// Round-trip through `ObjectStoreBridge` across every backend: keys are written
+/// verbatim through the backend (as an iceberg writer would), then listed, read
+/// and deleted through the bridge. Guards that:
+/// - listed keys carrying a literal `%` round-trip unchanged (`Path::parse`, not
+///   `Path::from`, so `a%20b` is not re-encoded to `a%2520b`);
+/// - directory-marker entries (e.g. ADLS `sub/`) never surface as objects.
+#[cfg(feature = "object-store")]
+async fn test_object_store_bridge_roundtrip_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    use std::{str::FromStr, sync::Arc};
+
+    use lakekeeper_io::{
+        Location,
+        object_store::{
+            MultipartUpload, ObjectStore, ObjectStoreExt, PutPayload, path::Path as OsPath,
+        },
+        object_store_bridge::ObjectStoreBridge,
+    };
+
+    // Root the bridge at a unique directory (no trailing slash) for this run.
+    let base_dir = config.test_dir_path("object-store-bridge");
+    let base_str = base_dir.trim_end_matches('/').to_string();
+    let base = Location::from_str(&base_str)?;
+    let io: Arc<dyn LakekeeperStorage> = Arc::new(storage.clone());
+    let bridge = ObjectStoreBridge::new(io, &base);
+
+    // Literal `%` sequences (`%20`, `%2B`) round-trip on every backend
+    // (see `test_special_characters_in_url_segments`); `sub/deep.txt` forces a
+    // sub-"directory" so backends that emit directory markers are exercised.
+    let names = ["plain.txt", "a%20b.txt", "pct%2Bplus.txt", "sub/deep.txt"];
+    for name in &names {
+        storage
+            .write(
+                &format!("{base_str}/{name}"),
+                Bytes::from(format!("content:{name}")),
+            )
+            .await?;
+    }
+
+    // List through the bridge: exactly the written keys, verbatim, no markers.
+    let listed: Vec<OsPath> = bridge
+        .list(None)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|m| m.map(|meta| meta.location))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut listed_str: Vec<String> = listed.iter().map(|p| p.as_ref().to_string()).collect();
+    listed_str.sort();
+    let mut expected: Vec<String> = names.iter().map(ToString::to_string).collect();
+    expected.sort();
+    assert_eq!(
+        listed_str, expected,
+        "bridge listing must match written keys verbatim"
+    );
+
+    // Each listed path must resolve back to its own object via `get`, and the
+    // full get must report the same metadata as `head` — a real `last_modified`
+    // (sourced from the read, not the epoch fallback) and the same `e_tag`.
+    for path in &listed {
+        let name = path.as_ref();
+        let head_meta = bridge.head(path).await?;
+        let got = bridge.get(path).await?;
+        assert_eq!(
+            got.meta.last_modified, head_meta.last_modified,
+            "get and head last_modified must agree for `{name}`"
+        );
+        assert_ne!(
+            got.meta.last_modified.timestamp(),
+            0,
+            "full get must report a real last_modified for `{name}`, not the epoch"
+        );
+        assert_eq!(
+            got.meta.e_tag, head_meta.e_tag,
+            "get and head e_tag must agree for `{name}`"
+        );
+        let bytes = got.bytes().await?;
+        assert_eq!(
+            &bytes[..],
+            format!("content:{name}").as_bytes(),
+            "round-trip get for `{name}`"
+        );
+    }
+
+    // Batch delete via `delete_stream`, then confirm nothing remains.
+    let del = futures::stream::iter(listed.clone().into_iter().map(Ok)).boxed();
+    let deleted: Vec<OsPath> = bridge
+        .delete_stream(del)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    // `delete_stream` yields one result per input path, in input order, so the
+    // echoed paths must equal the input exactly.
+    assert_eq!(
+        deleted, listed,
+        "delete_stream must echo the input paths in order"
+    );
+
+    let remaining = bridge.list(None).collect::<Vec<_>>().await;
+    assert!(
+        remaining.is_empty(),
+        "all objects deleted, listing must be empty: {remaining:?}"
+    );
+
+    // Multipart upload exercises `GatedMultipartUpload` over the real backend
+    // writer — the path compaction uses for files above the single-request
+    // threshold. Three 10 MiB parts exceed every backend's threshold (25 MiB on
+    // S3/GCS, 7 MiB on ADLS), so this is a genuine multi-part write. Each part
+    // carries a distinct byte so the read-back pins the parts' order (the gate
+    // chain's whole purpose), not just the total length.
+    const PART_SIZE: usize = 10 * 1024 * 1024;
+    let part_bytes = [0xaa_u8, 0xbb, 0xcc];
+    let mp_path = OsPath::from("multipart/big.bin");
+    let mut upload = bridge.put_multipart(&mp_path).await?;
+    for &b in &part_bytes {
+        upload
+            .put_part(PutPayload::from(Bytes::from(vec![b; PART_SIZE])))
+            .await?;
+    }
+    upload.complete().await?;
+    let got = bridge.get(&mp_path).await?.bytes().await?;
+    assert_eq!(
+        got.len(),
+        part_bytes.len() * PART_SIZE,
+        "multipart object size"
+    );
+    for (i, &b) in part_bytes.iter().enumerate() {
+        let slice = &got[i * PART_SIZE..(i + 1) * PART_SIZE];
+        assert!(
+            slice.iter().all(|&x| x == b),
+            "multipart part {i} must read back in order as {b:#x}"
+        );
+    }
+    bridge.delete(&mp_path).await?;
+
     Ok(())
 }
 

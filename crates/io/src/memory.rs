@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
 };
 
 type MemoryFile = (Bytes, DateTime<Utc>);
@@ -152,6 +152,30 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
     Ok(key.to_string())
 }
 
+/// Build a [`FileInfo`] for a stored object from its key and metadata.
+fn memory_file_info(
+    key: &str,
+    bytes: &Bytes,
+    last_modified: DateTime<Utc>,
+) -> Result<FileInfo, ReadError> {
+    let location_str = format!("{MEMORY_PREFIX}{key}");
+    let location = location_str.parse::<Location>().map_err(|e| {
+        ReadError::IOError(
+            IOError::new(
+                ErrorKind::Unexpected,
+                format!("Failed to parse location: {e}"),
+                location_str.clone(),
+            )
+            .set_source(anyhow::anyhow!(e)),
+        )
+    })?;
+    Ok(FileInfo::new(
+        Some(last_modified),
+        location,
+        Some(bytes.len() as u64),
+    ))
+}
+
 #[async_trait::async_trait]
 impl LakekeeperStorage for MemoryStorage {
     async fn delete(&self, path: &str) -> Result<(), DeleteError> {
@@ -188,12 +212,18 @@ impl LakekeeperStorage for MemoryStorage {
         }))
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let key = normalize_memory_path(path)?;
 
         let data = self.data.read().await;
         match data.get(&key) {
-            Some((bytes, _)) => Ok(bytes.clone()),
+            Some((bytes, last_modified)) => {
+                let info = memory_file_info(&key, bytes, *last_modified)?;
+                Ok(ObjectRead {
+                    bytes: bytes.clone(),
+                    info,
+                })
+            }
             None => Err(ReadError::IOError(IOError::new(
                 ErrorKind::NotFound,
                 "Object not found in memory storage",
@@ -203,7 +233,7 @@ impl LakekeeperStorage for MemoryStorage {
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
-        self.read(path).await
+        self.read(path).await.map(|r| r.bytes)
     }
 
     async fn read_range(
@@ -271,23 +301,7 @@ impl LakekeeperStorage for MemoryStorage {
             ))
         })?;
 
-        let location_str = format!("{MEMORY_PREFIX}{key}");
-        let location = location_str.parse::<Location>().map_err(|e| {
-            ReadError::IOError(
-                IOError::new(
-                    ErrorKind::Unexpected,
-                    format!("Failed to parse location: {e}"),
-                    location_str.clone(),
-                )
-                .set_source(anyhow::anyhow!(e)),
-            )
-        })?;
-
-        Ok(FileInfo::new(
-            Some(*last_modified),
-            location,
-            Some(bytes.len() as u64),
-        ))
+        memory_file_info(&key, bytes, *last_modified)
     }
 
     async fn list(
@@ -424,7 +438,7 @@ mod tests {
         let test_data = Bytes::from("Hello, World!");
 
         storage.write(test_path, test_data.clone()).await.unwrap();
-        let read_data = storage.read(test_path).await.unwrap();
+        let read_data = storage.read(test_path).await.unwrap().bytes;
         assert_eq!(test_data, read_data);
 
         // Test delete
@@ -446,7 +460,7 @@ mod tests {
             writer.write(Bytes::from("world!")).await.unwrap();
             writer.close().await.unwrap();
         }
-        let data = storage.read(path).await.unwrap();
+        let data = storage.read(path).await.unwrap().bytes;
         assert_eq!(data, Bytes::from("hello, world!"));
     }
 
@@ -479,7 +493,7 @@ mod tests {
         let test_data = Bytes::from("Hello without prefix!");
 
         storage.write(test_path, test_data.clone()).await.unwrap();
-        let read_data = storage.read(test_path).await.unwrap();
+        let read_data = storage.read(test_path).await.unwrap().bytes;
         assert_eq!(test_data, read_data);
     }
 
@@ -599,10 +613,10 @@ mod tests {
         let storage = MemoryStorage::with_data(initial_data);
 
         // Verify initial data is accessible
-        let content = storage.read("test/file.txt").await.unwrap();
+        let content = storage.read("test/file.txt").await.unwrap().bytes;
         assert_eq!(content, Bytes::from("initial content"));
 
-        let content2 = storage.read("test/file2.txt").await.unwrap();
+        let content2 = storage.read("test/file2.txt").await.unwrap().bytes;
         assert_eq!(content2, Bytes::from("initial content 2"));
 
         // Verify we can add more data
@@ -611,7 +625,7 @@ mod tests {
             .await
             .unwrap();
 
-        let content3 = storage.read("test/file3.txt").await.unwrap();
+        let content3 = storage.read("test/file3.txt").await.unwrap().bytes;
         assert_eq!(content3, Bytes::from("new content"));
 
         // Check length
