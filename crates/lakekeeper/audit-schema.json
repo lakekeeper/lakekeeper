@@ -43,7 +43,39 @@
       ],
       "x-audit-kind": "keys",
       "x-audit-keys-of": "action",
-      "x-audit-type": "lakekeeper::service::events::context::ActionContextKey"
+      "x-audit-type": "lakekeeper::service::events::context::ActionContextKey",
+      "x-audit-key-types": {
+        "allow_partial": "boolean",
+        "base_location": "string",
+        "created_before": "string",
+        "deletes": "integer",
+        "destination": "array",
+        "dry_run": "boolean",
+        "force": "boolean",
+        "format": "string",
+        "generic_table_id": "string",
+        "name": "string",
+        "narrowed_privileges": "array",
+        "principal": "string",
+        "principals": "array",
+        "privilege_scope": "string",
+        "privileges": "array",
+        "project_id": "string",
+        "properties": "object",
+        "purge": "boolean",
+        "recursive": "boolean",
+        "removed_properties": "array",
+        "requested_provider_id": "string",
+        "requested_source_id": "string",
+        "resource_types": "array",
+        "root_level": "string",
+        "source": "array",
+        "table_id": "string",
+        "target_refs": "array",
+        "update_kinds": "array",
+        "updated_properties": "object",
+        "writes": "integer"
+      }
     },
     "ActionRecord": {
       "type": "object",
@@ -1412,7 +1444,29 @@
       "additionalProperties": true,
       "description": "The `context` object of an authorization record: what the handler recorded about the\nrequest beyond its action and its entity.\n\nOnly the keys relevant to that request appear. What a given key carries is stated for that\nkey, not here, because a product that plugs into Lakekeeper contributes keys of its own.",
       "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::HandlerContext"
+      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::HandlerContext",
+      "properties": {
+        "self_provisioning": {
+          "type": "boolean",
+          "description": "Whether the user creation was the caller provisioning itself."
+        },
+        "invoked_by": {
+          "type": "string",
+          "description": "Which operation invoked this one, when a handler acts on behalf of another."
+        },
+        "queue_name": {
+          "type": "string",
+          "description": "The task queue an operation addressed."
+        },
+        "entity_id": {
+          "type": "string",
+          "description": "The id of the entity a task operation addressed."
+        },
+        "self_read": {
+          "type": "boolean",
+          "description": "Whether a grant read asked about the caller's own grants."
+        }
+      }
     },
     "HandlerContextKey": {
       "type": "string",
@@ -1432,6 +1486,13 @@
         "queue_name": "The task queue an operation addressed.",
         "self_provisioning": "Whether the user creation was the caller provisioning itself.",
         "self_read": "Whether a grant read asked about the caller's own grants."
+      },
+      "x-audit-key-types": {
+        "entity_id": "string",
+        "invoked_by": "string",
+        "queue_name": "string",
+        "self_provisioning": "boolean",
+        "self_read": "boolean"
       }
     },
     "InstanceAdminAction": {

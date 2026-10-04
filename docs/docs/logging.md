@@ -196,7 +196,7 @@ Discriminate on `record_type`, which every record carries and which is the only 
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `idempotency_key`      | String          | The request's `Idempotency-Key`. Absent when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
-| `context`              | Object          | Optional. Additional request context, keyed by the handler. A value is a string, a flag, a count, a list, a map, or the object a shaped key declares. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
+| `context`              | Object          | Optional. Additional request context, keyed by the handler. A value is a string, a flag, a count, a list, a map, or the object a shaped key declares; the [schema](audit/schema.json) states the type of every key, Lakekeeper's on the `context` object itself and each product's under `x-audit-key-types` on its own key vocabulary. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
 | `failure_reason`       | String          | Only on failed events. One of `action_forbidden`, `resource_not_found`, `cannot_see_resource`, `internal_authorization_error`, `internal_catalog_error`, `invalid_request_data`. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 

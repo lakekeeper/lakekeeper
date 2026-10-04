@@ -540,8 +540,12 @@ fn fixture_detailed_decision(action: ActionDescriptor, entity: EntityDescriptor)
 }
 
 /// Context entries attributed to Lakekeeper, the emitter whose keys these fixtures use.
+/// Context entries as the handler would have pushed them.
+///
+/// Takes a `ContextValue` rather than a string so a fixture carries the type its key
+/// declares: a flag reaches the record as a flag, as `push_extra_context_bool` writes it.
 fn fixture_context(
-    entries: &[(&str, &str)],
+    entries: &[(&str, crate::service::authz::ContextValue)],
 ) -> Arc<std::collections::HashMap<String, crate::service::events::context::ContextEntry>> {
     Arc::new(
         entries
@@ -550,7 +554,7 @@ fn fixture_context(
                 (
                     (*key).to_string(),
                     crate::service::events::context::ContextEntry {
-                        value: crate::service::authz::ContextValue::String((*value).to_string()),
+                        value: value.clone(),
                         emitter: <crate::Lakekeeper as crate::audit::AuditEmitter>::NAME,
                         emitter_format: <crate::Lakekeeper as crate::audit::AuditEmitter>::FORMAT,
                     },
@@ -826,7 +830,10 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
                 fixture_namespace_entity(),
             ])),
             actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
-            extra_context: fixture_context(&[("invoked_by", "maintenance-task")]),
+            extra_context: fixture_context(&[(
+                "invoked_by",
+                crate::service::authz::ContextValue::String("maintenance-task".to_string()),
+            )]),
             authorizations: Arc::new(vec![
                 fixture_decision(fixture_read_action(), fixture_table_entity(), true),
                 fixture_detailed_decision(
@@ -1055,7 +1062,10 @@ fn fixture_authz_failed_with_context() {
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
             error: fixture_error(),
-            extra_context: fixture_context(&[("self_read", "false")]),
+            extra_context: fixture_context(&[(
+                "self_read",
+                crate::service::authz::ContextValue::Bool(false),
+            )]),
             authorizations: Arc::new(vec![fixture_decision(
                 fixture_read_action(),
                 fixture_namespace_entity(),
@@ -2685,7 +2695,10 @@ fn maximal_authorization() -> AuthorizationRecord {
         actions: Arc::new(vec![fixture_read_action()]),
         failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
         error: fixture_error(),
-        extra_context: fixture_context(&[("self_read", "true")]),
+        extra_context: fixture_context(&[(
+            "self_read",
+            crate::service::authz::ContextValue::Bool(true),
+        )]),
         authorizations: Arc::new(vec![fixture_detailed_decision(
             fixture_read_action(),
             fixture_table_entity(),

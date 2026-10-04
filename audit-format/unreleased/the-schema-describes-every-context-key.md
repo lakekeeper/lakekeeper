@@ -21,10 +21,21 @@ list says what it holds:
 "resource_types": {"type": "array", "items": {"$ref": "#/$defs/ResourceType"}}
 ```
 
-The object stays open: an action no branch names still validates, and those sets stay open the
-way every vocabulary in this log is open — a new name may appear at any version, so treat one
-you do not recognise as opaque.
+The record's own `context` object is typed the same way. Its definition lists the keys
+Lakekeeper declares with their types, and every key vocabulary — Lakekeeper's and any other
+product's — carries `x-audit-key-types`, mapping each of its keys to the type it holds:
 
-**What to do:** nothing, unless you want it. Validating against the schema behaves as before.
-If you generate parsers, the branches tell you which keys to expect on each action and in what
-type, and the four closed sets generate as the enumerations they always were.
+```
+"HandlerContext":    {"properties": {"self_read": {"type": "boolean"}, …}}
+"HandlerContextKey": {"x-audit-key-types": {"self_read": "boolean", "queue_name": "string", …}}
+```
+
+Everything stays open: an action no branch names still validates, `context` still accepts keys
+from any product, and those value sets stay open the way every vocabulary in this log is open —
+a new name may appear at any version, so treat one you do not recognise as opaque.
+
+**What to do:** nothing, unless you want it. Validating against the schema behaves as before
+for anything you already send. If you generate parsers, the branches tell you which keys to
+expect on each action and in what type, the four closed sets generate as the enumerations they
+always were, and the `context` keys are no longer untyped. Read `x-audit-key-types` on a
+product's own key vocabulary for the keys it contributes.

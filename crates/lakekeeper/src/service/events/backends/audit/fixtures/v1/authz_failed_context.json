@@ -28,7 +28,7 @@
   "privilege_source": "authorizer",
   "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
   "context": {
-    "self_read": "false"
+    "self_read": false
   },
   "authorizations": [
     {

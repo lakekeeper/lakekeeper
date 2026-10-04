@@ -118,14 +118,19 @@ pub struct ContextEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum HandlerContextKey {
     /// Whether the user creation was the caller provisioning itself.
+    #[audit(value = "boolean")]
     SelfProvisioning,
     /// Which operation invoked this one, when a handler acts on behalf of another.
+    #[audit(value = "string")]
     InvokedBy,
     /// The task queue an operation addressed.
+    #[audit(value = "string")]
     QueueName,
     /// The id of the entity a task operation addressed.
+    #[audit(value = "string")]
     EntityId,
     /// Whether a grant read asked about the caller's own grants.
+    #[audit(value = "boolean")]
     SelfRead,
 }
 
