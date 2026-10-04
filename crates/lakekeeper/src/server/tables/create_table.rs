@@ -114,7 +114,6 @@ impl<A: Authorizer> TableCreationGuard<A> {
 /// Load a table from the catalog
 pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
-    // mut because we need to change location
     request: CreateTableRequest,
     data_access: impl Into<DataAccessMode> + Send,
     state: ApiContext<State<A, C, S>>,

@@ -163,6 +163,8 @@ pub trait ContractVerification: Debug {
         _current_metadata: &ViewMetadata,
     ) -> Result<ContractVerificationOutcome, ErrorModel>;
 
+    /// `request` is the request as sent by the client: `location` is `None` unless the client set
+    /// one. The resolved location is `table_metadata.location()`.
     async fn check_create_table(
         &self,
         _request: &CreateTableRequest,
@@ -171,6 +173,8 @@ pub trait ContractVerification: Debug {
         Ok(ContractVerificationOutcome::Clear {})
     }
 
+    /// `request` is the request as sent by the client: `location` is `None` unless the client set
+    /// one. The resolved location is `view_metadata.location()`.
     async fn check_create_view(
         &self,
         _request: &CreateViewRequest,
