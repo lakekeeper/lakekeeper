@@ -10,7 +10,7 @@
   ],
   "actions": [
     {
-      "action_name": "read_data"
+      "action_name": "get_metadata"
     },
     {
       "action_name": "update_properties",
@@ -24,10 +24,10 @@
   ],
   "entities": [
     {
-      "entity_type": "table",
+      "entity_type": "namespace",
       "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-      "table_id": "019684ff-0000-7000-8000-000000000002",
-      "table": "sales.orders"
+      "namespace_id": "019684ff-0000-7000-8000-000000000003",
+      "namespace": "sales"
     }
   ],
   "actor": {
@@ -39,13 +39,13 @@
   "authorizations": [
     {
       "action": {
-        "action_name": "read_data"
+        "action_name": "get_metadata"
       },
       "entity": {
-        "entity_type": "table",
+        "entity_type": "namespace",
         "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "table_id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
       },
       "allowed": true,
       "determined_by": []
@@ -61,10 +61,10 @@
         ]
       },
       "entity": {
-        "entity_type": "table",
+        "entity_type": "namespace",
         "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "table_id": "019684ff-0000-7000-8000-000000000002",
-        "table": "sales.orders"
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
       },
       "allowed": true,
       "determined_by": []

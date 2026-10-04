@@ -15,16 +15,18 @@
       "table_id": "019684ff-0000-7000-8000-000000000002"
     },
     {
-      "action_name": "drop",
+      "action_name": "delete",
       "force": true,
-      "purge": true
+      "purge": true,
+      "recursive": true
     }
   ],
   "entities": [
     {
-      "entity_type": "warehouse",
-      "project_id": "00000000-0000-0000-0000-000000000000",
-      "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+      "entity_type": "namespace",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace_id": "019684ff-0000-7000-8000-000000000003",
+      "namespace": "sales"
     }
   ],
   "actor": {
@@ -41,23 +43,26 @@
         "table_id": "019684ff-0000-7000-8000-000000000002"
       },
       "entity": {
-        "entity_type": "warehouse",
-        "project_id": "00000000-0000-0000-0000-000000000000",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
       },
       "allowed": true,
       "determined_by": []
     },
     {
       "action": {
-        "action_name": "drop",
+        "action_name": "delete",
         "force": true,
-        "purge": true
+        "purge": true,
+        "recursive": true
       },
       "entity": {
-        "entity_type": "warehouse",
-        "project_id": "00000000-0000-0000-0000-000000000000",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
       },
       "allowed": true,
       "determined_by": []

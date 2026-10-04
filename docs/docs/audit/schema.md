@@ -39,7 +39,11 @@ Each shape carries its own value under `x-audit-record-type`, so a consumer can 
 
 A field whose values are a closed set points at the definition listing them, so a validator checks the value and a code generator emits an enum for it. That list is what the set held when the schema was generated, and the set is open: a later release may add a value without moving `audit_format`.
 
-**A value the list does not contain means the record is newer than this schema, not that it is invalid.** Route it to a default branch and carry on — the same rule that applies to every value set. Re-download the schema to pick up the new value. What will not happen without a major version is a value being renamed or removed, so a consumer that matches what it knows keeps working.
+**A value the list does not contain means the record is newer than this schema, not that it is invalid.** Route it to a default branch and carry on — the same rule that applies to every value set. What will not happen without a major version is a value being renamed or removed, so a consumer that matches what it knows keeps working.
+
+This has one consequence worth planning for: **a schema validates the value sets as of the version it was generated from.** Validate a record carrying a newer value against an older copy of this document and the validator rejects it — correctly, by its own rules, and wrongly about the record. So keep the schema in step with the server it reads from: download it from the version you run, and download it again when you upgrade. A consumer that routes on values rather than validating them needs none of this.
+
+The exposure is small by construction. Of the value sets this document defines, only a few are linked from a record field, and most of those cannot grow: `decision`, `privilege_scope` and `root_level` are closed by what they mean. The ones that do grow — `entity_type`, `resource_type`, `update_kinds` and `failure_reason` — grow on a release boundary, which is the moment to re-download. The field that gains values most often, `action_name`, is not linked at all.
 
 Three fields are not linked at all, and carry `x-audit-open` instead: `action_name`, `operation` and `outcome`. Their values come from whichever product contributed them — `emitters` names every product a record carries something of — so no single product's schema can list them.
 

@@ -10,7 +10,7 @@
   ],
   "actions": [
     {
-      "action_name": "read_data"
+      "action_name": "get_metadata"
     }
   ],
   "entities": [
@@ -40,7 +40,7 @@
         "user": "oidc~bob"
       },
       "action": {
-        "action_name": "read_data"
+        "action_name": "get_metadata"
       },
       "entity": {
         "entity_type": "table",
@@ -63,7 +63,7 @@
         "user": "oidc~bob"
       },
       "action": {
-        "action_name": "read_data"
+        "action_name": "get_metadata"
       },
       "entity": {
         "entity_type": "namespace",

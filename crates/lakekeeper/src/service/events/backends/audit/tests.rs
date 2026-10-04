@@ -343,6 +343,22 @@ fn fixture_namespace_entity() -> EntityDescriptor {
         .field(FIELD_NAME_NAMESPACE, &"sales")
 }
 
+/// An action a table and a namespace can both carry, for the fixtures that pair one action
+/// with entities of more than one kind.
+fn fixture_metadata_action() -> ActionDescriptor {
+    CatalogTableAction::GetMetadata.action_descriptor()
+}
+
+/// A namespace delete that asked for every override, built from the action's own descriptor.
+fn fixture_namespace_delete_action() -> ActionDescriptor {
+    CatalogNamespaceAction::Delete {
+        force: true,
+        purge: true,
+        recursive: true,
+    }
+    .action_descriptor()
+}
+
 fn fixture_read_action() -> ActionDescriptor {
     ActionDescriptor::builder()
         .action_name(AnyWireStr::literal_for_tests("read_data"))
@@ -855,7 +871,7 @@ fn fixture_authz_succeeded_single_action_plural_entities() {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::many([fixture_table_entity(), fixture_namespace_entity()]),
-            vec![fixture_read_action()],
+            vec![fixture_metadata_action()],
             fixture_context(&[]),
         ))
     });
@@ -869,8 +885,8 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
-            EventEntities::one(fixture_table_entity()),
-            vec![fixture_read_action(), fixture_action_with_context()],
+            EventEntities::one(fixture_namespace_entity()),
+            vec![fixture_metadata_action(), fixture_action_with_context()],
             fixture_context(&[]),
         ))
     });
@@ -878,8 +894,11 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
     assert_matches_fixture("authz_succeeded_actions_entity", &contract_fields(record));
 }
 
-/// Action context and entity fields that real traffic emits but the other fixtures
-/// do not: `name`, `table_id`, `force`, `purge`, and `project_id`.
+/// Action context that real traffic emits but the other fixtures do not: `name`,
+/// `table_id`, `force`, `purge` and `recursive`, the last carried by no other fixture.
+///
+/// Both actions are a namespace's, so the decision per (action, entity) pair this
+/// synthesises describes a request the server can actually serve.
 ///
 /// The documentation test walks the fixtures, so its reach is exactly the fixtures' reach.
 /// A field carried by no fixture is a field nothing checks the documentation for.
@@ -888,8 +907,11 @@ fn fixture_authz_succeeded_rich_action_context() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
-            EventEntities::one(fixture_warehouse_entity()),
-            vec![fixture_create_table_action(), fixture_drop_action()],
+            EventEntities::one(fixture_namespace_entity()),
+            vec![
+                fixture_create_table_action(),
+                fixture_namespace_delete_action(),
+            ],
             fixture_context(&[]),
         ))
     });
@@ -955,7 +977,7 @@ fn fixture_authz_succeeded_empty_collections() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
-            EventEntities::one(fixture_warehouse_entity()),
+            EventEntities::one(fixture_table_entity()),
             vec![
                 fixture_empty_collections_action(),
                 CatalogTableAction::Drop {
@@ -1058,7 +1080,7 @@ fn fixture_authz_failed_with_context() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
-            entities: Arc::new(EventEntities::one(fixture_namespace_entity())),
+            entities: Arc::new(EventEntities::one(fixture_table_entity())),
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
             error: fixture_error(),
@@ -1068,7 +1090,7 @@ fn fixture_authz_failed_with_context() {
             )]),
             authorizations: Arc::new(vec![fixture_decision(
                 fixture_read_action(),
-                fixture_namespace_entity(),
+                fixture_table_entity(),
                 false,
             )]),
         })
@@ -1093,7 +1115,7 @@ fn fixture_authz_failed_admission_gate() {
                 fixture_table_entity(),
                 fixture_namespace_entity(),
             ])),
-            actions: Arc::new(vec![fixture_read_action()]),
+            actions: Arc::new(vec![fixture_metadata_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
             error: fixture_error(),
             extra_context: fixture_context(&[]),
@@ -1101,7 +1123,7 @@ fn fixture_authz_failed_admission_gate() {
                 Authorization {
                     id: Some("check-0".to_string()),
                     for_principal: for_bob(),
-                    action: fixture_read_action(),
+                    action: fixture_metadata_action(),
                     entity: fixture_table_entity(),
                     allowed: Some(false),
                     determined_by: vec![DeterminingFactor::AdmissionGate {
@@ -1112,7 +1134,7 @@ fn fixture_authz_failed_admission_gate() {
                 Authorization {
                     id: Some("check-1".to_string()),
                     for_principal: for_bob(),
-                    action: fixture_read_action(),
+                    action: fixture_metadata_action(),
                     entity: fixture_namespace_entity(),
                     allowed: Some(false),
                     determined_by: vec![DeterminingFactor::AdmissionGate {
