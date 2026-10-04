@@ -2795,7 +2795,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
         let allowed = authorizer.clone().check(key).await?;
 
-        OpenFGAResult::Ok(Some(action.clone()).filter(|_| allowed))
+        OpenFGAResult::Ok(allowed.then(|| action.clone()))
     });
     let actions = futures::future::try_join_all(actions)
         .await?
@@ -3066,7 +3066,7 @@ mod tests {
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
-        use super::{super::*, *};
+        use super::*;
         use crate::migration::tests::authorizer_for_empty_store;
 
         /// Run both halves of an assignment update back to back.

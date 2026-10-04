@@ -627,7 +627,7 @@ mod tests {
         let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
 
         // Stack should contain only the error id, not the original detail
-        assert!(parsed.error.stack.len() == 1);
+        assert_eq!(parsed.error.stack.len(), 1);
         assert!(parsed.error.stack[0].starts_with("Error ID: "));
     }
 
@@ -657,7 +657,7 @@ mod tests {
 
         // Stack should preserve original and append error id
         assert_eq!(parsed.error.stack.len(), 2);
-        assert!(parsed.error.stack[0] == "user detail");
+        assert_eq!(parsed.error.stack[0], "user detail");
         assert!(parsed.error.stack[1].starts_with("Error ID: "));
     }
 }

@@ -10,6 +10,7 @@ pub mod events;
 pub mod health;
 pub mod idempotency;
 pub mod maintenance;
+pub(crate) mod request_project;
 pub mod secrets;
 pub mod storage;
 pub mod task_configs;

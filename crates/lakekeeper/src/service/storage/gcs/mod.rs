@@ -43,7 +43,14 @@ use crate::{
 
 mod sts;
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — `reqwest::Client::new()` panics on the same condition.
+        .expect("Failed to build GCS credential HTTP client")
+});
 const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
 static STS_URL: LazyLock<Url> = LazyLock::new(|| {
     STS_URL_STR
@@ -266,8 +273,8 @@ impl GcsProfile {
     #[allow(clippy::unused_self)]
     pub fn generate_catalog_config(&self, _: WarehouseId) -> CatalogConfig {
         CatalogConfig {
-            defaults: HashMap::with_capacity(0),
-            overrides: HashMap::with_capacity(0),
+            defaults: HashMap::new(),
+            overrides: HashMap::new(),
             endpoints: supported_endpoints().to_vec(),
             idempotency_key_lifetime: None,
         }

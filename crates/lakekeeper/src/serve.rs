@@ -12,7 +12,7 @@ use crate::{
         management::v1::server::{
             APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus,
         },
-        router::{RouterArgs, new_full_router, serve as service_serve},
+        router::{RouterArgs, new_full_router, new_health_router, serve as service_serve},
         shutdown_signal,
     },
     service::{
@@ -373,6 +373,10 @@ async fn serve_inner<
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
     let build_info = build_info.unwrap_or(&DEFAULT_BUILD_INFO);
 
+    // The listener always binds: in headless worker mode
+    // (`LAKEKEEPER__SERVE_HTTP_API=false`) it serves only `/health` (see the
+    // router selection below) so liveness/readiness probes still have an
+    // endpoint.
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
@@ -515,22 +519,56 @@ async fn serve_inner<
         register_fn(task_queue_registry.clone(), state.clone()).await?;
     }
 
-    // Router
-    let mut router = new_full_router::<C, _, _, _>(RouterArgs {
-        authenticator: authenticator.clone(),
-        state: state.clone(),
-        service_health_provider: health_provider.clone(),
-        cors_origins: CONFIG.allow_origin.as_deref(),
-        metrics_layer: Some(layer),
-        endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
-        instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
-        admission_gates,
-    })
-    .await?;
-
-    if let Some(modify_router_fn) = modify_router_fn {
-        router = modify_router_fn(router);
+    // Number of task-queue workers that will actually run. Queues register even
+    // with zero workers, so this is distinct from "any queues registered".
+    let total_task_workers = task_queue_registry.total_workers().await;
+    // A headless host with neither task-queue workers nor background services
+    // does nothing: no HTTP API, no task processing, yet `/health` reports 200.
+    // Fail fast: such a process would only pretend to be healthy. A host that
+    // registers background services (even with no task workers) still does work,
+    // so it is allowed to start.
+    if total_task_workers == 0
+        && additional_background_services.is_empty()
+        && !CONFIG.serve_http_api
+    {
+        return Err(anyhow!(
+            "Headless host has no work to do: serve_http_api is disabled, no task-queue workers \
+             are configured (all TASK_*_WORKERS=0 or skipped by read-only maintenance), and no \
+             background services are registered. Refusing to start a process that would do \
+             nothing. Enable at least one TASK_*_WORKERS, register a background service, or set \
+             LAKEKEEPER__SERVE_HTTP_API=true."
+        ));
     }
+
+    // Router: the full catalog API when serving it, otherwise a minimal
+    // `/health`-only router for headless worker deployments. Building the full
+    // router generates the OpenAPI document and installs CORS/auth layers, so a
+    // worker skips it entirely; the per-request metrics `layer` is dropped with
+    // it (a worker serves no API requests to record). The metrics server itself
+    // still runs, spawned below.
+    let router = if CONFIG.serve_http_api {
+        let mut router = new_full_router::<C, _, _, _>(RouterArgs {
+            authenticator: authenticator.clone(),
+            state: state.clone(),
+            service_health_provider: health_provider.clone(),
+            cors_origins: CONFIG.allow_origin.as_deref(),
+            metrics_layer: Some(layer),
+            endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
+            instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
+            admission_gates,
+        })
+        .await?;
+
+        if let Some(modify_router_fn) = modify_router_fn {
+            router = modify_router_fn(router);
+        }
+        router
+    } else {
+        // Headless: the host announces the mode at startup (see the binary's
+        // `serve`). Serve only `/health` for probes.
+        drop(layer);
+        new_health_router(health_provider.clone())
+    };
 
     // ---- Launch background services ----
     // Metrics server:
@@ -585,8 +623,16 @@ async fn serve_inner<
     let task_runner = task_queue_registry
         .task_queues_runner(cancellation_token.clone())
         .await;
-    if task_queue_registry.is_empty().await {
-        tracing::info!("No task queues registered, skipping task queue worker startup");
+    if total_task_workers == 0 {
+        // Queues can be registered with zero workers (every TASK_*_WORKERS=0) or
+        // skipped entirely (read-only maintenance). `run_queue_workers` returns
+        // immediately in that case, so don't spawn the monitor — otherwise its
+        // early `Ok(())` is treated as a service that should run forever exiting,
+        // which shuts the whole process down. The headless no-work case already
+        // failed fast above, so this is an API-only pod.
+        tracing::info!(
+            "No task-queue workers configured; serving the HTTP API without a task worker monitor."
+        );
     } else {
         let task_abort_handle = service_futures.spawn(async move {
             task_runner.run_queue_workers(true).await;
@@ -595,7 +641,8 @@ async fn serve_inner<
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
     }
 
-    // HTTP Server / Axum:
+    // HTTP Server / Axum. Serves the full API, or just `/health` in headless
+    // worker mode.
     let cancellation_token_clone = cancellation_token.clone();
     let axum_abort_handle = service_futures.spawn(async move {
         service_serve(listener, router, cancellation_token_clone)
@@ -628,9 +675,15 @@ async fn serve_inner<
 
 fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
     if server_info.is_open_for_bootstrap() {
-        tracing::info!(
-            "The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly."
-        );
+        if CONFIG.serve_http_api {
+            tracing::info!(
+                "The catalog is open for bootstrap. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly."
+            );
+        } else {
+            tracing::info!(
+                "The catalog is open for bootstrap. This is a headless worker and serves no bootstrap endpoint; bootstrap via an instance running the HTTP API (Web-UI or the bootstrap endpoint)."
+            );
+        }
     } else {
         tracing::info!("The catalog is not open for bootstrap.");
         if !server_info.terms_accepted() {

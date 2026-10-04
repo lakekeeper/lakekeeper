@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     onelake_workspace_id: Optional[str] = None
     onelake_lakehouse_id: Optional[str] = None
     onelake_region: Optional[str] = None
+    onelake_client_id: Optional[Secret] = None
+    onelake_client_secret: Optional[Secret] = None
+    onelake_tenant_id: Optional[Secret] = None
     # Comma-separated subset of `default,regional,workspace-private-link`.
     # Each listed mode fans out into its own `storage_config` parametrization.
     # `regional` additionally requires `LAKEKEEPER_TEST__ONELAKE_REGION`.
@@ -128,21 +131,19 @@ if (
         )
 
 # Generic ADLS / WASBS testing only when a storage account is supplied.
-# `azure_client_id` alone is not a sufficient signal — it is also the Entra
-# app reg that OneLake reuses, so gating on it pulls generic-ADLS configs into
-# OneLake-only test runs. docker-compose substitutes unset host vars to empty
-# string, so guard against both `None` and `""`.
+# docker-compose substitutes unset host vars to empty string, so guard against
+# both `None` and `""`.
 if settings.azure_storage_account_name and settings.azure_client_id:
     STORAGE_CONFIGS.append({"type": "azure"})
 
 # Fan out one storage_config entry per requested OneLake endpoint mode. A
-# OneLake warehouse is identified by workspace+lakehouse; client creds come
-# from the generic AZURE_* env vars (same Entra app reg in practice).
+# OneLake warehouse is identified by workspace+lakehouse, and authenticates
+# with its own Entra app reg via LAKEKEEPER_TEST__ONELAKE_CLIENT_*.
 # `regional` mode also requires LAKEKEEPER_TEST__ONELAKE_REGION.
 if (
     settings.onelake_workspace_id
     and settings.onelake_lakehouse_id
-    and settings.azure_client_id
+    and settings.onelake_client_id
 ):
     _modes = {
         m.strip()
@@ -317,8 +318,8 @@ def storage_config(request) -> dict:
             pytest.skip("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID is not set")
         if not settings.onelake_lakehouse_id:
             pytest.skip("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID is not set")
-        if not settings.azure_client_id:
-            pytest.skip("LAKEKEEPER_TEST__AZURE_CLIENT_ID is not set")
+        if not settings.onelake_client_id:
+            pytest.skip("LAKEKEEPER_TEST__ONELAKE_CLIENT_ID is not set")
 
         endpoint_mode = request.param["endpoint-mode"]
         if endpoint_mode == "default":
@@ -355,9 +356,9 @@ def storage_config(request) -> dict:
             "storage-credential": {
                 "type": "az",
                 "credential-type": "client-credentials",
-                "client-id": settings.azure_client_id,
-                "client-secret": settings.azure_client_secret,
-                "tenant-id": settings.azure_tenant_id,
+                "client-id": settings.onelake_client_id,
+                "client-secret": settings.onelake_client_secret,
+                "tenant-id": settings.onelake_tenant_id,
             },
         }
     elif request.param["type"] == "gcs":

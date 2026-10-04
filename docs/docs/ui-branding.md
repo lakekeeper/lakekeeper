@@ -1,5 +1,5 @@
 ---
-description: "Re-skin the Lakekeeper Plus console with custom colors and a partner logo from a single environment variable, with no rebuild required."
+description: "Re-skin the Lakekeeper Plus console with custom colors, a partner logo and your own support links, from environment variables, with no rebuild required."
 ---
 
 # UI Branding { #ui-branding .lkp }
@@ -150,6 +150,28 @@ Restart the server and reload the UI to see the new theme.
 ## Local development
 
 When you run the UI with the Vite dev server (instead of the packaged binary), set the same base64 value in `VITE_UI_BRANDING` in your `.env` instead of `LAKEKEEPER__UI__BRANDING`. The dev server inlines env values **at startup**, so restart the dev server after changing it — a browser refresh alone won't pick it up.
+
+## Support links
+
+The console's help menu — **Documentation**, **Create an Issue** and **Contact Support** — points at Lakekeeper and Vakamo by default. A deployment that runs its own helpdesk can retarget each entry, independently:
+
+```bash
+export LAKEKEEPER__UI__SUPPORT_DOCS_URL=https://docs.example.com/lakehouse
+export LAKEKEEPER__UI__SUPPORT_ISSUE_URL=https://support.example.com/new-ticket
+export LAKEKEEPER__UI__SUPPORT_CONTACT_URL=https://support.example.com
+```
+
+| Menu entry | Variable | Default |
+|---|---|---|
+| Documentation | `LAKEKEEPER__UI__SUPPORT_DOCS_URL` | Lakekeeper documentation |
+| Create an Issue | `LAKEKEEPER__UI__SUPPORT_ISSUE_URL` | `https://support.vakamo.com` |
+| Contact Support | `LAKEKEEPER__UI__SUPPORT_CONTACT_URL` | `https://support.vakamo.com` |
+
+Set them as **ordinary URLs** — unlike `LAKEKEEPER__UI__BRANDING`, there is nothing to encode by hand. Lakekeeper encodes each value before substituting it into the UI, and the console decodes it again on load. Leave one unset and that entry keeps its built-in target.
+
+A value that is not an absolute `http(s)` URL is ignored in favour of the default: the URL is handed to the browser to open, so a malformed or non-web value is never followed.
+
+Like branding, this is a **Lakekeeper Plus** feature; the open-source console always links to the Lakekeeper project.
 
 ## See also
 

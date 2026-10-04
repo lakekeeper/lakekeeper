@@ -10,13 +10,13 @@ use crate::{
     request_metadata::ProjectIdMissing,
     service::{
         ApplyTagError, ColumnNotFound, CreateRoleError, CreateTagDefinitionError, DeleteRoleError,
-        DeleteTagDefinitionError, GetRoleAcrossProjectsError, GetTaskDetailsError,
-        InternalErrorMessage, ListRolesError, ListTagAttachmentsError, ListTagDefinitionsError,
-        ManagedRoleImmutable, NoWarehouseTaskError, RemoveTagError, ResolveTasksError,
-        RoleMembershipCycle, SearchRolesError, SystemRoleImmutable,
-        SystemRoleMemberRolesNotSupported, SystemRoleMembershipRequiresInstanceAdmin,
-        TagDefinitionReserved, TagNameNotFound, TagTargetNotFound, TaskNotFoundError,
-        UpdateRoleError, UpdateTagDefinitionError,
+        DeleteTagDefinitionError, GetRoleAcrossProjectsError, GetRoleInProjectError,
+        GetTaskDetailsError, InternalErrorMessage, ListRolesError, ListTagAttachmentsError,
+        ListTagDefinitionsError, ManagedRoleImmutable, NoWarehouseTaskError, RemoveTagError,
+        ResolveTasksError, RoleMembershipCycle, RoleProviderIdReserved, RoleProviderNotApiManaged,
+        SearchRolesError, SystemRoleImmutable, SystemRoleMemberRolesNotSupported,
+        SystemRoleMembershipRequiresInstanceAdmin, TagDefinitionReserved, TagNameNotFound,
+        TagTargetNotFound, TaskNotFoundError, UpdateRoleError, UpdateTagDefinitionError,
         authz::{
             AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace,
             AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView,
@@ -138,12 +138,14 @@ pub enum IsAllowedActionError {
     CannotInspectPermissions(CannotInspectPermissions),
     BadRequest(AuthzBadRequest),
     CountMismatch(AuthorizationCountMismatch),
+    InternalError(AuthorizationInternalError),
 }
 delegate_authorization_failure_source!(IsAllowedActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     BadRequest,
-    CountMismatch
+    CountMismatch,
+    InternalError
 });
 
 impl From<BackendUnavailableOrCountMismatch> for IsAllowedActionError {
@@ -159,14 +161,19 @@ impl From<BackendUnavailableOrCountMismatch> for IsAllowedActionError {
     }
 }
 
+/// Error from authorizer checks that admit a bad request: the backend is
+/// unavailable (503), the request is invalid, or the authorizer hit an internal
+/// error (500).
 #[derive(Debug, PartialEq, derive_more::From)]
 pub enum AuthzBackendErrorOrBadRequest {
     BackendUnavailable(AuthorizationBackendUnavailable),
     BadRequest(AuthzBadRequest),
+    InternalError(AuthorizationInternalError),
 }
 delegate_authorization_failure_source!(AuthzBackendErrorOrBadRequest => {
     BackendUnavailable,
     BadRequest,
+    InternalError,
 });
 
 impl From<AuthzBackendErrorOrBadRequest> for IsAllowedActionError {
@@ -174,6 +181,7 @@ impl From<AuthzBackendErrorOrBadRequest> for IsAllowedActionError {
         match err {
             AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
             AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::InternalError(e) => e.into(),
         }
     }
 }
@@ -319,6 +327,54 @@ impl AuthorizationFailureSource for AuthorizationBackendUnavailable {
     }
 }
 
+/// The authorizer hit a deterministic internal error, such as a request it
+/// cannot build. Retrying yields the same failure, so this is HTTP 500 and
+/// distinct from [`AuthorizationBackendUnavailable`] (503), which clients and
+/// load balancers retry.
+///
+/// The client receives a generic message; `stack` and `source` are only logged.
+#[derive(Debug, thiserror::Error)]
+#[error("Internal authorization error: {source}")]
+pub struct AuthorizationInternalError {
+    pub stack: Vec<String>,
+    #[source]
+    pub source: Box<dyn StdError + Send + Sync + 'static>,
+}
+
+impl_error_stack_methods!(AuthorizationInternalError);
+
+impl PartialEq for AuthorizationInternalError {
+    fn eq(&self, other: &Self) -> bool {
+        self.stack == other.stack && self.source.to_string() == other.source.to_string()
+    }
+}
+
+impl AuthorizationInternalError {
+    pub fn new<E>(source: E) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        Self {
+            stack: Vec::new(),
+            source: Box::new(source),
+        }
+    }
+}
+
+impl AuthorizationFailureSource for AuthorizationInternalError {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::internal(
+            "Authorization failed due to an internal error",
+            "AuthorizationInternalError",
+            Some(self.source),
+        )
+        .append_details(self.stack)
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InternalAuthorizationError
+    }
+}
+
 #[derive(Debug, derive_more::From)]
 pub enum AuthZError {
     RequireWarehouseActionError(RequireWarehouseActionError),
@@ -340,9 +396,12 @@ pub enum AuthZError {
     SystemRoleMembershipRequiresInstanceAdmin(SystemRoleMembershipRequiresInstanceAdmin),
     SystemRoleMemberRolesNotSupported(SystemRoleMemberRolesNotSupported),
     ManagedRoleImmutable(ManagedRoleImmutable),
+    RoleProviderIdReserved(RoleProviderIdReserved),
+    RoleProviderNotApiManaged(RoleProviderNotApiManaged),
     CreateRoleError(CreateRoleError),
     ListRolesError(ListRolesError),
     GetRoleAcrossProjectsError(GetRoleAcrossProjectsError),
+    GetRoleInProjectError(GetRoleInProjectError),
     DeleteRoleError(DeleteRoleError),
     UpdateRoleError(UpdateRoleError),
     SearchRolesError(SearchRolesError),
@@ -427,6 +486,9 @@ impl From<RequireTabularActionsError> for AuthZError {
             RequireTabularActionsError::AuthorizationCountMismatch(e) => {
                 RequireWarehouseActionError::AuthorizationCountMismatch(e).into()
             }
+            RequireTabularActionsError::AuthorizationInternalError(e) => {
+                RequireWarehouseActionError::AuthorizationInternalError(e).into()
+            }
             RequireTabularActionsError::CannotInspectPermissions(e) => {
                 RequireWarehouseActionError::CannotInspectPermissions(e).into()
             }
@@ -469,9 +531,12 @@ delegate_authorization_failure_source!(AuthZError => {
     SystemRoleMembershipRequiresInstanceAdmin,
     SystemRoleMemberRolesNotSupported,
     ManagedRoleImmutable,
+    RoleProviderIdReserved,
+    RoleProviderNotApiManaged,
     CreateRoleError,
     ListRolesError,
     GetRoleAcrossProjectsError,
+    GetRoleInProjectError,
     DeleteRoleError,
     UpdateRoleError,
     SearchRolesError,
@@ -495,3 +560,79 @@ delegate_authorization_failure_source!(AuthZError => {
     ApplyGrantsStoreError,
     ListGrantsStoreError
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn internal_error() -> AuthorizationInternalError {
+        AuthorizationInternalError::new(std::io::Error::other("secret internal detail"))
+            .append_detail("action Lakekeeper::Action::\"CreateNamespace\"")
+    }
+
+    #[test]
+    fn internal_error_is_a_500_with_a_generic_message() {
+        let err = internal_error();
+        assert_eq!(
+            err.to_failure_reason(),
+            AuthorizationFailureReason::InternalAuthorizationError
+        );
+
+        let model = err.into_error_model();
+        assert_eq!(model.code, StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        assert_eq!(model.r#type, "AuthorizationInternalError");
+        assert_eq!(
+            model.message,
+            "Authorization failed due to an internal error"
+        );
+        assert_eq!(
+            model.stack,
+            vec!["action Lakekeeper::Action::\"CreateNamespace\"".to_string()]
+        );
+        assert_eq!(
+            model.source.map(|s| s.to_string()).as_deref(),
+            Some("secret internal detail")
+        );
+    }
+
+    #[test]
+    fn internal_error_stays_a_500_through_authorizer_error_conversions() {
+        let from_bad_request_enum: IsAllowedActionError =
+            AuthzBackendErrorOrBadRequest::from(internal_error()).into();
+        assert!(matches!(
+            from_bad_request_enum,
+            IsAllowedActionError::InternalError(_)
+        ));
+
+        let errors = [
+            AuthZError::from(AuthzBackendErrorOrBadRequest::from(internal_error())),
+            AuthZError::from(IsAllowedActionError::from(internal_error())),
+            AuthZError::from(RequireWarehouseActionError::from(
+                IsAllowedActionError::from(internal_error()),
+            )),
+            AuthZError::from(RequireTabularActionsError::from(
+                IsAllowedActionError::from(internal_error()),
+            )),
+        ];
+        for err in errors {
+            assert_eq!(
+                err.to_failure_reason(),
+                AuthorizationFailureReason::InternalAuthorizationError
+            );
+            let model = err.into_error_model();
+            assert_eq!(model.code, StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+            assert_eq!(model.r#type, "AuthorizationInternalError");
+        }
+    }
+
+    #[test]
+    fn backend_unavailable_stays_a_503() {
+        let err = IsAllowedActionError::from(AuthorizationBackendUnavailable::new(
+            std::io::Error::other("connection refused"),
+        ));
+        assert_eq!(
+            err.into_error_model().code,
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        );
+    }
+}

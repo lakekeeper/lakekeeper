@@ -23,7 +23,7 @@ use google_cloud_storage::{
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
     delete_not_found_is_ok, execute_with_parallelism,
     gcs::{GcsLocation, gcs_error::parse_error},
     safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
@@ -253,11 +253,10 @@ impl LakekeeperStorage for GcsStorage {
             .as_ref()
             .and_then(parse_offsetdatetime);
 
-        Ok(FileInfo::new(
-            last_modified,
-            location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, location.location().clone(), size)
+                .with_e_tag(Some(head_response.etag.clone())),
+        )
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -279,30 +278,42 @@ impl LakekeeperStorage for GcsStorage {
         Ok(bytes::Bytes::from(data))
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let gcs_location = GcsLocation::try_from_str(path)?;
 
         let head_response = head(&self.client, &gcs_location).await?;
         let file_size = validate_file_size(head_response.size, gcs_location.as_str())?;
 
-        if file_size == 0 {
-            return Ok(Bytes::new());
-        }
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed.
+        let info = FileInfo::new(
+            head_response
+                .updated
+                .as_ref()
+                .and_then(parse_offsetdatetime),
+            gcs_location.location().clone(),
+            crate::size_to_u64(head_response.size, gcs_location.as_str()),
+        )
+        .with_e_tag(Some(head_response.etag.clone()));
 
-        if file_size < MAX_BYTES_PER_REQUEST {
+        let bytes = if file_size == 0 {
+            Bytes::new()
+        } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
             let request = build_get_object_request(&gcs_location);
-            return fetch_range(&self.client, &request, None..None).await;
-        }
+            fetch_range(&self.client, &request, None..None).await?
+        } else {
+            parallel_chunked_read_with_fixed_generation(
+                &self.client,
+                &gcs_location,
+                0,
+                file_size,
+                Some(head_response.generation),
+            )
+            .await?
+        };
 
-        parallel_chunked_read_with_fixed_generation(
-            &self.client,
-            &gcs_location,
-            0,
-            file_size,
-            Some(head_response.generation),
-        )
-        .await
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(

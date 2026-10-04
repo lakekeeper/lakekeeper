@@ -35,37 +35,38 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
-        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
-        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
-        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
-        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
-        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
-        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError,
-        Role, RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
-        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
-        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
-        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
-        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
-        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        DeleteRoleError, DeleteTagDefinitionError, DropGenericTableError, DropTabularError,
+        EffectiveTagCandidate, EnsureWarehouseSpecMutableError, GenericTableCreation,
+        GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
+        GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
+        ListCatalogRoleMembersPage, ListGenericTablesError, ListGrantsStoreError,
+        ListNamespacesQuery, ListRoleMembersResult, ListRolesError, ListRolesPage,
+        ListRolesResponse, ListTabularsError, ListTagAttachmentsError, ListTagAttachmentsResponse,
+        ListTagDefinitionsError, ListTagDefinitionsResponse, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
+        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncFor, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
+        TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Tag,
+        TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
+        TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
+        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
+        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
-            GrantSpec, GrantSubtreeFilter, GrantSubtreeRoot, ListGrantsResultPage,
-            ListSubtreeGrantsResultPage, UserOrRoleId,
+            GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
+            SubtreeGrantRoot, UserOrRoleId,
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -91,13 +92,17 @@ use super::{
         repair_namespace_path_casing, update_namespace_properties,
     },
     pagination::to_token_precision,
-    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
+    role::{
+        create_roles, delete_roles, list_roles, list_roles_by_idents_in_projects,
+        lock_role_and_count_grants, update_role,
+    },
     tabular::table::load_tables,
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
         get_tag_definition, get_tag_definition_by_name, list_column_tags_for_tabular,
         list_effective_tag_candidates, list_tag_attachments, list_tag_definitions,
-        list_tags_for_target, remove_tag, remove_tag_for_target, update_tag_definition,
+        list_tags_for_target, list_tags_on_targets, remove_tag, remove_tag_for_target,
+        update_tag_definition,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -412,6 +417,14 @@ impl CatalogStore for super::PostgresBackend {
         delete_roles(project_id, filter, &mut **transaction).await
     }
 
+    async fn lock_role_and_count_grants_impl<'a>(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<u64, DeleteRoleError> {
+        lock_role_and_count_grants(project_id, role_id, transaction).await
+    }
+
     async fn search_role_impl(
         project_id: &ProjectId,
         search_term: &str,
@@ -420,12 +433,12 @@ impl CatalogStore for super::PostgresBackend {
         search_role(project_id, search_term, &catalog_state.read_pool()).await
     }
 
-    async fn list_roles_by_idents_impl(
-        project_id: &ProjectId,
+    async fn list_roles_by_idents_in_projects_impl(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError> {
-        list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
+        list_roles_by_idents_in_projects(project_ids, idents, &catalog_state.read_pool()).await
     }
 
     // ---------------- Grants ----------------
@@ -460,8 +473,8 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn list_grants_in_subtree_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListSubtreeGrantsResultPage, ListGrantsStoreError> {
@@ -492,8 +505,8 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn select_subtree_grant_candidates_impl(
-        root: GrantSubtreeRoot,
-        filter: &GrantSubtreeFilter,
+        root: SubtreeGrantRoot,
+        filter: &SubtreeGrantFilter,
         limit: usize,
         catalog_state: Self::State,
     ) -> Result<GrantRevokeCandidates, ListGrantsStoreError> {
@@ -504,7 +517,7 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn revoke_grant_candidates_impl<'a>(
-        root: GrantSubtreeRoot,
+        root: SubtreeGrantRoot,
         candidates: &[GrantCandidate],
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, RevokeSubtreeGrantsStoreError> {
@@ -618,6 +631,13 @@ impl CatalogStore for super::PostgresBackend {
         list_tags_for_target(target, &catalog_state.read_pool()).await
     }
 
+    async fn list_tags_on_targets_impl(
+        targets: &[TagTarget],
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        list_tags_on_targets(targets, &catalog_state.read_pool()).await
+    }
+
     async fn list_column_tags_for_tabular_impl(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
@@ -669,6 +689,7 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn sync_user_role_assignments_by_provider_impl<'a>(
         user: &CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
@@ -686,6 +707,7 @@ impl CatalogStore for super::PostgresBackend {
         let unique = UniqueRoles::from_unchecked(roles);
         super::role_assignment::sync_user_role_assignments_by_provider(
             user,
+            sync_for,
             project_id,
             provider_id,
             unique,
@@ -715,6 +737,17 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError> {
         super::role_assignment::list_role_ancestors(role_ids, &catalog_state.read_pool()).await
+    }
+
+    async fn list_direct_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError> {
+        super::role_assignment::list_direct_role_assignments_for_user(
+            user_id,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 
     async fn list_role_assignments_for_role_by_ident_impl(
@@ -798,6 +831,33 @@ impl CatalogStore for super::PostgresBackend {
         let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
         super::role_assignment::affected_users_for_membership_edges(
             &member_uuids,
+            &mut **transaction,
+        )
+        .await
+    }
+
+    async fn affected_users_for_membership_edges_after_commit_impl(
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserId>, CatalogBackendError> {
+        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
+        super::role_assignment::affected_users_for_membership_edges_after_commit(
+            &member_uuids,
+            &catalog_state.write_pool(),
+        )
+        .await
+    }
+
+    async fn expire_role_assignment_syncs_impl<'a>(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), CatalogBackendError> {
+        super::role_assignment::expire_role_assignment_syncs(
+            project_id,
+            provider_id,
+            user_ids,
             &mut **transaction,
         )
         .await
@@ -954,7 +1014,7 @@ impl CatalogStore for super::PostgresBackend {
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<Vec<RoleId>>> {
-        delete_user(user_id, &mut **transaction).await
+        delete_user(user_id, transaction).await
     }
 
     async fn create_warehouse_impl<'a>(

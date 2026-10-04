@@ -10,15 +10,15 @@ use futures::{StreamExt, stream};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, RetryableError, WriteError,
-    execute_with_parallelism,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, RetryableError,
+    WriteError, execute_with_parallelism,
     s3::{
         S3Location,
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
-            parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
-            parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
-            parse_upload_part_error,
+            parse_create_multipart_upload_error, parse_delete_error, parse_get_bucket_policy_error,
+            parse_get_object_error, parse_head_object_error, parse_list_objects_v2_error,
+            parse_put_object_error, parse_upload_part_error,
         },
     },
     safe_usize_to_i32, validate_file_size,
@@ -58,6 +58,18 @@ impl S3Storage {
     #[must_use]
     pub fn aws_kms_key_arn(&self) -> Option<&String> {
         self.aws_kms_key_arn.as_ref()
+    }
+
+    /// The policy document of `bucket`, or `None` if it has none.
+    ///
+    /// # Errors
+    /// Fails if the policy cannot be read, for example because the credential
+    /// is not allowed to.
+    pub async fn bucket_policy(&self, bucket: &str) -> Result<Option<String>, IOError> {
+        match self.client.get_bucket_policy().bucket(bucket).send().await {
+            Ok(output) => Ok(output.policy),
+            Err(e) => parse_get_bucket_policy_error(e, bucket),
+        }
     }
 }
 
@@ -196,23 +208,35 @@ impl LakekeeperStorage for S3Storage {
         }))
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
         let head_response = head(&self.client, &s3_location).await?;
         let content_length = head_response.content_length().unwrap_or(0);
         let file_size = validate_file_size(content_length, path)?;
 
-        if file_size == 0 {
-            return Ok(Bytes::new());
-        }
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed.
+        let location_str = s3_location.to_string();
+        let info = FileInfo::new(
+            head_response.last_modified().and_then(parse_timestamp),
+            s3_location.location().clone(),
+            head_response
+                .content_length()
+                .and_then(|n| crate::size_to_u64(n, &location_str)),
+        )
+        .with_e_tag(head_response.e_tag().map(ToString::to_string));
 
-        if file_size < MAX_BYTES_PER_REQUEST {
+        let bytes = if file_size == 0 {
+            Bytes::new()
+        } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            return fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await;
-        }
+            fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await?
+        } else {
+            let etag = head_response.e_tag().map(ToString::to_string);
+            parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await?
+        };
 
-        let etag = head_response.e_tag().map(ToString::to_string);
-        parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
@@ -281,11 +305,10 @@ impl LakekeeperStorage for S3Storage {
             .content_length()
             .and_then(|n| crate::size_to_u64(n, &location_str));
         let last_modified = head_response.last_modified().and_then(parse_timestamp);
-        Ok(FileInfo::new(
-            last_modified,
-            s3_location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, s3_location.location().clone(), size)
+                .with_e_tag(head_response.e_tag().map(ToString::to_string)),
+        )
     }
 
     async fn list(
@@ -1182,5 +1205,65 @@ mod tests {
         assert_eq!(s3_key_to_str(&["a"]), "a");
         assert_eq!(s3_key_to_str(&["a", "b"]), "a/b");
         assert_eq!(s3_key_to_str(&["a", ""]), "a/");
+    }
+
+    /// Storage whose endpoint answers every request with `status` and `body`.
+    async fn storage_answering(status: &'static str, body: &'static str) -> S3Storage {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("eu01"))
+            .endpoint_url(format!("http://{addr}"))
+            .force_path_style(true)
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "access", "secret", None, None, "test",
+            ))
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+            .build();
+        S3Storage::new(aws_sdk_s3::Client::from_conf(config), None)
+    }
+
+    #[tokio::test]
+    async fn a_bucket_without_a_policy_has_none() {
+        let storage = storage_answering(
+            "404 Not Found",
+            "<Error><Code>NoSuchBucketPolicy</Code><Message>The specified bucket does not have a bucket policy.</Message></Error>",
+        )
+        .await;
+        assert_eq!(storage.bucket_policy("my-bucket").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_bucket_policy_is_returned_verbatim() {
+        let storage = storage_answering("200 OK", r#"{"Statement":[]}"#).await;
+        assert_eq!(
+            storage.bucket_policy("my-bucket").await.unwrap().as_deref(),
+            Some(r#"{"Statement":[]}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_policy_read_is_permission_denied() {
+        let storage = storage_answering(
+            "403 Forbidden",
+            "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
+        )
+        .await;
+        let error = storage.bucket_policy("my-bucket").await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{error}");
     }
 }

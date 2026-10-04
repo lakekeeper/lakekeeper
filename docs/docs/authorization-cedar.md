@@ -15,8 +15,8 @@ description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: decla
 
 Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
 
-!!! note "Permissions are policies, not grants"
-    Cedar decides from policies you author and deploy, so there is nothing to hand out at runtime: the [Grants API](./grants.md) publishes no grantable privileges here and its writes are rejected. Grant support for Cedar is planned for 0.14. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md). If you want permissions managed at runtime by admins and object owners instead, see [OpenFGA](./authorization-openfga.md).
+!!! note "Policies decide, and grants feed them"
+    Cedar decides from policies. Lakekeeper Plus also keeps [grants](./grants.md), handed out at runtime through the Grants API. Its predefined policies turn grants into access inside projects; server actions need the four server-grant `permit`s from the schema. Your own policies can read grants as `resource.principal_privileges`. Switch the predefined policies off with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false`. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md).
 
 ## How it Works
 
@@ -29,7 +29,7 @@ Lakekeeper uses the built-in Cedar Authorizer to evaluate whether a request is a
 To evaluate authorization requests, Cedar requires the following information:
 
 1. **Policies**: Define which principals can perform which actions on which resources. Policies are provided via files (`LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`) or Kubernetes ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`). See [Policy Examples](#policy-examples) below.
-1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Generic Tables, Namespaces, Warehouses, etc.) for each decision. User roles are also included if present in the user's token and `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured. For scenarios where role information isn't available in tokens, you can provide external entities—see [External Entity Management](#external-entity-management).
+1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Generic Tables, Namespaces, Warehouses, etc.) for each decision. The user's roles are included too: roles from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from configured role providers such as LDAP, and [roles managed in Lakekeeper](#roles-managed-in-lakekeeper). You can also provide users and roles yourself—see [External Entity Management](#external-entity-management).
 1. **Context**: Transient request-specific data related to an action. For example, the `table_properties_updates` field is available when checking `Lakekeeper::Action::"CommitTable"`. Context is handled internally by Lakekeeper and requires no configuration.
 1. **Schema**: Defines entity types recognized by the application. Lakekeeper uses a built-in schema (downloadable above) that can be customized via `LAKEKEEPER__CEDAR__SCHEMA_*` environment variables. We recommend schema customization only for advanced use cases.
 
@@ -39,17 +39,17 @@ Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have 
 
 ## RBAC and ABAC Support
 
-Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
+Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties, or the [governance tags](#tag-based-access-control) in effect on an object — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
 
-## Token-Based Role Matching with `project_roles`
+## Role Matching with `project_roles`
 
-Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records that represents the role memberships relevant to the project being accessed:
+Every `Lakekeeper::User` entity carries a `project_roles` attribute — a flat set of records holding the user's role memberships. At actions inside a project these are the user's roles in that object's project. At server actions they are the user's groups (see [Role scope at server actions](#role-scope-at-server-actions)):
 
 ```
 principal.project_roles  →  Set<{provider_id: String, source_id: String}>
 ```
 
-Lakekeeper populates this set automatically from the user's token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured) for the project context of the current request. In external entity mode (`EXTERNALLY_MANAGED_USER_AND_ROLES=true`) you populate it yourself in the entity JSON file.
+Lakekeeper fills this set for you: roles from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from configured role providers, from [admission gates](./admission.md), and [roles managed in Lakekeeper](#roles-managed-in-lakekeeper), including every role they are nested in. At server actions it holds only the user's groups. In external entity mode (`EXTERNALLY_MANAGED_USER_AND_ROLES=true`) you fill it yourself in the entity JSON file.
 
 The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attributes identifying the user's own authentication provider and their ID within it:
 
@@ -57,8 +57,8 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 |--------------------------------|------------------------------------------------|-----|
 | `provider_id`                  | `"oidc"`                                       | Authentication provider of the user |
 | `source_id`                    | `"2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"`       | User's ID within the provider |
-| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
-| `global_role_ids` | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
+| `project_roles`   | `[{provider_id: "oidc", source_id: "admins"}]` | Role memberships as `{provider_id, source_id}` records: roles from token claims, role providers (e.g. LDAP), admission gates and roles managed in Lakekeeper, resolved in the object's project. At server actions: the user's groups. |
+| `global_role_ids` | `["admins", "developers"]`                     | The `source_id` of each of the user's groups, as a plain `Set<String>`. Lakekeeper roles are not in it. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
 The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
 
@@ -67,13 +67,123 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 | Scenario                                                         | Recommended approach |
 |------------------------------------------------------------------|-----------|
 | Roles come from OIDC/token claims or a role provider (e.g. LDAP) | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
-| Role `source_id` values are globally unique across all providers | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
-| Roles are managed in Lakekeeper (via the management API)         | `principal in Lakekeeper::Role::"<project-id>/oidc~my-role"` |
+| Directory group names are unique across all your providers       | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
+| Roles are managed in Lakekeeper (via the management API)         | At actions inside a project, `principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})`, or `principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"` for one project's role. At server actions, a server grant to the role. See [Roles managed in Lakekeeper](#roles-managed-in-lakekeeper) |
 | Roles come from an external entities file                        | Either approach works; `project_roles` is simpler |
 
-`project_roles` simplifies policies especially in single-project setups: to use `principal in Lakekeeper::Role::...` you need to know the project ID, which is an identifier that is inconvenient to embed in policy files. `project_roles` lets you match by provider and role name alone, with no project ID required.
+`project_roles` matches by provider and role name alone, with no project ID. `principal in Lakekeeper::Role::...` needs the project ID, which is inconvenient to embed in policy files. For groups, `project_roles` is also the form that works at every action, server actions included.
 
-`global_role_ids` further simplifies policies when all configured role providers use globally unique `source_id` values (e.g. a single LDAP server or OIDC provider where group names are unique). Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+`global_role_ids` holds the names of your directory groups: the roles your identity and role providers assign (token claims, LDAP, Entra ID, Okta), without the provider prefix. It simplifies policies when those names are unique across your providers (e.g. a single LDAP server or OIDC provider). Roles managed in Lakekeeper belong to one project and are named by whoever creates them, so they are not included: creating a role can never make someone match a `global_role_ids` check. Enable it with `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`; when disabled the attribute is always an empty set.
+
+### Roles managed in Lakekeeper
+
+Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`. Whoever joins a role holds its grants, so changing a role's members is granting: the predefined policies let `manage_grants` on the role's project add and remove members, rename and delete roles, while `describe` is enough to read them. With `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES=true` the API creates no roles and answers `400 CreateRolesNotSupported`: declare every role in your entities file instead — see [External Entity Management](#external-entity-management).
+
+At actions inside a project, a user holds every role they are assigned to and every role those are nested in, at any depth, so both ways of naming a role match its indirect members too. At server actions neither matches a Lakekeeper role; see [Role scope at server actions](#role-scope-at-server-actions).
+
+```cedar
+// The `analysts` role of the object's project (never at server actions).
+principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})
+
+// The `analysts` role of one specific project.
+principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"
+```
+
+Things to know:
+
+- Name a role by its `source_id`. The role's display name is not available to Cedar, and a role created with a `source-id` of its own cannot be named by its id.
+- A `source_id` names a role only together with its `provider_id`: `analysts` in `lakekeeper` and `analysts` in `ldap` are different roles. Wherever a policy reads a `source_id` — `resource.source_id` on a role action, or `context.requested_source_id` — check the matching `provider_id` too.
+- At actions inside a project, `project_roles` names a role of the project the request is decided in. A request about a resource is decided in that resource's project: the one `x-project-id` names or, for a catalog request without it, the project of the warehouse it addresses.
+- Changing a role's `source_id` through the source-system endpoint changes its name in Cedar: policies naming the old `source_id` stop matching it.
+- `global_role_ids` does not include these roles, and resource property tags (`role:` / `role-full:`) cannot reference them.
+- When a user acts as a role with `x-assume-role`, the principal is that role. `principal in Lakekeeper::Role::"…"` still matches the roles it is nested in. A role has no `project_roles`: guard that read with `principal is Lakekeeper::User`, which limits the policy to users. At server actions, a request under `x-assume-role` is denied: send it without the header to act as yourself.
+
+### Role scope at server actions
+
+A user holds two kinds of role:
+
+- **Groups** come from a directory (LDAP, Entra ID, Okta), from token claims, or from an [admission gate](./admission.md).
+- **Lakekeeper roles** are roles managed in Lakekeeper and `system` roles.
+
+What a user carries depends on the action:
+
+- **Actions inside a project** (project, warehouse and below): every role the user holds in that object's project, groups and Lakekeeper roles, with every role those are nested in.
+- **Server actions** (every action on `Lakekeeper::Server`, user management included): the user's groups, in `project_roles` and `global_role_ids`. They are the same for every `x-project-id`. `roles` is empty; `principal in Role::"..."` and `request_project` work only at actions inside a project.
+
+A Lakekeeper role counts at server actions through a server grant. Act as yourself: a request with `x-assume-role` is denied at server actions. When Lakekeeper loads or reloads its policies, the server-action check refuses a policy that would stop nobody at a server action, and the log shows the fix.
+
+#### Name groups with the flat form
+
+The flat form works at every action. A `Lakekeeper::Role::"<project-id>/<provider>~<source-id>"` id names a group in one project and matches no user at server actions.
+
+```cedar
+permit (
+  principal is Lakekeeper::User,
+  action in [Lakekeeper::Action::"ListUsers", Lakekeeper::Action::"UpdateUsers", Lakekeeper::Action::"DeleteUsers"],
+  resource is Lakekeeper::Server
+)
+when { principal.project_roles.contains({provider_id: "ldap", source_id: "user-admins"}) };
+```
+
+#### Server grants for Lakekeeper roles
+
+Grant the role a privilege on the server ([`/management/v1/server/grants`](./grants.md#where-you-can-grant)), and load these four permits, one per privilege. No predefined policy decides server actions, so a server grant does nothing without them:
+
+```cedar
+permit (principal, action in Lakekeeper::Action::"ServerDescribeActions", resource is Lakekeeper::Server)
+when { resource.principal_privileges.direct.describe };
+
+permit (principal, action in Lakekeeper::Action::"ServerCreateActions", resource is Lakekeeper::Server)
+when { resource.principal_privileges.direct.create };
+
+permit (principal, action in Lakekeeper::Action::"ServerModifyActions", resource is Lakekeeper::Server)
+when { resource.principal_privileges.direct.manage };
+
+permit (principal, action in Lakekeeper::Action::"ServerGrantActions", resource is Lakekeeper::Server)
+when { resource.principal_privileges.direct.manage_grants };
+```
+
+Every member of the role holds its grants, so whoever manages the role's members decides who has them. If nobody can reach server administration yet, an identity from [`LAKEKEEPER__INSTANCE_ADMINS`](./instance-admins.md) can set the first grant.
+
+#### Forbid a group
+
+A `forbid` on a group with an unconstrained `action` holds at every action, server actions included. It also stops its members from assuming a role:
+
+```cedar
+forbid (principal is Lakekeeper::User, action, resource)
+when { principal.project_roles.contains({provider_id: "ldap", source_id: "contractors"}) };
+```
+
+Name `AssumeRole` too in a `forbid` on fewer actions.
+
+A decision about another user — a grant's grantee, or the subject of a permission check — sees that user's directory groups. With [persisted token roles](./configuration.md#token-role-provider) it also sees the token groups last stored for them. Admission groups come only with the user's own requests. To decide about users who are not signed in, use a role provider (LDAP, Entra ID, Okta).
+
+#### Fix a `forbid` that names a group by its `Role` id
+
+Split it in two: keep the original for actions inside projects, and add a copy for server actions that uses the flat form. A `Role` id in the scope moves into the `when`:
+
+```cedar
+forbid (principal in Lakekeeper::Role::"my-project/ldap~contractors", action, resource)
+when { !(resource is Lakekeeper::Server) };
+
+forbid (principal, action, resource is Lakekeeper::Server)
+when { (principal is Lakekeeper::User && principal.project_roles.contains({provider_id: "ldap", source_id: "contractors"})) };
+```
+
+Split a `permit` whose exception names the group the same way: the copy keeps the exception, the actions and the other conditions. If the group's provider is no longer configured, the flat form matches nobody; name a group the members still hold.
+
+To keep any policy away from server actions, add `!(resource is Lakekeeper::Server)` to its `when`. Use this condition, not a `principal has request_project` test: the server-action check refuses a `forbid` that reaches server actions with that test.
+
+#### Act as yourself at server actions
+
+A request with `x-assume-role` is denied every server action, except on the caller's own user record. A permission check about a role is denied there too, and `/management/v1/permissions/cedar/resolve-entities` answers `400` when asked about a role at the server. Every user can update and delete their own user record: Lakekeeper allows that before any policy is evaluated.
+
+!!! tip "The server-action check"
+    When Lakekeeper loads or reloads its policies, the server-action check reads each policy that can decide a server action. It refuses a `forbid`, or a `permit`'s exception, that names something no user has at server actions, such as a `Role` id, a Lakekeeper role, `roles` or `request_project`, because it would stop nobody there. The log names the policy and shows the fix: add `!(resource is Lakekeeper::Server)` to its `when` to keep it for actions inside projects, and add a policy for server actions that names a group with the flat form or reads a server grant. A `permit` that requires such a name allows nobody at server actions. It still loads: with a warning for a Lakekeeper role, `roles` or `request_project`, and with no message for a group's `Role` id. A refused reload keeps the policies already loaded; see [Policy and Entity Management](#policy-and-entity-management).
+
+For externally managed users and roles, see [External Entity Management](#external-entity-management).
+
+The project list is decided per project: each project is decided with your roles in that project, as a request naming it with `x-project-id` would be, and `IncludeProjectInList` decides whether it shows up.
 
 ### Policy example
 
@@ -95,9 +205,6 @@ when {
     )
 };
 ```
-
-!!! note
-    `project_roles` and `global_role_ids` are only populated when the request has a project context (i.e. for warehouse, namespace, table, and view operations). Both are empty sets for server-level actions that span multiple projects, so policies using either attribute will always deny server-level actions. Use the full Role ID or grant direct access to users for server-level policies.
 
 !!! tip "Monitoring role providers"
     Role provider availability is tracked via Prometheus metrics (`lakekeeper_role_provider_up`, `lakekeeper_role_provider_get_roles_duration_seconds`), emitted per `provider_id` for providers with an external backend such as LDAP. The built-in OIDC token provider does no external lookup, so it reports neither — with `persist_token_roles` it surfaces only through `lakekeeper_role_provider_sync_errors_total` on a failed catalog write. Lakekeeper deliberately excludes role provider health from the pod liveness probe — an unreachable provider causes graceful fallback to cached roles from Postgres rather than a pod restart. See [Monitoring — Role Provider Metrics](./monitoring.md#role-provider-metrics) for details and alerting guidance.
@@ -210,7 +317,7 @@ principal in resource.properties.getTag("access-owners").roles ||
 principal in resource.properties.getTag("access-owners").users
 ```
 
-The `principal in <set-of-roles>` check leverages Cedar's entity hierarchy: a user is considered `in` a role if that role appears anywhere in the user's ancestry chain (as established by OIDC token claims or external entity definitions).
+The `principal in <set-of-roles>` check leverages Cedar's entity hierarchy: a user is considered `in` a role if that role appears anywhere in the user's ancestry chain (as established by token claims, role providers, roles managed in Lakekeeper or external entity definitions).
 
 ### Access-Control Property Keys
 
@@ -250,6 +357,64 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 !!! tip
     Because malformed access-control values are rejected on write, you can rely on the `roles`/`users` sets being accurate and complete during read-path authorization.
+
+## Tag-Based Access Control
+
+[Governance tags](./tags.md) on warehouses, namespaces, tables, views and generic tables are visible to Cedar policies, so access can follow classification. For example, keep `pii` data from everyone outside a compliance role, or open a namespace to readers once it is tagged `published`.
+
+### How Tags Are Exposed to Cedar
+
+Every Warehouse, Namespace, Table, View and GenericTable entity carries a `lowercase_tags` attribute of type `ResourceTags`. This is a Cedar entity with one tag per governance tag in effect on the object, each holding a `TagValue` record:
+
+```cedar
+type TagValue = {
+    value:     String,       // the value in effect, as applied; "" for a marker tag
+    values:    Set<String>,  // every value this tag has on the object or above it
+    inherited: Bool,         // whether `value` comes from a namespace or warehouse above
+}
+```
+
+The tags are the object's [effective tags](./tags.md#effective-inherited-tags), the same set `?effective=true` returns: its own tags plus those inherited from the namespaces and the warehouse above it. When one tag is applied at several levels, the nearest one wins. Column tags are not included.
+
+Keys are the tag's name in lower case, so `hasTag("pii")` also matches a tag named `PII`. Tag names are unique per project ignoring case, so a rename that only changes case keeps matching. Values keep their case.
+
+```cedar
+// The object, or anything above it, is tagged pii
+resource.lowercase_tags.hasTag("pii")
+
+// The value in effect
+resource.lowercase_tags.hasTag("sensitivity") &&
+resource.lowercase_tags.getTag("sensitivity").value == "restricted"
+
+// Applied to this object itself, not inherited
+resource.lowercase_tags.hasTag("sensitivity") &&
+!resource.lowercase_tags.getTag("sensitivity").inherited
+```
+
+Guard every `getTag` with `hasTag`: any key may be missing, and Cedar rejects a policy that reads a tag without checking for it first.
+
+### Rules a Lower Level Cannot Weaken
+
+The nearest value wins, so a tag applied to a table replaces the value the table would inherit. If namespace `finance` is tagged `sensitivity=restricted` and a table inside it `sensitivity=public`, the table's `value` is `public`. Anyone allowed to tag that table could lift a restriction set on the namespace.
+
+When a rule must hold whatever is applied further down, check `values` instead. It keeps every value on the way down, and a lower level cannot remove one:
+
+```cedar
+// Restricted data, wherever the restriction was applied, only for the compliance group.
+forbid (
+    principal,
+    action in Lakekeeper::Action::"TableSelectActions",
+    resource is Lakekeeper::Table
+)
+when {
+    resource.lowercase_tags.hasTag("sensitivity") &&
+    resource.lowercase_tags.getTag("sensitivity").values.contains("restricted")
+}
+unless {
+    principal is Lakekeeper::User &&
+    principal.project_roles.contains({provider_id: "oidc", source_id: "compliance"})
+};
+```
 
 ## User Identity Derivations
 
@@ -360,7 +525,7 @@ The following table documents the ID format used for each Cedar entity type. The
 | `Lakekeeper::Table`                              | `<warehouse-uuid>/<table-uuid>`             | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::View`                               | `<warehouse-uuid>/<view-uuid>`              | `d08dca76-.../019c192f-...` |
 | `Lakekeeper::User`                               | `<provider_id>~<subject_in_idp>`            | `oidc~alice@example.com` |
-| `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins` |
+| `Lakekeeper::Role`                               | `<project-id>/<provider_id>~<source_id>`    | `my-project/oidc~data-admins`, `my-project/lakekeeper~analysts` |
 | `Lakekeeper::UserDerivedAttributes` | Same ID as the owning `User` (1:1)          | `oidc~alice@example.com` |
 
 **Notes:**
@@ -371,15 +536,17 @@ The following table documents the ID format used for each Cedar entity type. The
 
 ## External Entity Management
 
-**Default Behavior**: Lakekeeper automatically includes `Lakekeeper::User` entities with information extracted from user tokens. When `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured, Lakekeeper also provides `Lakekeeper::Role` entities, enabling role-based policies.
+**Default Behavior**: Lakekeeper automatically includes the `Lakekeeper::User` entity with information extracted from the user's token. At actions inside a project it also includes a `Lakekeeper::Role` entity for every role the user holds — from the token (when `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured), from role providers, and roles managed in Lakekeeper — enabling role-based policies. At server actions, see [Role scope at server actions](#role-scope-at-server-actions).
 
-**External Management**: In scenarios where role information isn't available in tokens, you can manage users and roles externally:
+**External Management**: To manage users and roles yourself instead, provide them as external entities:
 
 1. Set `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` to `true`
 2. Provide entity definitions via `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES*` configurations
 3. Ensure your external entities conform to Lakekeeper's Cedar schema
 
 See [Entity Definition Example](#entity-definition-example) below for the JSON format.
+
+In this mode Lakekeeper builds no user or role entities: a user is exactly what your entities file declares, with its attributes (such as `project_roles` and `global_role_ids`) and its `Role` parents, at every action, server actions included. What this page says a user carries at server actions describes the default mode. The [server-action check](#role-scope-at-server-actions) and the `x-assume-role` rule apply the same in every mode.
 
 **Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
 
@@ -420,7 +587,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     **Option 2 — using `project_roles`**
-    `project_roles` is always an empty set for server-level actions (which carry no project context), so this policy will never permit them. Use Option 1 with the full Role ID when server-level permissions are required, or grant direct access to users.
+    `project_roles` matches by provider and role name, with no project ID to look up. At project actions it holds the roles of the project the request is decided in; the Role ID in Option 1 names the role of one project. At server actions only Option 2 matches, and only for groups — see [Role scope at server actions](#role-scope-at-server-actions). With externally managed users and roles, both options match what your entities file declares.
 
     ```cedar
     permit (
@@ -437,7 +604,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "Grant access based on a token-sourced group (project_roles)"
 
-    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. Note that `project_roles` is always an empty set for server-level actions — use the full Role ID for those.
+    Use this pattern when roles come from OIDC token claims (configured via `LAKEKEEPER__OPENID_ROLES_CLAIM`). This avoids constructing the full role entity ID (which requires the project ID) and works identically in both token mode and external-entity mode. `project_roles` holds the roles of the project the request is decided in at project actions, and the user's groups at server actions — see [Role scope at server actions](#role-scope-at-server-actions).
 
     ```cedar
     permit (
@@ -676,7 +843,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     ```
 
     !!! tip "Role resolution"
-        `principal in resource.properties.getTag("access-readers").roles` uses Cedar's built-in entity hierarchy. A user is considered `in` a role if that role appears as an ancestor in the user entity's parent chain — exactly the same mechanism used for static role-based policies. This means the access control lists stored in table properties work seamlessly with both token-extracted roles (`LAKEKEEPER__OPENID_ROLES_CLAIM`) and externally managed role assignments.
+        `principal in resource.properties.getTag("access-readers").roles` uses Cedar's built-in entity hierarchy. A user is considered `in` a role if that role appears as an ancestor in the user entity's parent chain — exactly the same mechanism used for static role-based policies. This means the access control lists stored in table properties work the same for token-extracted roles (`LAKEKEEPER__OPENID_ROLES_CLAIM`), roles from role providers, and externally managed role assignments.
 
 ??? example "ABAC: Namespace-level access control inherited by all tables"
 
@@ -730,7 +897,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ## Entity Definition Example
 
-Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View. Additionally, if `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, also User and Roles are provided to Cedar. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
+Lakekeeper provides the following entities internally to Cedar: Server, Project, Warehouse, Namespace, Table, View, the requesting User, and a Role for every role the user holds. A request on a table called "my-table" in Namespace "my-namespace" provides the following entities to Cedar:
 
 ??? example "Entities provided to Cedar internally"
     ```json
@@ -872,20 +1039,28 @@ Lakekeeper provides the following entities internally to Cedar: Server, Project,
                 "id": "oidc~2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
             "attrs": {
-                // Lakekeeper-managed roles the user belongs to (from the management API).
-                "roles": [],
-                // Token-sourced roles flattened for the current project context.
-                // Populated from LAKEKEEPER__OPENID_ROLES_CLAIM when present.
+                // Every role the user holds in the table's project, as Role
+                // entities — from the token, role providers and roles managed in
+                // Lakekeeper, including roles they are nested in. Empty at
+                // server actions.
+                "roles": [
+                    { "__entity": { "type": "Lakekeeper::Role", "id": "019c192f-0613-7422-90f1-7dd6b09f033c/oidc~analysts" } }
+                ],
+                // The same roles as {provider_id, source_id} records.
                 "project_roles": [
                     {"provider_id": "oidc", "source_id": "analysts"}
                 ],
-                // source_id of each provider-resolved role; only populated when
-                // LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true, otherwise [].
+                // Names of the roles from identity and role providers; only
+                // populated when LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true,
+                // otherwise [].
                 "global_role_ids": [],
                 "provider_id": "oidc",
                 "source_id": "2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
-            "parents": []
+            // Every role in `roles` is a parent, so `principal in Role::"…"` matches.
+            "parents": [
+                { "type": "Lakekeeper::Role", "id": "019c192f-0613-7422-90f1-7dd6b09f033c/oidc~analysts" }
+            ]
         }
     ]
     ```
@@ -986,6 +1161,47 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
 
+## Break-Glass
+
+Cedar policies come from two places. The **server set** comes from files and ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__*`), and only the operator can change it. The **scope sets** are stored in the catalog, one per project and one per warehouse, and a project manages its own through the management API.
+
+A project controls its own scope set, so it can write a `forbid` that denies everyone, including the people who would remove it again. Break-glass is the way out.
+
+A break-glass request is decided by the server set only. Scope policies are not read, so a bad one cannot block the repair. Grants are still read: they sit in an ordinary catalog table that a policy lockout cannot reach, so the grants a project already has start granting access again.
+
+Break-glass allows only what the server set allows. The operator writes the policy that says who may repair a project.
+
+### Sending a Break-Glass Request
+
+Add the `x-break-glass` header, with your reason as its value:
+
+```bash
+curl -X POST "https://lakekeeper.example.com/management/v1/permissions/cedar/project/policies" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-project-id: 01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "x-break-glass: INC-1234 removing the forbid that locked out the admins" \
+  -H "Content-Type: application/json" \
+  -d '{"writes": [], "replace": true}'
+```
+
+Any non-empty value works. The reason goes into the audit event as `break_glass`, cut off at 256 bytes, so send a ticket reference. See the [Logging guide](./logging.md#audit-logs-and-rust_log).
+
+Break-glass applies only to a user acting as themselves. Requests that assume a role with `x-assume-role`, and permission checks about someone else, are decided the normal way. OpenFGA and allow-all ignore the header: it changes no decision and only shows up in the audit record.
+
+An [instance admin](./instance-admins.md) must give a reason, because their requests skip stored policy and nothing else would record why a policy changed. Without one, applying project or warehouse policies answers `403 CedarInstanceAdminNeedsBreakGlass`. The value `true` does not count as a reason.
+
+### Checking Whether Break-Glass Is Available
+
+Ask `break-glass-status` first. It only reports, and decides nothing:
+
+```bash
+curl "https://lakekeeper.example.com/management/v1/permissions/cedar/break-glass-status?project-id=01943e3d-43c5-7a4e-b6dd-a55c7796d9da" \
+  -H "Authorization: Bearer $TOKEN"
+# {"break-glass-available": true}
+```
+
+Anyone signed in can ask, and no permission is needed, because the people who need this answer are the ones being denied. It covers one project and the break-glass path only. To see whether someone is an instance admin, read `is-instance-admin` from `/management/v1/whoami`.
+
 ## Cedar Actions
 
 The following tables document all available Cedar actions. Use action groups for broad permissions or individual actions for fine-grained control.
@@ -1006,141 +1222,242 @@ Because the audit `action_name` deliberately omits the resource type (`delete`, 
 }
 ```
 
+### How action groups are nested
+
+A policy can name a group in place of every action in it. Each level has a ladder of groups, from the narrowest step to the widest:
+
+| Level | Ladder |
+|---|---|
+| Server, Project, Warehouse, Namespace | `<Level>DescribeActions` < `<Level>CreateActions` < `<Level>ModifyActions` < `<Level>Actions` |
+| Table, View, GenericTable | `<Level>DescribeActions` < `<Level>SelectActions` < `<Level>WriteActions` < `<Level>ModifyActions` < `<Level>Actions` |
+| Tag | `TagDescribeActions` < `TagApplyActions` < `TagModifyActions` < `TagActions` |
+| Role | `RoleActions` only |
+
+A wider step contains the narrower ones: a permit on `ProjectModifyActions` also allows every create and describe action on the project. Permit the narrowest group that covers what you mean. A `forbid` works the same way.
+
+Grant administration and policy administration stand outside every `<Level>Actions` group. Name them on their own: see [Grant Administration Actions](#grant-administration-actions) and [Cedar Policy Actions](#cedar-policy-actions). `DataPlaneActions` holds the actions that hand out data or data-access credentials: `ReadTableData`, `WriteTableData`, `SelectView`, `ReadGenericTableData` and `WriteGenericTableData`. A `forbid` on it keeps a principal away from data and leaves their metadata access alone.
+
+The **Group** column below names the narrowest group an action is in. An action marked "none" is in no group: a policy reaches it by naming it, or by leaving `action` unconstrained.
+
 ### Server Actions
 
-| Action                                            | Audit log `action_name`                    | Description              |
-|---------------------------------------------------|--------------------------------------------|--------------------------|
-| `ListServerCedarEntitySources`                    | `list_cedar_entity_sources`                | List Cedar entity sources configured at server level |
-| `ListCedarPoliciesFromServerSources` | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
-| `ListServerCedarPolicySources`                    | `list_cedar_policy_sources`                | List Cedar policy sources configured at server level |
-| `CreateProject`                                   | `create_project`                           | Create new projects      |
-| `UpdateUsers`                                     | `update_users`                             | Modify user information  |
-| `DeleteUsers`                                     | `delete_users`                             | Remove users from the system |
-| `ListUsers`                                       | `list_users`                               | View all users in the system |
-| `ProvisionUsers`                                  | `provision_users`                          | Provision new users      |
-| `IntrospectServerAuthorization`                   | `introspect_authorization`                 | Check access permissions on the server for **other** users (applies when `identity` parameter doesn't match current user) |
-| `EvaluateCedarPolicies`                           | `evaluate_cedar_policies`                  | Evaluate user-provided Cedar policies (development tool) |
+At server actions a user carries their groups; see [Role scope at server actions](#role-scope-at-server-actions).
+
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `ListUsers` | `list_users` | `ServerDescribeActions` | List the users this server knows about |
+| `CreateProject` | `create_project` | `ServerCreateActions` | Create a project |
+| `ProvisionUsers` | `provision_users` | `ServerModifyActions` | Create a user record, through the API or at the user's first authenticated request |
+| `UpdateUsers` | `update_users` | `ServerModifyActions` | Change what Lakekeeper stores about a user |
+| `DeleteUsers` | `delete_users` | `ServerModifyActions` | Remove a user record |
+
+Every user can update and delete their own user record; that needs no policy. Server grants are under [Grant Administration Actions](#grant-administration-actions), and the server's policy sources under [Cedar Policy Actions](#cedar-policy-actions).
 
 ### Project Actions
 
-| Action                                        | Audit log `action_name`    | Description                  |
-|-----------------------------------------------|----------------------------|------------------------------|
-| `GetProjectMetadata`                          | `get_metadata`             | View project details and configuration |
-| `ListWarehouses`                              | `list_warehouses`          | List all warehouses in the project |
-| `IncludeProjectInList`                        | `include_in_list`          | Include project in list operations (visibility) |
-| `ListRoles`                                   | `list_roles`               | List all roles in the project |
-| `SearchRoles`                                 | `search_roles`             | Search for roles in the project |
-| `GetProjectEndpointStatistics`                | `get_endpoint_statistics`  | View API usage statistics for the project |
-| `GetProjectTaskQueueConfig`                   | `get_task_queue_config`    | View task queue configuration for the project |
-| `GetProjectTasks`                             | `get_project_tasks`        | List background tasks in the project |
-| `IntrospectProjectAuthorization` | `introspect_authorization` | Check access permissions on the project for other users |
-| `CreateWarehouse`                             | `create_warehouse`         | Create new warehouses in the project |
-| `DeleteProject`                               | `delete`                   | Delete the project           |
-| `RenameProject`                               | `rename`                   | Change project name          |
-| `CreateRole`                                  | `create_role`              | Create new roles in the project |
-| `ModifyProjectTaskQueueConfig`                | `modify_task_queue_config` | Update task queue configuration |
-| `ControlProjectTasks`                         | `control_project_tasks`    | Manage background tasks (cancel, retry, etc.) |
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `GetProjectMetadata` | `get_metadata` | `ProjectDescribeActions` | View project details and configuration |
+| `ListWarehouses` | `list_warehouses` | `ProjectDescribeActions` | List all warehouses in the project |
+| `IncludeProjectInList` | `include_in_list` | `ProjectDescribeActions` | Include the project in project listings |
+| `ListRoles` | `list_roles` | `ProjectDescribeActions` | List all roles in the project |
+| `SearchRoles` | `search_roles` | `ProjectDescribeActions` | Search for roles in the project |
+| `ListTags` | `list_tags` | `ProjectDescribeActions` | List the project's tag definitions |
+| `GetProjectEndpointStatistics` | `get_endpoint_statistics` | `ProjectDescribeActions` | View API usage statistics for the project |
+| `GetProjectTaskQueueConfig` | `get_task_queue_config` | `ProjectDescribeActions` | View task queue configuration for the project |
+| `GetProjectTasks` | `get_project_tasks` | `ProjectDescribeActions` | List background tasks in the project |
+| `CreateWarehouse` | `create_warehouse` | `ProjectCreateActions` | Create a warehouse in the project |
+| `DeleteProject` | `delete` | `ProjectModifyActions` | Delete the project |
+| `RenameProject` | `rename` | `ProjectModifyActions` | Change the project's name |
+| `ModifyProjectTaskQueueConfig` | `modify_task_queue_config` | `ProjectModifyActions` | Update task queue configuration |
+| `ControlProjectTasks` | `control_project_tasks` | `ProjectModifyActions` | Manage background tasks (cancel, retry, etc.) |
+| `CreateRole` | `create_role` | `ProjectModifyActions` | Create a role in the project |
+| `CreateTag` | `create_tag` | `ProjectModifyActions` | Create a tag definition in the project |
+| `ReadUserRoleAssignments` | `read_role_assignments` | none | List the roles a user holds in the project (`GET /management/v1/user/{user_id}/roles` and `/roles/transitive`) |
 
-The following Action Groups are available: `ProjectDescribeActions` (read-only), `ProjectModifyActions` (includes Describe), `ProjectActions` (all)
+`ProjectCreateActions` covers places to put data. `CreateRole` and `CreateTag` shape how the project is governed, so they are in `ProjectModifyActions`; permit them by name to allow them alone.
 
 ### Role Actions
 
-| Action                                     | Audit log `action_name` | Description                     |
-|--------------------------------------------|-------------------------|---------------------------------|
-| `AssumeRole`                               | `assume_role`           | Assume this role (use role's permissions) |
-| `DeleteRole`                               | `delete`                | Delete the role                 |
-| `UpdateRole`                               | `update`                | Modify role properties          |
-| `ReadRole`                                 | `read`                  | View role details               |
-| `ReadRoleMetadata`                         | `read_metadata`         | View role metadata              |
-| `IntrospectRoleAuthorization` | —                       | Check access permissions on the role for other users |
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `AssumeRole` | `assume_role` | `RoleActions` | Act as this role for the request. It changes who the caller is, so permit it narrowly |
+| `ReadRole` | `read` | `RoleActions` | Read the role, including its members |
+| `ReadRoleMetadata` | `read_metadata` | `RoleActions` | Read only the role's name and project |
+| `UpdateRole` | `update` | `RoleActions` | Change the role's name or description |
+| `DeleteRole` | `delete` | `RoleActions` | Delete the role |
+| `ManageRoleAssignments` | `manage_role_assignments` | `RoleActions` | Add or remove the role's members (users or roles) |
+| `ReadRoleAssignments` | `read_role_assignments` | `RoleActions` | List the role's members, parents and assignments |
+| `UpdateRoleSourceSystem` | `update_source_system` | `RoleActions` | Rebind the role to a different provider and source id |
 
-The following Action Groups are available: `RoleActions` (all role operations)
+### Tag Actions
+
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `ReadTag` | `read` | `TagDescribeActions` | Read a tag definition (name, value kind, allowed values) |
+| `ApplyTag` | `apply` | `TagApplyActions` | Attach the tag to an object |
+| `RemoveTag` | `remove` | `TagApplyActions` | Detach the tag from an object |
+| `UpdateTag` | `update` | `TagModifyActions` | Rename the tag, widen its scope or add values |
+| `DeleteTag` | `delete` | `TagModifyActions` | Delete the tag definition |
+| `ReadTagAttachments` | `read_attachments` | `TagModifyActions` | List every object the tag is attached to |
+
+Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the tag, and the object's own tag action (`ManageWarehouseTags`, `ManageNamespaceTags`, `ManageTableTags`, `ManageViewTags` or `ManageGenericTableTags`).
 
 ### Warehouse Actions
 
-| Action                                          | Audit log `action_name`     | Description                |
-|-------------------------------------------------|-----------------------------|----------------------------|
-| `UseWarehouse`                                  | `use`                       | Use the warehouse (required for any warehouse operations) |
-| `ListNamespacesInWarehouse`                     | `list_namespaces`           | List namespaces in the warehouse |
-| `GetWarehouseMetadata`                          | `get_metadata`              | View warehouse configuration and details |
-| `GetConfig`                                     | `get_config`                | Get warehouse configuration for clients |
-| `IncludeWarehouseInList`                        | `include_in_list`           | Include warehouse in list operations (visibility) |
-| `ListDeletedTabulars`                           | `list_deleted_tabulars`     | List soft-deleted tables and views |
-| `GetTaskQueueConfig`                            | `get_task_queue_config`     | View task queue configuration |
-| `GetAllTasks`                                   | `get_all_tasks`             | List all background tasks in the warehouse |
-| `ListEverythingInWarehouse`                     | `list_everything`           | List all objects (namespaces, tables, views) in warehouse |
-| `GetWarehouseEndpointStatistics`                | `get_endpoint_statistics`   | View API usage statistics for the warehouse |
-| `IntrospectWarehouseAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
-| `DeleteWarehouse`                               | `delete`                    | Delete the warehouse       |
-| `UpdateStorage`                                 | `update_storage`            | Modify storage configuration |
-| `UpdateStorageCredential`                       | `update_storage_credential` | Update storage credentials |
-| `DeactivateWarehouse`                           | `deactivate`                | Deactivate the warehouse (suspend operations) |
-| `ActivateWarehouse`                             | `activate`                  | Activate a deactivated warehouse |
-| `RenameWarehouse`                               | `rename`                    | Change warehouse name      |
-| `ModifySoftDeletion`                            | `modify_soft_deletion`      | Configure soft-deletion settings |
-| `ModifyTaskQueueConfig`                         | `modify_task_queue_config`  | Update task queue configuration |
-| `ControlAllTasks`                               | `control_all_tasks`         | Manage all background tasks |
-| `SetWarehouseProtection`                        | `set_protection`            | Enable/disable deletion protection |
-| `CreateNamespaceInWarehouse`                    | `create_namespace`          | Create namespaces directly in the warehouse |
-
-The following Action Groups are available: `WarehouseDescribeActions` (read-only), `WarehouseModifyActions` (includes Describe), `WarehouseActions` (all)
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `UseWarehouse` | `use` | `WarehouseDescribeActions` | Reach the warehouse at all. Every warehouse request checks it first; denied, the warehouse looks absent |
+| `ListNamespacesInWarehouse` | `list_namespaces` | `WarehouseDescribeActions` | List namespaces in the warehouse |
+| `GetWarehouseMetadata` | `get_metadata` | `WarehouseDescribeActions` | View warehouse configuration and details |
+| `GetConfig` | `get_config` | `WarehouseDescribeActions` | Read the Iceberg REST config that clients call when they connect |
+| `IncludeWarehouseInList` | `include_in_list` | `WarehouseDescribeActions` | Include the warehouse in warehouse listings |
+| `ListDeletedTabulars` | `list_deleted_tabulars` | `WarehouseDescribeActions` | List soft-deleted tables and views |
+| `GetTaskQueueConfig` | `get_task_queue_config` | `WarehouseDescribeActions` | View task queue configuration |
+| `GetAllTasks` | `get_all_tasks` | `WarehouseDescribeActions` | List all background tasks in the warehouse |
+| `ListEverythingInWarehouse` | `list_everything` | `WarehouseDescribeActions` | List everything under the warehouse; the per-item `Include…InList` checks are skipped |
+| `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
+| `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
+| `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
+| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Modify storage configuration |
+| `UpdateStorageCredential` | `update_storage_credential` | `WarehouseModifyActions` | Update storage credentials |
+| `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
+| `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
+| `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
+| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings |
+| `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
+| `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
+| `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |
+| `SetWarehouseFormatVersionPolicy` | `set_format_version_policy` | `WarehouseModifyActions` | Change the warehouse's Iceberg format-version policy |
+| `ManageWarehouseTags` | `manage_tags` | `WarehouseModifyActions` | Attach or detach tags on the warehouse |
+| `AcceptMovedNamespaceInWarehouse` | `accept_moved_namespace` | none | Accept a namespace moved in at the warehouse root. Asked together with `CreateNamespaceInWarehouse` |
 
 ### Namespace Actions
 
-| Action                                          | Audit log `action_name` | Description                |
-|-------------------------------------------------|-------------------------|----------------------------|
-| `ListEverythingInNamespace`                     | `list_everything`       | List all objects (tables, views, child namespaces) in namespace |
-| `GetNamespaceMetadata`                          | `get_metadata`          | View namespace properties and configuration |
-| `IncludeNamespaceInList`                        | `include_in_list`       | Include namespace in list operations (visibility) |
-| `ListTables`                                    | `list_tables`           | List tables in the namespace |
-| `ListViews`                                     | `list_views`            | List views in the namespace |
-| `ListNamespacesInNamespace`                     | `list_namespaces`       | List child namespaces      |
-| `IntrospectNamespaceAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
-| `DeleteNamespace`                               | `delete`                | Delete the namespace       |
-| `SetNamespaceProtection`                        | `set_protection`        | Enable/disable deletion protection |
-| `CreateTable`                                   | `create_table`          | Create tables in the namespace |
-| `CreateView`                                    | `create_view`           | Create views in the namespace |
-| `CreateNamespaceInNamespace`                    | `create_namespace`      | Create child namespaces    |
-| `UpdateNamespaceProperties`                     | `update_properties`     | Modify namespace properties |
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `ListEverythingInNamespace` | `list_everything` | `NamespaceDescribeActions` | List everything under the namespace; the per-item `Include…InList` checks are skipped |
+| `GetNamespaceMetadata` | `get_metadata` | `NamespaceDescribeActions` | View namespace properties and configuration |
+| `IncludeNamespaceInList` | `include_in_list` | `NamespaceDescribeActions` | Include the namespace in namespace listings |
+| `ListTables` | `list_tables` | `NamespaceDescribeActions` | List tables in the namespace |
+| `ListViews` | `list_views` | `NamespaceDescribeActions` | List views in the namespace |
+| `ListGenericTables` | `list_generic_tables` | `NamespaceDescribeActions` | List generic tables in the namespace |
+| `ListNamespacesInNamespace` | `list_namespaces` | `NamespaceDescribeActions` | List child namespaces |
+| `CreateTable` | `create_table` | `NamespaceCreateActions` | Create a table in the namespace |
+| `CreateView` | `create_view` | `NamespaceCreateActions` | Create a view in the namespace |
+| `CreateGenericTableInNamespace` | `create_generic_table` | `NamespaceCreateActions` | Create a generic table in the namespace |
+| `CreateNamespaceInNamespace` | `create_namespace` | `NamespaceCreateActions` | Create a child namespace |
+| `DeleteNamespace` | `delete` | `NamespaceModifyActions` | Delete the namespace |
+| `SetNamespaceProtection` | `set_protection` | `NamespaceModifyActions` | Enable or disable deletion protection |
+| `ManageNamespaceTags` | `manage_tags` | `NamespaceModifyActions` | Attach or detach tags on the namespace |
+| `UpdateNamespaceProperties` | `update_properties` | `NamespaceModifyActions` | Modify namespace properties |
+| `MoveNamespace` | `move` | none | Move the namespace to a new path: the source half of a move |
+| `AcceptMovedNamespaceInNamespace` | `accept_moved_namespace` | none | Accept a namespace moved in as a child. Asked together with `CreateNamespaceInNamespace` |
 
-The following Action Groups are available: `NamespaceDescribeActions` (read-only), `NamespaceModifyActions` (includes Describe), `NamespaceActions` (all)
+A move changes what the moved subtree inherits, so `MoveNamespace` and the two `AcceptMovedNamespaceIn…` actions are in no group. Name them to allow a move. Moving out and moving in are decided separately.
 
 ### Table Actions
 
-| Action                                      | Audit log `action_name` | Description                    |
-|---------------------------------------------|-------------------------|--------------------------------|
-| `GetTableMetadata`                          | `get_metadata`          | View table schema, metadata, and configuration |
-| `IncludeTableInList`                        | `include_in_list`       | Include table in list operations (visibility) |
-| `GetTableTasks`                             | `get_tasks`             | List background tasks for the table |
-| `ReadTableData`                             | `read_data`             | Read data from the table (SELECT queries) |
-| `IntrospectTableAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
-| `DropTable`                                 | `drop`                  | Delete the table               |
-| `WriteTableData`                            | `write_data`            | Write data to the table (INSERT, UPDATE, DELETE) |
-| `RenameTable`                               | `rename`                | Change table name or move to different namespace |
-| `UndropTable`                               | `undrop`                | Restore a soft-deleted table   |
-| `ControlTableTasks`                         | `control_tasks`         | Manage table background tasks  |
-| `SetTableProtection`                        | `set_protection`        | Enable/disable deletion protection |
-| `CommitTable`                               | `commit`                | Commit table changes (schema updates, snapshots) |
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `GetTableMetadata` | `get_metadata` | `TableDescribeActions` | View table schema, metadata, and configuration |
+| `IncludeTableInList` | `include_in_list` | `TableDescribeActions` | Include the table in table listings |
+| `GetTableTasks` | `get_tasks` | `TableDescribeActions` | List background tasks for the table |
+| `ReadTableData` | `read_data` | `TableSelectActions` | Read data from the table |
+| `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table |
+| `CommitTable` | `commit` | `TableWriteActions` | Commit table changes (data, schema, properties) |
+| `DropTable` | `drop` | `TableModifyActions` | Delete the table |
+| `RenameTable` | `rename` | `TableModifyActions` | Change the table's name or move it to another namespace |
+| `UndropTable` | `undrop` | `TableModifyActions` | Restore a soft-deleted table |
+| `ControlTableTasks` | `control_tasks` | `TableModifyActions` | Manage the table's background tasks |
+| `SetTableProtection` | `set_protection` | `TableModifyActions` | Enable or disable deletion protection |
+| `ManageTableTags` | `manage_tags` | `TableModifyActions` | Attach or detach tags on the table |
 
-*Action Groups*: `TableDescribeActions` (metadata only), `TableSelectActions` (includes Describe + read data), `TableModifyActions` (includes Describe + Select + modifications), `TableActions` (all)
+`TableWriteActions` lets a loading job write and commit without dropping, renaming or unprotecting the table. A commit covers schema changes too; policies cannot tell the two apart.
 
 ### View Actions
 
-| Action                                     | Audit log `action_name` | Description                     |
-|--------------------------------------------|-------------------------|---------------------------------|
-| `GetViewMetadata`                          | `get_metadata`          | View view definition and metadata |
-| `IncludeViewInList`                        | `include_in_list`       | Include view in list operations (visibility) |
-| `GetViewTasks`                             | `get_tasks`             | List background tasks for the view |
-| `SelectView`                               | `select`                | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
-| `IntrospectViewAuthorization` | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
-| `DropView`                                 | `drop`                  | Delete the view                 |
-| `RenameView`                               | `rename`                | Change view name or move to different namespace |
-| `UndropView`                               | `undrop`                | Restore a soft-deleted view     |
-| `ControlViewTasks`                         | `control_tasks`         | Manage view background tasks    |
-| `SetViewProtection`                        | `set_protection`        | Enable/disable deletion protection |
-| `CommitView`                               | `commit`                | Commit view changes (update definition, properties) |
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `GetViewMetadata` | `get_metadata` | `ViewDescribeActions` | View the view's definition and metadata |
+| `IncludeViewInList` | `include_in_list` | `ViewDescribeActions` | Include the view in view listings |
+| `GetViewTasks` | `get_tasks` | `ViewDescribeActions` | List background tasks for the view |
+| `SelectView` | `select` | `ViewSelectActions` | Execute the view to produce rows (also required to traverse the view in a `referenced-by` chain) |
+| `CommitView` | `commit` | `ViewWriteActions` | Commit a new version of the view (definition, properties) |
+| `DropView` | `drop` | `ViewModifyActions` | Delete the view |
+| `RenameView` | `rename` | `ViewModifyActions` | Change the view's name or move it to another namespace |
+| `UndropView` | `undrop` | `ViewModifyActions` | Restore a soft-deleted view |
+| `ControlViewTasks` | `control_tasks` | `ViewModifyActions` | Manage the view's background tasks |
+| `SetViewProtection` | `set_protection` | `ViewModifyActions` | Enable or disable deletion protection |
+| `ManageViewTags` | `manage_tags` | `ViewModifyActions` | Attach or detach tags on the view |
 
-*Action Groups*: `ViewDescribeActions` (metadata only), `ViewSelectActions` (includes Describe + execute), `ViewModifyActions` (includes Describe + Select + modifications), `ViewActions` (all)
+### Generic Table Actions
+
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `GetGenericTableMetadata` | `get_metadata` | `GenericTableDescribeActions` | View the generic table's metadata |
+| `IncludeGenericTableInList` | `include_in_list` | `GenericTableDescribeActions` | Include the generic table in listings |
+| `GetGenericTableTasks` | `get_tasks` | `GenericTableDescribeActions` | List background tasks for the generic table |
+| `ReadGenericTableData` | `read_data` | `GenericTableSelectActions` | Read data from the generic table |
+| `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table |
+| `DropGenericTable` | `drop` | `GenericTableModifyActions` | Delete the generic table |
+| `RenameGenericTable` | `rename` | `GenericTableModifyActions` | Change the generic table's name or move it to another namespace |
+| `UndropGenericTable` | `undrop` | `GenericTableModifyActions` | Restore a soft-deleted generic table |
+| `ControlGenericTableTasks` | `control_tasks` | `GenericTableModifyActions` | Manage the generic table's background tasks |
+| `SetGenericTableProtection` | `set_protection` | `GenericTableModifyActions` | Enable or disable deletion protection |
+| `ManageGenericTableTags` | `manage_tags` | `GenericTableModifyActions` | Attach or detach tags on the generic table |
+
+### Grant Administration Actions
+
+These actions decide who may read and hand out [grants](./grants.md). Name `GrantActions` (every level), `GrantReadActions` (the read-only part, every level), a `<Level>GrantActions` group or a single action.
+
+| Level | Grant and revoke | Read grants | Ask about another principal |
+|---|---|---|---|
+| Server | `ManageServerGrants` | `ReadServerGrants` | `IntrospectServerAuthorization` |
+| Project | `ManageProjectGrants` | `ReadProjectGrants` | `IntrospectProjectAuthorization` |
+| Warehouse | `ManageWarehouseGrants` | `ReadWarehouseGrants` | `IntrospectWarehouseAuthorization` |
+| Namespace | `ManageNamespaceGrants` | `ReadNamespaceGrants` | `IntrospectNamespaceAuthorization` |
+| Table | `ManageTableGrants` | `ReadTableGrants` | `IntrospectTableAuthorization` |
+| View | `ManageViewGrants` | `ReadViewGrants` | `IntrospectViewAuthorization` |
+| GenericTable | `ManageGenericTableGrants` | `ReadGenericTableGrants` | `IntrospectGenericTableAuthorization` |
+| Tag | `ManageTagGrants` | `ReadTagGrants` | `IntrospectTagAuthorization` |
+| Role | — | — | `IntrospectRoleAuthorization` |
+
+- `Manage<Level>Grants` (audit `apply_grants`, group `<Level>GrantActions`): grant and revoke privileges on the object. Each privilege is decided on its own, with `context.privilege`, `context.grantee` and `context.direction`.
+- `Read<Level>Grants` (audit `read_grants`, groups `<Level>GrantActions` and `GrantReadActions`): see who holds grants on the object. It also makes the object itself visible.
+- `Introspect<Level>Authorization` (groups `<Level>GrantActions` and `GrantReadActions`; `IntrospectRoleAuthorization` is in `GrantReadActions` only): ask what another principal may do on the object. `/management/v1/permissions/cedar/resolve-entities` records it as `introspect_authorization`, at the server, project, warehouse, namespace, table, view and generic-table levels.
+
+Whole-subtree grant administration has its own groups. `SubtreeGrantActions` holds all four actions, under `GrantActions`; `SubtreeGrantReadActions` is also in `GrantReadActions`. The call is decided once, on the warehouse or namespace it names; see [Clearing a subtree](./grants.md#clearing-a-subtree).
+
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `ReadWarehouseSubtreeGrants` | `read_subtree_grants` | `SubtreeGrantReadActions` | List every grant at and under the warehouse |
+| `RevokeWarehouseSubtreeGrants` | `revoke_subtree_grants` | `SubtreeGrantRevokeActions` | Revoke those grants in bulk. Permanent |
+| `ReadNamespaceSubtreeGrants` | `read_subtree_grants` | `SubtreeGrantReadActions` | List every grant at and under the namespace |
+| `RevokeNamespaceSubtreeGrants` | `revoke_subtree_grants` | `SubtreeGrantRevokeActions` | Revoke those grants in bulk. Permanent |
+
+### Cedar Policy Actions
+
+These actions read and write Cedar policies. Name `CedarPolicyActions` (every level), `CedarPolicyReadActions` (the read-only part, every level), a `<Level>CedarPolicyActions` group or a single action. The `manage_policies` privilege maps to `ProjectCedarPolicyActions` and `WarehouseCedarPolicyActions`.
+
+| Action | Audit log `action_name` | Group | Description |
+|---|---|---|---|
+| `ListServerCedarPolicySources` | `list_cedar_policy_sources` | `ServerCedarPolicyActions`, `CedarPolicyReadActions` | List the server's policy sources |
+| `ListServerCedarEntitySources` | `list_cedar_entity_sources` | `ServerCedarPolicyActions`, `CedarPolicyReadActions` | List the server's entity sources |
+| `ListCedarPoliciesFromServerSources` | `list_cedar_policies_from_server_sources` | `ServerCedarPolicyActions`, `CedarPolicyReadActions` | Read the policies the server's sources provide |
+| `EvaluateCedarPolicies` | | `ServerCedarPolicyActions`, `CedarPolicyReadActions` | Try a policy against the engine without saving it. Reserved for a future endpoint |
+| `ListProjectCedarPolicies` | `list_cedar_policies` | `ProjectCedarPolicyActions`, `CedarPolicyReadActions` | List the project's policies |
+| `GetProjectCedarPolicy` | `get_cedar_policy` | `ProjectCedarPolicyActions`, `CedarPolicyReadActions` | Read one of the project's policies |
+| `ApplyProjectCedarPolicies` | `apply_cedar_policies` | `ProjectCedarPolicyActions` | Write the project's policies |
+| `ToggleProjectPredefinedPolicy` | `toggle_predefined_policy` | `ProjectCedarPolicyActions` | Switch one predefined policy on or off for the project |
+| `ResetProjectPredefinedPolicies` | `reset_predefined_policies` | `ProjectCedarPolicyActions` | Put the project back on the shipped predefined defaults |
+| `ListWarehouseCedarPolicies` | `list_cedar_policies` | `WarehouseCedarPolicyActions`, `CedarPolicyReadActions` | List the warehouse's policies |
+| `GetWarehouseCedarPolicy` | `get_cedar_policy` | `WarehouseCedarPolicyActions`, `CedarPolicyReadActions` | Read one of the warehouse's policies |
+| `ApplyWarehouseCedarPolicies` | `apply_cedar_policies` | `WarehouseCedarPolicyActions` | Write the warehouse's policies |
+| `ToggleWarehousePredefinedPolicy` | `toggle_predefined_policy` | `WarehouseCedarPolicyActions` | Switch one predefined policy on or off for the warehouse |
+| `ResetWarehousePredefinedPolicies` | `reset_predefined_policies` | `WarehouseCedarPolicyActions` | Put the warehouse back on the shipped predefined defaults |
+
+Every warehouse route checks `UseWarehouse` first, so permit `UseWarehouse` together with `WarehouseCedarPolicyActions`.
 
 ### Context-Aware Actions
 
@@ -1152,14 +1469,24 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 |-------------------------------------------|----------------------------------|
 | `CreateProject`                           | `project_name?: String`, `project_id?: String` |
 | `CreateWarehouse`                         | `warehouse_name?: String`        |
-| `CreateRole`                              | `role_name?: String`             |
+| `CreateRole`                              | `role_name?: String`, `requested_provider_id?: String`, `requested_source_id?: String` |
+| `CreateTag`                               | `tag_name?: String` |
+| `UpdateRoleSourceSystem`                  | `requested_provider_id?: String`, `requested_source_id?: String` |
 | `CreateNamespaceInWarehouse`              | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateNamespaceInNamespace` | `namespace_name?: String`, `initial_namespace_properties: ResourceProperties` |
 | `CreateTable`                             | `table_name?: String`, `table_id?: String`, `initial_table_properties: ResourceProperties` |
 | `CreateView`                              | `view_name?: String`, `initial_view_properties: ResourceProperties` |
+| `CreateGenericTableInNamespace`           | `generic_table_name?: String`, `generic_table_id?: String`, `format?: String`, `base_location?: String`, `initial_generic_table_properties: ResourceProperties` |
+| `DeleteNamespace`                         | `force: Bool`, `purge: Bool`, `recursive: Bool` |
+| `MoveNamespace`                           | `destination: String`, `force: Bool` |
+| `AcceptMovedNamespaceInWarehouse`, `AcceptMovedNamespaceInNamespace` | `source: String` |
+| `DropTable`, `DropView`                   | `force: Bool`, `purge: Bool` |
 | `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |
 | `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
 | `CommitView`                              | `view_properties_updates: ResourceProperties`, `view_properties_removal: Set<String>` |
+| `Manage<Level>Grants`                     | `privilege: <Level>Privilege`, `grantee: Grantee`, `direction: GrantDirection` |
+| `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
+| `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 

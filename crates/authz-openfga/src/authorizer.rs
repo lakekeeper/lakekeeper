@@ -2934,7 +2934,8 @@ pub(crate) mod tests {
                 }
                 IsAllowedActionError::AuthorizationBackendUnavailable(_)
                 | IsAllowedActionError::BadRequest(_)
-                | IsAllowedActionError::CountMismatch(_) => {
+                | IsAllowedActionError::CountMismatch(_)
+                | IsAllowedActionError::InternalError(_) => {
                     panic!("Expected CannotInspectPermissions error, got: {err:?}")
                 }
             }

@@ -22,7 +22,8 @@ use veil::Redact;
 use super::{
     S3Credential, S3Flavor, S3Profile, ShortTermCredentialsRequest, TableConfig,
     error::{
-        CredentialsError, InvalidProfileError, TableConfigError, UpdateError, ValidationError,
+        CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
+        ValidationError,
     },
     s3::{S3AccessKeyCredential, S3UrlStyleDetectionMode},
     storage_layout::StorageLayout,
@@ -65,26 +66,38 @@ pub struct StackitProfile {
     pub key_prefix: Option<String>,
     /// STACKIT region, e.g. `eu01`.
     pub region: String,
+    /// STACKIT storage service that holds the bucket. Defaults to
+    /// `object-storage`. Ignored when `endpoint` is set.
+    ///
+    /// Each service is a distinct storage tenant, so the resolved endpoint is
+    /// immutable once the warehouse exists. An update may switch between
+    /// `storage-service` and `endpoint` if both resolve to the same endpoint.
+    #[serde(default)]
+    #[builder(default)]
+    pub storage_service: StackitStorageService,
     /// Endpoint override. Normally omitted — the endpoint is derived from
-    /// `region`.
+    /// `region` and `storage-service`. Takes precedence over `storage-service`
+    /// when set.
     ///
     /// Set this only for a STACKIT endpoint outside the public naming scheme,
     /// which STACKIT hands out per customer. Such an endpoint is a distinct
-    /// storage tenant, not another route to the same bucket, so it is immutable
-    /// once the warehouse exists.
+    /// storage tenant, not another route to the same bucket, so the resolved
+    /// endpoint is immutable once the warehouse exists. An update may switch
+    /// between `endpoint` and `storage-service` if both resolve to the same
+    /// endpoint.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub endpoint: Option<Url>,
     /// Vend temporary downscoped credentials via STS. Defaults to enabled.
     ///
-    /// Requires `credentials-group-urn`, and requires the credentials group to
-    /// carry a trust policy allowing `sts:AssumeRole`. Disable it to fall back
-    /// to remote signing on storage that predates `StorageGRID` 12.0.
+    /// Requires `credentials-group-urn`, and a trust policy on that group
+    /// allowing `sts:AssumeRole`. Disable it to fall back to remote signing on
+    /// STACKIT storage without STS.
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub sts_enabled: bool,
     /// URN of the STACKIT credentials group to assume when vending credentials,
-    /// e.g. `urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3`.
+    /// e.g. `urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3`.
     ///
     /// Copy it verbatim from the credentials group; it is not derivable.
     /// Required when `sts-enabled` is true, optional otherwise — but validated
@@ -112,9 +125,49 @@ pub struct StackitProfile {
     pub storage_layout: Option<StorageLayout>,
 }
 
+/// STACKIT storage service that holds a bucket.
+///
+/// - `object-storage`: STACKIT Object Storage, `object.storage.<region>.onstackit.cloud`.
+/// - `data-platform`: STACKIT data platform storage,
+///   `dataplatform.storage.<region>.onstackit.cloud`. Available in `eu01` only.
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum StackitStorageService {
+    /// STACKIT Object Storage, `object.storage.<region>.onstackit.cloud`.
+    #[default]
+    ObjectStorage,
+    /// STACKIT data platform storage, `dataplatform.storage.<region>.onstackit.cloud`.
+    /// Available in `eu01` only.
+    DataPlatform,
+}
+
+impl StackitStorageService {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ObjectStorage => "object-storage",
+            Self::DataPlatform => "data-platform",
+        }
+    }
+
+    fn host_label(self) -> &'static str {
+        match self {
+            Self::ObjectStorage => "object",
+            Self::DataPlatform => "dataplatform",
+        }
+    }
+
+    fn is_offered_in(self, region: &str) -> bool {
+        match self {
+            Self::ObjectStorage => true,
+            Self::DataPlatform => region == "eu01",
+        }
+    }
+}
+
 impl StackitProfile {
     /// Endpoint this profile talks to — the override if set, else derived from
-    /// `region`.
+    /// `region` and `storage_service`.
     ///
     /// The region is re-validated here rather than trusted from
     /// [`Self::normalize`]: it is interpolated into a hostname, so a value
@@ -129,18 +182,7 @@ impl StackitProfile {
             return Ok(endpoint.clone());
         }
         validate_region(&self.region)?;
-        let host = format!("https://object.storage.{}.onstackit.cloud", self.region);
-        Url::parse(&host).map_err(|e| {
-            InvalidProfileError {
-                source: Some(Box::new(e)),
-                reason: format!(
-                    "Could not derive a STACKIT endpoint from region `{}`",
-                    self.region
-                ),
-                entity: "region".to_string(),
-            }
-            .into()
-        })
+        derived_endpoint(self.storage_service, &self.region)
     }
 
     /// The equivalent [`S3Profile`], which owns all wire behaviour.
@@ -198,6 +240,7 @@ impl StackitProfile {
     /// # Errors
     /// - `bucket` is not a valid S3 bucket name, or contains a `.`
     /// - `region` is empty
+    /// - `storage_service` is not offered in `region` and no `endpoint` is set
     /// - `sts_enabled` without a `credentials_group_urn`
     /// - `credentials_group_urn` is present but is not a STACKIT
     ///   credentials-group URN, whether or not `sts_enabled` is set
@@ -228,6 +271,7 @@ impl StackitProfile {
 
         self.region = self.region.trim().to_string();
         validate_region(&self.region)?;
+        self.validate_storage_service()?;
 
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim().trim_matches('/').to_string();
@@ -286,6 +330,24 @@ impl StackitProfile {
         Ok(())
     }
 
+    /// Check the storage service is offered in the region. Skipped when
+    /// `endpoint` is set, since the service then plays no part.
+    fn validate_storage_service(&self) -> Result<(), ValidationError> {
+        if self.endpoint.is_some() || self.storage_service.is_offered_in(&self.region) {
+            return Ok(());
+        }
+        Err(InvalidProfileError {
+            source: None,
+            reason: format!(
+                "STACKIT `storage-service` `{}` is not offered in region `{}`.",
+                self.storage_service.as_str(),
+                self.region
+            ),
+            entity: "storage-service".to_string(),
+        }
+        .into())
+    }
+
     /// Check that `other` is a permitted evolution of this profile.
     ///
     /// # Errors
@@ -302,9 +364,20 @@ impl StackitProfile {
         }
         // A different STACKIT endpoint is a different storage tenant, so moving
         // it would silently repoint the warehouse at other data. Unlike plain
-        // S3, where an endpoint change is usually just another route.
-        if self.endpoint != other.endpoint {
-            return Err(UpdateError::ImmutableField("endpoint".to_string()));
+        // S3, where an endpoint change is usually just another route. Compared
+        // resolved, so re-expressing the same endpoint as a `storage_service`
+        // is not a move.
+        let same_endpoint = matches!(
+            (self.endpoint(), other.endpoint()),
+            (Ok(this), Ok(that)) if this == that
+        );
+        if !same_endpoint {
+            let field = if self.storage_service == other.storage_service {
+                "endpoint"
+            } else {
+                "storage_service"
+            };
+            return Err(UpdateError::ImmutableField(field.to_string()));
         }
         // An update that omits the layout keeps the current one; resetting it
         // would change where new tables are written. Matches `S3Profile`.
@@ -375,8 +448,7 @@ impl StackitProfile {
     ///
     /// # Errors
     /// Fails if credentials cannot be vended. `StorageGRID`'s own errors are
-    /// translated into STACKIT-specific advice by
-    /// [`explain_stackit_sts_failure`].
+    /// translated into STACKIT-specific advice by `explain_sts_failure`.
     pub async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
@@ -399,55 +471,106 @@ impl StackitProfile {
             .map_err(|e| self.explain_sts_failure(e))
     }
 
-    /// Rewrite a `StorageGRID` failure into advice a STACKIT customer can act on.
+    /// Rewrite a `StorageGRID` STS failure into advice a STACKIT customer can act on.
     ///
     /// The raw errors name `StorageGRID` concepts a STACKIT customer never sees,
-    /// and the trust-policy prerequisite is invisible in them.
+    /// and the trust-policy prerequisite is invisible in them. What STS answered
+    /// moves to the error's details.
     fn explain_sts_failure(&self, error: TableConfigError) -> TableConfigError {
-        let raw = error.to_string();
-        let advice = if raw.contains("MethodNotAllowed") {
-            Some(format!(
-                "STACKIT storage in region `{}` does not offer an STS endpoint. This is \
-                 StorageGRID older than 12.0. Ask STACKIT support to migrate the storage, or \
-                 set `sts-enabled` to false to use remote signing instead.",
-                self.region
+        let TableConfigError::Credentials(CredentialsError::StsRejected { rejection, .. }) = &error
+        else {
+            return error;
+        };
+        let Some((error_type, message)) = self.sts_advice(rejection) else {
+            return error;
+        };
+        let details = rejection.details();
+        TableConfigError::ExplainedMisconfiguration {
+            message,
+            error_type,
+            details,
+            source: Some(Box::new(error)),
+        }
+    }
+
+    /// The error type and advice for an STS answer STACKIT is known to give.
+    fn sts_advice(&self, rejection: &StsRejection) -> Option<(&'static str, String)> {
+        let urn = self.credentials_group_urn.as_deref().unwrap_or("<unset>");
+        let message = rejection.message.as_deref().unwrap_or_default();
+        let code = rejection.code.as_deref();
+        // Every branch keeps the one fact needed to act: engines show only the
+        // message, not the details.
+        if rejection.http_status == Some(405) || code == Some("MethodNotAllowed") {
+            let storage = self.endpoint().map_or_else(
+                |_| format!("in region `{}`", self.region),
+                |e| format!("at `{e}`"),
+            );
+            // A bucket on the data platform storage, reached through the object
+            // storage endpoint, fails the same way.
+            let data_platform_hint = self.endpoint.is_none()
+                && self.storage_service != StackitStorageService::DataPlatform
+                && StackitStorageService::DataPlatform.is_offered_in(&self.region);
+            let fix = if data_platform_hint {
+                "If the bucket is on the STACKIT data platform storage, create the warehouse with \
+                 `storage-service` set to `data-platform`: an existing warehouse cannot change its \
+                 storage service. Otherwise set `sts-enabled` to false to use remote signing."
+            } else {
+                "Set `sts-enabled` to false to use remote signing."
+            };
+            Some((
+                "StackitStsUnavailable",
+                format!("The STACKIT storage {storage} does not offer STS. {fix}"),
             ))
-        } else if raw.contains("cannot be found") {
-            Some(format!(
-                "STACKIT could not find the credentials group `{}`. Check the URN against the \
-                 credentials group — note it uses the group's ID, not its display name.",
-                self.credentials_group_urn.as_deref().unwrap_or("<unset>")
-            ))
-        } else if raw.contains("Invalid resource type") || raw.contains("Failed to parse RoleArn") {
-            Some(
-                "`credentials-group-urn` is not a STACKIT credentials-group URN. It must look \
-                 like `urn:sgws:identity::<account>:group/credentials-group-<id>`."
-                    .to_string(),
-            )
-        } else if raw.contains("AccessDenied") || raw.contains("not authorized") {
-            self.credentials_group_urn.as_deref().map(|urn| {
+        } else if message.contains("cannot be found") {
+            Some((
+                "StackitCredentialsGroupNotFound",
                 format!(
-                    "STACKIT refused to assume credentials group `{urn}`. The group needs a \
-                     trust policy allowing `sts:AssumeRole`: {}",
-                    trust_policy_hint(urn)
-                )
-            })
+                    "STACKIT could not find the credentials group `{urn}`. Check \
+                     `credentials-group-urn`: it uses the group's ID \
+                     (`credentials-group-<id>`), not its display name, and the account of \
+                     the project that holds the bucket."
+                ),
+            ))
+        } else if message.contains("Failed to parse RoleArn") {
+            Some((
+                "StackitCredentialsGroupUrnInvalid",
+                format!(
+                    "`credentials-group-urn` `{urn}` is not a STACKIT credentials-group URN. \
+                     It must look like `urn:sgws:identity::<account>:group/credentials-group-<id>`."
+                ),
+            ))
+        } else if code == Some("AccessDenied")
+            && message.contains("not authorized to perform: sts:AssumeRole")
+        {
+            let principal = assuming_principal(message)
+                .map_or_else(|| urn.replace(":group/", ":user/"), ToString::to_string);
+            Some((
+                "StackitTrustPolicyMissing",
+                format!(
+                    "STACKIT refused to let `{principal}` assume the credentials group \
+                     `{urn}`. Add this trust policy to the credentials group: {}",
+                    trust_policy(&principal)
+                ),
+            ))
         } else {
             None
-        };
-
-        match advice {
-            Some(advice) => TableConfigError::Misconfiguration(format!("{advice} ({raw})")),
-            None => error,
         }
     }
 }
 
-/// The trust policy a STACKIT credentials group needs before it can be assumed.
+/// The principal STACKIT names in `User: <principal> is not authorized ...`.
+fn assuming_principal(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("User: ")?
+        .split_once(" is not authorized")
+        .map(|(principal, _)| principal)
+}
+
+/// A trust policy allowing `principal` to assume a STACKIT credentials group.
 ///
-/// The principal is the same URN with `:group/` replaced by `:user/`.
-fn trust_policy_hint(group_urn: &str) -> String {
-    let principal = group_urn.replace(":group/", ":user/");
+/// A group's own access keys act as the group's URN with `:group/` replaced
+/// by `:user/`.
+fn trust_policy(principal: &str) -> String {
     format!(
         r#"{{"Statement":[{{"Action":"sts:AssumeRole","Effect":"Allow","Principal":{{"AWS":"{principal}"}}}}]}}"#
     )
@@ -476,6 +599,22 @@ fn validate_region(region: &str) -> Result<(), ValidationError> {
         entity: "region".to_string(),
     }
     .into())
+}
+
+/// Public endpoint of `service` in `region`. Expects a validated `region`.
+fn derived_endpoint(service: StackitStorageService, region: &str) -> Result<Url, ValidationError> {
+    let host = format!(
+        "https://{}.storage.{region}.onstackit.cloud",
+        service.host_label()
+    );
+    Url::parse(&host).map_err(|e| {
+        InvalidProfileError {
+            source: Some(Box::new(e)),
+            reason: format!("Could not derive a STACKIT endpoint from region `{region}`"),
+            entity: "region".to_string(),
+        }
+        .into()
+    })
 }
 
 /// Validate a STACKIT credentials-group URN.
@@ -645,6 +784,17 @@ mod tests {
                             "{name} did not pass: {check:?}"
                         );
                     }
+                    // Whether the test bucket has a policy is outside this test.
+                    let bucket_access = report
+                        .checks
+                        .iter()
+                        .find(|c| c.name == ValidationCheckName::BucketAccessRestricted)
+                        .expect("report has the bucket-access check");
+                    assert_ne!(
+                        bucket_access.status,
+                        ValidationCheckStatus::Failed,
+                        "{bucket_access:?}"
+                    );
                 },
                 true,
             );
@@ -678,7 +828,7 @@ mod tests {
             .bucket("my-warehouse".to_string())
             .region("eu01".to_string())
             .credentials_group_urn(
-                "urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3"
+                "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3"
                     .to_string(),
             )
             .build()
@@ -712,7 +862,7 @@ mod tests {
         let s3 = profile().to_s3().unwrap();
         assert_eq!(
             s3.sts_role_arn.as_deref(),
-            Some("urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3")
+            Some("urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3")
         );
         assert_eq!(s3.flavor, S3Flavor::S3Compat);
         assert_eq!(s3.legacy_md5_behavior, Some(false));
@@ -760,7 +910,7 @@ mod tests {
     fn a_supplied_urn_is_validated_even_when_sts_is_disabled() {
         let mut p = profile();
         p.sts_enabled = false;
-        p.credentials_group_urn = Some("credentials-group-8cd7b4".to_string());
+        p.credentials_group_urn = Some("credentials-group-d4e5f6".to_string());
         let err = p.normalize(None).unwrap_err().to_string();
         assert!(err.contains("not a STACKIT credentials-group URN"), "{err}");
     }
@@ -769,13 +919,13 @@ mod tests {
     fn a_group_urn_is_trimmed() {
         let mut p = profile();
         p.credentials_group_urn = Some(
-            "  urn:sgws:identity::87066461224079950546:group/credentials-group-8cd7b4  "
+            "  urn:sgws:identity::12345678901234567890:group/credentials-group-d4e5f6  "
                 .to_string(),
         );
         p.normalize(None).unwrap();
         assert_eq!(
             p.credentials_group_urn.as_deref(),
-            Some("urn:sgws:identity::87066461224079950546:group/credentials-group-8cd7b4")
+            Some("urn:sgws:identity::12345678901234567890:group/credentials-group-d4e5f6")
         );
     }
 
@@ -843,10 +993,10 @@ mod tests {
     #[test]
     fn malformed_urns_are_rejected() {
         for urn in [
-            "urn:sgws:identity::87066461224079950546:role/x",
-            "urn:sgws:iam::87066461224079950546:group/x",
+            "urn:sgws:identity::12345678901234567890:role/x",
+            "urn:sgws:iam::12345678901234567890:group/x",
             "urn:sgws:identity::notdigits:group/x",
-            "urn:sgws:identity::87066461224079950546:group/",
+            "urn:sgws:identity::12345678901234567890:group/",
             "credentials-group-a1b2c3",
         ] {
             assert!(
@@ -856,17 +1006,231 @@ mod tests {
         }
     }
 
+    const GROUP: &str = "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3";
+
+    /// The table-config error STS produces for `rejection`.
+    fn sts_failure(status: u16, code: Option<&str>, message: Option<&str>) -> TableConfigError {
+        TableConfigError::Credentials(CredentialsError::StsRejected {
+            rejection: StsRejection {
+                http_status: Some(status),
+                code: code.map(ToString::to_string),
+                message: message.map(ToString::to_string),
+                request_id: Some("1234567890123456".to_string()),
+            },
+            source: Box::new(std::io::Error::other("sdk error")),
+        })
+    }
+
+    fn explained(error: TableConfigError) -> iceberg_ext::catalog::rest::ErrorModel {
+        let explained = profile().explain_sts_failure(error);
+        assert!(
+            matches!(
+                explained,
+                TableConfigError::ExplainedMisconfiguration { .. }
+            ),
+            "{explained:?}"
+        );
+        explained.into()
+    }
+
     #[test]
-    fn the_trust_policy_hint_names_the_user_form_of_the_group() {
-        let hint = trust_policy_hint(
-            "urn:sgws:identity::87066461224079950546:group/credentials-group-a1b2c3",
+    fn a_missing_trust_policy_names_the_principal_that_was_refused() {
+        // The access key belongs to another group than the one assumed.
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6 is \
+                 not authorized to perform: sts:AssumeRole on resource: \
+                 urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3.",
+            ),
+        ));
+        assert_eq!(model.r#type, "StackitTrustPolicyMissing");
+        assert_eq!(model.code, 400);
+        assert!(
+            model.message.contains(
+                r#""AWS":"urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6""#
+            ),
+            "{}",
+            model.message
+        );
+        assert!(model.message.contains(GROUP), "{}", model.message);
+        assert_eq!(
+            model.stack,
+            vec![
+                "STS answered AccessDenied (HTTP 403): User: \
+                 urn:sgws:identity::12345678901234567890:user/credentials-group-d4e5f6 is not \
+                 authorized to perform: sts:AssumeRole on resource: \
+                 urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3."
+                    .to_string(),
+                "STS request ID: 1234567890123456".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trust_policy_hint_falls_back_to_the_user_form_of_the_group() {
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(&format!(
+                "Principal is not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            )),
+        ));
+        assert!(
+            model.message.contains(
+                r#""AWS":"urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3""#
+            ),
+            "{}",
+            model.message
+        );
+    }
+
+    #[test]
+    fn other_access_denied_answers_are_passed_through() {
+        for message in [None, Some("Access Denied")] {
+            let error =
+                profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), message));
+            assert!(
+                matches!(
+                    error,
+                    TableConfigError::Credentials(CredentialsError::StsRejected { .. })
+                ),
+                "{message:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_group_is_not_mistaken_for_a_missing_trust_policy() {
+        // STACKIT answers `AccessDenied` for an unknown group too.
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(
+                "Group: urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3 \
+                 cannot be found.",
+            ),
+        ));
+        assert_eq!(model.r#type, "StackitCredentialsGroupNotFound");
+        assert!(
+            model.message.contains("not its display name"),
+            "{}",
+            model.message
+        );
+    }
+
+    #[test]
+    fn a_malformed_urn_is_explained() {
+        for message in [
+            "Failed to parse RoleArn: Invalid resource type in IAM ARN (or identity URN): \
+             urn:sgws:identity::12345678901234567890:role/lakekeeper",
+            "Failed to parse RoleArn: Invalid ARN/URN format: not-a-urn",
+        ] {
+            let model = explained(sts_failure(400, Some("ValidationError"), Some(message)));
+            assert_eq!(model.r#type, "StackitCredentialsGroupUrnInvalid");
+        }
+    }
+
+    #[test]
+    fn storage_without_sts_points_to_the_data_platform_storage() {
+        let model = explained(sts_failure(405, None, None));
+        assert!(
+            model
+                .message
+                .contains("`https://object.storage.eu01.onstackit.cloud/`"),
+            "{}",
+            model.message
         );
         assert!(
-            hint.contains(
-                r#""AWS":"urn:sgws:identity::87066461224079950546:user/credentials-group-a1b2c3""#
-            ),
-            "{hint}"
+            model
+                .message
+                .contains("create the warehouse with `storage-service` set to `data-platform`"),
+            "{}",
+            model.message
         );
+
+        let mut data_platform = profile();
+        data_platform.storage_service = StackitStorageService::DataPlatform;
+        let error = data_platform.explain_sts_failure(sts_failure(405, None, None));
+        let model = iceberg_ext::catalog::rest::ErrorModel::from(error);
+        assert!(
+            !model.message.contains("`storage-service`"),
+            "{}",
+            model.message
+        );
+        assert!(
+            model.message.contains("`sts-enabled` to false"),
+            "{}",
+            model.message
+        );
+    }
+
+    #[test]
+    fn storage_without_sts_is_explained_without_naming_internals() {
+        // The endpoint answers with an S3 error document STS cannot parse.
+        let model = explained(sts_failure(405, None, None));
+        assert_eq!(model.r#type, "StackitStsUnavailable");
+        assert!(
+            model.message.contains("`sts-enabled` to false"),
+            "{}",
+            model.message
+        );
+        assert!(!model.message.contains("StorageGRID"), "{}", model.message);
+    }
+
+    #[test]
+    fn an_unknown_sts_answer_is_passed_through() {
+        let error = profile().explain_sts_failure(sts_failure(500, Some("InternalError"), None));
+        assert!(
+            matches!(
+                error,
+                TableConfigError::Credentials(CredentialsError::StsRejected { .. })
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validation_and_table_loads_report_the_same_explained_error() {
+        let failure = || {
+            profile().explain_sts_failure(sts_failure(403, Some("AccessDenied"), Some(&format!(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is \
+                 not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            ))))
+        };
+        let from_validation =
+            iceberg_ext::catalog::rest::ErrorModel::from(ValidationError::from(failure()));
+        let from_table_load =
+            iceberg_ext::catalog::rest::IcebergErrorResponse::from(failure()).error;
+        for model in [&from_validation, &from_table_load] {
+            assert_eq!(model.r#type, "StackitTrustPolicyMissing");
+            assert_eq!(model.code, 400);
+            assert!(
+                model
+                    .message
+                    .starts_with("Misconfiguration: STACKIT refused"),
+                "{}",
+                model.message
+            );
+            assert_eq!(model.stack.len(), 2, "{:?}", model.stack);
+        }
+        assert_eq!(from_validation.message, from_table_load.message);
+    }
+
+    #[test]
+    fn explained_messages_hold_no_raw_response() {
+        let model = explained(sts_failure(
+            403,
+            Some("AccessDenied"),
+            Some(&format!(
+                "User: urn:sgws:identity::12345678901234567890:user/credentials-group-a1b2c3 is \
+                 not authorized to perform: sts:AssumeRole on resource: {GROUP}."
+            )),
+        ));
+        for raw in ["ErrorMetadata", "SdkBody", "Headers", "ServiceError"] {
+            assert!(!model.message.contains(raw), "{}", model.message);
+        }
     }
 
     #[test]
@@ -887,6 +1251,10 @@ mod tests {
                 p
             },
             |mut p: StackitProfile| {
+                p.storage_service = StackitStorageService::DataPlatform;
+                p
+            },
+            |mut p: StackitProfile| {
                 p.key_prefix = Some("elsewhere".to_string());
                 p
             },
@@ -896,7 +1264,7 @@ mod tests {
         // Rotating a credentials group is not a relocation.
         let mut ok = base.clone();
         ok.credentials_group_urn =
-            Some("urn:sgws:identity::87066461224079950546:group/credentials-group-zzz".to_string());
+            Some("urn:sgws:identity::12345678901234567890:group/credentials-group-zzz".to_string());
         assert!(base.clone().update_with(ok).is_ok());
     }
 
@@ -911,14 +1279,88 @@ mod tests {
         assert!(p.push_s3_delete_disabled);
         assert_eq!(p.sts_token_validity_seconds, 3600);
         assert_eq!(p.endpoint, None);
+        assert_eq!(p.storage_service, StackitStorageService::ObjectStorage);
     }
 
     #[test]
-    fn a_custom_endpoint_is_honoured_and_frozen() {
-        let dataplatform = Url::parse("https://dataplatform.storage.eu01.onstackit.cloud").unwrap();
+    fn the_data_platform_service_derives_its_endpoint() {
+        let p: StackitProfile = serde_json::from_str(
+            r#"{"bucket":"b","region":"eu01","storage-service":"data-platform","sts-enabled":false}"#,
+        )
+        .unwrap();
+        assert_eq!(p.storage_service, StackitStorageService::DataPlatform);
+        assert_eq!(
+            p.endpoint().unwrap().as_str(),
+            "https://dataplatform.storage.eu01.onstackit.cloud/"
+        );
+    }
+
+    #[test]
+    fn the_data_platform_service_is_rejected_outside_eu01() {
         let mut p = profile();
-        p.endpoint = Some(dataplatform.clone());
+        p.region = "eu02".to_string();
+        p.storage_service = StackitStorageService::DataPlatform;
+        let err = p.normalize(None).unwrap_err().to_string();
+        assert!(err.contains("not offered in region `eu02`"), "{err}");
+    }
+
+    #[test]
+    fn an_endpoint_takes_precedence_over_the_storage_service() {
+        let private = Url::parse("https://private.storage.eu01.onstackit.cloud").unwrap();
+        let mut p = profile();
+        p.storage_service = StackitStorageService::DataPlatform;
+        p.endpoint = Some(private.clone());
         p.normalize(None).unwrap();
-        assert_eq!(p.to_s3().unwrap().endpoint, Some(dataplatform));
+        assert_eq!(p.endpoint, Some(private.clone()));
+        assert_eq!(p.to_s3().unwrap().endpoint, Some(private.clone()));
+
+        // The service plays no part, so its region is not checked either.
+        p.region = "eu02".to_string();
+        p.normalize(None).unwrap();
+    }
+
+    #[test]
+    fn a_public_endpoint_is_stored_as_sent() {
+        let url = Url::parse("https://dataplatform.storage.eu01.onstackit.cloud").unwrap();
+        let mut p = profile();
+        p.endpoint = Some(url.clone());
+        p.normalize(None).unwrap();
+        assert_eq!(p.endpoint, Some(url));
+        assert_eq!(p.storage_service, StackitStorageService::ObjectStorage);
+    }
+
+    #[test]
+    fn re_expressing_the_endpoint_as_a_service_is_not_a_relocation() {
+        let mut before = profile();
+        before.endpoint =
+            Some(Url::parse("https://dataplatform.storage.eu01.onstackit.cloud").unwrap());
+        let mut after = profile();
+        after.storage_service = StackitStorageService::DataPlatform;
+        let merged = before.clone().update_with(after.clone()).unwrap();
+        assert_eq!(merged.storage_service, StackitStorageService::DataPlatform);
+        assert_eq!(merged.endpoint, None);
+        // And back again.
+        assert!(after.update_with(before).is_ok());
+    }
+
+    #[test]
+    fn changing_the_storage_service_is_reported_as_such() {
+        let mut after = profile();
+        after.storage_service = StackitStorageService::DataPlatform;
+        let err = profile().update_with(after).unwrap_err();
+        assert!(
+            matches!(&err, UpdateError::ImmutableField(f) if f == "storage_service"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_custom_endpoint_is_honoured() {
+        let private = Url::parse("https://private.storage.eu01.onstackit.cloud").unwrap();
+        let mut p = profile();
+        p.endpoint = Some(private.clone());
+        p.normalize(None).unwrap();
+        assert_eq!(p.endpoint, Some(private.clone()));
+        assert_eq!(p.to_s3().unwrap().endpoint, Some(private));
     }
 }

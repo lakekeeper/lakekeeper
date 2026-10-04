@@ -1152,8 +1152,26 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
+    // Foreign-key triggers fire after the whole statement, when the tabulars and view defaults
+    // removed here are gone, so no non-cascading key on `namespace` still finds rows, whatever
+    // order Postgres fires the triggers in. The order of the CTEs and the main DELETE is not
+    // guaranteed and only affects lock order: Postgres currently runs unreferenced CTEs after
+    // the main DELETE, locking namespace rows before tabulars, as with the cascade alone.
+    // Deleting the tabulars in an earlier statement, or referencing a CTE from the main
+    // DELETE, reverses that order against `move_namespace`.
+    // A view elsewhere then loads with an empty default namespace, as when its default
+    // namespace does not exist. Not filtered by warehouse: older view versions may point at a
+    // namespace of another warehouse.
     let record = sqlx::query!(
         r#"
+        WITH dropped_tabulars AS (
+            DELETE FROM tabular
+            WHERE warehouse_id = $1 AND (namespace_id = any($2) or namespace_id = $3)
+        ),
+        cleared_view_defaults AS (
+            UPDATE view_version SET default_namespace_id = NULL
+            WHERE default_namespace_id = any($2) or default_namespace_id = $3
+        )
         DELETE FROM namespace
             WHERE warehouse_id = $1
             -- If recursive is true, delete all child namespaces...
@@ -1417,13 +1435,15 @@ pub(crate) async fn update_namespace_properties(
 pub mod tests {
     use std::str::FromStr;
 
+    use iceberg::spec::ViewMetadata;
     use lakekeeper::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         service::{
-            CachePolicy, CatalogNamespaceOps, Transaction as _,
+            CachePolicy, CatalogNamespaceOps, Transaction as _, ViewId,
             is_same_namespace_path_ignoring_ascii_case,
         },
     };
+    use lakekeeper_io::Location;
 
     use super::{
         super::{PostgresBackend, warehouse::test::initialize_warehouse},
@@ -2065,6 +2085,318 @@ pub mod tests {
         transaction.commit().await.unwrap();
 
         assert_eq!(tables.len(), 0);
+    }
+
+    /// Creates a view in `namespace_id` whose versions all use `default_namespace`.
+    async fn create_view_with_default_namespace(
+        pool: &sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        name: &str,
+        default_namespace: &NamespaceIdent,
+    ) -> ViewId {
+        let location = Location::from_str(&format!("s3://my_bucket/{name}")).unwrap();
+        let mut request =
+            serde_json::to_value(crate::tabular::view::tests::view_request(None, &location))
+                .unwrap();
+        for version in request["versions"].as_array_mut().unwrap() {
+            version["default-namespace"] = serde_json::json!(default_namespace.clone().inner());
+        }
+        let request: ViewMetadata = serde_json::from_value(request).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("{location}/metadata/{}.gz.json", Uuid::now_v7())).unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        crate::tabular::view::create_view(
+            warehouse_id,
+            namespace_id,
+            &metadata_location,
+            &mut transaction,
+            name,
+            &request,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        ViewId::from(request.uuid())
+    }
+
+    /// The stored default namespace of each of the view's versions, by version id.
+    async fn stored_default_namespace_ids(
+        pool: &sqlx::PgPool,
+        view_id: ViewId,
+    ) -> Vec<Option<Uuid>> {
+        sqlx::query_scalar(
+            "SELECT default_namespace_id FROM view_version WHERE view_id = $1 ORDER BY version_id",
+        )
+        .bind(*view_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn test_can_recursive_drop_namespace_holding_a_view_that_defaults_to_it(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let view_id =
+            create_view_with_default_namespace(&pool, warehouse_id, namespace_id, "v", &namespace)
+                .await;
+        assert_eq!(
+            stored_default_namespace_ids(&pool, view_id).await,
+            vec![Some(*namespace_id); 2]
+        );
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let drop_info = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(
+            drop_info
+                .child_tables
+                .iter()
+                .map(|(id, _, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![TabularId::View(view_id)]
+        );
+        assert_eq!(
+            stored_default_namespace_ids(&pool, view_id).await,
+            Vec::<Option<Uuid>>::new()
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_dropping_a_namespace_clears_it_as_the_default_of_views_elsewhere(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let dropped = NamespaceIdent::from_vec(vec!["dropped".to_string()]).unwrap();
+        let dropped_id = initialize_namespace(state.clone(), warehouse_id, &dropped, None)
+            .await
+            .namespace_id();
+        let child =
+            NamespaceIdent::from_vec(vec!["dropped".to_string(), "child".to_string()]).unwrap();
+        let child_id = initialize_namespace(state.clone(), warehouse_id, &child, None)
+            .await
+            .namespace_id();
+        let kept = NamespaceIdent::from_vec(vec!["kept".to_string()]).unwrap();
+        let kept_id = initialize_namespace(state.clone(), warehouse_id, &kept, None)
+            .await
+            .namespace_id();
+        let view_id =
+            create_view_with_default_namespace(&pool, warehouse_id, kept_id, "v", &child).await;
+        assert_eq!(
+            stored_default_namespace_ids(&pool, view_id).await,
+            vec![Some(*child_id); 2]
+        );
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        drop_namespace(
+            warehouse_id,
+            dropped_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(
+            stored_default_namespace_ids(&pool, view_id).await,
+            vec![None; 2]
+        );
+        let mut transaction = pool.begin().await.unwrap();
+        let view = crate::tabular::view::load_view(warehouse_id, view_id, false, &mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(
+            view.metadata
+                .versions()
+                .map(|v| v.default_namespace().clone().inner())
+                .collect::<Vec<_>>(),
+            vec![Vec::<String>::new(); 2]
+        );
+    }
+
+    /// Versions written before default namespaces were resolved within the view's warehouse
+    /// can point at a namespace of another warehouse.
+    #[sqlx::test]
+    async fn test_dropping_a_namespace_clears_it_as_the_default_of_views_in_other_warehouses(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let dropped = NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let dropped_id = initialize_namespace(state.clone(), warehouse_id, &dropped, None)
+            .await
+            .namespace_id();
+
+        let other_project = lakekeeper::ProjectId::from(Uuid::now_v7());
+        let (_, other_warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+        let other_id = initialize_namespace(state.clone(), other_warehouse_id, &dropped, None)
+            .await
+            .namespace_id();
+        let view_id =
+            create_view_with_default_namespace(&pool, other_warehouse_id, other_id, "v", &dropped)
+                .await;
+        sqlx::query("UPDATE view_version SET default_namespace_id = $1 WHERE view_id = $2")
+            .bind(*dropped_id)
+            .bind(*view_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        drop_namespace(
+            warehouse_id,
+            dropped_id,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(
+            stored_default_namespace_ids(&pool, view_id).await,
+            vec![None; 2]
+        );
+    }
+
+    /// The delete triggers of `tabular`'s two keys on `namespace` fire in name order, and each
+    /// name ends in the trigger's OID. Re-creating the keys puts the non-cascading one first,
+    /// the order in which a namespace delete left to the cascade fails.
+    #[sqlx::test]
+    async fn test_recursive_drop_does_not_depend_on_foreign_key_trigger_order(pool: sqlx::PgPool) {
+        const ID_KEY: &str = "tabular_warehouse_id_namespace_id_fkey";
+        const NAME_KEY: &str = "tabular_warehouse_id_namespace_id_namespace_name_fkey";
+
+        let delete_trigger_order = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT c.conname::text FROM pg_trigger t \
+                 JOIN pg_constraint c ON c.oid = t.tgconstraint \
+                 WHERE t.tgrelid = 'namespace'::regclass AND c.conrelid = 'tabular'::regclass \
+                   AND (t.tgtype & 8) = 8 \
+                 ORDER BY t.tgname",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        // Names compare as text, so a round leaves the order wrong only if the OID counter
+        // crosses a power of ten or wraps during it; two consecutive rounds cannot both do that.
+        for _ in 0..2 {
+            for key in [NAME_KEY, ID_KEY] {
+                let definition: String = sqlx::query_scalar(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+                     WHERE conrelid = 'tabular'::regclass AND conname = $1",
+                )
+                .bind(key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE tabular DROP CONSTRAINT {key}, ADD CONSTRAINT {key} {definition}"
+                )))
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            if delete_trigger_order().await == [NAME_KEY, ID_KEY] {
+                break;
+            }
+        }
+        assert_eq!(delete_trigger_order().await, [NAME_KEY, ID_KEY]);
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        let namespace_id = crate::tabular::table::tests::get_namespace_id(
+            state.clone(),
+            warehouse_id,
+            &table.namespace,
+        )
+        .await;
+        let child = NamespaceIdent::from_vec(
+            table
+                .namespace
+                .clone()
+                .inner()
+                .into_iter()
+                .chain(["child".to_string()])
+                .collect(),
+        )
+        .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &child, None).await;
+        let child_table =
+            initialize_table(warehouse_id, state.clone(), false, Some(child), None, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let drop_info = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut dropped_tables = drop_info
+            .child_tables
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>();
+        dropped_tables.sort_by_key(|id| **id);
+        let mut expected = vec![
+            TabularId::Table(table.table_id),
+            TabularId::Table(child_table.table_id),
+        ];
+        expected.sort_by_key(|id| **id);
+        assert_eq!(dropped_tables, expected);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tabular WHERE tabular_id = ANY($1)")
+                .bind(vec![*table.table_id, *child_table.table_id])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[sqlx::test]

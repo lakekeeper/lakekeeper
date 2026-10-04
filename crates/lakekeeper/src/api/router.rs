@@ -226,13 +226,7 @@ pub async fn new_full_router<
             .layer(maybe_auth_layer),
     )
     // Add health later so that it is not authenticated
-    .route(
-        "/health",
-        get(|| async move {
-            let health = service_health_provider.collect_health().await;
-            health_response(health)
-        }),
-    );
+    .route("/health", health_route(service_health_provider));
 
     let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
     let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
@@ -284,6 +278,27 @@ pub async fn new_full_router<
     })
 }
 
+/// The unauthenticated `/health` handler, shared by the full router and the
+/// headless-worker router so their health responses cannot diverge.
+fn health_route<S: Clone + Send + Sync + 'static>(
+    service_health_provider: ServiceHealthProvider,
+) -> axum::routing::MethodRouter<S> {
+    get(|| async move {
+        let health = service_health_provider.collect_health().await;
+        health_response(health)
+    })
+}
+
+/// Build a minimal router that exposes only `/health`.
+///
+/// Used by headless worker deployments (`LAKEKEEPER__SERVE_HTTP_API=false`)
+/// that run background task-queue workers without the catalog API. The endpoint
+/// gives liveness/readiness probes something to hit; it is unauthenticated,
+/// exactly like `/health` on the full router.
+pub fn new_health_router(service_health_provider: ServiceHealthProvider) -> Router {
+    Router::new().route("/health", health_route(service_health_provider))
+}
+
 fn health_response(health: HealthState) -> axum::response::Response {
     let status = match health.health {
         HealthStatus::Healthy => StatusCode::OK,
@@ -293,6 +308,8 @@ fn health_response(health: HealthState) -> axum::response::Response {
     (status, Json(health)).into_response()
 }
 
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn print_request_body(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -317,6 +334,8 @@ async fn print_request_body(
     buffer_response_body(response, &method, &path, &request_id, &user_agent).await
 }
 
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn buffer_response_body(
     response: axum::response::Response,
     method: &str,
@@ -356,6 +375,8 @@ async fn buffer_response_body(
 }
 
 // This function is expensive and should only be used for debugging purposes.
+// The error is axum's own `Response`, so its size is not ours to change.
+#[allow(clippy::result_large_err)]
 async fn buffer_request_body(
     request: axum::extract::Request,
     method: &str,
@@ -654,7 +675,7 @@ mod test {
 
     use crate::{
         config::MaintenanceMode,
-        service::health::{Health, HealthState, HealthStatus},
+        service::health::{Health, HealthState, HealthStatus, ServiceHealthProvider},
     };
 
     fn test_health_state(health: HealthStatus) -> HealthState {
@@ -843,6 +864,39 @@ mod test {
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body.health, HealthStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn new_health_router_serves_only_health() {
+        // No providers → `collect_health` reports healthy.
+        let app = super::new_health_router(ServiceHealthProvider::new(vec![], 60));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: HealthState = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body.health, HealthStatus::Healthy);
+
+        // The worker router mounts nothing but `/health`.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/catalog/v1/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[cfg(feature = "open-api")]
