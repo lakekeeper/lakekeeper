@@ -121,7 +121,7 @@ This is why a release ships `4.0` rather than `4.4`. The baseline is raised by t
 - **Level** — `major`, `minor` or `none`: how badly the change affects a consumer. The only judgement you make.
 - **Baseline** — `audit-format/released.json`, the version the most recent release on this branch shipped. Maintained by the release recipe, and `null` until a release carries one.
 
-The schema pins every declared field and value, fixtures pin the emitted bytes of the scenarios they cover, fragments record intent, and nothing else in the tree observes the emitted JSON.
+The schema pins every declared field and value, fixtures pin the emitted bytes of the scenarios they cover, and fragments record intent. The corpus test observes real emitted records and validates them against the schema, but pins none of their bytes.
 
 **Which level.** A vocabulary enum reaches the log as string *values*, so renaming a variant changes the payload even though no field moves. Adding one does not: `docs/docs/logging.md` tells consumers that value sets are open and that an unrecognised value must be treated as opaque, so a new action or entity type is new capability rather than a changed format. A new *field* is a changed format, because a consumer reading the record's shape sees it.
 

@@ -331,13 +331,13 @@ pub fn assert_declared_key_types_match_the_code<E: super::AuditEmitter>(
     let written = key_types_written_in_source(crates_dir);
 
     let mut wrong = Vec::new();
-    for (key, ty) in &declared {
-        let Some(seen) = written.get(&normalized(key)) else {
+    for ((object, key), ty) in &declared {
+        let Some(seen) = written.get(&(*object, normalized(key))) else {
             continue; // declared but written nowhere: `every_declared_context_key_is_pushed`
         };
         if !seen.contains(ty) {
             wrong.push(format!(
-                "`{key}` declares `{ty}` and is written as {}",
+                "`{key}` of `{object}` declares `{ty}` and is written as {}",
                 seen.iter().copied().collect::<Vec<_>>().join(" and ")
             ));
         }
@@ -357,8 +357,11 @@ pub fn assert_declared_key_types_match_the_code<E: super::AuditEmitter>(
 /// # Panics
 ///
 /// If a key of an `action` declares none.
-fn declared_key_types<E: super::AuditEmitter>() -> BTreeMap<&'static str, &'static str> {
-    let mut declared: BTreeMap<&str, &str> = BTreeMap::new();
+fn declared_key_types<E: super::AuditEmitter>()
+-> BTreeMap<(&'static str, &'static str), &'static str> {
+    // Keyed by the object the key belongs to: one name may be a key of two objects and mean
+    // a different thing in each, so a type declared for one says nothing about the other.
+    let mut declared: BTreeMap<(&str, &str), &str> = BTreeMap::new();
     let mut undeclared = Vec::new();
     for reg in registrations(|reg| reg.emitter_name == E::NAME) {
         let Kind::Keys { object, names } = reg.kind else {
@@ -367,7 +370,7 @@ fn declared_key_types<E: super::AuditEmitter>() -> BTreeMap<&'static str, &'stat
         for name in names {
             match name.value_type {
                 Some(ty) => {
-                    declared.insert(name.text, ty);
+                    declared.insert((object, name.text), ty);
                 }
                 // An entity field's value is a `String` in the type that carries it, so
                 // the compiler already says what it is. Every other object's keys are
@@ -435,7 +438,9 @@ fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
 /// # Panics
 ///
 /// If the scan finds almost no call sites, which means it is reading the wrong tree.
-fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String, BTreeSet<&str>> {
+fn key_types_written_in_source(
+    crates_dir: &std::path::Path,
+) -> BTreeMap<(&'static str, String), BTreeSet<&'static str>> {
     /// The push that puts a key on the record's own `context` object. The variants spell
     /// the type they write, so the call site says it without a separate declaration.
     const PUSH: &str = "push_extra_context";
@@ -458,13 +463,18 @@ fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String,
         ("ContextValue::Object", "object"),
     ];
 
-    let mut written: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    // Keyed by the object, like the declarations it is compared against: the two key
+    // vocabularies may spell the same name for different objects.
+    let mut written: BTreeMap<(&'static str, String), BTreeSet<&'static str>> = BTreeMap::new();
     for text in &sources {
         for (builder, ty) in builders {
             for (at, _) in text.match_indices(builder) {
                 let block: String = text[at..].chars().take(120).collect();
                 if let Some(variant) = identifier_after(&block, "ActionContextKey::") {
-                    written.entry(normalized(&variant)).or_default().insert(ty);
+                    written
+                        .entry(("action", normalized(&variant)))
+                        .or_default()
+                        .insert(ty);
                 }
             }
         }
@@ -481,7 +491,10 @@ fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String,
             };
             let block: String = text[at..].chars().take(160).collect();
             if let Some(variant) = identifier_after(&block, "HandlerContextKey::") {
-                written.entry(normalized(&variant)).or_default().insert(ty);
+                written
+                    .entry(("context", normalized(&variant)))
+                    .or_default()
+                    .insert(ty);
             }
         }
         // A key built as a pair names its type in the value constructed beside it.
@@ -492,7 +505,10 @@ fn key_types_written_in_source(crates_dir: &std::path::Path) -> BTreeMap<String,
             };
             for (value, ty) in values {
                 if block.contains(value) {
-                    written.entry(normalized(&variant)).or_default().insert(ty);
+                    written
+                        .entry(("action", normalized(&variant)))
+                        .or_default()
+                        .insert(ty);
                 }
             }
         }
@@ -564,25 +580,28 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
     // A key's type is a property of the key: no key in this log is written as two types, so
     // it is declared once on the key vocabulary and looked up here rather than repeated in
     // every branch that names it.
-    let mut key_types: BTreeMap<&str, &str> = BTreeMap::new();
+    // Keyed by the object too: a key names one thing per object, not across all of them, so
+    // the same name may be declared for an `action` and for an `entity` and mean two
+    // different things. `assert_no_object_declares_a_key_twice` allows exactly that.
+    let mut key_types: BTreeMap<(&str, &str), &str> = BTreeMap::new();
     // The closed set a key's value is drawn from, where it is drawn from one. The vocabulary
     // already has a definition in this document, so the key points at it instead of
     // publishing the set a second time.
-    let mut key_values: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut key_values: BTreeMap<(&str, &str), &str> = BTreeMap::new();
     for reg in regs {
-        if let Kind::Keys { names, .. } = reg.kind {
+        if let Kind::Keys { object, names } = reg.kind {
             for name in names {
                 if let Some(ty) = name.value_type {
-                    key_types.insert(name.text, ty);
+                    key_types.insert((object, name.text), ty);
                 }
                 if let Some(vocabulary) = name.values {
-                    key_values.insert(name.text, vocabulary);
+                    key_values.insert((object, name.text), vocabulary);
                 }
             }
         }
     }
 
-    for (field, owner, _, default_type) in FLATTENED {
+    for (field, owner, vocabulary, default_type) in FLATTENED {
         let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for reg in regs {
             let Kind::Values { field: f, names } = reg.kind else {
@@ -605,9 +624,12 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
                 let properties: Map<String, Value> = keys
                     .into_iter()
                     .map(|key| {
-                        let ty = key_types.get(key.as_str()).copied().or(default_type);
+                        let ty = key_types
+                            .get(&(vocabulary, key.as_str()))
+                            .copied()
+                            .or(default_type);
                         let drawn_from = key_values
-                            .get(key.as_str())
+                            .get(&(vocabulary, key.as_str()))
                             .map(|name| json!({ "$ref": format!("#/$defs/{name}") }));
                         // An array says what it holds, whether or not that is a closed set:
                         // every one of them holds strings, and saying so costs nothing.
