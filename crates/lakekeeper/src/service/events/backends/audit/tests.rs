@@ -11,7 +11,8 @@ use crate::{
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
-            AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, GateDecision,
+            AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
+            GateDecision,
         },
         authn::UserId,
         authz::{
@@ -404,8 +405,8 @@ fn fixture_denied_authorization() -> Authorization {
 }
 
 /// A fully-populated entry, so the fixtures pin the optional fields in their
-/// present form as well as their absent one, and both `DeterminingFactor`
-/// variants including its own `None` fields.
+/// present form as well as their absent one, and every `DeterminingFactor`
+/// variant including its own `None` fields.
 fn fixture_detailed_authorization() -> Authorization {
     Authorization {
         id: Some("check-0".to_string()),
@@ -463,6 +464,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_actions_entity",
     "authz_failed_single",
     "authz_failed_context",
+    "authz_failed_admission_gate",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "grant_created",
@@ -634,6 +636,7 @@ fn determining_factor_tag(factor: &DeterminingFactor) -> &'static str {
     match factor {
         DeterminingFactor::Policy { .. } => "Policy",
         DeterminingFactor::SystemAuthority { .. } => "SystemAuthority",
+        DeterminingFactor::AdmissionGate { .. } => "AdmissionGate",
     }
 }
 
@@ -668,7 +671,7 @@ fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
     use crate::service::events::AuthorizationFailureReason as Reason;
 
     // `DeterminingFactor`'s variants carry fields, so values cannot be enumerated and
-    // these two have to be built by hand. The assertion below is what keeps the pair
+    // these have to be built by hand. The assertion below is what keeps the pair
     // honest against the type.
     let factors = [
         DeterminingFactor::Policy {
@@ -680,6 +683,10 @@ fn every_variant_a_derived_audit_enum_can_emit_is_documented() {
         DeterminingFactor::SystemAuthority {
             source: None,
             reason: None,
+        },
+        DeterminingFactor::AdmissionGate {
+            gate: String::new(),
+            check: None,
         },
     ];
     let factor_tags: Vec<&'static str> = factors.iter().map(determining_factor_tag).collect();
@@ -1018,6 +1025,56 @@ fn fixture_authz_failed_with_context() {
     assert_matches_fixture("authz_failed_context", &contract_fields(record));
 }
 
+/// A check for another user whom an admission gate would refuse: the `AdmissionGate`
+/// factor, once naming the refusing check and once with its `check` as null.
+#[test]
+fn fixture_authz_failed_admission_gate() {
+    let for_bob = || {
+        Some(UserOrRoleId::User(
+            crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id"),
+        ))
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::many([
+                fixture_table_entity(),
+                fixture_namespace_entity(),
+            ])),
+            actions: Arc::new(vec![fixture_read_action()]),
+            failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
+            error: fixture_error(),
+            extra_context: fixture_context(&[]),
+            authorizations: Arc::new(vec![
+                Authorization {
+                    id: Some("check-0".to_string()),
+                    for_principal: for_bob(),
+                    action: fixture_read_action(),
+                    entity: fixture_table_entity(),
+                    allowed: Some(false),
+                    determined_by: vec![DeterminingFactor::AdmissionGate {
+                        gate: "gate-a".to_string(),
+                        check: Some("check-a".to_string()),
+                    }],
+                },
+                Authorization {
+                    id: Some("check-1".to_string()),
+                    for_principal: for_bob(),
+                    action: fixture_read_action(),
+                    entity: fixture_namespace_entity(),
+                    allowed: Some(false),
+                    determined_by: vec![DeterminingFactor::AdmissionGate {
+                        gate: "gate-a".to_string(),
+                        check: None,
+                    }],
+                },
+            ]),
+        })
+    });
+
+    assert_matches_fixture("authz_failed_admission_gate", &contract_fields(record));
+}
+
 /// The operational family, emitted through `audit_operation!` rather than
 /// `audit_log!` — a different shape entirely, with `operation` / `outcome` /
 /// `context` and no `entity` or `decision`.
@@ -1293,9 +1350,13 @@ fn emit_admission_rejection(
     rejection: fn() -> AdmissionRejection,
 ) -> serde_json::Value {
     let metadata = fixture_admission_metadata(actor);
+    let user_id = metadata.user_id().expect("the fixture actor is a user");
     let records = emit_and_capture(|| async {
         AdmissionGates::new(vec![Arc::new(FixtureGate { rejection })])
-            .admit(AdmissionContext::new(&metadata, None))
+            .admit(AdmissionContext::new(
+                user_id,
+                AdmissionTrigger::from_request(&metadata),
+            ))
             .await
             .expect_err("the fixture gate rejects");
         Ok(())
@@ -2145,10 +2206,17 @@ fn the_wire_tag_helpers_agree_with_the_variant_names() {
                 effect: PolicyEffect::Permit,
                 source: None,
             },
-            _ => DeterminingFactor::SystemAuthority {
+            1 => DeterminingFactor::SystemAuthority {
                 source: None,
                 reason: None,
             },
+            2 => DeterminingFactor::AdmissionGate {
+                gate: String::new(),
+                check: None,
+            },
+            _ => panic!(
+                "`DeterminingFactor::{name}` has no constructor here: add one at index {index}."
+            ),
         };
         assert_eq!(
             determining_factor_tag(&variant),

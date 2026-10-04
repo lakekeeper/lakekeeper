@@ -851,10 +851,10 @@ where
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
 
-    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
-    /// the provided idents. Ordering is unspecified. No pagination.
-    async fn list_roles_by_idents_impl(
-        project_id: &ProjectId,
+    /// Every role in one of `project_ids` whose `(provider_id, source_id)` is exactly one
+    /// of `idents`. No pagination. Each role carries its own project.
+    async fn list_roles_by_idents_in_projects_impl(
+        project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
@@ -978,6 +978,9 @@ where
     /// same tabular twice with different kinds gets an unspecified one of them echoed.
     /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
     /// soft-deleted tabulars are included.
+    ///
+    /// Each returned grant's `principal` is the principal that holds it, so one read for
+    /// several principals can be split by grantee afterwards.
     async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
         resources: &[GrantResource],
@@ -1127,6 +1130,7 @@ where
 
     async fn sync_user_role_assignments_by_provider_impl<'a>(
         user: &CatalogUserRoleAssignmentUser<'_>,
+        sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
@@ -1154,6 +1158,13 @@ where
         role_ids: &[RoleId],
         catalog_state: Self::State,
     ) -> Result<HashMap<RoleId, Vec<AssignedRole>>, CatalogBackendError>;
+
+    /// The roles `user_id` is assigned to directly, in every project, each with its
+    /// project. No nesting parents.
+    async fn list_direct_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<AssignedRole>, CatalogBackendError>;
 
     async fn list_role_assignments_for_role_by_ident_impl(
         project_id: &ProjectId,
@@ -1203,20 +1214,30 @@ where
     /// endpoints `member_role_ids` are added or removed: every user assigned to any
     /// of those members or to any role in their combined descendant closure. The
     /// whole set is walked in a single query (no per-member fan-out). Runs on the
-    /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
-    /// is sound).
+    /// caller's transaction; see `membership_edge_affected_users` for what a read
+    /// before the commit misses.
     async fn affected_users_for_membership_edges_impl<'a>(
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 
+    /// [`Self::affected_users_for_membership_edges_impl`], read after the edge change
+    /// committed, in a read-only transaction of its own on the write pool. A lock wait
+    /// of more than a few seconds fails the read, so a pending `ALTER TABLE` on a role
+    /// table cannot hold its connection.
+    async fn affected_users_for_membership_edges_after_commit_impl(
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserId>, CatalogBackendError>;
+
     /// Delete the role-provider sync records of `user_ids` for `provider_id` in
     /// `project_id`, so the provider re-syncs those users on their next request.
-    async fn expire_role_assignment_syncs_impl(
+    /// Runs on the caller's transaction.
+    async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         user_ids: &[UserId],
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
@@ -1338,8 +1359,8 @@ where
     /// Soft-deletes the user and removes their role assignments + provider sync
     /// log (so a deleted user is no member of any role, matching the OpenFGA
     /// authorizer). Returns `None` if absent, else the roles the user was
-    /// assigned to — the caller evicts those roles' member caches and the user's
-    /// effective-roles cache after commit.
+    /// assigned to. The caller evicts the user's effective-roles cache after
+    /// commit.
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

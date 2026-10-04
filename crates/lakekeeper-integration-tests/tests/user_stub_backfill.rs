@@ -17,7 +17,7 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CatalogRoleAssignmentOps, CatalogStore, CatalogUserRoleAssignmentUser, RoleProviderId,
-        Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
+        SyncFor, Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -89,6 +89,7 @@ async fn seed_null_stub(
             user_type: None,
             updated_with: UserLastUpdatedWith::RoleProvider,
         },
+        SyncFor::OtherUser,
         project_id,
         &provider,
         &[],

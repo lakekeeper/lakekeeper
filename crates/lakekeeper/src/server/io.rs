@@ -36,7 +36,7 @@ pub(crate) async fn read_file(
     file: &Location,
     compression_codec: CompressionCodec,
 ) -> Result<Vec<u8>, IOErrorExt> {
-    let content: Vec<_> = io.read(file.as_str()).await.map(Into::into)?;
+    let content: Vec<_> = io.read(file.as_str()).await.map(|o| o.bytes.into())?;
 
     if matches!(compression_codec, CompressionCodec::None) {
         Ok(content)

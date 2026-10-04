@@ -23,6 +23,7 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 | `LAKEKEEPER__METRICS__PORT` | `9000` | `9000` | Port where the Prometheus metrics endpoint is reachable. |
 | `LAKEKEEPER__LISTEN_PORT` | `8181` | `8181` | Port Lakekeeper listens on. |
 | `LAKEKEEPER__BIND_IP` | `0.0.0.0`, `::1`, `::` | `0.0.0.0` (listen to all incoming IPv4 packages) | IP Address Lakekeeper binds to. |
+| `LAKEKEEPER__SERVE_HTTP_API` | `true` | `true` | If `true`, Lakekeeper serves the catalog & management HTTP API. Set to `false` to run a headless worker that only executes background [task-queue workers](#task-queues): metrics, health checks and task workers still run, and `/health` is served on `LAKEKEEPER__LISTEN_PORT` for probes, but the catalog API is not exposed. See [Task Queues](#task-queues). |
 | `LAKEKEEPER__SECRET_BACKEND` | `postgres` | `postgres` | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__SERVE_SWAGGER_UI` | `true` | `true` | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
 | `LAKEKEEPER__ALLOW_ORIGIN` | `*` | `None` | A comma separated list of allowed origins for CORS. |
@@ -127,13 +128,22 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 ### Task Queues
 
-Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
+Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files.
+
+Every Lakekeeper process runs the built-in task-queue workers by default, including instances that serve the HTTP API. You do not need dedicated worker pods to process background tasks.
+
+To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
+
+To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
+
+The following global configuration options are available:
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__TASK_POLL_INTERVAL` | 3600ms/30s | 10s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 | `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` | 2 | `2` | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
+| `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
 ### NATS
@@ -245,7 +255,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_SCOPE` | `lakekeeper` | `None` | A single scope that must be present in provided tokens — one word, no whitespace (startup fails otherwise). Read from the `scope` claim, or `scp` if `scope` is absent or carries no scopes; both a whitespace-delimited string and an array of strings are accepted; values must be strings. A [required-claim rule](#required-claims) on `scope` can require several scopes, but splits only on the `SEPARATOR` you set (`SEPARATOR=whitespace` gives the same splitting) and reads only the one named claim, with no `scp` fallback. |
 | `LAKEKEEPER__OPENID_REQUIRED_CLAIMS__<RULE>__CLAIM` <br> `…__ANY_OF` / `…__ALL_OF` / `…__NONE_OF` / `…__EXISTS` <br> `…__SEPARATOR` | `…__ORG__CLAIM=organizations` <br> `…__ORG__ANY_OF='[tenant-a, tenant-b]'` | `None` | Rules a verified token must satisfy, keyed by rule name. See [Required Claims](#required-claims). |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM` | `sub` or `oid,sub` | `None` | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim path or a comma-separated list of them; the first one that resolves to a non-blank string is used. A path nests on every dot (`resource_access.account.id`) or, when it contains `/` or `:`, names one claim outright — the same grammar as `OPENID_ROLES_CLAIM` and required-claim rules. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
-| `LAKEKEEPER__OPENID_ROLES_CLAIM` | `resource_access.lakekeeper.roles` | `None` | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM` | `resource_access.lakekeeper.roles` | `None` | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. The roles hold in every project. |
 | `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` | `Service Account {email}` | `None` | Fallback display name for tokens that carry no name claim (typically machine / service-account tokens). Placeholders `{claim.path}` are substituted from the token's claims using dot notation; write a literal brace by doubling it (`{{`/`}}`). A real name claim always takes precedence; if a referenced claim is absent or not a string the template is skipped and the user keeps the `Nameless App with ID <user-id>` placeholder. A structurally malformed template (unbalanced or empty braces) aborts startup. Applies to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` setup. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true | `false` | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` | `https://kubernetes.default.svc` | `None` | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
@@ -402,7 +412,7 @@ Please check the [Authorization User Guide](./authorization-cedar.md#authorizati
 | `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM` | `[my-cm-1, my-cm-2]` | — | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
 | `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` | `5` | `5` | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization-cedar.md#authorization-with-cedar) for more information. |
 | `LAKEKEEPER__CEDAR__REFRESH_DISABLED` | `false` | `false` | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. |
-| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` | `false` | — | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and provides no `Lakekeeper::Role` or `Lakekeeper::User` entities of its own. When set to `false` (default), Lakekeeper provides the `Lakekeeper::User` entity from the user's token and a `Lakekeeper::Role` entity for every role the user holds: from the token (`LAKEKEEPER__OPENID_ROLES_CLAIM`), from configured role providers, and roles managed in Lakekeeper. |
+| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` | `false` | — | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and provides no `Lakekeeper::Role` or `Lakekeeper::User` entities of its own. When set to `false` (default), Lakekeeper provides the `Lakekeeper::User` entity from the user's token and, at actions inside a project, a `Lakekeeper::Role` entity for every role the user holds: from the token (`LAKEKEEPER__OPENID_ROLES_CLAIM`), from configured role providers, and roles managed in Lakekeeper. See [Role scope at server actions](./authorization-cedar.md#role-scope-at-server-actions). |
 | `LAKEKEEPER__CEDAR__SCHEMA_FILE` | `/path/to/custom/schema.cedarschema` | — | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
 | `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` | `/path/to/schema-fragment.cedarschema` | — | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
 | `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES` | `["access_", "access-"]` | `["access_", "access-"]` | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization-cedar.md#property-based-access-control). |
@@ -437,12 +447,17 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__BRANDING`<span class="lkp"></span> | `eyJ0aGVtZXMiOns...` | — | Base64-encoded JSON that white-labels the UI with custom theme colors and partner logos. See [UI Branding](./ui-branding.md). Lakekeeper Plus only. |
 | `LAKEKEEPER__UI__STORAGE_PROVIDERS_ORDER`<span class="lkp"></span> | `stackit,aws` | — | Comma-separated storage providers that lead the list offered when adding a warehouse, in the order given. Providers not listed follow in their built-in order. Valid names: `aws`, `stackit`, `adls`, `onelake`, `s3_compat`, `gcs`, `r2`, `aliyun_oss`. Unknown names are ignored. Lakekeeper Plus only. |
 | `LAKEKEEPER__UI__STORAGE_PROVIDERS_HIDDEN`<span class="lkp"></span> | `r2,aliyun_oss` | — | Comma-separated storage providers to hide from the list offered when adding a warehouse. Same names as `LAKEKEEPER__UI__STORAGE_PROVIDERS_ORDER`. Cosmetic only: a hidden provider can still be configured through the API, and the setting never hides the provider an existing warehouse already uses. Hiding every provider is ignored. Lakekeeper Plus only. |
+| `LAKEKEEPER__UI__SUPPORT_DOCS_URL`<span class="lkp"></span> | `https://docs.example.com/lakehouse` | — | Target of the **Documentation** entry in the UI's support menu. Give an ordinary URL; Lakekeeper encodes it before serving it to the UI. Unset keeps the Lakekeeper documentation. A value that is not an absolute `http(s)` URL is ignored. Lakekeeper Plus only. |
+| `LAKEKEEPER__UI__SUPPORT_ISSUE_URL`<span class="lkp"></span> | `https://support.example.com/new-ticket` | — | Target of the **Create an Issue** entry in the UI's support menu. Same rules as `LAKEKEEPER__UI__SUPPORT_DOCS_URL`. Lakekeeper Plus only. |
+| `LAKEKEEPER__UI__SUPPORT_CONTACT_URL`<span class="lkp"></span> | `https://support.example.com` | — | Target of the **Contact Support** entry in the UI's support menu. Same rules as `LAKEKEEPER__UI__SUPPORT_DOCS_URL`. Lakekeeper Plus only. |
 
 ### Caching
 
 Lakekeeper uses in-memory caches to speed up certain operations.
 
 Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
+
+With a separate read replica (`LAKEKEEPER__PG_DATABASE_URL_READ`), an entry loaded right after a change can hold the replica's pre-change state, and it is served until it expires, for at most its TTL.
 
 **Short-Term Credentials (STC) Cache**
 
@@ -533,35 +548,36 @@ _Metrics_: The Role cache exposes Prometheus metrics for monitoring:
 
 **User Assignments Cache**
 
-Caches the set of roles assigned to each user (`UserId → role assignments`). This is the hot-path cache checked on every authorization request and is also the in-memory layer used by the LDAP role provider's two-layer caching scheme. The TTL must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` to bound the window in which a deleted role can still appear in assignment results.
+Caches the set of roles assigned to each user (`UserId → role assignments`). Only authorizers that resolve role assignments from Lakekeeper's own role store read this cache, such as [Cedar](./authorization-cedar.md)<span class="lkp"></span>, which checks it on every authorization request. It is also the in-memory layer of the cached role providers (LDAP, Entra ID, Okta)<span class="lkp"></span>. The OpenFGA backend keeps role membership in its own tuples, so under OpenFGA this cache is never populated and these settings have no effect. The TTL must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` to bound the window in which a deleted role can still appear in assignment results; a larger value stops Lakekeeper at startup.
 
 | Configuration Key                                                    | Type    | Default | Description |
 |----------------------------------------------------------------------|---------|---------|-----|
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED`           | boolean | `true`  | Enable/disable user-assignments caching. Default: `true` |
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
-| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`; a larger value stops Lakekeeper at startup. Default: `120` (2 minutes) |
+
+Adding a user to a role or removing them, adding or removing a member role, deleting a role, rebinding a role's source system, and a role provider sync update the affected users' entries on the worker that handled the change. Other workers keep serving their entries until they expire, so the change reaches them within the TTL plus read-replica lag.
+
+A **removed** assignment therefore keeps applying on other workers for up to the TTL. Even on the worker that handled the change, a read that starts just after the clear can still be served by a lagging read replica and cache what the replica saw. If that window is too wide for a multi-worker deployment, lower this TTL and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`. To read from the database every time, set `ENABLED=false`; a TTL of `0` leaves the cache enabled with every entry already expired.
+
+To remove a user's access on every worker at once, add a Cedar `forbid` policy for them, which applies on every worker within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the workers, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every worker after read-replica lag.
 
 _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="user_assignments"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="user_assignments"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="user_assignments"}`: Total number of cache misses
+- `lakekeeper_cache_fenced_total{cache_type="user_assignments"}`: Total number of loaded or synced entries left uncached because a change or a role provider sync overlapped them, of the same user or of another user that shares its invalidation counter. The next request for that user reads the database.
 
-**Role Members Cache**
+**Role Members Cache (deprecated)**
 
-Caches the members of each role (`RoleId → role members`). This is a cold-path cache populated only by admin/provider queries that list a role's members. Each entry holds a role's full member list, so the default capacity is deliberately low.
+Lakekeeper reads role member lists from the database on every request. The options below are deprecated and have no effect. Setting any of them logs a warning at startup.
 
 | Configuration Key                                                | Type    | Default | Description |
 |------------------------------------------------------------------|---------|---------|-----|
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`           | boolean | `true`  | Enable/disable role-members caching. Default: `true` |
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
-| `LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
-
-_Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
-
-- `lakekeeper_cache_size{cache_type="role_members"}`: Current number of entries in the cache
-- `lakekeeper_cache_hits_total{cache_type="role_members"}`: Total number of cache hits
-- `lakekeeper_cache_misses_total{cache_type="role_members"}`: Total number of cache misses
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`           | boolean | —       | Deprecated, no effect. |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`          | integer | —       | Deprecated, no effect. |
+| `LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS` | integer | —       | Deprecated, no effect. |
 
 **Role Ancestors Cache**
 
@@ -573,11 +589,11 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 |--------------------------------------------------------------------|---------|---------|-----|
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-ancestors caching. Default: `true` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
 Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
 
-The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL if the window is too wide, or set `ENABLED=false` to read from the database every time.
+The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL together with `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` if the window is too wide, or set `ENABLED=false` to read from the database every time.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 
@@ -746,9 +762,11 @@ The provider uses the reserved identifier `oidc`. If you declare a role provider
 
 By default, token roles live only for the duration of the request — they are read from the JWT and never stored. This means they are unavailable for authorization decisions about a user who is **not** the current caller, most notably [DEFINER views](./view-security.md), where access is evaluated as the view's owner rather than the querying user.
 
-Set `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES=true` to mirror each user's token roles into the catalog database. Persisted roles are then served whenever that user's permissions are evaluated while they are not the requesting caller — including DEFINER views.
+Set `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES=true` to store each user's token roles in the catalog database. Lakekeeper then uses the stored roles when it decides about a user who is not the caller, such as a DEFINER view's owner or a grant's grantee.
 
-On each request, the caller's token roles are compared against the stored set and written only when they differ; requests carrying unchanged roles do not write. A definer's roles are therefore as current as the most recent token that user presented. Roles are scoped to the project they were issued for: in multi-project deployments the owner must have presented a token for the project where the view lives. An empty roles claim is ignored rather than clearing the stored set.
+Stored token roles are a snapshot of the user's last token in a project, and they go stale while the user is not signed in. To decide about users who are not signed in, such as DEFINER view owners and grantees, use a role provider ([LDAP](#ldap-role-provider), [Entra ID](#microsoft-graph-entra-id-role-provider) or [Okta](#okta-role-provider)), which asks the directory. When a decision about another user is made at a server action, or in a project where they have made no request, their newest stored roles from any project apply.
+
+On each request, Lakekeeper compares the caller's token roles with the stored set and writes them when they differ. Each Lakekeeper instance writes an unchanged set again at most every 120 seconds. A token without roles clears the caller's stored roles in the request's project; most identity providers leave the roles claim out when a user has none. Entra ID also leaves out the `groups` claim for users in more than 200 groups, so those users have no token roles; resolve their groups with the Entra ID role provider.
 
 #### LDAP role provider
 
@@ -880,7 +898,7 @@ Each LDAP provider uses a two-layer cache to avoid a network round-trip to the L
 1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
 2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
 
-If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts LDAP, writes the fresh assignments back to both the database and the in-memory cache, and returns the result. If LDAP is temporarily unreachable, the stale database record is served instead and an audit warning is emitted. A user with no database record for the provider in the request's project — a user LDAP has not been asked about yet, or a member of a role from it that was just [deleted](./authorization.md) — gets errors until LDAP is reachable again.
+LDAP groups do not depend on the project, so a fresh record in any project answers every project. If the request's project lacks one of the groups in that record, for example after the role was deleted there, Lakekeeper asks LDAP and stores the answer in that project. When no project holds a record younger than `SYNC_INTERVAL_SECS`, Lakekeeper asks LDAP and writes the answer to the request's project and the in-memory cache. A server action, such as creating a project or listing users, uses a fresh record from any project or asks LDAP, and stores nothing. If LDAP is unreachable, Lakekeeper serves the newest stored record from any project and emits an audit warning. A user with no stored record for the provider in any project, such as a user LDAP has not been asked about yet, gets errors until LDAP is reachable again.
 
 | Variable                             | Default | Description                 |
 |--------------------------------------|---------|-----------------------------|

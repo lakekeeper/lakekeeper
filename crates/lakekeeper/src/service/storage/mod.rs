@@ -2672,10 +2672,10 @@ mod tests {
             .await
             .unwrap();
 
-        let input1 = downscoped1.read(test_file1.as_str()).await.unwrap();
+        let input1 = downscoped1.read(test_file1.as_str()).await.unwrap().bytes;
         assert_eq!(input1.as_ref(), b"test content 1");
 
-        let input2 = downscoped2.read(test_file2.as_str()).await.unwrap();
+        let input2 = downscoped2.read(test_file2.as_str()).await.unwrap().bytes;
         assert_eq!(input2.as_ref(), b"test content 2");
 
         // cannot read across locations

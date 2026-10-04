@@ -221,18 +221,6 @@ pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
     }
 }
 
-/// Resolve `(project_id, role_ident)` → `RoleId` using the secondary index only.
-///
-/// Returns `None` if the ident is not in the role ident cache.  Does not
-/// touch the primary `ROLE_CACHE` — use [`role_cache_get_by_ident`] if the
-/// full role is needed.
-pub(crate) async fn role_ident_to_id(
-    project_id: ArcProjectId,
-    ident: ArcRoleIdent,
-) -> Option<RoleId> {
-    IDENT_TO_ID_CACHE.get(&(project_id, ident)).await
-}
-
 /// Insert a `(project_id, role_ident)` → `RoleId` mapping into the secondary
 /// index without touching the primary [`ROLE_CACHE`].
 ///

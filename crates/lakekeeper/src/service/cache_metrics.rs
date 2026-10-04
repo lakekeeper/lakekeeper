@@ -2,9 +2,11 @@
 //!
 //! Every cache emits the same three metric names differentiated by the
 //! `cache_type` label (values: `"role"`, `"warehouse"`, `"namespace"`,
-//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_members"`,
-//! `"role_ancestors"`, `"warehouse_name_to_id"`, `"role_ident_to_id"`,
-//! `"namespace_ident_to_id"`, `"shared_role_idents"`, `"shared_project_ids"`).
+//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_ancestors"`,
+//! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`,
+//! `"shared_role_idents"`, `"shared_project_ids"`). The user-assignments cache
+//! also counts the results it leaves uncached after an overlapping invalidation or
+//! sync ([`METRIC_CACHE_FENCED_TOTAL`]).
 //!
 //! Caches owned by code outside this crate — an
 //! [`AdmissionGate`](crate::service::admission::AdmissionGate), an
@@ -22,6 +24,10 @@ use axum_prometheus::metrics;
 pub(crate) const METRIC_CACHE_SIZE: &str = "lakekeeper_cache_size";
 pub(crate) const METRIC_CACHE_HITS_TOTAL: &str = "lakekeeper_cache_hits_total";
 pub(crate) const METRIC_CACHE_MISSES_TOTAL: &str = "lakekeeper_cache_misses_total";
+/// Results a cache left uncached because an invalidation, or a sync of a key in the
+/// same invalidation stripe, overlapped them, labelled by `cache_type`. Only caches
+/// that count invalidations emit it.
+pub(crate) const METRIC_CACHE_FENCED_TOTAL: &str = "lakekeeper_cache_fenced_total";
 
 /// Histogram of how many users' cached role assignments are invalidated by a
 /// single role→role membership edge change, labelled by `operation`
@@ -36,6 +42,10 @@ pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
     metrics::describe_gauge!(METRIC_CACHE_SIZE, "Current number of entries in the cache");
     metrics::describe_counter!(METRIC_CACHE_HITS_TOTAL, "Total number of cache hits");
     metrics::describe_counter!(METRIC_CACHE_MISSES_TOTAL, "Total number of cache misses");
+    metrics::describe_counter!(
+        METRIC_CACHE_FENCED_TOTAL,
+        "Total number of loaded or synced results left uncached because an invalidation or a sync in the same stripe overlapped them"
+    );
     metrics::describe_histogram!(
         METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS,
         "Number of users whose cached role assignments were invalidated by a single role-membership edge change"
@@ -52,6 +62,13 @@ pub fn record_cache_hit(cache_type: &'static str) {
 pub fn record_cache_miss(cache_type: &'static str) {
     let () = &*METRICS_INITIALIZED;
     metrics::counter!(METRIC_CACHE_MISSES_TOTAL, "cache_type" => cache_type).increment(1);
+}
+
+/// Record one result `cache_type` left uncached because an invalidation or a sync
+/// in the same stripe overlapped it.
+pub(crate) fn record_cache_fenced(cache_type: &'static str) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::counter!(METRIC_CACHE_FENCED_TOTAL, "cache_type" => cache_type).increment(1);
 }
 
 /// Publish the current number of entries held by `cache_type`.

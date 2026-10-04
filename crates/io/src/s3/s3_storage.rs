@@ -10,8 +10,8 @@ use futures::{StreamExt, stream};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, RetryableError, WriteError,
-    execute_with_parallelism,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, RetryableError,
+    WriteError, execute_with_parallelism,
     s3::{
         S3Location,
         s3_error::{
@@ -208,23 +208,35 @@ impl LakekeeperStorage for S3Storage {
         }))
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+    async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
         let head_response = head(&self.client, &s3_location).await?;
         let content_length = head_response.content_length().unwrap_or(0);
         let file_size = validate_file_size(content_length, path)?;
 
-        if file_size == 0 {
-            return Ok(Bytes::new());
-        }
+        // The `head` above already carries the object metadata, so it is
+        // surfaced here; a second request is not needed.
+        let location_str = s3_location.to_string();
+        let info = FileInfo::new(
+            head_response.last_modified().and_then(parse_timestamp),
+            s3_location.location().clone(),
+            head_response
+                .content_length()
+                .and_then(|n| crate::size_to_u64(n, &location_str)),
+        )
+        .with_e_tag(head_response.e_tag().map(ToString::to_string));
 
-        if file_size < MAX_BYTES_PER_REQUEST {
+        let bytes = if file_size == 0 {
+            Bytes::new()
+        } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            return fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await;
-        }
+            fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await?
+        } else {
+            let etag = head_response.e_tag().map(ToString::to_string);
+            parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await?
+        };
 
-        let etag = head_response.e_tag().map(ToString::to_string);
-        parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
@@ -293,11 +305,10 @@ impl LakekeeperStorage for S3Storage {
             .content_length()
             .and_then(|n| crate::size_to_u64(n, &location_str));
         let last_modified = head_response.last_modified().and_then(parse_timestamp);
-        Ok(FileInfo::new(
-            last_modified,
-            s3_location.location().clone(),
-            size,
-        ))
+        Ok(
+            FileInfo::new(last_modified, s3_location.location().clone(), size)
+                .with_e_tag(head_response.e_tag().map(ToString::to_string)),
+        )
     }
 
     async fn list(

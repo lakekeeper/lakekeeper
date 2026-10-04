@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (user_id, project_id, provider_id) DO UPDATE SET synced_at = EXCLUDED.synced_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ccaa25cc05842d2052b2de7847506f2af773690cc7bbec3f2bef4b05e3dd35a4"
+}

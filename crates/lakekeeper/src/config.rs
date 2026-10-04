@@ -145,8 +145,19 @@ pub(crate) fn get_config() -> DynAppConfig {
     }
 
     validate_cache_ttls(&mut config);
+    warn_deprecated_cache_options(&config);
 
     config
+}
+
+fn warn_deprecated_cache_options(config: &DynAppConfig) {
+    if config.cache.role_members.is_set() {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__ROLE_MEMBERS__* (or ICEBERG_REST__CACHE__ROLE_MEMBERS__*) is \
+             deprecated and has no effect: role member lists are read from the database. \
+             Remove these settings."
+        );
+    }
 }
 
 /// Caches whose entries name roles must not outlive the role cache: a deleted role would
@@ -485,6 +496,12 @@ pub struct DynAppConfig {
     /// Bind IP the server listens on.
     /// Defaults to 0.0.0.0
     pub bind_ip: IpAddr,
+    /// Serve the main HTTP API (default: true). When false, the process runs
+    /// headless: metrics, health checks, background services and task-queue
+    /// workers still run, and the listener serves only `/health` for probes;
+    /// the catalog and management API is not exposed. Enables headless worker
+    /// deployments that execute task-queue work without serving the API.
+    pub serve_http_api: bool,
     /// If x-forwarded-x headers should be respected.
     /// Defaults to true
     pub use_x_forwarded_headers: bool,
@@ -1107,25 +1124,20 @@ impl Default for UserAssignmentsCache {
     }
 }
 
-/// Cache for `RoleId → ListRoleMembersResult` lookups.
-///
-/// Cold path: admin / provider queries only. Keep capacity low —
-/// each entry holds an unbounded `Vec<AssignedUser>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Deprecated `cache.role_members` options. Lakekeeper has no role-members cache:
+/// role member lists are read from the database. The options are accepted so that
+/// existing configurations keep starting, and setting any of them logs a warning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct RoleMembersCache {
-    pub(crate) enabled: bool,
-    pub(crate) capacity: u64,
-    pub(crate) time_to_live_secs: u64,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) capacity: Option<u64>,
+    pub(crate) time_to_live_secs: Option<u64>,
 }
 
-impl Default for RoleMembersCache {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            capacity: 1_000,
-            time_to_live_secs: 120,
-        }
+impl RoleMembersCache {
+    fn is_set(&self) -> bool {
+        self.enabled.is_some() || self.capacity.is_some() || self.time_to_live_secs.is_some()
     }
 }
 
@@ -1171,7 +1183,7 @@ pub(crate) struct Cache {
     pub(crate) role: RoleCache,
     /// User-assignments cache: `UserId → roles`.
     pub(crate) user_assignments: UserAssignmentsCache,
-    /// Role-members cache: `RoleId → members`.
+    /// Deprecated and ignored; see [`RoleMembersCache`].
     pub(crate) role_members: RoleMembersCache,
     /// Role-ancestors cache: `RoleId → the roles it is a member of`.
     pub(crate) role_ancestors: RoleAncestorsCache,
@@ -1317,6 +1329,7 @@ impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
             base_uri: None,
+            serve_http_api: true,
             enable_default_project: true,
             default_project_id: None,
             use_x_forwarded_headers: true,
@@ -2734,21 +2747,14 @@ mod test {
     }
 
     #[test]
-    fn test_role_members_cache() {
+    #[tracing_test::traced_test]
+    fn deprecated_role_members_cache_options_are_accepted_and_ignored() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
-            assert!(config.cache.role_members.enabled);
-            assert_eq!(config.cache.role_members.capacity, 1_000);
-            assert_eq!(config.cache.role_members.time_to_live_secs, 120);
+            assert!(!config.cache.role_members.is_set());
             Ok(())
         });
-
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "false");
-            let config = get_config();
-            assert!(!config.cache.role_members.enabled);
-            Ok(())
-        });
+        assert!(!logs_contain("ROLE_MEMBERS"));
 
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "true");
@@ -2758,11 +2764,13 @@ mod test {
                 "30",
             );
             let config = get_config();
-            assert!(config.cache.role_members.enabled);
-            assert_eq!(config.cache.role_members.capacity, 5000);
-            assert_eq!(config.cache.role_members.time_to_live_secs, 30);
+            assert!(config.cache.role_members.is_set());
             Ok(())
         });
+        assert!(logs_contain(
+            "LAKEKEEPER__CACHE__ROLE_MEMBERS__* (or ICEBERG_REST__CACHE__ROLE_MEMBERS__*) is \
+             deprecated and has no effect"
+        ));
     }
 
     /// A deployment predating the role-ancestors cache still starts.
@@ -2793,10 +2801,7 @@ mod test {
                 "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
                 "300",
             );
-            jail.set_env(
-                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
-                "60",
-            );
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__TIME_TO_LIVE_SECS", "60");
             let _config = get_config(); // must panic – user_assignments TTL > role TTL
             Ok(())
         });

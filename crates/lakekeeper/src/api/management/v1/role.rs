@@ -26,7 +26,7 @@ use crate::{
             APIEventContext,
             context::{Unresolved, authz_to_error_no_audit},
         },
-        role_assignments_cache,
+        role_assignments_cache, role_cache,
     },
 };
 
@@ -980,7 +980,7 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
 ) -> Result<(), AuthZError> {
     let role_id = role.id;
 
-    let mut t = C::Transaction::begin_write(catalog_state.clone())
+    let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // Lock first: until commit no sync can add an assignee this delete would miss
@@ -1003,34 +1003,39 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
     C::delete_role(project_id, role_id, t.transaction()).await?;
-    t.commit()
-        .await
-        .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-
-    // Post-commit: expire the members' sync records for the role's provider, so the
-    // provider re-syncs them on their next request. A fresh record would otherwise
-    // keep serving their stored roles, now missing this one, until it ages out. It
-    // runs outside the delete transaction, so it holds no lock a concurrent sync or
-    // user delete waits on; if it fails, the records age out as usual. A provider
-    // role has no member roles, so `affected_users` are exactly its assignees.
+    // Expire the members' sync records for the role's provider with the delete, so
+    // the provider re-syncs them on their next request. A fresh record would keep
+    // serving their stored roles, now missing this one, until it ages out. It runs
+    // after the cascade: a sync writes its record after its assignments and a user
+    // delete removes it after theirs, so neither holds a record while waiting on this
+    // transaction. A provider role has no member roles, so `affected_users` are
+    // exactly its assignees.
     let provider_id = role.ident.provider_id();
     if !provider_id.is_lakekeeper() && !provider_id.is_system() && !affected_users.is_empty() {
         C::expire_role_assignment_syncs_impl(
             project_id,
             provider_id,
             &affected_users,
-            catalog_state,
+            t.transaction(),
         )
         .await
-        .inspect_err(|e| {
-            tracing::warn!(
-                %role_id,
-                error = %e,
-                "Failed to expire role-provider sync records after deleting a role"
-            );
-        })
-        .ok();
+        .map_err::<DeleteRoleError, _>(Into::into)?;
     }
+    // Post-commit, in-memory: the role and its assignments are gone, so the role's
+    // own entry and each affected user's effective-roles entry are stale. A failed
+    // commit may have landed, so it clears them too.
+    role_assignments_cache::run_to_completion(async move {
+        let committed = t.commit().await;
+        role_cache::role_cache_invalidate(role_id).await;
+        role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
+        // The cascade also erased this role's `role_membership` edges, so it is no
+        // longer an ancestor of anything nested beneath it — a set cached per role, not
+        // per user.
+        role_assignments_cache::role_ancestors_cache_invalidate_all();
+        committed
+    })
+    .await
+    .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
 
     // Post-commit: best-effort authz cleanup. `create_role`'s `require_no_relations`
     // guard blocks reuse of the id, so a leftover edge can't grant access.
@@ -1041,17 +1046,6 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
             tracing::error!(?e, "Failed to delete role from authorizer: {}", e.error);
         })
         .ok();
-
-    // Post-commit (infallible, in-memory): the role and its assignments are gone,
-    // so each affected user's effective-roles entry and the deleted role's own
-    // direct-user-assignee list are stale. No parent eviction — `ROLE_MEMBERS_CACHE`
-    // stores a role's user-assignees only, never its member-roles (see G2 in the
-    // cache-hardening notes).
-    role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
-    role_assignments_cache::role_members_cache_invalidate(role_id).await;
-    // The cascade also erased this role's `role_membership` edges, so it is no longer an
-    // ancestor of anything nested beneath it — a set cached per role, not per user.
-    role_assignments_cache::role_ancestors_cache_invalidate_all();
     Ok(())
 }
 
@@ -1100,27 +1094,31 @@ async fn apply_update_role_source_system<C: CatalogStore>(
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     // A source-system rebind changes the role's `RoleIdent` (provider_id/source_id),
     // which is cached per row in every assignee's USER_ASSIGNMENTS closure
-    // (`AssignedRole.role_ident`) and in this role's ROLE_MEMBERS entry. External
-    // authorizers key on the ident, so without eviction those closures evaluate the
-    // stale binding until TTL. Mirror `apply_delete_role`: read the affected-user
-    // closure pre-commit on the txn (so a failed read rolls the rebind back), evict
-    // post-commit. Unlike delete, the assignment/membership rows are updated (not
-    // cascade-deleted), so the set is identical pre- and post-commit. ROLE_CACHE is
-    // refreshed separately by the `role_updated` event the handler emits.
+    // (`AssignedRole.role_ident`). External authorizers key on the ident, so without
+    // eviction those closures evaluate the stale binding until TTL. Mirror
+    // `apply_delete_role`: read the affected-user closure pre-commit on the txn (so a
+    // failed read rolls the rebind back), evict post-commit. The assignment and
+    // membership rows are updated in place, so the set is identical pre- and
+    // post-commit. The post-commit step also evicts the role's `ROLE_CACHE` entry; the
+    // `role_updated` event the handler emits afterwards caches the rebound role.
     let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
         .await
         .map_err::<UpdateRoleError, _>(Into::into)?;
     let role = C::set_role_source_system(project_id, role_id, &request, t.transaction()).await?;
-    t.commit()
-        .await
-        .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-
-    role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
-    role_assignments_cache::role_members_cache_invalidate(role_id).await;
-    // A rebind changes this role's ident, which is what an external authorizer names it by.
-    // Cached ancestor sets carry that ident per row, so they would keep publishing the old
-    // one — and a policy naming the new ident would match nothing.
-    role_assignments_cache::role_ancestors_cache_invalidate_all();
+    // The role's own entry carries the old ident too. A failed commit may have
+    // landed, so it clears the entries as well.
+    role_assignments_cache::run_to_completion(async move {
+        let committed = t.commit().await;
+        role_cache::role_cache_invalidate(role_id).await;
+        role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
+        // A rebind changes this role's ident, which is what an external authorizer names
+        // it by. Cached ancestor sets carry that ident per row, so they would keep
+        // publishing the old one — and a policy naming the new ident would match nothing.
+        role_assignments_cache::role_ancestors_cache_invalidate_all();
+        committed
+    })
+    .await
+    .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     Ok(role)
 }
 

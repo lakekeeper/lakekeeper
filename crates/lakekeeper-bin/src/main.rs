@@ -474,11 +474,20 @@ async fn migrate(force_idempotent_hooks: bool) -> anyhow::Result<()> {
 }
 
 async fn serve(force_start: bool) -> anyhow::Result<()> {
-    tracing::info!(
-        "Starting server on {}:{}...",
-        CONFIG.bind_ip,
-        CONFIG.listen_port
-    );
+    if CONFIG.serve_http_api {
+        tracing::info!(
+            "Starting server on {}:{}...",
+            CONFIG.bind_ip,
+            CONFIG.listen_port
+        );
+    } else {
+        tracing::info!(
+            "Starting headless worker (serve_http_api disabled): running background task-queue \
+             workers; only /health is served on {}:{}.",
+            CONFIG.bind_ip,
+            CONFIG.listen_port
+        );
+    }
     let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
     if !force_start {
         wait_for_db::wait_for_db(true, 0, 0, true).await?;

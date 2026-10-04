@@ -4,9 +4,9 @@ description: "Configure admission gates in Lakekeeper Plus to allow or deny auth
 
 # Admission Gates { #admission-gates .lkp }
 
-An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, suspend a tenant or principal, or reject revoked tokens.
+An **admission gate** makes a coarse allow/deny decision about an *already-authenticated* request **before it reaches any handler** — distinct from the per-resource [Authorizer](./authorization.md). Use one to consult an external control-plane entitlement service, or to suspend a tenant or principal.
 
-Gates run on every authenticated request, in order, after the actor and instance-admin status are resolved; the first rejection wins. A gate returns either a terminal `403 Forbidden` or — when it fails closed because an upstream it depends on is unreachable — a `503` with a `Retry-After`.
+Gates run on every authenticated request, in order, before the `x-assume-role` check and before any handler. The first rejection wins. A gate decides about the user alone: it sees the user's identity provider and subject, never the project, warehouse or token of the request. The roles it grants hold in every project and at server actions, on the user's own requests. A gate returns either a terminal `403 Forbidden` or — when it fails closed because an upstream it depends on is unreachable — a `503` with a `Retry-After`.
 
 The gate seam itself ([`AdmissionGate`](https://github.com/lakekeeper/lakekeeper/blob/main/crates/lakekeeper/src/service/admission.rs)) is a Rust trait; see [Customize](./customize.md) to implement your own. This page documents the **external enforce-endpoint gate** that ships ready-to-configure with Lakekeeper Plus.
 
@@ -14,7 +14,7 @@ The gate seam itself ([`AdmissionGate`](https://github.com/lakekeeper/lakekeeper
 
 This gate is for deployments whose IdP issues **broad, non-instance-scoped tokens**, where a separate service — not the token — is authoritative for whether the caller may use *this* Lakekeeper instance. After authentication, the gate asks that service, per caller, and either lets the request through or rejects it.
 
-If your tokens already carry the entitlement (claims, roles, audience), you don't need this — use [authentication](./authentication.md) and [authorization](./authorization.md).
+If your tokens already carry the entitlement (claims, roles, audience), rely on [authentication](./authentication.md) and [authorization](./authorization.md) alone.
 
 ## How it works
 
@@ -28,13 +28,12 @@ The gate evaluates one or more named **checks** against a configured enforce end
 
 Only an exact `403` is read as an authoritative deny. Every other non-`2xx` status — including other `4xx` (e.g. `400`, `401`, `404`, `429`) and any `5xx` — is treated as the endpoint being unable to give a verdict, so the gate fails closed with a `503`. This is deliberate: a misconfigured or malfunctioning enforce endpoint must never silently admit. If your endpoint signals "denied" with a status other than `403`, map it to `403` on its side.
 
-On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream.
+On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream. Under [Cedar](./authorization-cedar.md#role-matching-with-project_roles), name an admission role like any group, for example `principal.project_roles.contains({provider_id: "control-plane", source_id: "instance-access"})` for the [example](#example) below.
 
-- **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the request-derived placeholders `{{subject}}` (the token `sub`) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
-- **IdP-scoped.** The gate only governs tokens from the configured `idp_id`. Tokens from any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
+- **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the user-derived placeholders `{{subject}}` (the user's subject in its identity provider) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
+- **IdP-scoped.** The gate only governs users of the configured `idp_id`. Users of any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
 - **Cached.** Decisions are cached in memory per `(subject, check)` for `cache_ttl_secs`. Both allow *and* deny are cached, so a denied-but-authenticated caller triggers at most one upstream call per TTL and cannot amplify load; transient `5xx`/timeout results are never cached.
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
-- **Token relay is opt-in.** The caller's bearer token is forwarded only when `auth` is `forward_caller_token`; otherwise the endpoint is reached with the static `headers` only. A forwarded token goes over the configured URL (use TLS) and is never logged.
 
 ## Monitoring
 
@@ -44,14 +43,14 @@ Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{ga
 
 The gate is **disabled unless an `[admission_enforce]` block is present**. Like [Cedar derivations](./authorization-cedar.md) and [role providers](./configuration.md#role-provider), this is nested config, so it is configured via a TOML file with full environment-variable parity — point `LAKEKEEPER__ADMISSION_ENFORCE_FILE` at a TOML file, and/or set `LAKEKEEPER__ADMISSION_ENFORCE__*` variables on top.
 
-Unknown keys are refused: a typo in the gate block, in `auth`, or in a check fails startup rather than leaving the setting it was meant to be at its default.
+Unknown keys are refused: a typo in the gate block or in a check fails startup rather than leaving the setting it was meant to be at its default.
 
 ### `[admission_enforce]`
 
 | Key                            | Required | Default | Description                                                       |
 | ------------------------------ | -------- | ------- | ----------------------------------------------------------------- |
 | `endpoint`                     | yes      | —       | Enforce endpoint URL (`POST`). Validated at startup.              |
-| `idp_id`                       | yes      | —       | Only govern tokens from this IdP; others are admitted untouched. Must name a provider this server authenticates, or startup fails. |
+| `idp_id`                       | yes      | —       | Only govern users of this IdP; others are admitted untouched. Must name a provider this server authenticates, or startup fails. |
 | `role_provider_id`             | yes      | —       | Provider namespace for the synthesized admission roles.           |
 | `cache_ttl_secs`               | no       | `60`    | TTL for cached allow/deny decisions.                              |
 | `cache_max_entries`            | no       | `10000` | Max cached decisions.                                             |
@@ -59,19 +58,7 @@ Unknown keys are refused: a typo in the gate block, in `auth`, or in a check fai
 | `connect_timeout_secs`         | no       | `2`     | Connection timeout.                                               |
 | `unavailable_retry_after_secs` | no       | `5`     | `Retry-After` returned on the fail-closed `503`.                  |
 | `headers`                      | no       | `{}`    | Extra static headers sent on every call (e.g. a service API key). |
-| `auth`                         | no       | *none*  | How to authenticate (see below). Omit to send no `Authorization`. |
 | `checks`                       | yes      | —       | Named map of checks (at least one). See below.                   |
-
-### `[admission_enforce.auth]`
-
-Omit to forward no token. Currently one scheme — relay the caller's bearer token:
-
-```toml
-[admission_enforce.auth]
-type = "forward_caller_token"   # sent as `Authorization: Bearer <caller token>`
-```
-
-When set, the request **must** carry a bearer token; the gate fails closed if it is absent.
 
 ### `[admission_enforce.checks.<name>]`
 
@@ -92,9 +79,6 @@ endpoint         = "https://control-plane.internal/v1/authorize"
 idp_id           = "oidc"
 role_provider_id = "control-plane"
 cache_ttl_secs   = 60
-
-[admission_enforce.auth]
-type = "forward_caller_token"
 
 # A `403` here rejects the request outright.
 [admission_enforce.checks.instance_access]
@@ -136,7 +120,6 @@ Because the body is a single JSON string, the whole config — including bodies 
 LAKEKEEPER__ADMISSION_ENFORCE__ENDPOINT='https://control-plane.internal/v1/authorize'
 LAKEKEEPER__ADMISSION_ENFORCE__IDP_ID='oidc'
 LAKEKEEPER__ADMISSION_ENFORCE__ROLE_PROVIDER_ID='control-plane'
-LAKEKEEPER__ADMISSION_ENFORCE__AUTH__TYPE='forward_caller_token'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__KIND='gating'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__ROLE_SOURCE_ID='instance-access'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__BODY='{"subject":"{{subject}}","resource":"102befc3-424d-479e-b1f7-bb47c1e1a1a2","resourceType":"project","actions":["workflows.instance.read"]}'

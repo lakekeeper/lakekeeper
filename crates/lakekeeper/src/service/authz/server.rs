@@ -6,7 +6,7 @@ use crate::{
         Actor, ServerId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
+            AuthorizationInternalError, Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogServerAction, IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -85,6 +85,7 @@ pub enum CheckActorError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AssumeRoleForbidden(AssumeRoleForbidden),
     BadRequest(AuthzBadRequest),
+    AuthorizationInternalError(AuthorizationInternalError),
 }
 
 impl From<AuthzBackendErrorOrBadRequest> for CheckActorError {
@@ -92,6 +93,7 @@ impl From<AuthzBackendErrorOrBadRequest> for CheckActorError {
         match err {
             AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
             AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::InternalError(e) => e.into(),
         }
     }
 }
@@ -99,7 +101,8 @@ impl From<AuthzBackendErrorOrBadRequest> for CheckActorError {
 delegate_authorization_failure_source!(CheckActorError => {
     AuthorizationBackendUnavailable,
     AssumeRoleForbidden,
-    BadRequest
+    BadRequest,
+    AuthorizationInternalError
 });
 
 // --------------------------- Return Error types ---------------------------
@@ -109,6 +112,7 @@ pub enum RequireServerActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     BadRequest(AuthzBadRequest),
 }
 impl From<AuthzBackendErrorOrBadRequest> for RequireServerActionError {
@@ -116,6 +120,7 @@ impl From<AuthzBackendErrorOrBadRequest> for RequireServerActionError {
         match err {
             AuthzBackendErrorOrBadRequest::BackendUnavailable(e) => e.into(),
             AuthzBackendErrorOrBadRequest::BadRequest(e) => e.into(),
+            AuthzBackendErrorOrBadRequest::InternalError(e) => e.into(),
         }
     }
 }
@@ -134,6 +139,7 @@ impl From<IsAllowedActionError> for RequireServerActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -142,6 +148,7 @@ delegate_authorization_failure_source!(RequireServerActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     BadRequest
 });
 

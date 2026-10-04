@@ -9,7 +9,7 @@ use crate::{
         ArcProjectId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
+            AuthorizationInternalError, Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
             CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -73,6 +73,7 @@ pub enum RequireProjectActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireProjectActionError {
@@ -90,6 +91,7 @@ impl From<IsAllowedActionError> for RequireProjectActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -98,6 +100,7 @@ delegate_authorization_failure_source!(RequireProjectActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     AuthorizerValidationFailed
 });
 
@@ -148,6 +151,31 @@ pub trait AuthZProjectOps: Authorizer {
                 decisions
             },
         ))
+    }
+
+    async fn are_projects_included_in_list(
+        &self,
+        metadata: &RequestMetadata,
+        projects: &[&ArcProjectId],
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
+        if metadata.bypasses_control_plane_authz(None) {
+            return Ok(MustUse::from(vec![
+                AuthorizationDecision::allow();
+                projects.len()
+            ]));
+        }
+        let decisions = self
+            .are_projects_included_in_list_impl(metadata, projects)
+            .await?;
+        if decisions.len() != projects.len() {
+            return Err(AuthorizationCountMismatch::new(
+                projects.len(),
+                decisions.len(),
+                "project",
+            )
+            .into());
+        }
+        Ok(MustUse::from(decisions))
     }
 
     async fn are_allowed_project_actions_arr<

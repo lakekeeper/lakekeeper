@@ -338,16 +338,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let projects = if authz_list_unsupported {
             tracing::debug!(
-                "Authorization backend does not support listing projects, filtering per project."
+                "Authorization backend does not support listing projects, asking about each project."
             );
             let decisions = authorizer
-                .are_allowed_project_actions_vec(
+                .are_projects_included_in_list(
                     &request_metadata,
-                    None,
-                    &projects
-                        .iter()
-                        .map(|p| (&p.project_id, CatalogProjectAction::GetMetadata))
-                        .collect::<Vec<_>>(),
+                    &projects.iter().map(|p| &p.project_id).collect::<Vec<_>>(),
                 )
                 .await
                 .map_err(authz_to_error_no_audit)?;

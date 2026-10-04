@@ -2462,14 +2462,34 @@ where
     /// Perform bootstrapping, including granting the provided user the highest level of access.
     async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
-    /// Return Err only for internal errors.
-    /// If unsupported is returned, Lakekeeper will run checks for every project individually using
-    /// `are_allowed_project_actions`.
+    /// The projects the caller may see in a project listing. Return Err only for
+    /// internal errors. An authorizer that cannot enumerate them returns
+    /// [`ListProjectsResponse::Unsupported`]; Lakekeeper then reads every project and
+    /// asks [`Self::are_projects_included_in_list_impl`] about each.
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
     ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::Unsupported)
+    }
+
+    /// Whether the caller may see each of `projects` in a project listing, one decision
+    /// per project, in order. Asked only after [`Self::list_projects_impl`] returned
+    /// [`ListProjectsResponse::Unsupported`], with every project the catalog holds.
+    ///
+    /// The default asks [`CatalogProjectAction::IncludeInList`] for every project in one
+    /// batch.
+    async fn are_projects_included_in_list_impl(
+        &self,
+        metadata: &RequestMetadata,
+        projects: &[&ArcProjectId],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let batch: Vec<(&ArcProjectId, Self::ProjectAction)> = projects
+            .iter()
+            .map(|project_id| (*project_id, CatalogProjectAction::IncludeInList.into()))
+            .collect();
+        self.are_allowed_project_actions_impl(metadata, None, &batch)
+            .await
     }
 
     /// Search users
@@ -3933,8 +3953,14 @@ pub mod tests {
         /// Report an empty grant store of its own from [`Authorizer::grants`], as
         /// OpenFGA does. `false` keeps grants in the catalog.
         own_grant_store: bool,
+        /// Answer [`Authorizer::list_projects_impl`] with `Unsupported`, as Cedar does,
+        /// so the listing asks about each project.
+        unsupported_project_listing: bool,
         /// Awaited by every catalog object check. See [`Self::with_check_hook`].
         check_hook: Option<CheckHook>,
+        /// The admission roles each assume-role check saw. See
+        /// [`Self::assume_role_checks`].
+        assume_role_checks: Arc<std::sync::Mutex<Vec<Option<Vec<String>>>>>,
     }
 
     /// A future run by each check, as `HidingAuthorizer` holds it.
@@ -3991,8 +4017,20 @@ pub mod tests {
                 api_role_providers: ApiRoleProviders::AnyUnmanaged,
                 create_role_rejection: None,
                 own_grant_store: false,
+                unsupported_project_listing: false,
                 check_hook: None,
+                assume_role_checks: Arc::default(),
             }
+        }
+
+        /// One entry per assume-role check, in call order: the admission roles on
+        /// the request it decided, sorted. `None` when the request carried none.
+        ///
+        /// # Panics
+        /// Panics if the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn assume_role_checks(&self) -> Vec<Option<Vec<String>>> {
+            self.assume_role_checks.lock().unwrap().clone()
         }
 
         /// Report `providers` as provider-managed, so a test can exercise the
@@ -4010,6 +4048,14 @@ pub mod tests {
         #[must_use]
         pub fn with_api_role_providers(mut self, providers: ApiRoleProviders) -> Self {
             self.api_role_providers = providers;
+            self
+        }
+
+        /// Answer the project listing with `Unsupported`, so the handler asks about
+        /// each project.
+        #[must_use]
+        pub fn with_unsupported_project_listing(mut self) -> Self {
+            self.unsupported_project_listing = true;
             self
         }
 
@@ -4224,8 +4270,17 @@ pub mod tests {
             &self,
             _principal: &UserId,
             _assumed_role: &Role,
-            _request_metadata: &RequestMetadata,
+            request_metadata: &RequestMetadata,
         ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
+            let admission_roles = request_metadata.admission_roles().map(|roles| {
+                let mut roles: Vec<String> = roles.iter().map(ToString::to_string).collect();
+                roles.sort();
+                roles
+            });
+            self.assume_role_checks
+                .lock()
+                .unwrap()
+                .push(admission_roles);
             Ok(true)
         }
 
@@ -4241,7 +4296,11 @@ pub mod tests {
             &self,
             _metadata: &RequestMetadata,
         ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
-            Ok(ListProjectsResponse::All)
+            Ok(if self.unsupported_project_listing {
+                ListProjectsResponse::Unsupported
+            } else {
+                ListProjectsResponse::All
+            })
         }
 
         async fn can_search_users_impl(

@@ -1037,14 +1037,14 @@ async fn transitive_role_member_of(pool: PgPool) {
 // ==================== source-system rebind invalidates closures ====================
 
 /// Rebinding a role's source system changes its `RoleIdent`, which is cached per
-/// row in every assignee's USER_ASSIGNMENTS closure and in the role's ROLE_MEMBERS
-/// entry. The handler must evict both (mirroring `delete_role`), or external
-/// authorizers evaluate the stale ident until TTL. Behavioral assertion: after the
+/// row in every assignee's USER_ASSIGNMENTS closure. The handler must evict it
+/// (mirroring `delete_role`), or external authorizers evaluate the stale ident
+/// until TTL. Behavioral assertion: after the
 /// rebind, the cached reads reflect the NEW ident (and return a fresh `Arc`),
 /// proving eviction. The eviction is synchronous (post-commit in the handler), so
 /// no sleep is needed.
 #[sqlx::test]
-async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: PgPool) {
+async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
     use lakekeeper::{
         api::management::v1::role::{Service as _, UpdateRoleSourceSystemRequest},
         service::CatalogRoleAssignmentOps as _,
@@ -1067,7 +1067,7 @@ async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: P
     .await
     .unwrap();
 
-    // Warm both closures so they cache the OLD ident ("old-src").
+    // Warm the closure so it caches the OLD ident ("old-src").
     let warmed_user =
         PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
             .await
@@ -1127,7 +1127,7 @@ async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: P
         "user-assignments entry was not evicted by the rebind",
     );
 
-    // ROLE_MEMBERS entry must likewise reflect the rebound ident.
+    // The role's member list likewise reflects the rebound ident.
     let after_members =
         PostgresBackend::list_role_assignments_for_role(role, ctx.v1_state.catalog.clone())
             .await
@@ -1136,7 +1136,7 @@ async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: P
     assert_eq!(
         after_members.role_ident.source_id(),
         &RoleSourceId::try_new("new-src").unwrap(),
-        "role-members entry served the stale ident after a source-system rebind",
+        "the member list carries the stale ident after a source-system rebind",
     );
 }
 
@@ -1474,4 +1474,205 @@ async fn managed_role_membership_write_audits_as_a_single_denial(pool: PgPool) {
         listener.failure_reasons(),
         vec![lakekeeper::service::events::AuthorizationFailureReason::ActionForbidden],
     );
+}
+
+// ==================== a dropped request still finishes its commit ====================
+
+/// The roles `user_id` effectively holds, as the cached read serves them.
+async fn served_roles(ctx: &Ctx, user_id: &UserId) -> std::collections::HashSet<RoleId> {
+    use lakekeeper::service::CatalogRoleAssignmentOps as _;
+    PostgresBackend::list_role_assignments_for_user(user_id, ctx.v1_state.catalog.clone())
+        .await
+        .unwrap()
+        .roles
+        .iter()
+        .map(|r| r.role_id)
+        .collect()
+}
+
+/// Runs `request` until its commit waits at `gate`, drops the request, then lets the
+/// commit finish.
+async fn drop_while_committing<T: std::fmt::Debug + Send + 'static>(
+    gate: lakekeeper_integration_tests::CommitGate,
+    request: impl std::future::Future<Output = T> + Send + 'static,
+) {
+    let request = tokio::spawn(request);
+    gate.wait_for_a_held_commit().await;
+    request.abort();
+    assert!(
+        request.await.unwrap_err().is_cancelled(),
+        "the request is dropped while its commit waits"
+    );
+    gate.release().await;
+}
+
+/// A member removal whose request is dropped while it commits still removes the
+/// member from the cached effective roles.
+#[sqlx::test]
+async fn a_member_removal_dropped_while_committing_still_updates_the_cache(pool: PgPool) {
+    use lakekeeper::service::CatalogRoleAssignmentOps as _;
+    use lakekeeper_integration_tests::{CommitGate, eventually};
+
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let role = make_role(&ctx, &project_id, "dropped-removal", "dropped-removal").await;
+    let alice = UserId::new_unchecked("oidc", "dropped-removal-0001");
+    provision_user(&ctx, &alice, "Alice").await;
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(served_roles(&ctx, &alice).await, [role].into());
+
+    let gate = CommitGate::install(&pool, "role_assignment", "DELETE").await;
+    drop_while_committing(
+        gate,
+        ApiServer::remove_role_member(
+            ctx.clone(),
+            metadata(&project_id),
+            role,
+            RoleMemberType::User,
+            alice.to_string(),
+        ),
+    )
+    .await;
+
+    eventually("the removal commits and the cache serves it", || async {
+        let stored = PostgresBackend::list_direct_role_assignments_for_user(
+            &alice,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        stored.is_empty() && served_roles(&ctx, &alice).await.is_empty()
+    })
+    .await;
+}
+
+/// An edge removal whose request is dropped while it commits still removes the
+/// former parent from the cached effective roles of the member's users.
+#[sqlx::test]
+async fn an_edge_removal_dropped_while_committing_still_updates_the_cache(pool: PgPool) {
+    use lakekeeper::service::{CatalogRoleAssignmentOps as _, RoleMembershipDirection};
+    use lakekeeper_integration_tests::{CommitGate, eventually};
+
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let parent = make_role(
+        &ctx,
+        &project_id,
+        "dropped-edge-parent",
+        "dropped-edge-parent",
+    )
+    .await;
+    let member = make_role(
+        &ctx,
+        &project_id,
+        "dropped-edge-member",
+        "dropped-edge-member",
+    )
+    .await;
+    let alice = UserId::new_unchecked("oidc", "dropped-edge-0001");
+    provision_user(&ctx, &alice, "Alice").await;
+    for (role, members) in [
+        (member, vec![user_member(&alice)]),
+        (parent, vec![role_member(member)]),
+    ] {
+        ApiServer::add_role_members(
+            ctx.clone(),
+            metadata(&project_id),
+            role,
+            AddRoleMembersRequest { members },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(served_roles(&ctx, &alice).await, [member, parent].into());
+
+    let gate = CommitGate::install(&pool, "role_membership", "DELETE").await;
+    drop_while_committing(
+        gate,
+        ApiServer::remove_role_member(
+            ctx.clone(),
+            metadata(&project_id),
+            parent,
+            RoleMemberType::Role,
+            member.to_string(),
+        ),
+    )
+    .await;
+
+    eventually(
+        "the edge removal commits and the cache serves it",
+        || async {
+            let parents = PostgresBackend::list_role_memberships(
+                member,
+                RoleMembershipDirection::MemberOf,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap();
+            parents.is_empty() && served_roles(&ctx, &alice).await == [member].into()
+        },
+    )
+    .await;
+}
+
+/// A role delete whose request is dropped while it commits still removes the role
+/// from its members' cached effective roles and from the role cache.
+#[sqlx::test]
+async fn a_role_delete_dropped_while_committing_still_updates_the_caches(pool: PgPool) {
+    use lakekeeper::{
+        api::management::v1::role::{DeleteRoleQuery, Service as _},
+        service::CachePolicy,
+    };
+    use lakekeeper_integration_tests::{CommitGate, eventually};
+
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let arc_project = std::sync::Arc::new(project_id.clone());
+    let role = make_role(&ctx, &project_id, "dropped-delete", "dropped-delete").await;
+    let alice = UserId::new_unchecked("oidc", "dropped-delete-0001");
+    provision_user(&ctx, &alice, "Alice").await;
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(served_roles(&ctx, &alice).await, [role].into());
+    let cached_role = || async {
+        PostgresBackend::get_role_by_id_cache_aware(
+            &arc_project,
+            role,
+            CachePolicy::Use,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+    };
+    assert!(cached_role().await.is_ok(), "the role is cached");
+
+    let gate = CommitGate::install(&pool, "\"role\"", "DELETE").await;
+    drop_while_committing(
+        gate,
+        ApiServer::delete_role(
+            ctx.clone(),
+            metadata(&project_id),
+            role,
+            DeleteRoleQuery::default(),
+        ),
+    )
+    .await;
+
+    eventually("the delete commits and both caches serve it", || async {
+        served_roles(&ctx, &alice).await.is_empty() && cached_role().await.is_err()
+    })
+    .await;
 }

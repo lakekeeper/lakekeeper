@@ -10,9 +10,9 @@ use crate::{
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogWarehouseAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogWarehouseAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -162,6 +162,7 @@ pub enum RequireWarehouseActionError {
     AuthZWarehouseActionForbidden(AuthZWarehouseActionForbidden),
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizationInternalError(AuthorizationInternalError),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthZCannotListAllTasks(AuthZCannotListAllTasks),
     AuthorizerValidationFailed(AuthzBadRequest),
@@ -199,6 +200,7 @@ impl From<IsAllowedActionError> for RequireWarehouseActionError {
             IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
             IsAllowedActionError::BadRequest(e) => e.into(),
             IsAllowedActionError::CountMismatch(e) => e.into(),
+            IsAllowedActionError::InternalError(e) => e.into(),
         }
     }
 }
@@ -206,6 +208,7 @@ delegate_authorization_failure_source!(RequireWarehouseActionError => {
     AuthZWarehouseActionForbidden,
     AuthorizationBackendUnavailable,
     AuthorizationCountMismatch,
+    AuthorizationInternalError,
     CannotInspectPermissions,
     AuthZCannotUseWarehouseId,
     CatalogBackendError,

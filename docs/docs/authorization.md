@@ -15,9 +15,9 @@ Lakekeeper delegates every access decision to one configured **Authorizer**. Thi
 | Availability | Open source | Lakekeeper Plus |
 | Extra service to run | Yes — an OpenFGA deployment with its own database | No, built in |
 | How permissions are expressed | Relationships between principals and objects, stored as data | Policies you author and deploy |
-| Who changes them | Admins **and** object owners, at runtime, through the UI or API | Whoever can deploy the policy source |
+| Who changes them | Admins **and** object owners, at runtime, through the UI or API | Whoever can deploy the policy source; `manage_grants` holders, at runtime, through the Grants API |
 | Conditions on attributes | No | Yes — time, tags, request attributes |
-| Grants API | Full vocabulary | Planned for 0.14 |
+| Grants API | Full vocabulary | Yes, enforced through policies |
 | Changing your mind later | You can switch **to** OpenFGA on a running deployment | Switching away generally needs a new Lakekeeper instance |
 
 Two further authorizers exist for narrower purposes. **AllowAll** permits every request and is meant for development and testing only — it records grants faithfully but enforces nothing. **Custom** lets you implement the `Authorizer` trait yourself; see [Customize](./customize.md).
@@ -30,7 +30,7 @@ Configuration for each is in the [Authorization configuration](./configuration.m
 
 - **Evaluating Lakekeeper?** Read the page for the authorizer you are leaning towards, and stop there.
 - **Setting one up?** The same page — each carries its own model, roles and configuration.
-- **Need Alice to read a table?** Under OpenFGA, use the UI — or the [Grants API](./grants.md) if you are automating it — and note that object owners can hand out access to their own objects. Under Cedar, access comes from your policy source, so change that instead.
+- **Need Alice to read a table?** Under OpenFGA, use the UI — or the [Grants API](./grants.md) if you are automating it — and note that object owners can hand out access to their own objects. Under Cedar, use the [Grants API](./grants.md) too: the predefined policies turn the grant into access. Conditions beyond grants go in your policy source.
 - **Operating the deployment?** See [Instance Admins](./instance-admins.md) for administrative access that does not depend on the authorizer being healthy.
 
 ## Grants, privileges and roles
@@ -45,7 +45,7 @@ Three words are used consistently across the authorizers and the API:
 
 A role's `provider-id` says who owns it. `lakekeeper` roles are yours to manage through the API; roles in a [role provider's](./configuration.md#role-provider) namespace belong to that provider, so create, rename, source-system rebind and member (un)assignment are rejected with `400 ManagedRoleImmutable` — change them in the identity provider instead. They are still ordinary grant principals: grant privileges to them like any other role.
 
-You can delete a provider-managed role, for example one whose group was deleted in the directory. Each member's next request then re-syncs from the provider: if the provider still reports the group, the role is created again under a new id, without the deleted role's grants. Other Lakekeeper instances follow once the member's entry in the [user assignments cache](./configuration.md#caching) expires. [Persisted token roles](./configuration.md#token-role-provider) used for DEFINER views regain the group at the view owner's own next request. If the provider is unreachable at the re-sync, the deleted role's members get errors until it is reachable again.
+You can delete a provider-managed role, for example one whose group was deleted in the directory. Each member's next request in that project then asks the provider again: if the provider still reports the group, the role is created again under a new id, without the deleted role's grants. Other Lakekeeper instances follow once the member's entry in the [user assignments cache](./configuration.md#caching) expires. [Persisted token roles](./configuration.md#token-role-provider) used for DEFINER views regain the group at the view owner's own next request. If the provider is unreachable, the newest stored groups from another project are served; a member with none gets errors until the provider is reachable again.
 
 Deleting any role also removes its grants. Where Lakekeeper stores grants in its database (every built-in authorizer except OpenFGA), a role that holds grants is only deleted with `force=true`; without it the request fails with `409 RoleHasGrants`.
 

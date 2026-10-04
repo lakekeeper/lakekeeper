@@ -236,7 +236,7 @@ mod test {
                 );
             }
             assert_eq!(
-                io.read(kept_file.as_str()).await.unwrap(),
+                io.read(kept_file.as_str()).await.unwrap().bytes,
                 Bytes::from_static(b"kept")
             );
 

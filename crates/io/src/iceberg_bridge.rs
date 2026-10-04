@@ -59,6 +59,18 @@ impl IcebergStorageBridge {
     pub fn new(lakekeeper_io: Arc<dyn LakekeeperStorage>) -> Self {
         Self { lakekeeper_io }
     }
+
+    /// The [`LakekeeperStorage`] this bridge wraps.
+    ///
+    /// Lets callers recover the native storage abstraction from an iceberg
+    /// [`iceberg::io::FileIO`] (via [`iceberg::io::Storage::as_any`]) — e.g. to
+    /// build an `object_store_bridge::ObjectStoreBridge` over the same backend
+    /// (under the `object-store` feature) so that a reader and a `DataFusion`
+    /// writer share one storage.
+    #[must_use]
+    pub fn lakekeeper_io(&self) -> Arc<dyn LakekeeperStorage> {
+        self.lakekeeper_io.clone()
+    }
 }
 
 /// Intentional hard fail for Ser/Deser because `lakekeeper_io` cannot be ser/deser,
@@ -100,7 +112,11 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn read(&self, path: &str) -> iceberg::Result<bytes::Bytes> {
-        self.lakekeeper_io.read(path).await.map_err(Into::into)
+        self.lakekeeper_io
+            .read(path)
+            .await
+            .map(|o| o.bytes)
+            .map_err(Into::into)
     }
 
     async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileRead>> {
@@ -116,7 +132,10 @@ impl Storage for IcebergStorageBridge {
 
     async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileWrite>> {
         let inner = self.lakekeeper_io.writer(path).await?;
-        Ok(Box::new(IcebergFileWrite { inner }))
+        Ok(Box::new(IcebergFileWrite {
+            inner,
+            bytes_written: 0,
+        }))
     }
 
     async fn delete(&self, path: &str) -> iceberg::Result<()> {
@@ -158,6 +177,12 @@ impl Storage for IcebergStorageBridge {
             path.to_string(),
         ))
     }
+
+    /// Overrides the default so this bridge is recoverable from a `&dyn Storage`
+    /// (see [`Self::lakekeeper_io`]).
+    fn as_any(&self) -> &(dyn std::any::Any + 'static) {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -179,16 +204,24 @@ impl iceberg::io::FileRead for IcebergFileRead {
 #[derive(Debug)]
 pub(crate) struct IcebergFileWrite {
     inner: Box<dyn LakekeeperFileWrite>,
+    bytes_written: u64,
 }
 
 #[async_trait]
 impl iceberg::io::FileWrite for IcebergFileWrite {
     async fn write(&mut self, bs: bytes::Bytes) -> iceberg::Result<()> {
+        self.bytes_written += bs.len() as u64;
         self.inner.write(bs).await.map_err(Into::into)
     }
 
-    async fn close(&mut self) -> iceberg::Result<()> {
-        self.inner.close().await.map_err(Into::into)
+    async fn close(&mut self) -> iceberg::Result<FileMetadata> {
+        self.inner
+            .close()
+            .await
+            .map_err(Into::<iceberg::Error>::into)?;
+        Ok(FileMetadata {
+            size: self.bytes_written,
+        })
     }
 }
 
