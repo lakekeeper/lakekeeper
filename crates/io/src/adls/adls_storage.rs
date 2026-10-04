@@ -538,6 +538,14 @@ impl LakekeeperStorage for AdlsStorage {
         path: &str,
     ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
         let path = path.trim_end_matches('/');
+        // URL parsing strips a trailing space, so the request would address a sibling.
+        if path.ends_with(' ') {
+            return Err(InvalidLocationError::new(
+                path.to_string(),
+                "Directory path must not end with a space".to_string(),
+            )
+            .into());
+        }
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
         let client = self.get_directory_client(&adls_location)?;
@@ -559,7 +567,7 @@ impl LakekeeperStorage for AdlsStorage {
                 if http_err.error_code() == Some("DirectoryNotEmpty") {
                     return Ok(RemoveEmptyDirectoryOutcome::NotEmpty);
                 }
-                // The `ETag` no longer matches: the directory was replaced since the `HEAD`.
+                // The directory was replaced after the `HEAD`, so it has a different `ETag`.
                 if http_err.status() == azure_core::StatusCode::PreconditionFailed {
                     return Ok(RemoveEmptyDirectoryOutcome::NotFound);
                 }

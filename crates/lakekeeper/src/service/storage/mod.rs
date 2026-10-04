@@ -33,7 +33,7 @@ use iceberg_ext::{
 };
 use lakekeeper_io::{
     InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
-    s3::S3Location,
+    adls::AdlsLocation, s3::S3Location,
 };
 pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
@@ -1319,6 +1319,13 @@ impl StorageProfile {
             // Base location is always `abfss://` for OneLake; no scheme rewrite needed.
         }
 
+        if matches!(self, StorageProfile::Adls(_) | StorageProfile::OneLake(_))
+            && let Err(e) = AdlsLocation::try_from_location(other, true)
+        {
+            tracing::debug!("Location {other} is not usable on ADLS: {e}");
+            return false;
+        }
+
         base_location.with_trailing_slash();
         if other == &base_location {
             return false;
@@ -2250,6 +2257,35 @@ mod tests {
     }
 
     #[test]
+    fn test_is_allowed_location_adls_rejects_unparseable_paths() {
+        let profile = StorageProfile::Adls(GenericAdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("test_prefix".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        });
+        let base = "abfss://filesystem@account.dfs.core.windows.net/test_prefix";
+        for (sublocation, expected_result) in [
+            (format!("{base}/ns/a%5Cb"), true),
+            (format!(r"{base}/ns/..\test_prefix"), false),
+            (format!(r"{base}/ns\t"), false),
+            (format!("{base}/ns/%2E%2E/t"), false),
+        ] {
+            let loc = Location::from_str(&sublocation).unwrap();
+            assert_eq!(
+                profile.is_allowed_location(&loc),
+                expected_result,
+                "sublocation={sublocation}",
+            );
+        }
+    }
+
+    #[test]
     fn test_is_allowed_location_onelake_rejects_percent_in_segments() {
         use az::{EndpointMode, OneLakeProfile, TopLevelFolder};
         use uuid::Uuid;
@@ -2546,10 +2582,11 @@ mod tests {
             .await
             .unwrap();
         io.delete(marker.as_str()).await.unwrap();
-        let expected = if matches!(
+        let hierarchical = matches!(
             profile,
             StorageProfile::Adls(_) | StorageProfile::OneLake(_)
-        ) {
+        );
+        let expected = if hierarchical {
             lakekeeper_io::RemoveEmptyDirectoryOutcome::Removed
         } else {
             lakekeeper_io::RemoveEmptyDirectoryOutcome::Unsupported
@@ -2562,6 +2599,16 @@ mod tests {
             is_empty(&io, &table_location).await.unwrap(),
             "Location should be empty after removing the emptied directory"
         );
+
+        // The base is a unique test prefix, so its empty directory is removed too.
+        if hierarchical {
+            assert_eq!(
+                io.remove_empty_directory(base_location.as_str())
+                    .await
+                    .unwrap(),
+                lakekeeper_io::RemoveEmptyDirectoryOutcome::Removed
+            );
+        }
     }
 
     #[allow(clippy::too_many_lines)]

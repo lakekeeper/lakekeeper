@@ -1253,7 +1253,7 @@ pub(crate) async fn drop_namespace(
             .filter_map(|(ns_id, loc)| match Location::from_str(&loc) {
                 Ok(location) => Some((NamespaceId::from(ns_id), location)),
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         "Failed to parse location '{loc}' of dropped namespace {ns_id}, skipping its cleanup: {e}"
                     );
                     None
@@ -2563,14 +2563,15 @@ pub mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let locations = drop_info
+        let mut locations = drop_info
             .namespace_locations
             .into_iter()
             .map(|(id, location)| (location.to_string(), id))
-            .collect::<std::collections::BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
+        locations.sort_by(|(a, _), (b, _)| a.cmp(b));
         assert_eq!(
             locations,
-            [(location("p"), parent), (location("p/c"), child)].into()
+            vec![(location("p"), parent), (location("p/c"), child)]
         );
     }
 

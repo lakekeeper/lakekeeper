@@ -1381,6 +1381,18 @@ async fn test_remove_empty_directory_impl(
     storage.write(&plain_file, Bytes::from("plain")).await?;
 
     if hierarchical {
+        // Paths the request URL would resolve to `empty_dir` are rejected.
+        let empty_dir_name = empty_dir.trim_end_matches('/');
+        for path in [
+            format!("{empty_dir_name} /"),
+            format!("{parent_dir}x/..\\empty"),
+        ] {
+            assert!(
+                storage.remove_empty_directory(&path).await.is_err(),
+                "{path}"
+            );
+        }
+
         assert_eq!(
             storage.remove_empty_directory(&empty_dir).await?,
             RemoveEmptyDirectoryOutcome::Removed

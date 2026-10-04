@@ -146,3 +146,11 @@ Namespaces have a `location` property that determines where their tabulars are s
 
 - **With location property**: New tabulars always use the namespace's persisted location, regardless of storage layout changes.
 - **Without location property**: These namespaces compute locations from the current storage layout. Layout changes affect new tabular placement.
+
+## Empty Namespace Directories
+
+On [ADLS Gen2](storage-adls.md) with hierarchical namespace and on [OneLake](storage-onelake.md), a directory remains after the files in it are deleted. Dropping a namespace with `purge=true` removes the directories of the namespace and of the child namespaces dropped with it, if they are empty. Child directories are removed first, so a parent that only held them is removed too.
+
+Only directories strictly below the warehouse base location are removed. With the `default` and `tabular-only` layouts a namespace's location is the base location itself, so this affects `full-hierarchy` warehouses, namespaces created before 0.13, and namespaces with an explicit `location`.
+
+Removal runs once, during the drop request, and never fails the drop. A recursive drop queues table and view files for deletion in the background, so the directories of namespaces that contained tables usually remain. To have them removed, drop the tables first and drop the namespace with `purge=true` once their purge tasks have finished.

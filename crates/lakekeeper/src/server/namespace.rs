@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
 
 use futures::FutureExt;
 use http::StatusCode;
@@ -41,7 +41,10 @@ use crate::{
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::storage_layout::{NamespaceNameContext, NamespacePath},
+        storage::{
+            storage_layout::{NamespaceNameContext, NamespacePath},
+            validation::far_future,
+        },
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
@@ -631,16 +634,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         event_ctx.emit_namespace_dropped_async();
 
         if flags.purge {
-            // A third of the request budget, so a slow backend cannot time out a committed drop.
-            let budget = CONFIG.max_request_time / 3;
+            let deadline = namespace_cleanup_deadline(
+                tokio::time::Instant::now(),
+                request_metadata.received_at(),
+                CONFIG.max_request_time,
+            );
             let cleanup = try_cleanup_namespace_locations(
                 &warehouse,
                 &state.v1_state.secrets,
                 namespace_locations,
             );
-            if tokio::time::timeout(budget, cleanup).await.is_err() {
+            if tokio::time::timeout_at(deadline, cleanup).await.is_err() {
                 tracing::warn!(
-                    "Removing empty namespace directories in warehouse {warehouse_id} exceeded {budget:?}; the remaining directories are kept"
+                    "Removing empty directories of dropped namespace {namespace_id} in warehouse {warehouse_id} ran out of time; the remaining directories are kept"
                 );
             }
         }
@@ -1005,6 +1011,24 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
             }
         }
     }
+}
+
+/// A third of the request limit, ending by five sixths of it from the request's arrival so that a
+/// slow backend cannot time out the response of a committed drop.
+fn namespace_cleanup_deadline(
+    now: tokio::time::Instant,
+    received_at: tokio::time::Instant,
+    request_limit: Duration,
+) -> tokio::time::Instant {
+    // Divided first so that an effectively unbounded limit cannot overflow.
+    [
+        now.checked_add(request_limit / 3),
+        received_at.checked_add(request_limit / 6 * 5),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or_else(far_future)
 }
 
 /// Locations strictly below `base`, deepest first so a parent is checked after its children.
@@ -1374,6 +1398,38 @@ mod tests {
             candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![grandchild, child, parent]
         );
+
+        // Trailing slashes do not make a parent sort ahead of its child.
+        let candidates = namespace_cleanup_candidates(
+            &base,
+            vec![
+                (parent, loc("abfss://fs@acc.dfs.core.windows.net/wh/p///")),
+                (child, loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c")),
+            ],
+        );
+        assert_eq!(
+            candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![child, parent]
+        );
+    }
+
+    #[test]
+    fn test_namespace_cleanup_deadline_fits_the_request_limit() {
+        let limit = Duration::from_secs(30);
+        let received_at = tokio::time::Instant::now();
+        let at = |secs| received_at + Duration::from_secs(secs);
+        // Early in the request the cleanup gets a third of the limit.
+        assert_eq!(
+            namespace_cleanup_deadline(at(1), received_at, limit),
+            at(11)
+        );
+        // Late in the request it ends at five sixths of the limit.
+        assert_eq!(
+            namespace_cleanup_deadline(at(20), received_at, limit),
+            at(25)
+        );
+        // An unbounded limit does not overflow.
+        assert!(namespace_cleanup_deadline(at(0), received_at, Duration::MAX) > at(30));
     }
 
     #[test]
