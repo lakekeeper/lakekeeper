@@ -26,19 +26,20 @@
 //!   The distinction is not cosmetic: a new value on
 //!   a field changes no format, while a new key is a new field, which is a minor version.
 //!
-//! A value vocabulary whose values are spelled somewhere else — another product publishes
-//! them, or they mirror a vocabulary that does — adds `external_values`, and is then exempt
-//! from the `lower_snake_case` rule every other name is held to. Say which vocabulary in the
-//! enum's doc comment. Without the marker the values are checked, so one cannot end up
-//! unchecked by being forgotten.
+//! Every name a vocabulary puts on the wire is its variant name in `snake_case`, or the name
+//! `#[audit(rename = "...")]` gives that variant. `strum` and `serde` attributes are not read:
+//! an enum that is also an API type keeps its API spelling to itself. The macro rejects any
+//! name that is not `lower_snake_case`, unless the vocabulary is spelled somewhere else —
+//! another product publishes the values, or they mirror a vocabulary that does — in which case
+//! it adds `external_values` and says how with `#[audit(rename_all = "...")]`. Name that
+//! vocabulary in the enum's doc comment.
 //!
-//! Wire names of a vocabulary enum follow, in this order of precedence, `#[audit(rename_all =
-//! "...")]`, `#[strum(serialize_all = "...")]`, `#[serde(rename_all = "...")]`, else the
-//! variant name verbatim; per variant, `#[audit(rename = "...")]`, `#[strum(to_string =
-//! "...")]` or `#[strum(serialize = "...")]`, `#[serde(rename = "...")]`. `#[strum(disabled)]`
-//! variants are skipped, as `IntoStaticStr` skips them. The `#[audit(...)]` helper attributes
-//! are consumed by this macro and never reach the compiler, so an enum needs no serde or strum
-//! derive to name its wire values.
+//! Each placement takes a closed set of `#[audit(...)]` keys, each `key = "string"`: a
+//! vocabulary enum takes `rename_all` (with `external_values` only); a variant of a value
+//! vocabulary takes `rename` and `carries`; a field of such a variant takes `expands_to`, which
+//! every unnamed field of an action needs; a variant of a key vocabulary takes `rename`; a
+//! part takes none. An unknown key, a key given twice and a value that is not a string are
+//! rejected. The attributes are consumed here and never reach the compiler.
 //!
 //! Registry entries exist in **debug builds only**: the entry is behind
 //! `#[cfg(debug_assertions)]`, so release binaries carry neither the registry nor the
@@ -49,6 +50,8 @@
 //! Rules enforced at expansion: no type or const generic parameters (lifetimes are fine and
 //! become `'static` in the registry); every named field of a part or context has a doc
 //! comment.
+
+use std::collections::BTreeMap;
 
 use heck::{
     ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase,
@@ -220,6 +223,7 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
         ));
     }
     require_field_docs(input)?;
+    reject_audit_attrs(input)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
@@ -282,8 +286,26 @@ fn expand_vocabulary(
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
-    let rule = rename_all_rule(&input.attrs)?;
     let external_values = matches!(vocabulary, Vocabulary::Values { external: true, .. });
+    // Every name this log owns is `snake_case`, so that is the rule unless the vocabulary is
+    // spelled somewhere else and says how.
+    let enum_attrs = audit_attrs(&input.attrs, &["rename_all"], "on a vocabulary enum")?;
+    let rule = match enum_attrs.get("rename_all") {
+        Some(_) if !external_values => {
+            return Err(Error::new_spanned(
+                &input.ident,
+                "every name this log owns is `snake_case`, which needs no `rename_all`. A \
+                 vocabulary spelled somewhere else adds `external_values` and says how with \
+                 `rename_all`.",
+            ));
+        }
+        Some(rule) => rule.clone(),
+        None => "snake_case".to_string(),
+    };
+    let variant_keys: &[&str] = match vocabulary {
+        Vocabulary::Values { .. } => &["rename", "carries"],
+        Vocabulary::Keys(_) => &["rename"],
+    };
 
     // Keys and values reach the wire as different types on purpose. A `WireKey` converts into
     // no value type, so an enum declared as keys cannot be written where a field's value is
@@ -347,25 +369,21 @@ fn expand_vocabulary(
     // key carries: the compiler checks every write against it.
     let keys_hold_values = matches!(vocabulary, Vocabulary::Keys(object) if object != "entity");
     for v in &data.variants {
-        if strum_disabled(&v.attrs)? {
-            continue;
-        }
-        for retired in ["value", "values_of", "holds"] {
-            if nested_str(&v.attrs, "audit", retired)?.is_some() {
-                return Err(Error::new_spanned(
-                    v,
-                    format!(
-                        "`{retired}` is gone: a key holds its value, and the type it holds is \
-                         what the schema publishes. Write `{}(<the value's type>)`.",
-                        v.ident
-                    ),
-                ));
-            }
-        }
-        let wire = match variant_rename(&v.attrs)? {
-            Some(explicit) => explicit,
-            None => apply_rule(rule.as_deref(), &v.ident.to_string())?,
+        let variant_attrs = audit_attrs(&v.attrs, variant_keys, "on a variant")?;
+        let wire = match variant_attrs.get("rename") {
+            Some(explicit) => explicit.clone(),
+            None => apply_rule(&rule, &v.ident.to_string())?,
         };
+        if !external_values && !is_lower_snake_case(&wire) {
+            return Err(Error::new_spanned(
+                v,
+                format!(
+                    "`{wire}` is not `lower_snake_case`, which is how this log spells every name \
+                     it owns: runs of `[a-z0-9]` joined by single underscores, starting with a \
+                     letter. A vocabulary spelled somewhere else adds `external_values`."
+                ),
+            ));
+        }
         let vident = &v.ident;
         let pattern = match &v.fields {
             Fields::Unit => quote!(Self::#vident),
@@ -412,21 +430,9 @@ fn expand_vocabulary(
         } else {
             values.push(quote!(::core::option::Option::None));
         }
-        // Context sits beside a value of a flattened field, so only a value vocabulary has
-        // any. On a key vocabulary the declaration would reach no schema and say nothing.
-        if nested_str(&v.attrs, "audit", "carries")?.is_some()
-            && !matches!(vocabulary, Vocabulary::Values { .. })
-        {
-            return Err(Error::new_spanned(
-                v,
-                "`carries` says which `context` keys sit beside a value on the wire, so it \
-                 belongs on a vocabulary declared with `field = \"<wire field>\"`. A key \
-                 vocabulary names the keys themselves; nothing sits beside them.",
-            ));
-        }
         // A field name is already in the enum's own spelling, so it takes the same rule the
-        // variant names take: `rename_all` moves both together.
-        let carried = variant_context(v, rule.as_deref())?;
+        // variant names take.
+        let carried = variant_context(v, &rule, &variant_attrs, vocabulary)?;
         carries.push(quote!(&[#(#carried),*]));
     }
     let count = names.len();
@@ -589,6 +595,27 @@ fn strip_our_attrs(input: &DeriveInput) -> DeriveInput {
     out
 }
 
+/// A part, a context or a shape takes no `#[audit]` key: its schema comes from its type, and
+/// its field names are its own.
+fn reject_audit_attrs(input: &DeriveInput) -> Result<()> {
+    const PLACEMENT: &str = "on an audit part";
+    audit_attrs(&input.attrs, &[], PLACEMENT)?;
+    let fields: Vec<&Fields> = match &input.data {
+        Data::Struct(s) => vec![&s.fields],
+        Data::Enum(e) => {
+            for v in &e.variants {
+                audit_attrs(&v.attrs, &[], PLACEMENT)?;
+            }
+            e.variants.iter().map(|v| &v.fields).collect()
+        }
+        Data::Union(_) => Vec::new(),
+    };
+    for field in fields.into_iter().flatten() {
+        audit_attrs(&field.attrs, &[], PLACEMENT)?;
+    }
+    Ok(())
+}
+
 fn reject_type_generics(input: &DeriveInput) -> Result<()> {
     for p in &input.generics.params {
         match p {
@@ -676,24 +703,38 @@ fn require_field_docs(input: &DeriveInput) -> Result<()> {
     Ok(())
 }
 
-/// The value of `#[<attr>(<key> = "...")]`, if present.
-fn nested_str(attrs: &[Attribute], attr: &str, key: &str) -> Result<Option<String>> {
-    let mut out = None;
-    for a in attrs.iter().filter(|a| a.path().is_ident(attr)) {
-        a.parse_nested_meta(|meta| {
-            if meta.path.is_ident(key) {
-                if out.is_none() {
-                    let value: Lit = meta.value()?.parse()?;
-                    if let Lit::Str(s) = value {
-                        out = Some(s.value());
-                    }
+/// The `#[audit(...)]` keys on one item, checked against the keys its placement takes.
+///
+/// Every key is `key = "string"`. A key the placement does not take, a key given twice, and a
+/// value that is not a string literal are all rejected, so a misspelt key cannot compile and
+/// leave the declaration it meant to make unsaid.
+fn audit_attrs(
+    attrs: &[Attribute],
+    allowed: &[&str],
+    placement: &str,
+) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for attr in attrs.iter().filter(|a| a.path().is_ident("audit")) {
+        attr.parse_nested_meta(|meta| {
+            let key = meta
+                .path
+                .get_ident()
+                .map_or_else(String::new, ToString::to_string);
+            if !allowed.contains(&key.as_str()) {
+                let takes = if allowed.is_empty() {
+                    "it takes none".to_string()
                 } else {
-                    let _: Expr = meta.value()?.parse()?;
-                }
-            } else if meta.input.peek(Token![=]) {
-                let _: Expr = meta.value()?.parse()?;
-            } else if meta.input.peek(syn::token::Paren) {
-                let _ = meta.parse_nested_meta(|_| Ok(()));
+                    format!("it takes `{}`", allowed.join("`, `"))
+                };
+                return Err(meta.error(format!(
+                    "`{key}` is not an `#[audit]` key {placement}: {takes}"
+                )));
+            }
+            let Lit::Str(value) = meta.value()?.parse::<Lit>()? else {
+                return Err(meta.error(format!("`{key}` takes a string literal")));
+            };
+            if out.insert(key.clone(), value.value()).is_some() {
+                return Err(meta.error(format!("`{key}` is given twice")));
             }
             Ok(())
         })?;
@@ -701,32 +742,16 @@ fn nested_str(attrs: &[Attribute], attr: &str, key: &str) -> Result<Option<Strin
     Ok(out)
 }
 
-/// Whether `#[<attr>(<flag>)]` is present.
-fn nested_flag(attrs: &[Attribute], attr: &str, flag: &str) -> Result<bool> {
-    let mut out = false;
-    for a in attrs.iter().filter(|a| a.path().is_ident(attr)) {
-        a.parse_nested_meta(|meta| {
-            if meta.path.is_ident(flag) && !meta.input.peek(Token![=]) {
-                out = true;
-            } else if meta.input.peek(Token![=]) {
-                let _: Expr = meta.value()?.parse()?;
-            } else if meta.input.peek(syn::token::Paren) {
-                let _ = meta.parse_nested_meta(|_| Ok(()));
-            }
-            Ok(())
-        })?;
-    }
-    Ok(out)
-}
-
-fn rename_all_rule(attrs: &[Attribute]) -> Result<Option<String>> {
-    if let Some(r) = nested_str(attrs, "audit", "rename_all")? {
-        return Ok(Some(r));
-    }
-    if let Some(r) = nested_str(attrs, "strum", "serialize_all")? {
-        return Ok(Some(r));
-    }
-    nested_str(attrs, "serde", "rename_all")
+/// Whether `name` is one or more runs of `[a-z0-9]` joined by single underscores, starting
+/// with a letter.
+fn is_lower_snake_case(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name.split('_').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
 }
 
 /// A comma-separated key list, as `expands_to` and `carries` both write one. Empty entries
@@ -746,21 +771,34 @@ fn split_keys(declared: &str) -> Vec<String> {
 /// `purge`, under the enum's own rename rule so the names match the wire.
 ///
 /// A field whose own type decides the keys lends its name to none of them, so it lists them
-/// literally: `#[audit(expands_to = "a, b")]` carries `a` and `b` in place of the field. The
-/// list is read as written — nothing resolves a vocabulary name here — and a test holds it
-/// against the keys the emitting code actually writes.
+/// literally: `#[audit(expands_to = "a, b")]` carries `a` and `b` in place of the field. An
+/// unnamed field of an action has no name to lend, so it always lists them, `""` for none.
 ///
 /// A variant with no fields at all can still reach a record with context beside it, when the
-/// handler that names the action assembles the context itself. It lists those keys the same
-/// way, with `#[audit(carries = "a, b")]` on the variant.
+/// handler that names the action assembles the context itself. It lists those keys with
+/// `#[audit(carries = "a, b")]` on the variant.
 ///
 /// # Errors
 ///
-/// If a variant both has fields and declares `carries`, which would say the same thing twice
-/// and let the two drift apart.
-fn variant_context(variant: &syn::Variant, rule: Option<&str>) -> Result<Vec<String>> {
-    let declared = nested_str(&variant.attrs, "audit", "carries")?;
-    if let Some(declared) = declared {
+/// If a variant both has fields and declares `carries`, which would say the same thing twice;
+/// if a field of a key vocabulary carries `#[audit]`; or if an unnamed field of an action
+/// declares no `expands_to`.
+fn variant_context(
+    variant: &syn::Variant,
+    rule: &str,
+    attrs: &BTreeMap<String, String>,
+    vocabulary: Vocabulary<'_>,
+) -> Result<Vec<String>> {
+    let field_keys: &[&str] = match vocabulary {
+        Vocabulary::Values { .. } => &["expands_to"],
+        Vocabulary::Keys(_) => &[],
+    };
+    let fields: Vec<(&syn::Field, BTreeMap<String, String>)> = variant
+        .fields
+        .iter()
+        .map(|field| Ok((field, audit_attrs(&field.attrs, field_keys, "on a field")?)))
+        .collect::<Result<_>>()?;
+    if let Some(declared) = attrs.get("carries") {
         if !matches!(variant.fields, Fields::Unit) {
             return Err(Error::new_spanned(
                 variant,
@@ -770,56 +808,48 @@ fn variant_context(variant: &syn::Variant, rule: Option<&str>) -> Result<Vec<Str
                  the keys takes `expands_to` instead.",
             ));
         }
-        return Ok(split_keys(&declared));
+        return Ok(split_keys(declared));
     }
-    let Fields::Named(named) = &variant.fields else {
-        return Ok(Vec::new());
-    };
+    let is_action = matches!(
+        vocabulary,
+        Vocabulary::Values {
+            field: "action_name",
+            ..
+        }
+    );
     let mut carries = Vec::new();
-    for field in &named.named {
-        // A field whose own type decides the keys cannot lend its name to one, so it names
-        // them. A test holds this against what the emitting code writes.
-        if let Some(declared) = nested_str(&field.attrs, "audit", "expands_to")? {
-            carries.extend(split_keys(&declared));
+    for (field, field_attrs) in fields {
+        if let Some(declared) = field_attrs.get("expands_to") {
+            carries.extend(split_keys(declared));
             continue;
         }
-        let Some(ident) = field.ident.as_ref() else {
-            continue;
-        };
-        carries.push(apply_rule(rule, &ident.to_string())?);
+        match &field.ident {
+            Some(ident) => carries.push(apply_rule(rule, &ident.to_string())?),
+            None if is_action => {
+                return Err(Error::new_spanned(
+                    field,
+                    "an unnamed field of an action has no name to lend a context key, so it \
+                     says which keys it writes: `#[audit(expands_to = \"a, b\")]`, or \
+                     `expands_to = \"\"` for none",
+                ));
+            }
+            None => {}
+        }
     }
     Ok(carries)
 }
 
-fn variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
-    if let Some(r) = nested_str(attrs, "audit", "rename")? {
-        return Ok(Some(r));
-    }
-    if let Some(r) = nested_str(attrs, "strum", "to_string")? {
-        return Ok(Some(r));
-    }
-    if let Some(r) = nested_str(attrs, "strum", "serialize")? {
-        return Ok(Some(r));
-    }
-    nested_str(attrs, "serde", "rename")
-}
-
-fn strum_disabled(attrs: &[Attribute]) -> Result<bool> {
-    nested_flag(attrs, "strum", "disabled")
-}
-
-fn apply_rule(rule: Option<&str>, name: &str) -> Result<String> {
+fn apply_rule(rule: &str, name: &str) -> Result<String> {
     Ok(match rule {
-        None => name.to_string(),
-        Some("snake_case") => name.to_snake_case(),
-        Some("kebab-case" | "kebab_case") => name.to_kebab_case(),
-        Some("camelCase" | "camel_case") => name.to_lower_camel_case(),
-        Some("PascalCase") => name.to_pascal_case(),
-        Some("SCREAMING_SNAKE_CASE" | "shouty_snake_case") => name.to_shouty_snake_case(),
-        Some("SCREAMING-KEBAB-CASE") => name.to_shouty_kebab_case(),
-        Some("lowercase") => name.to_lowercase(),
-        Some("UPPERCASE") => name.to_uppercase(),
-        Some(other) => {
+        "snake_case" => name.to_snake_case(),
+        "kebab-case" => name.to_kebab_case(),
+        "camelCase" => name.to_lower_camel_case(),
+        "PascalCase" => name.to_pascal_case(),
+        "SCREAMING_SNAKE_CASE" => name.to_shouty_snake_case(),
+        "SCREAMING-KEBAB-CASE" => name.to_shouty_kebab_case(),
+        "lowercase" => name.to_lowercase(),
+        "UPPERCASE" => name.to_uppercase(),
+        other => {
             return Err(Error::new(
                 proc_macro2::Span::call_site(),
                 format!("unsupported rename rule `{other}` on a vocabulary enum"),
@@ -872,11 +902,7 @@ mod tests {
 
     #[test]
     fn a_rename_rule_spells_the_wire_name_the_way_serde_does() {
-        let rule = |rule: &str| apply_rule(Some(rule), "GrantCreated").expect("a known rule");
-        assert_eq!(
-            apply_rule(None, "GrantCreated").expect("no rule"),
-            "GrantCreated"
-        );
+        let rule = |rule: &str| apply_rule(rule, "GrantCreated").expect("a known rule");
         assert_eq!(rule("snake_case"), "grant_created");
         assert_eq!(rule("kebab-case"), "grant-created");
         assert_eq!(rule("camelCase"), "grantCreated");
@@ -887,38 +913,108 @@ mod tests {
         assert_eq!(rule("SCREAMING-KEBAB-CASE"), "GRANT-CREATED");
         assert_eq!(rule("lowercase"), "grantcreated");
         assert_eq!(rule("UPPERCASE"), "GRANTCREATED");
-        assert!(apply_rule(Some("Train-Case"), "GrantCreated").is_err());
+        assert!(apply_rule("Train-Case", "GrantCreated").is_err());
     }
 
     #[test]
-    fn a_wire_name_follows_the_declared_precedence() {
-        let wire = |item: &str| expand_str(r#"field = "outcome""#, item).expect("expands");
-        // `#[audit(rename)]` wins over strum and serde, which is what lets an enum name its
-        // wire value without changing how it serialises for an API.
+    fn a_wire_name_is_snake_case_unless_the_audit_attribute_says_otherwise() {
+        let wire = |args: &str, item: &str| expand_str(args, item).expect("expands");
+        // `snake_case` is the default, and strum and serde are not read: an enum's API
+        // spelling cannot change what it puts on the wire.
         let expansion = wire(
+            r#"field = "outcome""#,
             r#"
-            #[audit(rename_all = "snake_case")]
+            #[strum(serialize_all = "kebab-case")]
             enum Outcome {
-                #[audit(rename = "x-y")]
-                #[serde(rename = "from_serde")]
+                #[serde(rename = "from-serde")]
+                SomethingHappened,
+                #[audit(rename = "explicit_name")]
                 Renamed,
-                Plain,
             }"#,
         );
-        assert!(expansion.contains(r#""x-y""#), "{expansion}");
-        assert!(expansion.contains(r#""plain""#), "{expansion}");
-        // `#[strum(disabled)]` drops the variant, as `IntoStaticStr` drops it.
+        assert!(expansion.contains(r#""something_happened""#), "{expansion}");
+        assert!(expansion.contains(r#""explicit_name""#), "{expansion}");
+        let names = between(&expansion, "WIRE_NAMES : [& 'static str ; 2usize] = [", "]");
+        assert_eq!(squash(names), r#""something_happened" , "explicit_name""#);
+        // A vocabulary spelled elsewhere says how, and is exempt from the case rule.
         let expansion = wire(
+            r#"field = "kind", external_values"#,
             r#"
-            enum Outcome {
-                #[strum(disabled)]
-                Hidden,
-                Shown,
-            }"#,
+            #[audit(rename_all = "kebab-case")]
+            enum Kind { GenericTable }"#,
         );
-        // The variant survives in the re-emitted enum; only its wire name is gone.
-        assert!(!expansion.contains(r#""Hidden""#), "{expansion}");
-        assert!(expansion.contains(r#""Shown""#), "{expansion}");
+        assert!(expansion.contains(r#""generic-table""#), "{expansion}");
+        // A variant `strum` disables still names a value: the macro reads no `strum`.
+        let expansion = wire(
+            r#"field = "outcome""#,
+            "enum Outcome { #[strum(disabled)] Hidden, Shown }",
+        );
+        assert!(expansion.contains(r#""hidden""#), "{expansion}");
+    }
+
+    #[test]
+    fn an_audit_key_is_checked_against_its_placement() {
+        // Unknown, duplicated, non-string and misplaced keys are all rejected, so a typo
+        // cannot compile and leave its declaration unsaid.
+        assert!(
+            rejection(
+                r#"field = "outcome""#,
+                r#"enum E { #[audit(renam = "a")] A }"#
+            )
+            .contains("`renam` is not an `#[audit]` key on a variant")
+        );
+        assert!(
+            rejection(
+                r#"field = "outcome""#,
+                r#"enum E { #[audit(rename = "a", rename = "b")] A }"#
+            )
+            .contains("given twice")
+        );
+        assert!(
+            rejection(r#"field = "outcome""#, "enum E { #[audit(rename = 1)] A }")
+                .contains("takes a string literal")
+        );
+        assert!(
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[audit(carries = "a")] A(bool) }"#
+            )
+            .contains("`carries` is not an `#[audit]` key on a variant")
+        );
+        assert!(
+            rejection(
+                "",
+                r#"struct S { #[audit(rename = "a")] /// A field.
+                a: u8 }"#
+            )
+            .contains("on an audit part: it takes none")
+        );
+        // A name this log owns is `snake_case`; only an external vocabulary may say otherwise.
+        assert!(
+            rejection(
+                r#"field = "outcome""#,
+                r#"#[audit(rename_all = "kebab-case")] enum E { A }"#
+            )
+            .contains("needs no `rename_all`")
+        );
+        assert!(
+            rejection(
+                r#"field = "outcome""#,
+                r#"enum E { #[audit(rename = "Not-Snake")] A }"#
+            )
+            .contains("is not `lower_snake_case`")
+        );
+        // An unnamed field of an action says which keys it writes, `""` for none.
+        assert!(
+            rejection(r#"field = "action_name""#, "enum E { A(u8) }").contains("no name to lend")
+        );
+        assert!(
+            expand_str(
+                r#"field = "action_name""#,
+                r#"enum E { A(#[audit(expands_to = "")] u8) }"#
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -942,8 +1038,8 @@ mod tests {
         assert_eq!(
             squash(&wire),
             squash(
-                r#"WireName { text : "Success" , doc : "The operation completed." , carries : & [] , value : :: core :: option :: Option :: None , } ,
-                   WireName { text : "Other" , doc : "" , carries : & [] , value : :: core :: option :: Option :: None , }"#
+                r#"WireName { text : "success" , doc : "The operation completed." , carries : & [] , value : :: core :: option :: Option :: None , } ,
+                   WireName { text : "other" , doc : "" , carries : & [] , value : :: core :: option :: Option :: None , }"#
             ),
             "{expansion}"
         );
@@ -1029,14 +1125,6 @@ mod tests {
             )
             .contains("say it a second way")
         );
-        // Nothing sits beside a key, so a key vocabulary has no context to declare.
-        assert!(
-            rejection(
-                r#"keys_of = "context""#,
-                r#"enum K { #[audit(carries = "a")] V(bool) }"#
-            )
-            .contains("nothing sits beside them")
-        );
     }
 
     #[test]
@@ -1075,21 +1163,6 @@ mod tests {
                 .contains("could never be emitted")
                 || expand_str(r#"keys_of = "entity""#, "enum K { A(bool) }").is_err()
         );
-        // The type a key holds replaces the string declarations it used to carry.
-        for retired in [
-            r#"value = "boolean""#,
-            r#"values_of = "Set""#,
-            r#"holds = "Part""#,
-        ] {
-            assert!(
-                rejection(
-                    r#"keys_of = "context""#,
-                    &format!("enum K {{ #[audit({retired})] A(bool) }}")
-                )
-                .contains("is gone"),
-                "{retired}"
-            );
-        }
     }
 
     #[test]
@@ -1112,7 +1185,7 @@ mod tests {
         // A variant that declares nothing still registers, carrying nothing.
         assert!(
             expansion.contains(
-                r#"text : "Bare" , doc : "An action that carries nothing." , carries : & []"#
+                r#"text : "bare" , doc : "An action that carries nothing." , carries : & []"#
             ),
             "{expansion}"
         );

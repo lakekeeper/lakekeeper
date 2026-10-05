@@ -49,7 +49,6 @@ use crate::{
 /// that require every field to be documented, and `#[audit_part]` derives every wire name
 /// from the variant, so a new variant cannot reach the wire unnamed.
 #[audit_part(keys_of = "entity")]
-#[audit(rename_all = "snake_case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
     ServerId,
@@ -128,7 +127,6 @@ impl ContextEntry {
 /// vocabulary declaring the same key would put two meanings at one path, and a test rejects
 /// that.
 #[audit_part(keys_of = "context")]
-#[audit(rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HandlerContextKey {
     /// Whether the user creation was the caller provisioning itself.
@@ -189,7 +187,6 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 /// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
 /// unnamed.
 #[audit_part(keys_of = "action")]
-#[audit(rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionContextKey {
     AllowPartial(bool),

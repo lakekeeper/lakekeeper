@@ -46,12 +46,6 @@ mod audit_crate_schema {
             env!("CARGO_MANIFEST_DIR"),
         );
     }
-
-    /// The values this crate names are house style.
-    #[test]
-    fn the_wire_values_this_crate_names_are_house_style() {
-        lakekeeper::audit::schema::assert_wire_values_are_house_style(env!("CARGO_PKG_NAME"));
-    }
 }
 mod authorizer;
 mod check;

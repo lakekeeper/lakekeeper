@@ -578,13 +578,12 @@ mod tests {
 
     /// A vocabulary enum declared the way any crate declares one.
     #[audit_part(field = "probe_outcome")]
-    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ProbeOutcome {
         /// Everything went fine.
         AllGood,
         /// Renamed explicitly.
-        #[audit(rename = "x-y")]
+        #[audit(rename = "renamed_value")]
         Renamed,
         /// Carries data; only the name reaches the wire.
         #[allow(dead_code)]
@@ -596,7 +595,6 @@ mod tests {
 
     /// A key vocabulary declared the way any crate declares one.
     #[audit_part(keys_of = "probe")]
-    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ProbeKey {
         /// The only key.
@@ -617,7 +615,7 @@ mod tests {
     fn a_vocabulary_enum_yields_serde_renamed_wire_values_tied_to_the_crate_emitter() {
         let good: Wire<ProbeOutcome> = ProbeOutcome::AllGood.as_wire();
         assert_eq!(good.text(), "all_good");
-        assert_eq!(ProbeOutcome::Renamed.as_wire().text(), "x-y");
+        assert_eq!(ProbeOutcome::Renamed.as_wire().text(), "renamed_value");
         assert_eq!(
             ProbeOutcome::WithData { n: 1 }.as_wire().text(),
             "with_data"
@@ -625,9 +623,12 @@ mod tests {
         // `as_str` is generated from the same match as `as_wire`, so the two cannot answer
         // differently and neither can drift from the value the registry declares.
         assert_eq!(ProbeOutcome::AllGood.as_str(), good.text());
-        assert_eq!(ProbeOutcome::Renamed.as_str(), "x-y");
+        assert_eq!(ProbeOutcome::Renamed.as_str(), "renamed_value");
         assert_eq!(ProbeOutcome::WIRE_VARIANTS.len(), 3);
-        assert_eq!(ProbeOutcome::WIRE_NAMES, ["all_good", "x-y", "with_data"]);
+        assert_eq!(
+            ProbeOutcome::WIRE_NAMES,
+            ["all_good", "renamed_value", "with_data"]
+        );
         assert_eq!(serde_json::to_value(good).expect("serializes"), "all_good");
         assert_eq!(good.to_string(), "all_good");
         let any: AnyWireStr = good.into();
@@ -662,7 +663,7 @@ mod tests {
 
         let outcome = by_name("ProbeOutcome");
         assert_eq!(outcome.kind.wire_place(), Some("probe_outcome"));
-        assert_eq!(texts(outcome), ["all_good", "x-y", "with_data"]);
+        assert_eq!(texts(outcome), ["all_good", "renamed_value", "with_data"]);
         assert!(matches!(outcome.kind, Kind::Values { .. }));
         assert!(outcome.schema.is_none());
         assert_eq!(outcome.emitter_name, "lakekeeper");

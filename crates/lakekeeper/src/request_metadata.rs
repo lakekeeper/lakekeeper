@@ -102,7 +102,6 @@ impl UserAgent {
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
 #[crate::audit::audit_part(field = "privilege_source")]
-#[audit(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
     /// A call the catalog made to itself, with no client request behind it. Full bypass,

@@ -135,7 +135,6 @@ pub struct AuthorizationSucceededEvent {
 /// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both `ResourceNotFound`
 /// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
 #[crate::audit::audit_part(field = "failure_reason")]
-#[audit(rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq, Eq, strum_macros::VariantArray, strum_macros::VariantNames)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user

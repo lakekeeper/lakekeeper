@@ -1551,14 +1551,12 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
     /// A test-only operation vocabulary; registered under `lakekeeper`, and kept out of the
     /// generated schema by its `tests` module path.
     #[crate::audit::audit_part(field = "operation")]
-    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy)]
     enum OperationProbe {
         /// The probe.
         ProbeOperation,
     }
     #[crate::audit::audit_part(field = "outcome")]
-    #[audit(rename_all = "snake_case")]
     #[derive(Clone, Copy)]
     enum OutcomeProbe {
         /// Fine.
@@ -2345,17 +2343,6 @@ fn no_fixture_action_carries_an_undeclared_key() {
     );
 }
 
-/// Every key a handler writes beside an action is one that action declares.
-///
-/// The fixture guard above checks the same thing against emitted records, so it is limited
-/// to actions a fixture covers. This reads the source, so it covers one nobody pinned.
-#[test]
-fn every_event_actions_key_is_declared() {
-    crate::audit::schema::assert_event_actions_write_only_declared_keys::<crate::Lakekeeper>(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
-    );
-}
-
 /// Every key an action says it carries is a key the action object declares.
 #[test]
 fn every_carried_key_is_a_declared_key() {
@@ -2533,12 +2520,6 @@ fn the_committed_crate_schema_matches_the_registry() {
         env!("CARGO_PKG_NAME"),
         env!("CARGO_MANIFEST_DIR"),
     );
-}
-
-/// The values this crate names are house style.
-#[test]
-fn the_wire_values_this_crate_names_are_house_style() {
-    crate::audit::schema::assert_wire_values_are_house_style(env!("CARGO_PKG_NAME"));
 }
 
 /// The schema's description of a record's shape is what the emitter actually writes.

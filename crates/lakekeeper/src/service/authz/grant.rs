@@ -57,6 +57,7 @@ use crate::{
 // `external_values` because these names are this API's: the audit log's `lower_snake_case`
 // rule is not applied to them.
 #[crate::audit::audit_part(field = "resource_type", external_values)]
+#[audit(rename_all = "kebab-case")]
 #[derive(
     Debug,
     Clone,
@@ -87,6 +88,7 @@ pub enum ResourceType {
     /// The only spelling `kebab-case` does not already produce.
     #[serde(rename = "tag-definition")]
     #[strum(serialize = "tag-definition")]
+    #[audit(rename = "tag-definition")]
     Tag,
 }
 
@@ -1105,6 +1107,20 @@ pub(crate) fn emit_bootstrap_grants_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The audit log and the management API spell resource types alike: each declares its
+    /// spelling, so a test is what keeps the two together.
+    #[test]
+    fn resource_types_are_spelled_alike_in_the_audit_log_and_the_api() {
+        use strum::VariantArray as _;
+        for (resource_type, wire) in ResourceType::VARIANTS.iter().zip(ResourceType::WIRE_NAMES) {
+            assert_eq!(
+                serde_json::to_value(resource_type).expect("serializes"),
+                serde_json::json!(wire)
+            );
+        }
+        assert_eq!(ResourceType::VARIANTS.len(), ResourceType::WIRE_NAMES.len());
+    }
 
     #[test]
     fn resource_type_round_trips_through_its_stored_spelling() {
