@@ -21,8 +21,7 @@
         "update_warehouse_assignments"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::api::AssignmentAction"
+      "x-audit-field": "action_name"
     },
     "GenericTableRelation": {
       "type": "string",
@@ -59,8 +58,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::GenericTableRelation"
+      "x-audit-field": "action_name"
     },
     "NamespaceRelation": {
       "type": "string",
@@ -112,8 +110,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::NamespaceRelation"
+      "x-audit-field": "action_name"
     },
     "ProjectRelation": {
       "type": "string",
@@ -157,8 +154,7 @@
         "warehouse"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ProjectRelation"
+      "x-audit-field": "action_name"
     },
     "RoleRelation": {
       "type": "string",
@@ -177,8 +173,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::RoleRelation"
+      "x-audit-field": "action_name"
     },
     "ServerRelation": {
       "type": "string",
@@ -197,8 +192,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ServerRelation"
+      "x-audit-field": "action_name"
     },
     "TableRelation": {
       "type": "string",
@@ -236,8 +230,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::TableRelation"
+      "x-audit-field": "action_name"
     },
     "TagRelation": {
       "type": "string",
@@ -255,8 +248,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::TagRelation"
+      "x-audit-field": "action_name"
     },
     "ViewRelation": {
       "type": "string",
@@ -293,8 +285,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ViewRelation"
+      "x-audit-field": "action_name"
     },
     "WarehouseRelation": {
       "type": "string",
@@ -352,8 +343,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::WarehouseRelation"
+      "x-audit-field": "action_name"
     }
   }
 }

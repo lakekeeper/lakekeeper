@@ -41,40 +41,7 @@
         "writes"
       ],
       "x-audit-kind": "keys",
-      "x-audit-keys-of": "action",
-      "x-audit-type": "lakekeeper::service::events::context::ActionContextKey",
-      "x-audit-key-types": {
-        "allow_partial": "boolean",
-        "base_location": "string",
-        "created_before": "string",
-        "deletes": "integer",
-        "destination": "array",
-        "dry_run": "boolean",
-        "force": "boolean",
-        "format": "string",
-        "generic_table_id": "string",
-        "name": "string",
-        "narrowed_privileges": "array",
-        "principal": "string",
-        "principals": "array",
-        "privilege_scope": "string",
-        "privileges": "array",
-        "project_id": "string",
-        "properties": "object",
-        "purge": "boolean",
-        "recursive": "boolean",
-        "removed_properties": "array",
-        "requested_provider_id": "string",
-        "requested_source_id": "string",
-        "resource_types": "array",
-        "root_level": "string",
-        "source": "array",
-        "table_id": "string",
-        "target_refs": "array",
-        "update_kinds": "array",
-        "updated_properties": "object",
-        "writes": "integer"
-      }
+      "x-audit-keys-of": "action"
     },
     "ActionRecord": {
       "type": "object",
@@ -93,7 +60,6 @@
       },
       "description": "An `action` object: the wire name and the action's context fields.",
       "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActionRecord",
       "allOf": [
         {
           "if": {
@@ -606,8 +572,7 @@
         "actor_type"
       ],
       "description": "The `actor` object: who made the request, as authentication established it.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ActorRecord"
+      "x-audit-kind": "part"
     },
     "ActorType": {
       "type": "string",
@@ -618,8 +583,7 @@
         "principal"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "actor_type",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::ActorType"
+      "x-audit-field": "actor_type"
     },
     "AdmissionRejectedContext": {
       "type": "object",
@@ -665,8 +629,7 @@
         "request_id"
       ],
       "description": "Context for the admission-rejection audit record: which gate refused the request, on what\ngrounds, and what the caller was told.\n\n`error_id` is the id the caller was handed, so a user's report resolves to this record.\n`request_id` is repeated out of the span, so the record stands alone.",
-      "x-audit-kind": "context",
-      "x-audit-type": "lakekeeper::service::admission::AdmissionRejectedContext<'_>"
+      "x-audit-kind": "context"
     },
     "AssignmentAction": {
       "type": "string",
@@ -682,8 +645,7 @@
         "update_warehouse_assignments"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::api::AssignmentAction"
+      "x-audit-field": "action_name"
     },
     "AssumedRoleRecord": {
       "type": "object",
@@ -707,8 +669,7 @@
         "source_id"
       ],
       "description": "The role an `assumed_role` actor acts as.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::AssumedRoleRecord"
+      "x-audit-kind": "part"
     },
     "AuditOperation": {
       "type": "string",
@@ -718,8 +679,7 @@
         "grant_revoked"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "operation",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOperation"
+      "x-audit-field": "operation"
     },
     "AuditOutcome": {
       "type": "string",
@@ -730,7 +690,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "outcome",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::AuditOutcome",
       "x-audit-descriptions": {
         "forbidden": "An admission gate denied the caller authoritatively.",
         "success": "The operation completed.",
@@ -743,8 +702,7 @@
         "assume_role"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::events::context::AuthnAction"
+      "x-audit-field": "action_name"
     },
     "AuthorizationFailureReason": {
       "type": "string",
@@ -758,7 +716,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "failure_reason",
-      "x-audit-type": "lakekeeper::service::events::types::authorization::AuthorizationFailureReason",
       "x-audit-descriptions": {
         "action_forbidden": "Action is not allowed for the user",
         "cannot_see_resource": "Resource exists but user lacks permission to see it",
@@ -852,7 +809,6 @@
       ],
       "description": "An authorization record: was this caller permitted to do these actions on these entities?",
       "x-audit-kind": "shape",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::AuthorizationRecord",
       "x-audit-record-type": "authorization"
     },
     "CatalogGenericTableAction": {
@@ -873,7 +829,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogGenericTableAction",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this generic table.",
         "read_grants": "Can list the grants held on this generic table."
@@ -905,7 +860,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogNamespaceAction",
       "x-audit-descriptions": {
         "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
         "manage_tags": "Attach/detach governance tags on this namespace.",
@@ -938,7 +892,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogProjectAction",
       "x-audit-descriptions": {
         "create_tag": "Create a new governance tag definition in this project.",
         "list_tags": "List tag definitions in this project.",
@@ -958,7 +911,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogRoleAction",
       "x-audit-descriptions": {
         "manage_role_assignments": "Can add/remove members (user or role) of this role.",
         "read_role_assignments": "Can list members / parents / assignments of this role.",
@@ -977,7 +929,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogServerAction",
       "x-audit-descriptions": {
         "create_project": "Can create items inside the server (can create Warehouses).",
         "delete_users": "Can delete all users on this server.",
@@ -1006,7 +957,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogTableAction",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this table.",
         "read_grants": "Can list the grants held on this table."
@@ -1025,7 +975,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogTagAction",
       "x-audit-descriptions": {
         "apply": "Attach this tag to a target. Also requires `manage_tags` on the target.",
         "delete": "Delete the tag definition.",
@@ -1046,7 +995,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogUserAction",
       "x-audit-descriptions": {
         "delete": "Can delete this user",
         "read": "Can get all details of the user given its id",
@@ -1072,7 +1020,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogViewAction",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this view.",
         "read_grants": "Can list the grants held on this view."
@@ -1110,7 +1057,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::CatalogWarehouseAction",
       "x-audit-descriptions": {
         "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
         "manage_tags": "Attach/detach governance tags on this warehouse.",
@@ -1155,8 +1101,7 @@
         }
       ],
       "description": "What a `context` key carries.\n\nA record holds context keys in two places: inside each entry of `actions`, beside\n`action_name`, and in the record's own `context` object. A key carries the same type in\neither, and which type that is is stated for that key in this schema.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::authz::ContextValue"
+      "x-audit-kind": "part"
     },
     "Decision": {
       "type": "string",
@@ -1165,8 +1110,7 @@
         "denied"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "decision",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::Decision"
+      "x-audit-field": "decision"
     },
     "DecisionRecord": {
       "type": "object",
@@ -1205,8 +1149,7 @@
         "determined_by"
       ],
       "description": "One entry of `authorizations[]`: which action on which entity was evaluated, for whom,\nwith what result.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::DecisionRecord"
+      "x-audit-kind": "part"
     },
     "DeterminingFactor": {
       "oneOf": [
@@ -1305,8 +1248,7 @@
         "format"
       ],
       "description": "One entry of `emitters`: a product that contributed to this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything an emitter owns — its\n`context` keys, its vocabulary, any shape it defines — on the entry naming it.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EmitterRecord"
+      "x-audit-kind": "part"
     },
     "EntityField": {
       "type": "string",
@@ -1331,8 +1273,7 @@
         "warehouse_id"
       ],
       "x-audit-kind": "keys",
-      "x-audit-keys-of": "entity",
-      "x-audit-type": "lakekeeper::service::events::context::EntityField"
+      "x-audit-keys-of": "entity"
     },
     "EntityRecord": {
       "type": "object",
@@ -1349,8 +1290,7 @@
         "type": "string"
       },
       "description": "An `entity` object: the kind of resource and its identifying fields.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::EntityRecord"
+      "x-audit-kind": "part"
     },
     "EntityType": {
       "type": "string",
@@ -1369,8 +1309,7 @@
         "warehouse"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "entity_type",
-      "x-audit-type": "lakekeeper::service::events::context::EntityType"
+      "x-audit-field": "entity_type"
     },
     "ErrorRecord": {
       "type": "object",
@@ -1410,8 +1349,7 @@
         "error_id"
       ],
       "description": "The `error` object of a denied authorization record.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::ErrorRecord"
+      "x-audit-kind": "part"
     },
     "FallbackAction": {
       "type": "string",
@@ -1419,8 +1357,7 @@
         "unknown"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::events::context::FallbackAction"
+      "x-audit-field": "action_name"
     },
     "GenericTableRelation": {
       "type": "string",
@@ -1457,8 +1394,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::GenericTableRelation"
+      "x-audit-field": "action_name"
     },
     "GrantContextRecord": {
       "type": "object",
@@ -1490,15 +1426,13 @@
         "resource_type"
       ],
       "description": "The `context` of a grant record: the full `(principal, privilege, resource)` triple. Grants\nare hard-deleted and keep no history, so a revocation's triple exists nowhere else once the\nrow is gone.",
-      "x-audit-kind": "context",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::GrantContextRecord"
+      "x-audit-kind": "context"
     },
     "HandlerContext": {
       "type": "object",
       "additionalProperties": true,
       "description": "The `context` object of an authorization record: what the handler recorded about the\nrequest beyond its action and its entity.\n\nOnly the keys relevant to that request appear. What a given key carries is stated for that\nkey, not here, because a product that plugs into Lakekeeper contributes keys of its own.",
       "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::HandlerContext",
       "properties": {
         "self_provisioning": {
           "type": "boolean",
@@ -1533,20 +1467,12 @@
       ],
       "x-audit-kind": "keys",
       "x-audit-keys-of": "context",
-      "x-audit-type": "lakekeeper::service::events::context::HandlerContextKey",
       "x-audit-descriptions": {
         "entity_id": "The id of the entity a task operation addressed.",
         "invoked_by": "Which operation invoked this one, when a handler acts on behalf of another.",
         "queue_name": "The task queue an operation addressed.",
         "self_provisioning": "Whether the user creation was the caller provisioning itself.",
         "self_read": "Whether a grant read asked about the caller's own grants."
-      },
-      "x-audit-key-types": {
-        "entity_id": "string",
-        "invoked_by": "string",
-        "queue_name": "string",
-        "self_provisioning": "boolean",
-        "self_read": "boolean"
       }
     },
     "InstanceAdminAction": {
@@ -1556,7 +1482,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::authz::instance_admin::InstanceAdminAction",
       "x-audit-descriptions": {
         "set_warehouse_managed_by": "Set or clear a warehouse's managed-by marker."
       }
@@ -1577,7 +1502,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper::service::events::context::ManagementAction",
       "x-audit-descriptions": {
         "apply_grants": "Context assembled by the handler from the request body: see `ApplyGrants` in\n`api::management::v1::grant`, whose fields these keys are.",
         "revoke_subtree_grants": "Context assembled by the handler from the request body and the scope its gate is\nasked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields\nthese keys are.\n\nThe six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated\nhere rather than left to the `Catalog*Action` variants that share this wire name, so\nwhat this action carries does not depend on another vocabulary keeping its own."
@@ -1633,8 +1557,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::NamespaceRelation"
+      "x-audit-field": "action_name"
     },
     "OperationRecord": {
       "type": "object",
@@ -1677,7 +1600,6 @@
       ],
       "description": "An operation record: something the system did that touches identity or access, with no\npermission decision of its own. Any emitter can produce one.",
       "x-audit-kind": "shape",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::OperationWire",
       "x-audit-record-type": "operation"
     },
     "PolicyEffect": {
@@ -1703,8 +1625,7 @@
         "only"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "privilege_scope",
-      "x-audit-type": "lakekeeper::service::authz::PrivilegeScope"
+      "x-audit-field": "privilege_scope"
     },
     "PrivilegeSource": {
       "type": "string",
@@ -1715,7 +1636,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "privilege_source",
-      "x-audit-type": "lakekeeper::request_metadata::PrivilegeSource",
       "x-audit-descriptions": {
         "authorizer": "Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).",
         "instance_admin": "Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass\nonly; data-plane actions still route through the configured authorizer.",
@@ -1764,8 +1684,7 @@
         "warehouse"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ProjectRelation"
+      "x-audit-field": "action_name"
     },
     "RecordType": {
       "type": "string",
@@ -1776,7 +1695,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "record_type",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::RecordType",
       "x-audit-descriptions": {
         "authorization": "Was this caller permitted to do these actions on these entities?",
         "operation": "Something the system did that touches identity or access.",
@@ -1839,7 +1757,6 @@
       ],
       "description": "A replay record: a retry answered from an idempotency record, so no authorization ran.",
       "x-audit-kind": "shape",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::shapes::ReplayRecord",
       "x-audit-record-type": "replay"
     },
     "ResourceType": {
@@ -1856,7 +1773,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "resource_type",
-      "x-audit-type": "lakekeeper::service::authz::grant::ResourceType",
       "x-audit-descriptions": {
         "tag-definition": "Spelled `tag-definition` on the wire, matching the path segment tag definitions\nare addressed by, so every key of the vocabulary map names its own URL segment.\nThe only spelling `kebab-case` does not already produce."
       }
@@ -1878,8 +1794,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::RoleRelation"
+      "x-audit-field": "action_name"
     },
     "RoleSubjectRecord": {
       "type": "object",
@@ -1893,8 +1808,7 @@
         "role"
       ],
       "description": "A role named as a target.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::RoleSubjectRecord"
+      "x-audit-kind": "part"
     },
     "RootLevelGrants": {
       "type": "string",
@@ -1904,7 +1818,6 @@
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "root_level",
-      "x-audit-type": "lakekeeper::service::authz::RootLevelGrants",
       "x-audit-descriptions": {
         "excluded": "Only grants held below the addressed resource are in range.",
         "included": "The request's range extends to the addressed resource itself. The kinds it\nactually reaches are in `resource_types`; a kind filter can still exclude the\nroot's own kind."
@@ -1927,8 +1840,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ServerRelation"
+      "x-audit-field": "action_name"
     },
     "SubjectRecord": {
       "anyOf": [
@@ -1942,8 +1854,7 @@
         }
       ],
       "description": "A principal named as a target: `for_principal` on a decision entry, `principal` on a grant\nrecord. `{\"user\": …}` or `{\"role\": …}`.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::SubjectRecord"
+      "x-audit-kind": "part"
     },
     "TableRelation": {
       "type": "string",
@@ -1981,8 +1892,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::TableRelation"
+      "x-audit-field": "action_name"
     },
     "TableUpdateKind": {
       "type": "string",
@@ -2012,8 +1922,7 @@
         "upgrade-format-version"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "update_kinds",
-      "x-audit-type": "iceberg_ext::catalog::table_update_kind::TableUpdateKind"
+      "x-audit-field": "update_kinds"
     },
     "TagRelation": {
       "type": "string",
@@ -2031,8 +1940,7 @@
         "project"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::TagRelation"
+      "x-audit-field": "action_name"
     },
     "UserSubjectRecord": {
       "type": "object",
@@ -2046,8 +1954,7 @@
         "user"
       ],
       "description": "A user named as a target.",
-      "x-audit-kind": "part",
-      "x-audit-type": "lakekeeper::service::events::backends::audit::parts::UserSubjectRecord"
+      "x-audit-kind": "part"
     },
     "ViewRelation": {
       "type": "string",
@@ -2084,8 +1991,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::ViewRelation"
+      "x-audit-field": "action_name"
     },
     "WarehouseRelation": {
       "type": "string",
@@ -2143,8 +2049,7 @@
         "select"
       ],
       "x-audit-kind": "enum",
-      "x-audit-field": "action_name",
-      "x-audit-type": "lakekeeper_authz_openfga::relations::WarehouseRelation"
+      "x-audit-field": "action_name"
     }
   }
 }

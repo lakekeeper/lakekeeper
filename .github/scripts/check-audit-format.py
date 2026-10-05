@@ -676,6 +676,15 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
             # open, so a new value changes nothing for a consumer. A key vocabulary lists the
             # KEYS of an object, so its names are field names: one more is one more field,
             # which is exactly what `minor` is for.
+            # What the names ARE: a field's values or an object's keys, and which field or
+            # object. A list that keeps its names but changes what they name is a different
+            # statement about the wire, which no consumer absorbs silently.
+            for ann in ("x-audit-kind", "x-audit-field", "x-audit-keys-of"):
+                if b.get(ann) != h.get(ann):
+                    bump(
+                        "breaking",
+                        f"`{name}`: {ann} went from {b.get(ann)!r} to {h.get(ann)!r}",
+                    )
             keys = "keys" in (h.get("x-audit-kind"), b.get("x-audit-kind"))
             noun = "key" if keys else "value"
             for gone in sorted(set(b["enum"]) - set(h["enum"])):
@@ -748,8 +757,39 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
             for key in sorted(set(b_by_key) & set(h_by_key)):
                 compare_properties(f"{name}/{key}", b_by_key[key], h_by_key[key], bump)
             continue
+
+        # Conditional branches: an `allOf` of `if`/`then` pairs, which is how a flattened
+        # object says which keys one of its values brings with it — `drop` carries `force`
+        # and `purge`. A branch is paired by the value its `if` matches, because that is what
+        # a consumer routes on, and its `then` is an object read like any other. Falls
+        # through rather than `continue`s: the definition's own properties still count.
+        b_cond, h_cond = _conditionals(b), _conditionals(h)
+        for value in sorted(set(b_cond) - set(h_cond)):
+            bump("breaking", f"`{name}` no longer says what `{value}` carries")
+        for value in sorted(set(h_cond) - set(b_cond)):
+            bump("additive", f"`{name}` now says what `{value}` carries")
+        for value in sorted(set(b_cond) & set(h_cond)):
+            compare_properties(f"{name}[{value}]", b_cond[value], h_cond[value], bump)
+
         compare_properties(name, b, h, bump)
     return kind, reasons
+
+
+def _conditionals(spec: dict) -> dict:
+    """The `if`/`then` branches of a definition, keyed by the value the `if` matches on.
+
+    One branch per value of the field the object is discriminated by, so that value is what
+    pairs a branch with its older self across two revisions.
+    """
+    out: dict[str, dict] = {}
+    for branch in spec.get("allOf") or []:
+        if not isinstance(branch, dict) or not isinstance(branch.get("then"), dict):
+            continue
+        for matched in ((branch.get("if") or {}).get("properties") or {}).values():
+            if isinstance(matched, dict) and "const" in matched:
+                out[str(matched["const"])] = branch["then"]
+                break
+    return out
 
 
 def _branch_key(branch: dict) -> str | None:
@@ -2015,6 +2055,49 @@ def self_test() -> int:
     check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
     check("schema: enum value added is none", classify_schema(schema({"D": decision}), schema({"D": decision_more}))[0], "none")
     check("schema: enum value removed is breaking", classify_schema(schema({"D": decision}), schema({"D": decision_less}))[0], "breaking")
+
+    # Conditional branches: how a flattened object says which keys one of its values brings
+    # with it. Without these the whole `allOf` was invisible, and an action silently losing a
+    # key — or a key changing type under it — read as no change at all.
+    def carries(**per_action: dict) -> dict:
+        return {
+            "type": "object",
+            "properties": {"action_name": {"type": "string"}},
+            "allOf": [
+                {
+                    "if": {"properties": {"action_name": {"const": act}}, "required": ["action_name"]},
+                    "then": {"properties": props},
+                }
+                for act, props in per_action.items()
+            ],
+        }
+
+    drop = carries(drop={"force": {"type": "boolean"}, "purge": {"type": "boolean"}})
+    drop_one = carries(drop={"force": {"type": "boolean"}})
+    drop_str = carries(drop={"force": {"type": "boolean"}, "purge": {"type": "string"}})
+    drop_more = carries(drop={"force": {"type": "boolean"}, "purge": {"type": "boolean"}, "recursive": {"type": "boolean"}})
+    drop_and_commit = carries(drop={"force": {"type": "boolean"}}, commit={"target_refs": {"type": "array"}})
+    drop_set = carries(drop={"root_level": {"$ref": "#/$defs/R"}})
+    drop_open = carries(drop={"root_level": {"type": "string"}})
+    check("schema: a branch losing a key is breaking", classify_schema(schema({"A": drop}), schema({"A": drop_one}))[0], "breaking")
+    check("schema: a carried key retyped is breaking", classify_schema(schema({"A": drop}), schema({"A": drop_str}))[0], "breaking")
+    check("schema: a branch gaining a key is additive", classify_schema(schema({"A": drop}), schema({"A": drop_more}))[0], "additive")
+    check("schema: an action losing its branch is breaking", classify_schema(schema({"A": drop_and_commit}), schema({"A": drop_one}))[0], "breaking")
+    check("schema: an action gaining a branch is additive", classify_schema(schema({"A": drop_one}), schema({"A": drop_and_commit}))[0], "additive")
+    check("schema: dropping every branch is breaking", classify_schema(schema({"A": drop}), schema({"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}))[0], "breaking")
+    check("schema: a key losing its value set is breaking", classify_schema(schema({"A": drop_set}), schema({"A": drop_open}))[0], "breaking")
+    check(
+        "schema: the action that lost a key is named",
+        any("`A[drop].purge` removed" in r for r in classify_schema(schema({"A": drop}), schema({"A": drop_one}))[1]),
+        True,
+    )
+
+    # A vocabulary that keeps its names but changes what they name is a different statement
+    # about the wire: the same list read as a field's values or as an object's keys.
+    values_voc = {"type": "string", "enum": ["a"], "x-audit-kind": "enum", "x-audit-field": "outcome"}
+    keys_voc = {"type": "string", "enum": ["a"], "x-audit-kind": "keys", "x-audit-keys-of": "context"}
+    check("schema: a vocabulary changing kind is breaking", classify_schema(schema({"V": values_voc}), schema({"V": keys_voc}))[0], "breaking")
+    check("schema: a vocabulary changing its field is breaking", classify_schema(schema({"V": values_voc}), schema({"V": {**values_voc, "x-audit-field": "decision"}}))[0], "breaking")
 
     # A key vocabulary. Its names are the keys of an object, so the same edit that is no
     # change on a value vocabulary adds a field here. Reading the two alike reported a new

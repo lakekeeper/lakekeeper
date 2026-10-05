@@ -64,7 +64,6 @@ The schema carries nine extension keywords. A generic JSON Schema tool ignores t
 | `x-audit-keys-of` | each `keys` | The object whose keys these are |
 | `x-audit-descriptions` | an `enum` or `keys` | What each name means, keyed by the name. Present for the names that carry a description; a name absent from the map has none |
 | `x-audit-key-shapes` | a `keys` set | What sits under a key whose value is an object, keyed by the key and pointing at the definition. Present only where at least one key declares a shape, so its absence means none does |
-| `x-audit-type` | each definition | The Rust type the definition was generated from. Diagnostic only — it changes when code is reorganised and is not part of the format |
 | `x-audit-open` | a property | The value comes from whichever product wrote the record, so this schema cannot list what it may hold |
 
 `enum` and `keys` are both lists of strings, and they change in different ways.

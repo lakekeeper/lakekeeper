@@ -159,15 +159,6 @@ fn key_shapes(reg: &Registration) -> BTreeMap<&str, Value> {
         .collect()
 }
 
-/// The JSON type each key's value reaches the wire as, for the keys that declare one.
-fn key_types(reg: &Registration) -> BTreeMap<&str, &str> {
-    reg.kind
-        .names()
-        .iter()
-        .filter_map(|name| name.value_type.map(|ty| (name.text, ty)))
-        .collect()
-}
-
 /// The definitions the registrations contribute, plus every type they reference.
 ///
 /// # Panics
@@ -198,7 +189,6 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 let mut schema = schema(&mut generator).to_value();
                 if let Some(object) = schema.as_object_mut() {
                     object.insert("x-audit-kind".into(), json!(reg.kind.as_str()));
-                    object.insert("x-audit-type".into(), json!((reg.type_name)()));
                     if let Kind::Shape { record_type } = reg.kind {
                         object.insert("x-audit-record-type".into(), json!(record_type));
                         pin_record_type(object, record_type);
@@ -234,7 +224,6 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                     "enum": names,
                     "x-audit-kind": reg.kind.as_str(),
                     place: reg.kind.wire_place(),
-                    "x-audit-type": (reg.type_name)(),
                 });
                 // What a vocabulary says about its own names, keyed by name. These sit on
                 // the vocabulary and not on the object the names belong to, because the
@@ -243,7 +232,6 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 // what a key holds from the schema of whoever declared the key.
                 add_key_map(&mut def, "x-audit-descriptions", &descriptions);
                 add_key_map(&mut def, "x-audit-key-shapes", &key_shapes(reg));
-                add_key_map(&mut def, "x-audit-key-types", &key_types(reg));
                 let name = short_type_name((reg.type_name)());
                 claim(&name, (reg.type_name)());
                 defs.insert(name, def);
@@ -289,10 +277,6 @@ const FLATTENED: [(&str, &str, &str, Option<&str>); 2] = [
     ("action_name", "ActionRecord", "action", None),
     ("entity_type", "EntityRecord", "entity", Some("string")),
 ];
-
-fn regs_for<E: super::AuditEmitter>() -> Vec<&'static Registration> {
-    registrations(|reg| reg.emitter_name == E::NAME)
-}
 
 /// Every key a vocabulary declares for `object`.
 fn keys_of_object(regs: Vec<&'static Registration>, object: &str) -> BTreeSet<&'static str> {
@@ -410,9 +394,11 @@ fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
         let Some((_, _, vocabulary, _)) = FLATTENED.iter().find(|(f, _, _, _)| *f == field) else {
             continue;
         };
-        // Scoped to the vocabulary holding this object's keys: a key of some other object is
-        // not a key of this one, however well declared it is over there.
-        let object_keys = keys_of_object(regs_for::<E>(), vocabulary);
+        // Scoped to the vocabulary holding this object's keys, but across every emitter: the
+        // `action` and `entity` objects are Lakekeeper's, and the attribute lets no other
+        // crate declare keys for them, so a product's own action carries Lakekeeper's keys.
+        // Resolving against this emitter alone would find none of them.
+        let object_keys = keys_of_object(registrations(|_| true), vocabulary);
         let owner = short_type_name((reg.type_name)());
         for name in names {
             for key in name.carries {
@@ -445,6 +431,27 @@ fn key_types_written_in_source(
     /// the type they write, so the call site says it without a separate declaration.
     const PUSH: &str = "push_extra_context";
 
+    // The key enums to look for at a call site, taken from the registry rather than named
+    // here, so a crate that declares its own `context` keys is read by the same pass.
+    let vocabularies: Vec<(&str, String)> = registrations(|_| true)
+        .iter()
+        .filter_map(|reg| match reg.kind {
+            Kind::Keys { object, .. } => {
+                Some((object, format!("{}::", short_type_name((reg.type_name)()))))
+            }
+            _ => None,
+        })
+        .collect();
+    let for_object = |want: &str| -> Vec<String> {
+        vocabularies
+            .iter()
+            .filter(|(object, _)| *object == want)
+            .map(|(_, prefix)| prefix.clone())
+            .collect()
+    };
+    let action_prefixes = for_object("action");
+    let context_prefixes = for_object("context");
+
     let mut sources = Vec::new();
     rust_sources(crates_dir, &mut sources);
     let builders = [
@@ -470,11 +477,13 @@ fn key_types_written_in_source(
         for (builder, ty) in builders {
             for (at, _) in text.match_indices(builder) {
                 let block: String = text[at..].chars().take(120).collect();
-                if let Some(variant) = identifier_after(&block, "ActionContextKey::") {
-                    written
-                        .entry(("action", normalized(&variant)))
-                        .or_default()
-                        .insert(ty);
+                for prefix in &action_prefixes {
+                    if let Some(variant) = identifier_after(&block, prefix) {
+                        written
+                            .entry(("action", normalized(&variant)))
+                            .or_default()
+                            .insert(ty);
+                    }
                 }
             }
         }
@@ -490,25 +499,29 @@ fn key_types_written_in_source(
                 _ => continue,
             };
             let block: String = text[at..].chars().take(160).collect();
-            if let Some(variant) = identifier_after(&block, "HandlerContextKey::") {
-                written
-                    .entry(("context", normalized(&variant)))
-                    .or_default()
-                    .insert(ty);
+            for prefix in &context_prefixes {
+                if let Some(variant) = identifier_after(&block, prefix) {
+                    written
+                        .entry(("context", normalized(&variant)))
+                        .or_default()
+                        .insert(ty);
+                }
             }
         }
         // A key built as a pair names its type in the value constructed beside it.
-        for (at, _) in text.match_indices("ActionContextKey::") {
-            let block: String = text[at..].chars().take(160).collect();
-            let Some(variant) = identifier_after(&block, "ActionContextKey::") else {
-                continue;
-            };
-            for (value, ty) in values {
-                if block.contains(value) {
-                    written
-                        .entry(("action", normalized(&variant)))
-                        .or_default()
-                        .insert(ty);
+        for prefix in &action_prefixes {
+            for (at, _) in text.match_indices(prefix.as_str()) {
+                let block: String = text[at..].chars().take(160).collect();
+                let Some(variant) = identifier_after(&block, prefix) else {
+                    continue;
+                };
+                for (value, ty) in values {
+                    if block.contains(value) {
+                        written
+                            .entry(("action", normalized(&variant)))
+                            .or_default()
+                            .insert(ty);
+                    }
                 }
             }
         }
@@ -529,7 +542,7 @@ const NESTED: [(&str, &str); 1] = [("context", "HandlerContext")];
 ///
 /// The object stays open — `additionalProperties` is untouched — because another product
 /// contributes keys of its own, and the crate owning this definition has never heard of
-/// them. Those are typed on the vocabulary that declares them, under `x-audit-key-types`.
+/// them. A key of another product is typed by the branches of that product's own schema.
 fn type_nested_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
     for (vocabulary, owner) in NESTED {
         let properties: Map<String, Value> = regs
@@ -558,7 +571,18 @@ fn type_nested_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) 
         if properties.is_empty() {
             continue;
         }
-        if let Some(object) = defs.get_mut(owner).and_then(Value::as_object_mut) {
+        // The object is shared, but its definition belongs to whoever declares the type. A
+        // product that contributes keys to it and owns no such type says what its own keys
+        // hold in a definition of the same name: each schema describes its own half, and a
+        // consumer reading a record applies the schema of every emitter the record names.
+        let def = defs.entry(owner.to_owned()).or_insert_with(|| {
+            json!({
+                "type": "object",
+                "additionalProperties": true,
+                "description": "The keys this product contributes to the record's `context`                                 object. Another product's keys are described by its own schema.",
+            })
+        });
+        if let Some(object) = def.as_object_mut() {
             object.insert("properties".into(), Value::Object(properties));
         }
     }
@@ -588,7 +612,10 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
     // already has a definition in this document, so the key points at it instead of
     // publishing the set a second time.
     let mut key_values: BTreeMap<(&str, &str), &str> = BTreeMap::new();
-    for reg in regs {
+    // Across every emitter, unlike the branches below: the `action` and `entity` objects are
+    // Lakekeeper's and no other crate may declare keys for them, so a product's own action
+    // carries Lakekeeper's keys and must read their types from Lakekeeper's vocabulary.
+    for reg in registrations(|_| true) {
         if let Kind::Keys { object, names } = reg.kind {
             for name in names {
                 if let Some(ty) = name.value_type {
@@ -656,7 +683,16 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
         if conditionals.is_empty() {
             continue;
         }
-        if let Some(object) = defs.get_mut(owner).and_then(Value::as_object_mut) {
+        // As above: a product whose actions carry keys says so in a definition of the same
+        // name, holding only its own branches. `allOf` composes, so a consumer that applies
+        // both schemas gets both halves without either knowing about the other.
+        let def = defs.entry(owner.to_owned()).or_insert_with(|| {
+            json!({
+                "type": "object",
+                "description": "Which `context` keys this product's actions carry. Another                                 product's actions are described by its own schema.",
+            })
+        });
+        if let Some(object) = def.as_object_mut() {
             object.insert("allOf".into(), json!(conditionals));
         }
     }
@@ -1061,7 +1097,10 @@ pub fn assert_event_actions_write_only_declared_keys<E: super::AuditEmitter>(
     // Keyed by the normalised name so a `Vocabulary::Variant` in the source matches without
     // reproducing the enum's rename rule here; the wire spelling rides along for the message.
     let mut declared: BTreeMap<String, (&str, BTreeSet<&str>)> = BTreeMap::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+    // Across every emitter: an action name belongs to whoever declared it, and a product's
+    // own action carries Lakekeeper's keys, so neither side of the pairing is this emitter's
+    // alone.
+    for reg in registrations(|_| true) {
         if let Kind::Values {
             field: "action_name",
             names,
@@ -1081,6 +1120,7 @@ pub fn assert_event_actions_write_only_declared_keys<E: super::AuditEmitter>(
     rust_sources(crates_dir, &mut sources);
 
     let mut checked = 0usize;
+    let mut named = 0usize;
     let mut accounted = 0usize;
     let mut anchors = 0usize;
     let mut undeclared = Vec::new();
@@ -1094,13 +1134,14 @@ pub fn assert_event_actions_write_only_declared_keys<E: super::AuditEmitter>(
             let Some(action) = action_named_in(body) else {
                 continue;
             };
+            named += 1;
             let Some((wire, keys)) = declared.get(&action) else {
                 continue;
             };
             checked += 1;
-            for (at, _) in body.match_indices("ActionContextKey::") {
+            for (at, _) in body.match_indices("ContextKey::") {
                 let window: String = body[at..].chars().take(80).collect();
-                let Some(variant) = identifier_after(&window, "ActionContextKey::") else {
+                let Some(variant) = identifier_after(&window, "ContextKey::") else {
                     continue;
                 };
                 let written = normalized(&variant);
@@ -1120,9 +1161,18 @@ pub fn assert_event_actions_write_only_declared_keys<E: super::AuditEmitter>(
          matching lost one and its keys went unchecked"
     );
     assert!(
-        checked > 0,
-        "no `event_actions` body named an action this emitter registers, so this is \
-         scanning the wrong tree"
+        !sources.is_empty(),
+        "no Rust source under {}, so this is scanning the wrong tree",
+        crates_dir.display()
+    );
+    // A body that names no action is a delegating impl — it hands the work to the actions it
+    // holds — and a crate may have only those, or none at all, when its actions reach the
+    // wire through another product's event context. What would be wrong is bodies that do
+    // name actions, none of which any emitter registers.
+    assert!(
+        named == 0 || checked > 0,
+        "{named} `event_actions` name an action and not one is registered, so this is \
+         reading names nothing declares"
     );
     undeclared.sort_unstable();
     undeclared.dedup();
