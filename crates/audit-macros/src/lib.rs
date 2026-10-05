@@ -1,7 +1,7 @@
 //! `#[audit_part]`: the one attribute every type that reaches the Lakekeeper audit log
 //! carries.
 //!
-//! Four placements:
+//! Five placements:
 //!
 //! - **A part** (`#[audit_part]` on a struct or a data enum): a nested object of a record.
 //!   Expands to `#[derive(Serialize, JsonSchema)]` through `lakekeeper`'s re-exports, so the
@@ -11,6 +11,11 @@
 //!   Every named field needs a doc comment: it is the field's description in the schema.
 //! - **A context** (`#[audit_part(context)]` on a struct): the `context` object of an operation
 //!   record. Same as a part, registered as a context.
+//! - **A shape** (`#[audit_part(shape = "authorization")]` on a struct, in `lakekeeper` only): a
+//!   whole record. Expands to its schema, its registry entry, and its `emit(self, message)`:
+//!   the audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
+//!   `record_type`, with every field under its own name and a field that serializes to `null`
+//!   left off. The field list is the struct's, so the record and its schema cannot differ.
 //! - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
 //!   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
 //!   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
@@ -224,6 +229,10 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
     }
     require_field_docs(input)?;
     reject_audit_attrs(input)?;
+    let emit = match shape {
+        Some(record_type) => shape_emit(input, record_type)?,
+        None => quote!(),
+    };
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
@@ -258,6 +267,8 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
         #item
 
         #part_impl
+
+        #emit
 
         #[cfg(debug_assertions)]
         ::lakekeeper::__private::inventory::submit! {
@@ -593,6 +604,90 @@ fn strip_our_attrs(input: &DeriveInput) -> DeriveInput {
         }
     }
     out
+}
+
+/// The `emit` of a shape: the one way its record reaches the log.
+///
+/// Every field goes on the line under its own name, in struct order, so the record and the
+/// schema derived from the same struct cannot list different fields. A field whose value
+/// serializes to `null` is left off the line. `record_type` is stamped from the attribute, so
+/// the struct holds no such field.
+fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
+    if std::env::var("CARGO_PKG_NAME").as_deref() != Ok("lakekeeper") {
+        return Err(Error::new_spanned(
+            &input.ident,
+            "a record shape is Lakekeeper's own; another product emits an operation record \
+             through `OperationRecord`",
+        ));
+    }
+    let Data::Struct(syn::DataStruct {
+        fields: Fields::Named(named),
+        ..
+    }) = &input.data
+    else {
+        return Err(Error::new_spanned(
+            &input.ident,
+            "a shape is a struct with named fields: each name is a key of the record",
+        ));
+    };
+    let mut fields = Vec::new();
+    for field in &named.named {
+        let name = field.ident.as_ref().expect("a named field");
+        if name == "record_type" {
+            return Err(Error::new_spanned(
+                field,
+                "`record_type` is stamped from `shape = \"...\"`; the struct holds no such field",
+            ));
+        }
+        for attr in field
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("serde") || a.path().is_ident("schemars"))
+        {
+            attr.parse_nested_meta(|meta| {
+                if ["rename", "skip", "flatten"]
+                    .iter()
+                    .any(|banned| meta.path.is_ident(banned))
+                {
+                    return Err(meta.error(
+                        "a shape's field name is its key on the record, and every field is \
+                         on it: no `rename`, `skip` or `flatten`",
+                    ));
+                }
+                if meta.input.peek(Token![=]) {
+                    let _: Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            })?;
+        }
+        fields.push(name);
+    }
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    Ok(quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Write this record as one log line, or nothing when the audit trail is off.
+            ///
+            /// Asked before anything is serialized, so a switched-off audit trail costs nothing,
+            /// and every record passes here, so the configuration switch covers every record
+            /// whatever built it.
+            pub(crate) fn emit(self, message: &'static str) {
+                if !crate::audit::enabled() {
+                    return;
+                }
+                #(let #fields = ::lakekeeper::audit::AuditJson::present(&self.#fields);)*
+                ::tracing::info!(
+                    target: crate::audit::AUDIT_TARGET,
+                    event_source = "audit",
+                    audit_format = crate::service::events::backends::audit::AUDIT_FORMAT,
+                    record_type = #record_type,
+                    #(#fields = #fields.as_ref().map(::tracing::field::valuable),)*
+                    "{}",
+                    message
+                );
+            }
+        }
+    })
 }
 
 /// A part, a context or a shape takes no `#[audit]` key: its schema comes from its type, and
@@ -1188,6 +1283,21 @@ mod tests {
                 r#"text : "bare" , doc : "An action that carries nothing." , carries : & []"#
             ),
             "{expansion}"
+        );
+    }
+
+    #[test]
+    fn a_shape_is_lakekeepers_own() {
+        // These tests run as the macro crate, so a shape is refused here as it is in any crate
+        // but Lakekeeper's. Lakekeeper's own shapes are exercised by its fixture tests, which
+        // run the generated `emit()`.
+        assert!(
+            rejection(
+                r#"shape = "operation""#,
+                "struct S { /// A field.
+                a: u8 }"
+            )
+            .contains("Lakekeeper's own")
         );
     }
 

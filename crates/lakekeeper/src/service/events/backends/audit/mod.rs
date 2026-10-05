@@ -235,7 +235,7 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        assemble::authorization_failed(&event).emit();
+        assemble::authorization_failed(&event).emit("Authorization failed event");
         Ok(())
     }
 
@@ -291,7 +291,7 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        assemble::authorization_succeeded(&event).emit();
+        assemble::authorization_succeeded(&event).emit("Authorization succeeded event");
         Ok(())
     }
 
@@ -306,7 +306,7 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        assemble::replay(&event).emit();
+        assemble::replay(&event).emit("Idempotent replay served");
         Ok(())
     }
 }

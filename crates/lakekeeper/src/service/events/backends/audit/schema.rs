@@ -499,23 +499,26 @@ fn link_carried_keys(
     }
 }
 
-/// Pin a shape's `record_type` to the one value it carries.
+/// Give a shape its `record_type`, pinned to the one value it carries.
 ///
-/// The field is the one a consumer routes on, and for a given shape it is a constant, not a
-/// choice from the vocabulary. `const` says exactly that, so a validator rejects a record
-/// checked against the wrong shape instead of accepting any of the three.
+/// The emitter stamps the field from the shape's attribute, so the struct the schema is
+/// derived from holds no such field; it is added here, first, as it is on the line. For a
+/// given shape it is a constant, not a choice from the vocabulary, and `const` says exactly
+/// that, so a validator rejects a record checked against the wrong shape.
 fn pin_record_type(shape: &mut Map<String, Value>, record_type: &str) {
-    let Some(property) = shape
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut("record_type"))
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    property.remove("type");
-    property.remove("$ref");
-    property.insert("const".into(), json!(record_type));
+    let property = json!({
+        "description": format!("Names this record's shape. Always `{record_type}`."),
+        "const": record_type,
+    });
+    // Replaced in place: with `preserve_order` a removed key would come back last.
+    if let Some(Value::Object(properties)) = shape.get_mut("properties") {
+        let mut first = Map::from_iter([("record_type".to_string(), property)]);
+        first.append(properties);
+        *properties = first;
+    }
+    if let Some(Value::Array(required)) = shape.get_mut("required") {
+        required.insert(0, json!("record_type"));
+    }
 }
 
 /// The crate schema of one crate: the definitions of the audit types it declares, for the

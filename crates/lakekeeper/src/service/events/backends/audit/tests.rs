@@ -2241,7 +2241,9 @@ fn audit_part_is_only_implemented_through_the_attribute() {
 fn only_the_shapes_emit_audit_records() {
     let offenders: Vec<String> = crate_sources()
         .into_iter()
-        .filter(|(path, _)| !path.ends_with("shapes.rs") && !path.ends_with("tests.rs"))
+        // `tests.rs` names the literal in its own assertions. The shapes themselves hold no
+        // such line: the attribute writes their `emit()`.
+        .filter(|(path, _)| !path.ends_with("tests.rs"))
         .filter(|(_, text)| code_only(text).contains("event_source = \"audit\""))
         .map(|(path, _)| path.display().to_string())
         .collect();
@@ -2553,110 +2555,6 @@ fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
     );
 }
 
-/// The keys one emission writes, without the envelope the subscriber owns.
-fn emitted_keys(emit: impl FnOnce()) -> std::collections::BTreeSet<String> {
-    emit_and_capture_one(|| async move {
-        emit();
-        Ok(())
-    })
-    .as_object()
-    .expect("a record is an object")
-    .keys()
-    .filter(|key| !super::contract::ENVELOPE_KEYS.contains(&key.as_str()))
-    .cloned()
-    .collect()
-}
-
-/// The keys a shape declares, plus the two `emit()` stamps on every record whatever its
-/// shape, which is why no shape lists them.
-fn declared_keys(
-    schema: &serde_json::Value,
-    record_type: &str,
-) -> std::collections::BTreeSet<String> {
-    let (_, shape) = crate::audit::validate::shape_of(schema, record_type)
-        .unwrap_or_else(|| panic!("no shape names `{record_type}`"));
-    shape["properties"]
-        .as_object()
-        .expect("a shape has properties")
-        .keys()
-        .cloned()
-        .chain(["event_source".to_owned(), "audit_format".to_owned()])
-        .collect()
-}
-
-/// An authorization record with every optional filled in. Written as a struct literal with
-/// no `..`, so a field added to the shape stops this file compiling until it has a value.
-fn maximal_authorization() -> AuthorizationRecord {
-    let assembled = assemble::authorization_failed(&AuthorizationFailedEvent {
-        request_metadata: Arc::new(fixture_metadata()),
-        entities: Arc::new(EventEntities::one(fixture_table_entity())),
-        actions: Arc::new(vec![fixture_read_action()]),
-        failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
-        error: fixture_error(),
-        extra_context: fixture_context(&[HandlerContextKey::SelfRead(true)]),
-        authorizations: Arc::new(vec![fixture_detailed_decision(
-            fixture_read_action(),
-            fixture_table_entity(),
-        )]),
-    });
-    AuthorizationRecord {
-        record_type: assembled.record_type,
-        emitters: assembled.emitters,
-        actions: assembled.actions,
-        entities: assembled.entities,
-        actor: assembled.actor,
-        privilege_source: assembled.privilege_source,
-        authorizations: assembled.authorizations,
-        decision: assembled.decision,
-        error: assembled.error,
-        failure_reason: assembled.failure_reason,
-        context: assembled.context,
-        // The optionals no single scenario fills in at once.
-        user_agent: Some("lakekeeper-tests/1.0".to_owned()),
-        break_glass: Some("INC-1234 undoing lockout forbid".to_owned()),
-        idempotency_key: Some(FIXTURE_IDEMPOTENCY_KEY.to_owned()),
-    }
-}
-
-/// A replay record with every optional filled in. See [`maximal_authorization`].
-fn maximal_replay() -> ReplayRecord {
-    let assembled = assemble::replay(&IdempotentReplayEvent {
-        request_metadata: Arc::new(fixture_metadata()),
-        entities: Arc::new(EventEntities::one(fixture_table_entity())),
-        actions: Arc::new(vec![fixture_read_action()]),
-        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
-    });
-    ReplayRecord {
-        record_type: assembled.record_type,
-        emitters: assembled.emitters,
-        actions: assembled.actions,
-        entities: assembled.entities,
-        actor: assembled.actor,
-        privilege_source: assembled.privilege_source,
-        idempotency_key: assembled.idempotency_key,
-        user_agent: Some("lakekeeper-tests/1.0".to_owned()),
-    }
-}
-
-/// An operation record carrying its one optional, `context`.
-fn emit_maximal_operation() {
-    let alice = UserId::try_from("oidc~alice").expect("valid test user id");
-    OperationRecord::new(
-        AuditOperation::GrantCreated.as_wire(),
-        ActorRecord::principal(&alice),
-        AuditOutcome::Success.as_wire(),
-    )
-    .context(GrantContextRecord::new(
-        &UserOrRoleId::User(alice.clone()),
-        "select",
-        &GrantResource::Warehouse(WarehouseId::new(
-            FIXTURE_WAREHOUSE_ID.parse().expect("fixed test uuid"),
-        )),
-    ))
-    .message("Grant created")
-    .emit();
-}
-
 /// A field whose values are a closed set points at the set; one that is open does not.
 ///
 /// A value set that nothing refers to describes the format without checking it: the schema
@@ -2768,84 +2666,6 @@ fn an_operation_record_from_another_emitter_satisfies_the_shape() {
         !is_valid_part(&schema, "OperationRecord", &body),
         "`record_type` must pin the shape, so a record naming another one is rejected"
     );
-}
-
-/// Every emission in `shapes.rs` is guarded by the gate.
-///
-/// The gate is stated once per `emit()` rather than once inside `emit_stamped!`, so that a
-/// record costs no serialization when the audit trail is off. Three statements can become
-/// two, and a behavioural test cannot tell: `tracing` filters an INFO event by target on its
-/// own, so a shape that forgot to ask still writes nothing under a filter. What the gate adds
-/// is the configuration switch and the saved work, and neither shows up in the captured
-/// output. So this counts the gates against the emissions they guard.
-#[test]
-fn every_emission_is_guarded_by_the_gate() {
-    let shapes = code_only(include_str!("shapes.rs"));
-    // `macro_rules! emit_stamped {` has no `!` after the name, so only invocations count.
-    let emissions = shapes.matches("emit_stamped!").count();
-    let gates = shapes.matches("crate::audit::enabled()").count();
-    assert!(
-        emissions >= 3,
-        "found {emissions} emissions, so this is scanning the wrong file"
-    );
-    assert_eq!(
-        gates, emissions,
-        "{gates} gate(s) for {emissions} emission(s) in shapes.rs. Every `emit()` must start \
-         with `if !crate::audit::enabled() {{ return; }}`: without it a record is serialized \
-         and handed to `tracing` even when the operator switched the audit trail off, and \
-         `LAKEKEEPER__AUDIT__TRACING__ENABLED=false` stops meaning anything for a record \
-         built outside the event listener."
-    );
-}
-
-/// Every field a shape declares is a field its `emit()` writes, and the other way round.
-///
-/// A shape is spelled twice: once as the struct the schema is derived from, once as the list
-/// of field names its `emit()` hands to `tracing`. Nothing ties the two spellings together,
-/// so renaming one alone changes the record without changing the schema, or the schema
-/// without changing the record.
-///
-/// The fixtures do not catch that. Each covers the scenario somebody wrote it for, and a
-/// field no scenario populates is absent from every one of them — `break_glass` is in none.
-/// So each shape is emitted here with every optional filled in, and the keys that come out
-/// are compared with the keys the schema declares.
-#[test]
-fn every_shape_emits_exactly_the_fields_it_declares() {
-    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
-    for (record_type, emitted) in [
-        (
-            "authorization",
-            emitted_keys(|| maximal_authorization().emit()),
-        ),
-        ("replay", emitted_keys(|| maximal_replay().emit())),
-        ("operation", emitted_keys(emit_maximal_operation)),
-    ] {
-        let declared = declared_keys(&schema, record_type);
-        assert_eq!(
-            emitted,
-            declared,
-            "`{record_type}` emits {:?} and declares {:?}. A field on one side only is a \
-             field the schema promises and no record carries, or a field on the wire that \
-             no schema describes: fix the struct and the `emit()` together.",
-            emitted.difference(&declared).collect::<Vec<_>>(),
-            declared.difference(&emitted).collect::<Vec<_>>(),
-        );
-    }
-}
-
-/// `context` is the one optional an operation record can lack, and absence is an absent key
-/// rather than a null.
-#[test]
-fn an_operation_record_without_context_omits_the_key() {
-    let keys = emitted_keys(|| {
-        OperationRecord::new(
-            AuditOperation::GrantCreated.as_wire(),
-            ActorRecord::principal(&UserId::try_from("oidc~alice").expect("valid test user id")),
-            AuditOutcome::Success.as_wire(),
-        )
-        .emit();
-    });
-    assert!(!keys.contains("context"), "{keys:?}");
 }
 
 #[test]

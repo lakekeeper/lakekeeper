@@ -28,6 +28,18 @@ impl AuditJson {
         Self(serde_json::to_value(part).expect("audit types serialize to JSON"))
     }
 
+    /// Serialize a field of a record, or `None` when it has no value: it serializes to `null`,
+    /// as an absent `Option` does. A record leaves such a field off the line.
+    ///
+    /// # Panics
+    ///
+    /// As [`AuditJson::of`].
+    #[must_use]
+    pub fn present<T: Serialize + ?Sized>(field: &T) -> Option<Self> {
+        let value = serde_json::to_value(field).expect("audit types serialize to JSON");
+        (!value.is_null()).then_some(Self(value))
+    }
+
     /// The tree.
     #[must_use]
     pub fn value(&self) -> &serde_json::Value {

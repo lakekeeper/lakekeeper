@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::{
-    Decision, RecordType,
+    Decision,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, EmitterRecord, EntityRecord, ErrorRecord,
         HandlerContext, SubjectRecord,
@@ -56,7 +56,6 @@ fn authorization(
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
-        record_type: RecordType::Authorization.as_wire(),
         emitters: EmitterRecord::list(
             EmitterRecord::of::<crate::Lakekeeper>(),
             contributors(actions, authorizations, extra_context),
@@ -78,7 +77,6 @@ fn authorization(
 
 pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     ReplayRecord {
-        record_type: RecordType::Replay.as_wire(),
         emitters: EmitterRecord::list(
             EmitterRecord::of::<crate::Lakekeeper>(),
             contributors(&event.actions, &[], &HashMap::new()),
