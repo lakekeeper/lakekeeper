@@ -141,25 +141,21 @@ impl FromStr for GcsLocation {
 /// Validate the GCS bucket name according to GCS naming conventions.
 ///
 /// # Errors
-/// * If the bucket name has less than 3 or more than 222 characters.
-/// * If any dot-separated component has more than 63 characters.
+/// * If the bucket name has less than 3 characters, more than 222 characters, or a dot-separated component with more than 63 characters.
 /// * If the bucket name contains invalid characters (must be lowercase letters, numbers, dots, underscores, and hyphens).
 /// * If the bucket name does not start and end with a letter or number.
 /// * If the bucket name contains two adjacent periods.
 /// * If the bucket name is an IP address in dotted-decimal notation.
 /// * If the bucket name starts with the "goog" prefix.
 pub fn validate_bucket_name(bucket: &str) -> Result<(), InvalidGCSBucketName> {
-    // Bucket names must be between 3 (min) and 222 (max) characters long.
-    if bucket.len() < 3 || bucket.len() > 222 {
+    // Bucket names must contain 3-63 characters. Names containing dots can contain up to 222
+    // characters, but each dot-separated component can be no longer than 63 characters.
+    if bucket.len() < 3
+        || bucket.len() > 222
+        || bucket.split('.').any(|component| component.len() > 63)
+    {
         return Err(InvalidGCSBucketName {
-            reason: "must be between 3 and 222 characters long.".to_string(),
-            bucket: bucket.to_string(),
-        });
-    }
-
-    if bucket.split('.').any(|component| component.len() > 63) {
-        return Err(InvalidGCSBucketName {
-            reason: "dot-separated components must not exceed 63 characters.".to_string(),
+            reason: "must be between 3 and 63 characters long, or up to 222 characters if it contains dots (each dot-separated part at most 63 characters).".to_string(),
             bucket: bucket.to_string(),
         });
     }
