@@ -134,22 +134,6 @@ pub enum HandlerContextKey {
     SelfRead,
 }
 
-/// The `action_name` of the defensive row emitted when an event reaches the audit log
-/// with no action at all.
-///
-/// A one-variant enum rather than a string literal so the value reaches the wire-value
-/// manifest: `action_name` is the field carrying most of the format's vocabulary, and a
-/// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
-/// names the same condition on the entity side of the same row.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
-)]
-#[audit_part(field = "action_name")]
-#[strum(serialize_all = "snake_case")]
-pub enum FallbackAction {
-    Unknown,
-}
-
 /// The `entity_type` of an audit record's `entity` object.
 ///
 /// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
@@ -173,7 +157,6 @@ pub enum EntityType {
     User,
     GenericTable,
     Tag,
-    Unknown,
 }
 
 // The former `&'static str` constants, retyped. Call sites spell these by name, so they
@@ -1399,15 +1382,7 @@ where
     /// the wrapping API call. When unset, the emit path synthesises one entry
     /// per (entity, action) pair from the context's existing fields.
     pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
-        // Treat an empty Vec as "unset" so the emit-path's synthesised
-        // fallback still produces a non-empty `authorizations[]` array.
-        // Storing `Some(vec![])` here would clobber the fallback and break
-        // the always-non-empty invariant audit consumers rely on.
-        self.authorizations_override = if authorizations.is_empty() {
-            None
-        } else {
-            Some(authorizations)
-        };
+        self.authorizations_override = Some(authorizations);
     }
 
     /// Record that this event's authorisation check is being made on behalf
@@ -1642,11 +1617,8 @@ where
 }
 
 /// Synthesise a default `authorizations` list for an event whose call site
-/// did not explicitly populate one. Produces one entry per (entity, action)
-/// pair so the array is never empty for a well-formed event; if either input
-/// is empty (shouldn't happen for real events) we still emit a single entry
-/// describing whatever is available, since downstream consumers expect at
-/// least one row.
+/// did not explicitly populate one: one entry per (entity, action) pair. An
+/// event with no entity or no action, such as an empty batch, gets none.
 ///
 /// Crate-visible so the audit fixtures pair their entries the way this does, and a fixture
 /// cannot describe a record whose per-decision entries name an action or an entity its own
@@ -1657,7 +1629,7 @@ pub(crate) fn synthesise_authorizations(
     for_principal: Option<&UserOrRoleId>,
     allowed: Option<bool>,
 ) -> Vec<Authorization> {
-    let mut out = Vec::with_capacity(entities.entities.len().max(1) * actions.len().max(1));
+    let mut out = Vec::with_capacity(entities.entities.len() * actions.len());
     for entity in &entities.entities {
         for action in actions {
             out.push(Authorization {
@@ -1669,29 +1641,6 @@ pub(crate) fn synthesise_authorizations(
                 determined_by: Vec::new(),
             });
         }
-    }
-    if out.is_empty() {
-        // Defensive: never emit a zero-length array. Real events always have
-        // at least one entity and one action, but if a degenerate event slips
-        // through we still want a row consumers can rely on.
-        out.push(Authorization {
-            id: None,
-            for_principal: for_principal.cloned(),
-            action: actions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| ActionDescriptor {
-                    action_name: FallbackAction::Unknown.as_wire().into(),
-                    context: Vec::new(),
-                }),
-            entity: entities
-                .entities
-                .first()
-                .cloned()
-                .unwrap_or_else(|| EntityDescriptor::new(EntityType::Unknown)),
-            allowed,
-            determined_by: Vec::new(),
-        });
     }
     out
 }

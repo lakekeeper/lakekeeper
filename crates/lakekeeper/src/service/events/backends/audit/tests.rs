@@ -616,6 +616,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_revoke_subtree_grants",
     "authz_succeeded_apply_grants",
     "authz_succeeded_empty_collections",
+    "authz_succeeded_empty_batch_check",
     "grant_created",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
@@ -992,6 +993,31 @@ fn fixture_authz_succeeded_empty_collections() {
 
     assert_matches_fixture(
         "authz_succeeded_empty_collections",
+        &contract_fields(record),
+    );
+}
+
+/// A batch check with no checks: the call succeeded and checked nothing, so the record names
+/// no entity and carries no per-decision entry. Built from the batch endpoint's own entity
+/// and action types, which is what the handler hands to the event.
+#[test]
+fn fixture_authz_succeeded_empty_batch_check() {
+    let checks: Vec<crate::api::management::v1::check::CatalogActionCheckItem> = Vec::new();
+    let entities = (crate::service::ServerId::new_random(), checks).event_entities();
+    let actions = crate::service::events::context::IntrospectPermissions {}.event_actions();
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            entities,
+            actions,
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_eq!(record["entities"], serde_json::json!([]));
+    assert_eq!(record["authorizations"], serde_json::json!([]));
+    assert_matches_fixture(
+        "authz_succeeded_empty_batch_check",
         &contract_fields(record),
     );
 }

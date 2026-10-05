@@ -97,8 +97,9 @@ pub struct AuthorizationFailedEvent {
     pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
-    /// Always non-empty: single-check events carry one synthesised entry,
-    /// batch-style events carry one entry per inner check.
+    /// One synthesised entry per (entity, action) pair, or one entry per inner
+    /// check for batch-style events. Empty for a request that named nothing to
+    /// check, such as an empty batch.
     pub authorizations: Arc<Vec<Authorization>>,
 }
 
@@ -121,8 +122,9 @@ pub struct AuthorizationSucceededEvent {
     pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
-    /// Always non-empty: single-check events carry one synthesised entry,
-    /// batch-style events carry one entry per inner check.
+    /// One synthesised entry per (entity, action) pair, or one entry per inner
+    /// check for batch-style events. Empty for a request that named nothing to
+    /// check, such as an empty batch.
     pub authorizations: Arc<Vec<Authorization>>,
 }
 

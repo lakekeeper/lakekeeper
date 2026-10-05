@@ -194,7 +194,7 @@ Discriminate on `record_type`, which every record carries and which is the only 
 | `user_agent`           | String          | The caller's `User-Agent` request header, recorded verbatim and truncated to 256 bytes. Absent when the request sent no `User-Agent` (or sent one that was not valid text) — for example an in-process call from a background worker. **Client-supplied and unverified** — see below. |
 | `break_glass`          | String          | Optional; present only when the caller sent the `x-break-glass` request header with a value that was non-empty after trimming, which nearly no request does. The reason the caller stated for marking the request an emergency override, recorded as sent (undecodable bytes replaced) and truncated to 256 bytes. **Client-supplied and unverified** — see below. |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
-| `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
+| `authorizations`       | Array           | Per-decision breakdown. Always present; empty only when the request named nothing to check, such as an empty batch check. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `idempotency_key`      | String          | The request's `Idempotency-Key`. Absent when the caller sent none. Present so a retry can be tied to the request that did the work — see [Idempotent replays](#operational-audit-events) |
 | `context`              | Object          | Optional. What the handler recorded about the request beyond its action and its entity. Its keys come from a set this product declares, not from the handler's name. A value is a string, a flag, a count, a list, a map, or the object a shaped key declares; the [schema](audit/schema.json) states the type of every key on the `context` object's own definition; a product plugged in on top states its keys the same way in its own schema. Absent when the request contributed none. See [Context fields](#audit-context-fields) below. |
 | `failure_reason`       | String          | Only on failed events. One of `action_forbidden`, `resource_not_found`, `cannot_see_resource`, `internal_authorization_error`, `internal_catalog_error`, `invalid_request_data`. |
@@ -266,7 +266,7 @@ New keys may be added at any minor version, so consumers must not assume this li
 
 **Entity Format:**
 
-Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table`, `tag`, or `unknown` (a defensive fallback when the entity could not be determined). As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
+Each entity is an object with an `entity_type` and the identifying fields for that type. `entity_type` is one of `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `task`, `role`, `user`, `generic-table` or `tag`. As with the other value sets, this list may gain entries at any version — see [Format version and stability](#audit-format).
 
 Which of the following fields appear depends on the entity type and on what the request supplied — a field is omitted rather than emitted empty. Every value is a string.
 
@@ -396,7 +396,7 @@ Only `created_before` is omitted, when the request does not narrow on it. `privi
 
 #### Per-decision breakdown (`authorizations`)
 
-Every authorization event carries an `authorizations` array with **at least one entry**. For ordinary single-check API calls the array has exactly one entry, synthesised from the event's top-level fields. For `/management/v1/action/batch-check` the array contains one entry per inner check, in request order. The `get_*_actions` introspection endpoints are **not** in that group: they emit a single synthesised entry for the `introspect_permissions` action, whatever the answer contains — the actions a principal holds are in the response body, not in this array.
+Every authorization event carries an `authorizations` array. For ordinary single-check API calls the array has exactly one entry, synthesised from the event's top-level fields. For `/management/v1/action/batch-check` the array contains one entry per inner check, in request order. A request that names nothing to check, such as a batch check with `checks: []` or a transaction commit with no table changes, records an empty array, and `decision` still carries the outcome. The `get_*_actions` introspection endpoints are **not** in that group: they emit a single synthesised entry for the `introspect_permissions` action, whatever the answer contains — the actions a principal holds are in the response body, not in this array.
 
 This means audit consumers can use **one query path** for both single and batch events: iterate `authorizations[]` and read the per-entry `allowed` flag, instead of switching between top-level `decision` and a per-batch breakdown.
 

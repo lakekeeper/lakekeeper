@@ -1288,7 +1288,6 @@
         "table",
         "tag",
         "task",
-        "unknown",
         "user",
         "view",
         "warehouse"
@@ -1335,14 +1334,6 @@
       ],
       "description": "The `error` object of a denied authorization record.",
       "x-audit-kind": "part"
-    },
-    "FallbackAction": {
-      "type": "string",
-      "enum": [
-        "unknown"
-      ],
-      "x-audit-kind": "enum",
-      "x-audit-field": "action_name"
     },
     "GrantContextRecord": {
       "type": "object",
