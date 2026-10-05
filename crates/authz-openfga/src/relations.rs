@@ -11,11 +11,11 @@ use lakekeeper::{
     service::{
         authn::UserId,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GenericTableAction,
-            NamespaceAction, ProjectAction, RoleAction, ServerAction, TableAction, TagAction,
-            ViewAction, WarehouseAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogTagAction,
+            CatalogViewAction, CatalogWarehouseAction, GenericTableAction, NamespaceAction,
+            ProjectAction, RoleAction, ServerAction, TableAction, TagAction, ViewAction,
+            WarehouseAction,
         },
     },
 };
@@ -98,7 +98,6 @@ impl OpenFgaEntity for UserOrRole {
 }
 
 /// Role Relations in the `OpenFGA` schema
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -137,13 +136,6 @@ impl From<CatalogRoleAction> for RoleRelation {
 }
 
 impl OpenFgaRelation for RoleRelation {}
-impl CatalogAction for RoleRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -286,7 +278,6 @@ impl ReducedRelation for CatalogRoleAction {
 }
 
 /// Tag (governance tag definition) Relations in the `OpenFGA` schema
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -324,13 +315,6 @@ impl From<CatalogTagAction> for TagRelation {
 }
 
 impl OpenFgaRelation for TagRelation {}
-impl CatalogAction for TagRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
-    }
-}
 
 impl ReducedRelation for CatalogTagAction {
     type OpenFgaRelation = TagRelation;
@@ -423,7 +407,6 @@ impl ReducedRelation for APITagRelation {
 }
 
 /// Server Relations in the `OpenFGA` schema
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -454,13 +437,6 @@ pub enum ServerRelation {
     CanGrantOperator,
 }
 impl ServerAction for ServerRelation {}
-impl CatalogAction for ServerRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
-    }
-}
 impl OpenFgaRelation for ServerRelation {}
 
 impl From<CatalogServerAction> for ServerRelation {
@@ -615,7 +591,6 @@ impl ReducedRelation for OpenFGAServerAction {
     }
 }
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -669,13 +644,6 @@ pub enum ProjectRelation {
     CanGetTaskQueueConfig,
     CanGetProjectTasks,
     CanControlProjectTasks,
-}
-impl CatalogAction for ProjectRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
-    }
 }
 impl ProjectAction for ProjectRelation {}
 impl OpenFgaRelation for ProjectRelation {}
@@ -947,7 +915,6 @@ impl ReducedRelation for OpenFGAProjectAction {
     }
 }
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Copy,
     Debug,
@@ -1024,13 +991,6 @@ impl WarehouseAction for WarehouseRelation {
             self,
             Self::CanReadAssignments | Self::CanReadSubtreeAssignments
         )
-    }
-}
-impl CatalogAction for WarehouseRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
     }
 }
 
@@ -1338,7 +1298,6 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     }
 }
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -1405,13 +1364,6 @@ pub enum NamespaceRelation {
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
-impl CatalogAction for NamespaceRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
-    }
-}
 impl NamespaceAction for NamespaceRelation {
     fn is_grant_read(&self) -> bool {
         matches!(
@@ -1694,7 +1646,6 @@ impl ReducedRelation for OpenFGANamespaceAction {
     }
 }
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -1748,13 +1699,6 @@ pub enum TableRelation {
 impl TableAction for TableRelation {
     fn is_data_plane(&self) -> bool {
         matches!(self, Self::CanReadData | Self::CanWriteData)
-    }
-}
-impl CatalogAction for TableRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
     }
 }
 impl OpenFgaRelation for TableRelation {}
@@ -1998,7 +1942,6 @@ impl ReducedRelation for OpenFGATableAction {
     }
 }
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Copy,
@@ -2051,13 +1994,6 @@ pub enum ViewRelation {
 impl ViewAction for ViewRelation {
     fn is_data_plane(&self) -> bool {
         matches!(self, Self::CanSelect)
-    }
-}
-impl CatalogAction for ViewRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
     }
 }
 impl OpenFgaRelation for ViewRelation {}
@@ -2300,7 +2236,6 @@ impl ReducedRelation for OpenFGAViewAction {
 
 // =================== Generic Table Relations ===================
 
-#[lakekeeper::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -2355,13 +2290,6 @@ pub enum GenericTableRelation {
 impl GenericTableAction for GenericTableRelation {
     fn is_data_plane(&self) -> bool {
         matches!(self, Self::CanReadData | Self::CanWriteData)
-    }
-}
-impl CatalogAction for GenericTableRelation {
-    fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder()
-            .action_name(self.as_wire())
-            .build()
     }
 }
 impl OpenFgaRelation for GenericTableRelation {}

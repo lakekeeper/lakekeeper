@@ -845,13 +845,13 @@ async fn admit_then_check_actor<A: super::authz::Authorizer>(
 
     let check_result = if let Some(role_id) = role_id {
         use crate::service::{
-            authz::{ActionDescriptor, CatalogAction},
+            authz::{ActionDescriptor, EventAction},
             events::{APIEventContext, context::AuthnAction},
         };
 
         #[derive(Debug)]
         struct AssumeRoleAction;
-        impl CatalogAction for AssumeRoleAction {
+        impl EventAction for AssumeRoleAction {
             fn action_descriptor(&self) -> ActionDescriptor {
                 ActionDescriptor::builder()
                     .action_name(AuthnAction::AssumeRole.as_wire())

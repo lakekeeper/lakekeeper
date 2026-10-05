@@ -29,7 +29,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         UserId,
-        authz::{ActionDescriptor, CatalogAction},
+        authz::{ActionDescriptor, EventAction},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
@@ -56,7 +56,7 @@ pub enum InstanceAdminAction {
     SetWarehouseManagedBy,
 }
 
-impl CatalogAction for InstanceAdminAction {
+impl EventAction for InstanceAdminAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name(self.as_wire())

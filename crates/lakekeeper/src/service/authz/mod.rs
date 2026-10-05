@@ -255,16 +255,49 @@ pub trait ManagesRoleAssignments: Send + Sync {
     ) -> std::result::Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError>;
 }
 
-pub trait CatalogAction
+/// An action that an event can name: one a handler asks for, carried by the events every
+/// [`EventListener`](crate::service::events::EventListener) receives.
+///
+/// Its descriptor is a declared wire name plus typed context keys, so only an enum carrying
+/// `#[audit_part(field = "action_name")]` can implement it. An authorizer's own action types
+/// do not: they name what that authorizer checks, which they say through `Display` for error
+/// text.
+pub trait EventAction
 where
     Self: std::fmt::Debug + Send + Sync + 'static,
 {
-    fn as_log_str(&self) -> String {
-        self.action_descriptor().log_string()
-    }
-
     fn action_descriptor(&self) -> ActionDescriptor;
 }
+
+/// How an action reads in a log line or an error message: `drop(force=false, purge=true)`.
+#[must_use]
+pub fn log_string(action: &impl EventAction) -> String {
+    action.action_descriptor().log_string()
+}
+
+/// `Display` for a Lakekeeper action enum: its [`log_string`], which is what an error names
+/// when one of these is the authorizer's own action type, as it is for allow-all.
+macro_rules! display_as_log_string {
+    ($($ty:ty),* $(,)?) => {$(
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&log_string(self))
+            }
+        }
+    )*};
+}
+
+display_as_log_string!(
+    CatalogServerAction,
+    CatalogProjectAction,
+    CatalogRoleAction,
+    CatalogWarehouseAction,
+    CatalogNamespaceAction,
+    CatalogTableAction,
+    CatalogViewAction,
+    CatalogGenericTableAction,
+    CatalogTagAction,
+);
 
 /// What a `context` key carries.
 ///
@@ -364,17 +397,25 @@ impl ActionDescriptor {
     /// - `"update_namespace(updated={foo: new}, removed=[bar, baz])"`
     #[must_use]
     pub fn log_string(&self) -> String {
-        if self.context.is_empty() {
-            self.action_name.to_string()
-        } else {
-            let params = self
-                .context
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({params})", self.action_name)
-        }
+        format_action(self.action_name.text(), &self.context)
+    }
+}
+
+/// An action and its context as one line of text: `name` alone, or `name(key=value, ...)`.
+///
+/// The one spelling of an action in error messages and log lines, whether the action comes
+/// from a descriptor or from an authorizer's own type.
+#[must_use]
+pub fn format_action(name: &str, context: &[(ActionContextKey, ContextValue)]) -> String {
+    if context.is_empty() {
+        name.to_string()
+    } else {
+        let params = context
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{name}({params})")
     }
 }
 
@@ -409,7 +450,7 @@ pub enum CatalogUserAction {
     ReadRoleAssignments,
 }
 
-impl CatalogAction for CatalogUserAction {
+impl EventAction for CatalogUserAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name(self.as_wire())
@@ -474,7 +515,7 @@ impl CatalogServerAction {
         &SERVER_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogServerAction {
+impl EventAction for CatalogServerAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::CreateProject { name, project_id } = self {
@@ -575,7 +616,7 @@ impl CatalogProjectAction {
         &PROJECT_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogProjectAction {
+impl EventAction for CatalogProjectAction {
     // A wildcard arm here would silently accept a future variant and emit nothing for
     // it, which is the whole failure this listing exists to prevent. Denied rather than
     // left to review: see the audit log section of docs/docs/developer-guide.md.
@@ -747,7 +788,7 @@ impl CatalogRoleAction {
         &ROLE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogRoleAction {
+impl EventAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::UpdateSourceSystem {
@@ -1238,7 +1279,7 @@ impl CatalogWarehouseAction {
         }
     }
 }
-impl CatalogAction for CatalogWarehouseAction {
+impl EventAction for CatalogWarehouseAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
@@ -1513,7 +1554,7 @@ impl CatalogNamespaceAction {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogNamespaceAction {
+impl EventAction for CatalogNamespaceAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     // Long because the no-context variants are listed exhaustively rather than
     // collapsed into a wildcard. That listing is the point, so the length is not a
@@ -1711,7 +1752,7 @@ impl CatalogTableAction {
         &TABLE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogTableAction {
+impl EventAction for CatalogTableAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
@@ -1841,7 +1882,7 @@ impl CatalogViewAction {
         &VIEW_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogViewAction {
+impl EventAction for CatalogViewAction {
     #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
@@ -1947,7 +1988,7 @@ impl CatalogGenericTableAction {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogGenericTableAction {
+impl EventAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
@@ -2022,7 +2063,7 @@ impl CatalogTagAction {
         &TAG_ACTION_VARIANTS
     }
 }
-impl CatalogAction for CatalogTagAction {
+impl EventAction for CatalogTagAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder()
             .action_name(self.as_wire())
@@ -3985,7 +4026,7 @@ pub mod tests {
             name: Some("my-project".to_string()),
             project_id: Some(crate::ProjectId::from(Uuid::nil())),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=my-project"), "got: {log}");
         assert!(
             log.contains("project_id=00000000-0000-0000-0000-000000000000"),
@@ -3996,7 +4037,7 @@ pub mod tests {
         let action = CatalogProjectAction::CreateWarehouse {
             name: Some("my-warehouse".to_string()),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=my-warehouse"), "got: {log}");
 
         // CreateRole with name
@@ -4004,7 +4045,7 @@ pub mod tests {
             name: Some("admin".to_string()),
             source_system: None,
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=admin"), "got: {log}");
         assert!(!log.contains("requested_provider_id"), "got: {log}");
 
@@ -4016,7 +4057,7 @@ pub mod tests {
                 source_id: "admins".parse().unwrap(),
             }),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=admin"), "got: {log}");
         assert!(log.contains("requested_provider_id=ldap"), "got: {log}");
         assert!(log.contains("requested_source_id=admins"), "got: {log}");
@@ -4026,7 +4067,7 @@ pub mod tests {
             name: Some("ns1".to_string()),
             properties: Arc::new(BTreeMap::new()),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=ns1"), "got: {log}");
 
         // CreateTable with name and table_id
@@ -4035,7 +4076,7 @@ pub mod tests {
             table_id: Some(crate::service::TableId::from(Uuid::nil())),
             properties: Arc::new(BTreeMap::new()),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=my-table"), "got: {log}");
         assert!(
             log.contains("table_id=00000000-0000-0000-0000-000000000000"),
@@ -4047,7 +4088,7 @@ pub mod tests {
             name: Some("my-view".to_string()),
             properties: Arc::new(BTreeMap::new()),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=my-view"), "got: {log}");
 
         // CreateNamespace in namespace with name
@@ -4055,7 +4096,7 @@ pub mod tests {
             name: Some("sub-ns".to_string()),
             properties: Arc::new(BTreeMap::new()),
         };
-        let log = action.as_log_str();
+        let log = log_string(&action);
         assert!(log.contains("name=sub-ns"), "got: {log}");
 
         // None fields should produce no context
@@ -4063,7 +4104,7 @@ pub mod tests {
             name: None,
             project_id: None,
         };
-        assert_eq!(action.as_log_str(), "create_project");
+        assert_eq!(log_string(&action), "create_project");
     }
 
     #[derive(Clone, Debug)]

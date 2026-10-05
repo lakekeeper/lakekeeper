@@ -11,8 +11,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogWarehouseAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -25,7 +25,15 @@ const CAN_SEE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::Use;
 
 pub trait WarehouseAction
 where
-    Self: CatalogAction + Clone + From<CatalogWarehouseAction> + Eq + PartialEq,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + From<CatalogWarehouseAction>
+        + Eq
+        + PartialEq,
 {
     /// Whether this is one of the grant-read actions, which double as visibility.
     ///
@@ -126,7 +134,7 @@ impl AuthZWarehouseActionForbidden {
     pub fn new(warehouse_id: WarehouseId, action: &impl WarehouseAction) -> Self {
         Self {
             warehouse_id,
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

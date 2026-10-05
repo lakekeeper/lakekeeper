@@ -84,7 +84,7 @@ pub struct AuthorizationFailedEvent {
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,
 
-    /// The action that was attempted, serialized from `CatalogAction`
+    /// The action that was attempted, serialized from `EventAction`
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Why the authorization failed
@@ -114,7 +114,7 @@ pub struct AuthorizationSucceededEvent {
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,
 
-    /// The action that was attempted, serialized from `CatalogAction`
+    /// The action that was attempted, serialized from `EventAction`
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Any additional context that may be useful for debugging or auditing

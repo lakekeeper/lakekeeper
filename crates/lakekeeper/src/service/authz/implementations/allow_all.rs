@@ -18,10 +18,10 @@ use crate::{
         authn::UserId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
-            AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-            CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
+            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            EventAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
@@ -62,7 +62,7 @@ const READ_GRANTS_ACTION: &str = "read_grants";
 
 /// The grantable vocabulary of one resource level: every catalog action on it,
 /// except the grant-reading gate.
-fn privileges_from_actions<A: CatalogAction>(
+fn privileges_from_actions<A: EventAction>(
     actions: &'static [A],
     resource_type: ResourceType,
 ) -> Vec<PrivilegeDescriptor> {

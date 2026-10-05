@@ -22,8 +22,8 @@ use crate::{
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
             Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogTableAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -261,7 +261,16 @@ pub(super) fn validate_namespace_hierarchy(
 
 pub trait TableAction
 where
-    Self: std::hash::Hash + CatalogAction + Clone + PartialEq + Eq + From<CatalogTableAction>,
+    Self: std::hash::Hash
+        + std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + PartialEq
+        + Eq
+        + From<CatalogTableAction>,
 {
     /// Whether this action reads or writes table row data (as opposed to metadata
     /// or catalog operations). The instance-admin bypass
@@ -414,7 +423,7 @@ impl AuthZTableActionForbidden {
         Self {
             warehouse_id,
             table: table.into(),
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

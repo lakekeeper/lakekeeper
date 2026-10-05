@@ -14,8 +14,8 @@ use crate::{
             ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
             AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogViewAction, IsAllowedActionError,
-            MustUse, UserOrRole, refresh_warehouse_and_namespace_if_needed,
+            CannotInspectPermissions, CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
+            refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
             CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
@@ -32,7 +32,15 @@ const CAN_SEE_PERMISSION: CatalogViewAction = CatalogViewAction::GetMetadata;
 
 pub trait ViewAction
 where
-    Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogViewAction>,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + PartialEq
+        + Eq
+        + From<CatalogViewAction>,
 {
     /// Whether this action executes the view (producing rows) as opposed to
     /// inspecting its metadata or performing a catalog operation on it.
@@ -134,7 +142,7 @@ impl AuthZViewActionForbidden {
         Self {
             warehouse_id,
             view: view.into(),
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

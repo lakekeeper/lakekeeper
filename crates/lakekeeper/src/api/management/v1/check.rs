@@ -25,10 +25,10 @@ use crate::{
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            AuthzWarehouseOps, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, DeterminingFactor, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError,
+            CatalogWarehouseAction, DeterminingFactor, EventAction, MustUse,
+            RequireNamespaceActionError, RequireTableActionError, RequireWarehouseActionError,
             RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{

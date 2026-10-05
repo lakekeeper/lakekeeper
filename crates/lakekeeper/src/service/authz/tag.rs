@@ -7,8 +7,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTagAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogTagAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -19,7 +19,14 @@ use crate::{
 
 pub trait TagAction
 where
-    Self: CatalogAction + Send + Sync + Clone + From<CatalogTagAction> + PartialEq,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + From<CatalogTagAction>
+        + PartialEq,
 {
 }
 
@@ -88,7 +95,7 @@ impl AuthZTagActionForbidden {
     pub fn new(tag_definition_id: TagDefinitionId, action: &impl TagAction) -> Self {
         Self {
             tag_definition_id,
-            action: action.action_descriptor().log_string(),
+            action: action.to_string(),
         }
     }
 }

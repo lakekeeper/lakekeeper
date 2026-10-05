@@ -18,8 +18,8 @@ use crate::{
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, DeterminingFactor, GrantResource, PolicyEffect, RoleSourceSystem,
+            ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
+            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, RoleSourceSystem,
             SubtreeGrantScope, UserOrRoleId,
         },
         events::{

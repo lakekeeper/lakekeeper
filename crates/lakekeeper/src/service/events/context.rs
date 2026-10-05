@@ -26,8 +26,8 @@ use crate::{
         TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
-            CatalogViewAction, UserOrRoleId,
+            ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            EventAction, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -900,7 +900,7 @@ impl APIEventActions for Vec<CatalogTableAction> {
     }
 }
 
-impl<T: CatalogAction> APIEventActions for T {
+impl<T: EventAction> APIEventActions for T {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![self.action_descriptor()]
     }

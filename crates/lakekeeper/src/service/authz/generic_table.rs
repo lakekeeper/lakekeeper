@@ -16,8 +16,8 @@ use crate::{
             ActionOnGenericTable, AuthZError, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
             Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogGenericTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogGenericTableAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -30,7 +30,15 @@ const CAN_SEE_PERMISSION: CatalogGenericTableAction = CatalogGenericTableAction:
 
 pub trait GenericTableAction
 where
-    Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogGenericTableAction>,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + PartialEq
+        + Eq
+        + From<CatalogGenericTableAction>,
 {
     /// Whether this action reads or writes generic-table row data (as opposed
     /// to metadata or catalog operations). Used to exclude data-plane actions
@@ -131,7 +139,7 @@ impl AuthZGenericTableActionForbidden {
         Self {
             warehouse_id,
             generic_table: generic_table.into(),
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

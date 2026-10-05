@@ -26,7 +26,7 @@ use lakekeeper::{
         Actor, CachePolicy, CatalogRoleOps, CatalogStore, GenericTableId,
         GetRoleAcrossProjectsError, NamespaceId, Result, RoleId, SecretStore, State, TableId,
         TagDefinitionId, ViewId,
-        authz::ActionDescriptor,
+        authz::{ActionDescriptor, EventAction},
         events::{
             APIEventContext,
             context::{APIEventActions, IntrospectPermissions, authz_to_error_no_audit},
@@ -322,6 +322,36 @@ pub(crate) enum AssignmentAction {
     UpdateViewAssignments,
     UpdateGenericTableAssignments,
     UpdateRoleAssignments,
+}
+
+/// The `action_name` values the OpenFGA permission endpoints record: the relation each
+/// endpoint checks, spelled the way OpenFGA spells it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
+)]
+#[strum(serialize_all = "snake_case")]
+// The shared `Can` prefix is the relation's own name: each wire value is the relation a
+// consumer matches on, so trimming it would rename three audit log values.
+#[lakekeeper::audit::audit_part(field = "action_name")]
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum PermissionAction {
+    /// Read an object's metadata. Checked when the caller checks their own access to an
+    /// object, and when the caller reads an object's authorization properties.
+    CanGetMetadata,
+    /// Read who holds which relation on an object. Checked when the caller checks another
+    /// principal's access to an object, and when the caller reads its assignments.
+    CanReadAssignments,
+    /// Change whether an object's grants are managed. Checked when the caller sets managed
+    /// access on a warehouse or a namespace.
+    CanSetManagedAccess,
+}
+
+impl EventAction for PermissionAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -994,13 +1024,13 @@ async fn get_warehouse_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         warehouse_id,
-        AllWarehouseRelation::CanGetMetadata,
+        PermissionAction::CanGetMetadata,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllWarehouseRelation::CanGetMetadata,
             &warehouse_id.to_openfga(),
         )
         .await;
@@ -1041,13 +1071,13 @@ async fn set_warehouse_managed_access<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         warehouse_id,
-        AllWarehouseRelation::CanSetManagedAccess,
+        PermissionAction::CanSetManagedAccess,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllWarehouseRelation::CanSetManagedAccess,
             &warehouse_id.to_openfga(),
         )
         .await;
@@ -1086,13 +1116,13 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         namespace_id,
-        AllNamespaceRelations::CanSetManagedAccess,
+        PermissionAction::CanSetManagedAccess,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllNamespaceRelations::CanSetManagedAccess,
             &namespace_id.to_openfga(),
         )
         .await;
@@ -1129,13 +1159,13 @@ async fn get_namespace_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         namespace_id,
-        AllNamespaceRelations::CanGetMetadata,
+        PermissionAction::CanGetMetadata,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllNamespaceRelations::CanGetMetadata,
             &namespace_id.to_openfga(),
         )
         .await;
@@ -1560,13 +1590,13 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         role_id,
-        AllRoleRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllRoleRelations::CanReadAssignments,
             &role_id.to_openfga(),
         )
         .await;
@@ -1608,13 +1638,13 @@ async fn get_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         tag_definition_id,
-        AllTagRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllTagRelations::CanReadAssignments,
             &tag_definition_id.to_openfga(),
         )
         .await;
@@ -1656,14 +1686,14 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     let event_ctx = APIEventContext::for_server(
         Arc::new(metadata),
         api_context.v1_state.events,
-        AllServerAction::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
         lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllServerAction::CanReadAssignments,
             &server_id,
         )
         .await;
@@ -1705,14 +1735,14 @@ async fn get_project_assignments<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        Arc::new(AllProjectRelations::CanReadAssignments),
+        Arc::new(PermissionAction::CanReadAssignments),
     );
     let project_id_openfga = event_ctx.user_provided_entity().to_openfga();
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllProjectRelations::CanReadAssignments,
             &project_id_openfga,
         )
         .await;
@@ -1763,14 +1793,14 @@ async fn get_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         project_id,
-        AllProjectRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
     let project_id_openfga = event_ctx.user_provided_entity().to_openfga();
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            AllProjectRelations::CanReadAssignments,
             &project_id_openfga,
         )
         .await;
@@ -1816,11 +1846,15 @@ async fn get_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         warehouse_id,
-        AllWarehouseRelation::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
-        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .require_action(
+            event_ctx.request_metadata(),
+            AllWarehouseRelation::CanReadAssignments,
+            &object,
+        )
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1861,11 +1895,15 @@ async fn get_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
         Arc::new(metadata),
         api_context.v1_state.events,
         namespace_id,
-        AllNamespaceRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
-        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .require_action(
+            event_ctx.request_metadata(),
+            AllNamespaceRelations::CanReadAssignments,
+            &object,
+        )
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1908,11 +1946,15 @@ async fn get_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events,
         warehouse_id,
         table_id,
-        AllTableRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
-        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .require_action(
+            event_ctx.request_metadata(),
+            AllTableRelations::CanReadAssignments,
+            &object,
+        )
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -1955,11 +1997,15 @@ async fn get_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events,
         warehouse_id,
         view_id,
-        AllViewRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
-        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .require_action(
+            event_ctx.request_metadata(),
+            AllViewRelations::CanReadAssignments,
+            &object,
+        )
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
@@ -2317,11 +2363,15 @@ async fn get_generic_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events,
         warehouse_id,
         generic_table_id,
-        AllGenericTableRelations::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
     );
 
     let authz_result = authorizer
-        .require_action(event_ctx.request_metadata(), *event_ctx.action(), &object)
+        .require_action(
+            event_ctx.request_metadata(),
+            AllGenericTableRelations::CanReadAssignments,
+            &object,
+        )
         .await;
 
     let _ = event_ctx.emit_authz(authz_result)?;
