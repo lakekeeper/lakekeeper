@@ -15,8 +15,8 @@ pub mod validate;
 
 pub use emitter::{AuditEmitter, is_emitter_name};
 pub use part::{
-    AUDIT_TARGET, AnyWireStr, AuditPart, Kind, Registration, WireKey, WireName, WireStr, enabled,
-    warn_on_retired_audit_filter,
+    AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
+    Registration, Vocabulary, Wire, WireKey, WireName, enabled, warn_on_retired_audit_filter,
 };
 pub use parts::{
     ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityRecord, ErrorRecord,
@@ -134,9 +134,9 @@ pub enum Decision {
 
 /// The `operation` value on the operational records this crate emits.
 ///
-/// This does not close the `operation` space. [`OperationRecord`] takes any `WireStr` of its
-/// emitter, so a crate outside this repository names its own operations and is responsible
-/// for its own vocabulary — see the audit log section of `docs/docs/developer-guide.md`. What
+/// This does not close the `operation` space. [`OperationRecord`] takes a value of any
+/// operation vocabulary of its emitter, so a crate outside this repository names its own
+/// operations and is responsible for its own vocabulary — see the audit log section of `docs/docs/developer-guide.md`. What
 /// the enum does is bring Lakekeeper's own operations under the same rename check as
 /// everything else it emits.
 #[audit_part(field = "operation")]
@@ -196,6 +196,17 @@ crate::__private::inventory::submit! {
         external_values: true,
         schema_name: None,
         schema: None,
+    }
+}
+
+// `TableUpdateKind` is a vocabulary by hand for the same reason it is registered by hand: its
+// crate cannot carry the attribute. Its names are `VariantNames`' list, in declaration order,
+// which is also the order of its discriminants.
+impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
+    type Emitter = crate::Lakekeeper;
+    const SCHEMA_NAME: &'static str = "TableUpdateKind";
+    fn wire(&self) -> Wire<Self> {
+        Wire::new(<Self as strum::VariantNames>::VARIANTS[*self as usize])
     }
 }
 
@@ -472,9 +483,9 @@ pub mod contract {
             ));
         }
 
-        let known_action: BTreeSet<String> = ActionContextKey::VARIANTS
+        let known_action: BTreeSet<String> = ActionContextKey::WIRE_NAMES
             .iter()
-            .map(|k| k.as_str().to_string())
+            .map(|k| (*k).to_string())
             .chain(["action_name".to_string()])
             .collect();
         let unknown_action: Vec<String> = keys_at(record, "action", "actions")

@@ -299,84 +299,17 @@ display_as_log_string!(
     CatalogTagAction,
 );
 
-/// What a `context` key carries.
-///
-/// A record holds context keys in two places: inside each entry of `actions`, beside
-/// `action_name`, and in the record's own `context` object. A key carries the same type in
-/// either, and which type that is is stated for that key in this schema.
-// One type for both so a key's legal values do not depend on which object it sits in. Declare
-// a key's type with `#[audit(value = "...")]`; `every_declared_key_type_matches_the_code`
-// holds the declaration to the builder the value is written with.
-#[audit_part]
-#[serde(untagged)]
-#[derive(Clone, Debug, PartialEq)]
-pub enum ContextValue {
-    /// A set of key-value pairs (e.g. properties, `updated_properties`).
-    Map(BTreeMap<String, String>),
-    /// A list of plain strings (e.g. `removed_properties`).
-    List(Vec<String>),
-    /// An object. The key that carries one names its shape, which this schema defines.
-    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
-    Object(crate::audit::AuditJson),
-    /// A flag the request either set or did not (e.g. `force`, `dry_run`).
-    Bool(bool),
-    /// A count (e.g. `writes`, `deletes`).
-    Integer(i64),
-    /// A single string value (e.g. resource name, ID).
-    String(String),
-}
-
-impl std::fmt::Display for ContextValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Map(map) => {
-                let entries = map
-                    .iter()
-                    .map(|(k, v)| format!("{k}: {v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "{{{entries}}}")
-            }
-            Self::List(list) => {
-                write!(f, "[{}]", list.join(", "))
-            }
-            Self::Object(json) => write!(f, "{}", json.value()),
-            Self::Bool(b) => write!(f, "{b}"),
-            Self::Integer(n) => write!(f, "{n}"),
-            Self::String(s) => write!(f, "{s}"),
-        }
-    }
-}
-
 #[derive(Clone, Debug, typed_builder::TypedBuilder)]
 #[builder(mutators(
+    /// Add one context key, holding its value.
     #[allow(unreachable_pub)]
-    pub fn context_map(&mut self, key: ActionContextKey, map: impl Into<BTreeMap<String, String>>) {
-        self.context.push((key, ContextValue::Map(map.into())));
+    pub fn context(&mut self, entry: ActionContextKey) {
+        self.context.push(entry);
     }
+    /// Add the context a value describes about itself.
     #[allow(unreachable_pub)]
-    pub fn context_list(&mut self, key: ActionContextKey, list: impl Into<Vec<String>>) {
-        self.context.push((key, ContextValue::List(list.into())));
-    }
-    #[allow(unreachable_pub)]
-    pub fn context_string(&mut self, key: ActionContextKey, value: impl Into<String>) {
-        self.context.push((key, ContextValue::String(value.into())));
-    }
-    #[allow(unreachable_pub)]
-    pub fn context_bool(&mut self, key: ActionContextKey, value: bool) {
-        self.context.push((key, ContextValue::Bool(value)));
-    }
-    #[allow(unreachable_pub)]
-    pub fn context_integer(&mut self, key: ActionContextKey, value: impl Into<i64>) {
-        self.context.push((key, ContextValue::Integer(value.into())));
-    }
-    /// Append the context a value describes about itself.
-    #[allow(unreachable_pub)]
-    pub fn context_pairs(
-        &mut self,
-        pairs: impl IntoIterator<Item = (ActionContextKey, ContextValue)>,
-    ) {
-        self.context.extend(pairs);
+    pub fn contexts(&mut self, entries: impl IntoIterator<Item = ActionContextKey>) {
+        self.context.extend(entries);
     }
 ))]
 pub struct ActionDescriptor {
@@ -384,8 +317,9 @@ pub struct ActionDescriptor {
     /// `#[audit_part(field = "action_name")]`, from any emitter.
     #[builder(setter(into))]
     pub action_name: AnyWireStr,
+    /// The action's context keys, each holding its value, in the order they were added.
     #[builder(via_mutators)]
-    pub context: Vec<(ActionContextKey, ContextValue)>,
+    pub context: Vec<ActionContextKey>,
 }
 
 impl ActionDescriptor {
@@ -406,16 +340,42 @@ impl ActionDescriptor {
 /// The one spelling of an action in error messages and log lines, whether the action comes
 /// from a descriptor or from an authorizer's own type.
 #[must_use]
-pub fn format_action(name: &str, context: &[(ActionContextKey, ContextValue)]) -> String {
+pub fn format_action(name: &str, context: &[ActionContextKey]) -> String {
     if context.is_empty() {
         name.to_string()
     } else {
         let params = context
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|key| format!("{}={}", key.as_str(), format_value(&key.value())))
             .collect::<Vec<_>>()
             .join(", ");
         format!("{name}({params})")
+    }
+}
+
+/// A context value as a log line or an error message prints it: a string bare, a list as
+/// `[a, b]`, an object as `{key: value}`, anything else as JSON.
+#[must_use]
+pub fn format_value(value: &serde_json::Value) -> String {
+    LogValue(value).to_string()
+}
+
+struct LogValue<'a>(&'a serde_json::Value);
+
+impl std::fmt::Display for LogValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            serde_json::Value::String(s) => f.write_str(s),
+            serde_json::Value::Array(items) => {
+                let items = items.iter().map(|item| LogValue(item).to_string());
+                write!(f, "[{}]", items.collect::<Vec<_>>().join(", "))
+            }
+            serde_json::Value::Object(map) => {
+                let entries = map.iter().map(|(k, v)| format!("{k}: {}", LogValue(v)));
+                write!(f, "{{{}}}", entries.collect::<Vec<_>>().join(", "))
+            }
+            other => write!(f, "{other}"),
+        }
     }
 }
 
@@ -520,10 +480,10 @@ impl EventAction for CatalogServerAction {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         if let Self::CreateProject { name, project_id } = self {
             if let Some(n) = name {
-                b = b.context_string(ActionContextKey::Name, n.clone());
+                b = b.context(ActionContextKey::Name(n.clone()));
             }
             if let Some(pid) = project_id {
-                b = b.context_string(ActionContextKey::ProjectId, pid.to_string());
+                b = b.context(ActionContextKey::ProjectId(pid.to_string()));
             }
         }
         b.build()
@@ -625,17 +585,17 @@ impl EventAction for CatalogProjectAction {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::CreateWarehouse { name: Some(n) } | Self::CreateTag { name: Some(n) } => {
-                b = b.context_string(ActionContextKey::Name, n.clone());
+                b = b.context(ActionContextKey::Name(n.clone()));
             }
             Self::CreateRole {
                 name,
                 source_system,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string(ActionContextKey::Name, n.clone());
+                    b = b.context(ActionContextKey::Name(n.clone()));
                 }
                 if let Some(source_system) = source_system {
-                    b = b.context_pairs(source_system.requested_context());
+                    b = b.contexts(source_system.requested_context());
                 }
             }
             // Actions that contribute no audit context. Listed explicitly rather than
@@ -683,16 +643,10 @@ impl RoleSourceSystem {
     /// The action context this identity contributes as a client-requested value:
     /// `requested_provider_id` and `requested_source_id`.
     #[must_use]
-    pub fn requested_context(&self) -> [(ActionContextKey, ContextValue); 2] {
+    pub fn requested_context(&self) -> [ActionContextKey; 2] {
         [
-            (
-                ActionContextKey::RequestedProviderId,
-                ContextValue::String(self.provider_id.to_string()),
-            ),
-            (
-                ActionContextKey::RequestedSourceId,
-                ContextValue::String(self.source_id.to_string()),
-            ),
+            ActionContextKey::RequestedProviderId(self.provider_id.to_string()),
+            ActionContextKey::RequestedSourceId(self.source_id.to_string()),
         ]
     }
 }
@@ -795,10 +749,10 @@ impl EventAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_pairs(target.requested_context());
+            b = b.contexts(target.requested_context());
         }
         if let Self::Delete { force } = self {
-            b = b.context_bool(ActionContextKey::Force, *force);
+            b = b.context(ActionContextKey::Force(*force));
         }
         b.build()
     }
@@ -1040,7 +994,7 @@ impl SubtreeGrantScope {
     /// Public because an authorizer that builds its own request context reads the scope
     /// directly.
     #[must_use]
-    pub fn context(&self) -> Vec<(ActionContextKey, ContextValue)> {
+    pub fn context(&self) -> Vec<ActionContextKey> {
         // Principals are prefixed by kind, matching the wire discriminator, so a user id
         // and a role id that coincide stay distinguishable.
         let principal = match &self.principal {
@@ -1051,40 +1005,26 @@ impl SubtreeGrantScope {
             }
         };
         vec![
-            (ActionContextKey::DryRun, ContextValue::Bool(self.dry_run)),
-            (
-                ActionContextKey::ResourceTypes,
-                ContextValue::List(
-                    self.resource_types
-                        .as_set()
-                        .iter()
-                        .map(|kind| kind.as_str().to_string())
-                        .collect(),
-                ),
+            ActionContextKey::DryRun(self.dry_run),
+            ActionContextKey::ResourceTypes(
+                self.resource_types
+                    .as_set()
+                    .iter()
+                    .map(ResourceType::as_wire)
+                    .collect(),
             ),
-            (
-                ActionContextKey::RootLevel,
-                ContextValue::String(self.root_level.as_str().to_string()),
-            ),
-            (ActionContextKey::Principal, ContextValue::String(principal)),
+            ActionContextKey::RootLevel(self.root_level.as_wire()),
+            ActionContextKey::Principal(principal),
             // Unlike the members above, the widest privilege case cannot be written out:
             // an empty filter matches privileges this authorizer no longer publishes, so
             // there is no list to expand it into. `privilege_scope` carries it instead,
             // and the set below is named for what it holds — the narrowing, empty when
             // there is none — so that reading it alone cannot pass for the whole answer.
-            (
-                ActionContextKey::PrivilegeScope,
-                ContextValue::String(self.privileges.scope().as_str().to_string()),
-            ),
-            (
-                ActionContextKey::NarrowedPrivileges,
-                ContextValue::List(match &self.privileges {
-                    SubtreeGrantPrivileges::Every {} => Vec::new(),
-                    SubtreeGrantPrivileges::Only { names } => {
-                        names.as_set().iter().cloned().collect()
-                    }
-                }),
-            ),
+            ActionContextKey::PrivilegeScope(self.privileges.scope().as_wire()),
+            ActionContextKey::NarrowedPrivileges(match &self.privileges {
+                SubtreeGrantPrivileges::Every {} => Vec::new(),
+                SubtreeGrantPrivileges::Only { names } => names.as_set().iter().cloned().collect(),
+            }),
         ]
     }
 }
@@ -1286,15 +1226,15 @@ impl EventAction for CatalogWarehouseAction {
         match self {
             Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string(ActionContextKey::Name, n.clone());
+                    b = b.context(ActionContextKey::Name(n.clone()));
                 }
-                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
             Self::AcceptMovedNamespace { source } => {
-                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
+                b = b.context(ActionContextKey::Source(source.as_ref().clone()));
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
-                b = b.context_pairs(
+                b = b.contexts(
                     scope
                         .as_ref()
                         .map(SubtreeGrantScope::context)
@@ -1302,7 +1242,7 @@ impl EventAction for CatalogWarehouseAction {
                 );
             }
             Self::Delete { force } => {
-                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context(ActionContextKey::Force(*force));
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::UpdateStorage { .. }
@@ -1569,12 +1509,12 @@ impl EventAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string(ActionContextKey::Name, n.clone());
+                    b = b.context(ActionContextKey::Name(n.clone()));
                 }
                 if let Some(tid) = table_id {
-                    b = b.context_string(ActionContextKey::TableId, tid.to_string());
+                    b = b.context(ActionContextKey::TableId(tid.to_string()));
                 }
-                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
             Self::CreateGenericTable {
                 name,
@@ -1584,62 +1524,60 @@ impl EventAction for CatalogNamespaceAction {
                 properties,
             } => {
                 if let Some(n) = name {
-                    b = b.context_string(ActionContextKey::Name, n.clone());
+                    b = b.context(ActionContextKey::Name(n.clone()));
                 }
                 if let Some(gtid) = generic_table_id {
-                    b = b.context_string(ActionContextKey::GenericTableId, gtid.to_string());
+                    b = b.context(ActionContextKey::GenericTableId(gtid.to_string()));
                 }
                 if let Some(f) = format {
-                    b = b.context_string(ActionContextKey::Format, f.clone());
+                    b = b.context(ActionContextKey::Format(f.clone()));
                 }
                 if let Some(bl) = base_location {
-                    b = b.context_string(ActionContextKey::BaseLocation, bl.clone());
+                    b = b.context(ActionContextKey::BaseLocation(bl.clone()));
                 }
-                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
             Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
-                    b = b.context_string(ActionContextKey::Name, n.clone());
+                    b = b.context(ActionContextKey::Name(n.clone()));
                 }
-                b = b.context_map(ActionContextKey::Properties, properties.as_ref().clone());
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
             Self::UpdateProperties {
                 removed_properties,
                 updated_properties,
             } => {
-                b = b.context_map(
-                    ActionContextKey::UpdatedProperties,
+                b = b.context(ActionContextKey::UpdatedProperties(
                     updated_properties.as_ref().clone(),
-                );
+                ));
 
-                b = b.context_list(
-                    ActionContextKey::RemovedProperties,
+                b = b.context(ActionContextKey::RemovedProperties(
                     removed_properties.as_ref().clone(),
-                );
+                ));
             }
             Self::Delete {
                 force,
                 purge,
                 recursive,
             } => {
-                b = b.context_bool(ActionContextKey::Force, *force);
-                b = b.context_bool(ActionContextKey::Purge, *purge);
-                b = b.context_bool(ActionContextKey::Recursive, *recursive);
+                b = b.context(ActionContextKey::Force(*force));
+                b = b.context(ActionContextKey::Purge(*purge));
+                b = b.context(ActionContextKey::Recursive(*recursive));
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
             Self::AcceptMovedNamespace { source } => {
-                b = b.context_list(ActionContextKey::Source, source.as_ref().clone());
+                b = b.context(ActionContextKey::Source(source.as_ref().clone()));
             }
             Self::Move { destination, force } => {
                 // The destination is the whole point of the decision for a policy engine:
                 // it determines which subtree's grants the moved namespace inherits.
-                b = b.context_list(ActionContextKey::Destination, destination.as_ref().clone());
+                b = b.context(ActionContextKey::Destination(destination.as_ref().clone()));
 
-                b = b.context_bool(ActionContextKey::Force, *force);
+                b = b.context(ActionContextKey::Force(*force));
             }
             Self::ReadSubtreeGrants { scope } | Self::RevokeSubtreeGrants { scope } => {
-                b = b.context_pairs(
+                b = b.contexts(
                     scope
                         .as_ref()
                         .map(SubtreeGrantScope::context)
@@ -1763,32 +1701,28 @@ impl EventAction for CatalogTableAction {
                 target_refs,
                 update_kinds,
             } => {
-                b = b.context_map(
-                    ActionContextKey::UpdatedProperties,
+                b = b.context(ActionContextKey::UpdatedProperties(
                     updated_properties.as_ref().clone(),
-                );
+                ));
 
-                b = b.context_list(
-                    ActionContextKey::RemovedProperties,
+                b = b.context(ActionContextKey::RemovedProperties(
                     removed_properties.as_ref().clone(),
-                );
+                ));
 
-                b = b.context_list(
-                    ActionContextKey::TargetRefs,
+                b = b.context(ActionContextKey::TargetRefs(
                     target_refs.iter().cloned().collect::<Vec<_>>(),
-                );
+                ));
 
-                b = b.context_list(
-                    ActionContextKey::UpdateKinds,
+                b = b.context(ActionContextKey::UpdateKinds(
                     update_kinds
                         .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>(),
-                );
+                        .map(crate::audit::Vocabulary::wire)
+                        .collect(),
+                ));
             }
             Self::Drop { force, purge } => {
-                b = b.context_bool(ActionContextKey::Force, *force);
-                b = b.context_bool(ActionContextKey::Purge, *purge);
+                b = b.context(ActionContextKey::Force(*force));
+                b = b.context(ActionContextKey::Purge(*purge));
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::WriteData { .. }
@@ -1891,19 +1825,17 @@ impl EventAction for CatalogViewAction {
                 updated_properties,
                 removed_properties,
             } => {
-                b = b.context_map(
-                    ActionContextKey::UpdatedProperties,
+                b = b.context(ActionContextKey::UpdatedProperties(
                     updated_properties.as_ref().clone(),
-                );
+                ));
 
-                b = b.context_list(
-                    ActionContextKey::RemovedProperties,
+                b = b.context(ActionContextKey::RemovedProperties(
                     removed_properties.as_ref().clone(),
-                );
+                ));
             }
             Self::Drop { force, purge } => {
-                b = b.context_bool(ActionContextKey::Force, *force);
-                b = b.context_bool(ActionContextKey::Purge, *purge);
+                b = b.context(ActionContextKey::Force(*force));
+                b = b.context(ActionContextKey::Purge(*purge));
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::GetMetadata { .. }
@@ -1993,8 +1925,8 @@ impl EventAction for CatalogGenericTableAction {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
             Self::Drop { force, purge } => {
-                b = b.context_bool(ActionContextKey::Force, *force);
-                b = b.context_bool(ActionContextKey::Purge, *purge);
+                b = b.context(ActionContextKey::Force(*force));
+                b = b.context(ActionContextKey::Purge(*purge));
             }
             // Contribute no audit context. Listed, not `_` — see above.
             Self::ReadData { .. }
@@ -3482,10 +3414,7 @@ pub mod tests {
     #[test]
     fn empty_collections_are_emitted_rather_than_omitted() {
         let keys = |d: ActionDescriptor| -> Vec<String> {
-            d.context
-                .iter()
-                .map(|(k, _)| k.as_str().to_string())
-                .collect()
+            d.context.iter().map(|k| k.as_str().to_string()).collect()
         };
 
         let commit = CatalogTableAction::Commit {
@@ -3795,7 +3724,7 @@ pub mod tests {
             .action_descriptor()
             .context
             .into_iter()
-            .map(|(k, v)| (k.as_str(), v.to_string()))
+            .map(|k| (k.as_str(), format_value(&k.value())))
             .collect();
         // Ordering is deterministic: refs sort lexically, kinds sort by variant.
         assert_eq!(context.get("target_refs"), Some(&"[dev, main]".to_string()));

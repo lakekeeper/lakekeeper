@@ -10,14 +10,13 @@ use serde::ser::SerializeMap as _;
 
 use super::ActorType;
 use crate::{
-    Lakekeeper,
-    audit::{AnyWireStr, WireStr, audit_part},
+    audit::{AnyWireStr, Wire, audit_part},
     request_metadata::RequestMetadata,
     service::{
         UserId,
         authn::{Actor, InternalActor},
-        authz::{ContextValue, GrantResource, UserOrRoleId},
-        events::AuthorizationError,
+        authz::{GrantResource, ResourceType, UserOrRoleId},
+        events::{AuthorizationError, context::EntityType},
     },
 };
 
@@ -26,7 +25,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActorRecord {
     /// One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`.
-    pub(crate) actor_type: WireStr<Lakekeeper>,
+    pub(crate) actor_type: Wire<ActorType>,
     /// The authenticated principal. Present for `principal` and `assumed_role`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) principal: Option<String>,
@@ -221,7 +220,7 @@ pub struct ActionRecord {
     /// The action's context, keyed by `ActionContextKey` wire names, in the order the action
     /// recorded them.
     #[serde(flatten)]
-    pub(crate) context: OrderedFields<ContextValue>,
+    pub(crate) context: OrderedFields<serde_json::Value>,
 }
 
 /// An `entity` object: the kind of resource and its identifying fields.
@@ -229,7 +228,7 @@ pub struct ActionRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityRecord {
     /// The kind of resource: `table`, `namespace`, `warehouse`, …
-    pub(crate) entity_type: WireStr<Lakekeeper>,
+    pub(crate) entity_type: Wire<EntityType>,
     /// The entity's identifying fields, keyed by `EntityField` wire names, in the order the
     /// entity recorded them.
     #[serde(flatten)]
@@ -276,7 +275,7 @@ pub struct GrantContextRecord {
     /// The privilege name, verbatim from the authorizer's vocabulary.
     pub(crate) privilege: String,
     /// The kind of resource the grant is on.
-    pub(crate) resource_type: WireStr<Lakekeeper>,
+    pub(crate) resource_type: Wire<ResourceType>,
     /// The exact resource. Absent for server grants, whose type is their whole identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) resource_id: Option<String>,

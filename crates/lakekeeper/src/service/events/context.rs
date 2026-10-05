@@ -1,7 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::{TableUpdateKind, rest::ErrorModel};
 use lakekeeper_io::s3::S3Location;
 use strum::VariantArray;
 use tracing::Instrument;
@@ -19,7 +22,7 @@ use crate::{
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
-    audit::audit_part,
+    audit::{Wire, audit_part},
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
@@ -27,7 +30,7 @@ use crate::{
         authn::UserIdRef,
         authz::{
             ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
-            EventAction, UserOrRoleId,
+            EventAction, PrivilegeScope, ResourceType, RootLevelGrants, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -99,11 +102,22 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextEntry {
     /// What the handler recorded.
-    pub value: crate::service::authz::ContextValue,
+    pub value: serde_json::Value,
     /// `AuditEmitter::NAME` of the emitter that declared the key.
     pub emitter: &'static str,
     /// `AuditEmitter::FORMAT` of that emitter.
     pub emitter_format: &'static str,
+}
+
+impl ContextEntry {
+    /// The entry a key holding its value makes, attributed to the key's emitter.
+    pub(crate) fn of<K: crate::audit::RecordContextKey>(key: &K) -> Self {
+        Self {
+            value: key.value(),
+            emitter: <K::Emitter as crate::audit::AuditEmitter>::NAME,
+            emitter_format: <K::Emitter as crate::audit::AuditEmitter>::FORMAT,
+        }
+    }
 }
 
 /// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
@@ -115,23 +129,18 @@ pub struct ContextEntry {
 /// that.
 #[audit_part(keys_of = "context")]
 #[audit(rename_all = "snake_case")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantArray)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HandlerContextKey {
     /// Whether the user creation was the caller provisioning itself.
-    #[audit(value = "boolean")]
-    SelfProvisioning,
+    SelfProvisioning(bool),
     /// Which operation invoked this one, when a handler acts on behalf of another.
-    #[audit(value = "string")]
-    InvokedBy,
+    InvokedBy(String),
     /// The task queue an operation addressed.
-    #[audit(value = "string")]
-    QueueName,
+    QueueName(String),
     /// The id of the entity a task operation addressed.
-    #[audit(value = "string")]
-    EntityId,
+    EntityId(String),
     /// Whether a grant read asked about the caller's own grants.
-    #[audit(value = "boolean")]
-    SelfRead,
+    SelfRead(bool),
 }
 
 /// The `entity_type` of an audit record's `entity` object.
@@ -181,74 +190,38 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 /// unnamed.
 #[audit_part(keys_of = "action")]
 #[audit(rename_all = "snake_case")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionContextKey {
-    #[audit(value = "boolean")]
-    AllowPartial,
-    #[audit(value = "string")]
-    BaseLocation,
-    #[audit(value = "string")]
-    CreatedBefore,
-    #[audit(value = "integer")]
-    Deletes,
-    #[audit(value = "array")]
-    Destination,
-    #[audit(value = "boolean")]
-    DryRun,
-    #[audit(value = "boolean")]
-    Force,
-    #[audit(value = "string")]
-    Format,
-    #[audit(value = "string")]
-    GenericTableId,
-    #[audit(value = "string")]
-    Name,
-    #[audit(value = "array")]
-    NarrowedPrivileges,
-    #[audit(value = "string")]
-    Principal,
-    #[audit(value = "array")]
-    Principals,
-    #[audit(value = "string", values_of = "PrivilegeScope")]
-    PrivilegeScope,
-    #[audit(value = "array")]
-    Privileges,
-    #[audit(value = "string")]
-    ProjectId,
-    #[audit(value = "object")]
-    Properties,
-    #[audit(value = "boolean")]
-    Purge,
-    #[audit(value = "boolean")]
-    Recursive,
-    #[audit(value = "array")]
-    RemovedProperties,
-    #[audit(value = "string")]
-    RequestedProviderId,
-    #[audit(value = "string")]
-    RequestedSourceId,
-    #[audit(value = "array", values_of = "ResourceType")]
-    ResourceTypes,
-    #[audit(value = "string", values_of = "RootLevelGrants")]
-    RootLevel,
-    #[audit(value = "array")]
-    Source,
-    #[audit(value = "string")]
-    TableId,
-    #[audit(value = "array")]
-    TargetRefs,
-    #[audit(value = "array", values_of = "TableUpdateKind")]
-    UpdateKinds,
-    #[audit(value = "object")]
-    UpdatedProperties,
-    #[audit(value = "integer")]
-    Writes,
-}
-
-impl std::fmt::Display for ActionContextKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+    AllowPartial(bool),
+    BaseLocation(String),
+    CreatedBefore(String),
+    Deletes(i64),
+    Destination(Vec<String>),
+    DryRun(bool),
+    Force(bool),
+    Format(String),
+    GenericTableId(String),
+    Name(String),
+    NarrowedPrivileges(Vec<String>),
+    Principal(String),
+    Principals(Vec<String>),
+    PrivilegeScope(Wire<PrivilegeScope>),
+    Privileges(Vec<String>),
+    ProjectId(String),
+    Properties(BTreeMap<String, String>),
+    Purge(bool),
+    Recursive(bool),
+    RemovedProperties(Vec<String>),
+    RequestedProviderId(String),
+    RequestedSourceId(String),
+    ResourceTypes(Vec<Wire<ResourceType>>),
+    RootLevel(Wire<RootLevelGrants>),
+    Source(Vec<String>),
+    TableId(String),
+    TargetRefs(Vec<String>),
+    UpdateKinds(Vec<Wire<TableUpdateKind>>),
+    UpdatedProperties(BTreeMap<String, String>),
+    Writes(i64),
 }
 
 // ── Traits ──────────────────────────────────────────────────────────────────
@@ -1305,73 +1278,17 @@ where
         &self.dispatcher
     }
 
-    /// Record a key on this event's `context` object.
+    /// Record a key on this event's `context` object, with the value it holds.
     ///
-    /// The key comes from a key enum declared with `#[audit_part(keys_of = "context")]`, so it
-    /// is declared in its emitter's schema and cannot be a literal. Lakekeeper's own keys are
-    /// [`HandlerContextKey`]; the emitter is free, so a crate outside this one supplies its
-    /// own. A value enum is not accepted here: its variants name what a field holds, not where
-    /// it goes.
-    pub fn push_extra_context<E: crate::audit::AuditEmitter>(
-        &mut self,
-        key: impl Into<crate::audit::WireKey<E>>,
-        value: impl Into<String>,
-    ) {
-        self.extra_context.insert(
-            key.into().text().to_string(),
-            ContextEntry {
-                value: crate::service::authz::ContextValue::String(value.into()),
-                emitter: E::NAME,
-                emitter_format: E::FORMAT,
-            },
-        );
-    }
-
-    /// Record a key on this event's `context` object whose value is a flag.
-    ///
-    /// A flag is a `bool` on the wire, not the word `"true"`: a consumer branches on it
-    /// rather than comparing it against a spelling.
-    pub fn push_extra_context_bool<E: crate::audit::AuditEmitter>(
-        &mut self,
-        key: impl Into<crate::audit::WireKey<E>>,
-        value: bool,
-    ) {
-        self.extra_context.insert(
-            key.into().text().to_string(),
-            ContextEntry {
-                value: crate::service::authz::ContextValue::Bool(value),
-                emitter: E::NAME,
-                emitter_format: E::FORMAT,
-            },
-        );
-    }
-
-    /// Record a key on this event's `context` object whose value is an object.
-    ///
-    /// The part and the key belong to one emitter, which is what ties the value to the shape
-    /// the key declares with `#[audit(holds = "...")]`. A key that declares no shape takes
-    /// [`EventContext::push_extra_context`] and a string.
-    /// Taken by value like every other part of a record, so a caller can hand over one it
-    /// built on the spot; it is serialized here and the entry carries the tree, not the type.
+    /// The key comes from a key enum declared with `#[audit_part(keys_of = "context")]`,
+    /// which is the only kind this accepts: Lakekeeper's own are [`HandlerContextKey`], and a
+    /// crate outside this one declares its own. Each key holds its value in the type its
+    /// declaration names, so a flag is a `bool` and a shaped key holds its part.
+    // Taken by value: a caller builds the key on the spot and hands it over.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn push_extra_context_object<E, C>(
-        &mut self,
-        key: impl Into<crate::audit::WireKey<E>>,
-        value: C,
-    ) where
-        E: crate::audit::AuditEmitter,
-        C: crate::audit::AuditPart<Emitter = E>,
-    {
-        self.extra_context.insert(
-            key.into().text().to_string(),
-            ContextEntry {
-                value: crate::service::authz::ContextValue::Object(crate::audit::AuditJson::of(
-                    &value,
-                )),
-                emitter: E::NAME,
-                emitter_format: E::FORMAT,
-            },
-        );
+    pub fn push_extra_context(&mut self, entry: impl crate::audit::RecordContextKey) {
+        self.extra_context
+            .insert(entry.wire().text().to_string(), ContextEntry::of(&entry));
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to

@@ -13,7 +13,7 @@
 //!   record. Same as a part, registered as a context.
 //! - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
 //!   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
-//!   to `as_wire(&self) -> WireStr<Emitter>`, `as_str(&self) -> &'static str`, and
+//!   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
 //!   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
 //!   field and every value with its doc comment. No derives are added and `AuditPart` is not
 //!   implemented: such an enum often already serializes differently for an API.
@@ -290,11 +290,11 @@ fn expand_vocabulary(
     // expected, and a value enum cannot become an object key.
     let (wire_ty, kind_of, conversions) = match vocabulary {
         Vocabulary::Values { field, .. } => (
-            quote!(::lakekeeper::audit::WireStr<crate::audit_emitter::Emitter>),
+            quote!(::lakekeeper::audit::Wire<#ident #ty_generics>),
             quote!(::lakekeeper::audit::Kind::Values { field: #field, names: &WIRE }),
             quote! {
                 impl #impl_generics ::core::convert::From<#ident #ty_generics>
-                    for ::lakekeeper::audit::WireStr<crate::audit_emitter::Emitter> #where_clause {
+                    for ::lakekeeper::audit::Wire<#ident #ty_generics> #where_clause {
                     fn from(value: #ident #ty_generics) -> Self {
                         value.as_wire()
                     }
@@ -337,15 +337,30 @@ fn expand_vocabulary(
     };
 
     let mut arms = Vec::new();
+    let mut value_arms = Vec::new();
     let mut names = Vec::new();
     let mut docs = Vec::new();
-    let mut shapes = Vec::new();
-    let mut value_sets = Vec::new();
     let mut carries = Vec::new();
-    let mut value_types = Vec::new();
+    let mut values = Vec::new();
+    // An `entity` key's value is always a string, so its keys hold nothing. Every other
+    // object's keys hold their value, and the type they hold is the declaration of what the
+    // key carries: the compiler checks every write against it.
+    let keys_hold_values = matches!(vocabulary, Vocabulary::Keys(object) if object != "entity");
     for v in &data.variants {
         if strum_disabled(&v.attrs)? {
             continue;
+        }
+        for retired in ["value", "values_of", "holds"] {
+            if nested_str(&v.attrs, "audit", retired)?.is_some() {
+                return Err(Error::new_spanned(
+                    v,
+                    format!(
+                        "`{retired}` is gone: a key holds its value, and the type it holds is \
+                         what the schema publishes. Write `{}(<the value's type>)`.",
+                        v.ident
+                    ),
+                ));
+            }
         }
         let wire = match variant_rename(&v.attrs)? {
             Some(explicit) => explicit,
@@ -360,40 +375,43 @@ fn expand_vocabulary(
         arms.push(quote!(#pattern => <#wire_ty>::new(#wire)));
         names.push(wire);
         docs.push(doc_text(&v.attrs).unwrap_or_default());
-        let holds = variant_holds(&v.attrs)?;
-        if holds.is_some() && !matches!(vocabulary, Vocabulary::Keys(_)) {
-            return Err(Error::new_spanned(
-                v,
-                "`holds` says what shape sits under a key, so it belongs on a vocabulary \
-                 declared with `keys_of = \"<object>\"`. A value vocabulary names what a field \
-                 holds, and that name is the value itself.",
-            ));
+        if let Vocabulary::Keys(object) = vocabulary {
+            match (&v.fields, keys_hold_values) {
+                (Fields::Unnamed(held), true) if held.unnamed.len() == 1 => {
+                    let ty = &held.unnamed[0].ty;
+                    values.push(quote!(::core::option::Option::Some(
+                        (|generator: &mut ::lakekeeper::__private::schemars::SchemaGenerator| {
+                            generator.subschema_for::<#ty>()
+                        }) as fn(&mut ::lakekeeper::__private::schemars::SchemaGenerator)
+                            -> ::lakekeeper::__private::schemars::Schema
+                    )));
+                    value_arms.push(quote!(
+                        Self::#vident(value) => ::lakekeeper::__private::serde_json::to_value(value)
+                    ));
+                }
+                (_, true) => {
+                    return Err(Error::new_spanned(
+                        v,
+                        format!(
+                            "a key of `{object}` holds its value: write `{vident}(<type>)`, \
+                             with the type the key carries on the wire"
+                        ),
+                    ));
+                }
+                (Fields::Unit, false) => values.push(quote!(::core::option::Option::None)),
+                (_, false) => {
+                    return Err(Error::new_spanned(
+                        v,
+                        format!(
+                            "a key of `{object}` holds no value: its value is a string the \
+                             record carries beside it"
+                        ),
+                    ));
+                }
+            }
+        } else {
+            values.push(quote!(::core::option::Option::None));
         }
-        // Which strings a key's value is drawn from, where it is drawn from a closed set.
-        let drawn_from = nested_str(&v.attrs, "audit", "values_of")?;
-        if drawn_from.is_some() && !matches!(vocabulary, Vocabulary::Keys(_)) {
-            return Err(Error::new_spanned(
-                v,
-                "`values_of` says which closed set a key's value comes from, so it belongs \
-                 on a vocabulary declared with `keys_of = \"<object>\"`. A value vocabulary \
-                 is itself such a set.",
-            ));
-        }
-        if drawn_from.is_some() && holds.is_some() {
-            return Err(Error::new_spanned(
-                v,
-                "a value is a name from a set or a document, not both. `values_of` names the \
-                 set its value is drawn from; `holds` names the object serialized under it.",
-            ));
-        }
-        value_sets.push(match drawn_from {
-            Some(name) => quote!(::core::option::Option::Some(#name)),
-            None => quote!(::core::option::Option::None),
-        });
-        shapes.push(match holds {
-            Some(name) => quote!(::core::option::Option::Some(#name)),
-            None => quote!(::core::option::Option::None),
-        });
         // Context sits beside a value of a flattened field, so only a value vocabulary has
         // any. On a key vocabulary the declaration would reach no schema and say nothing.
         if nested_str(&v.attrs, "audit", "carries")?.is_some()
@@ -410,14 +428,74 @@ fn expand_vocabulary(
         // variant names take: `rename_all` moves both together.
         let carried = variant_context(v, rule.as_deref())?;
         carries.push(quote!(&[#(#carried),*]));
-        value_types.push(match variant_value_type(&v.attrs)? {
-            Some(ty) => quote!(::core::option::Option::Some(#ty)),
-            None => quote!(::core::option::Option::None),
-        });
     }
     let count = names.len();
     let wire_consts = names.iter().map(|n| quote!(<#wire_ty>::new(#n)));
     let item = strip_our_attrs(input);
+    let schema_name = ident.to_string();
+
+    // What a key hands over: its value, in the JSON type the schema publishes for it.
+    let value_fn = if keys_hold_values {
+        quote! {
+            /// The value this key carries, as it reaches the wire.
+            ///
+            /// # Panics
+            ///
+            /// If the held value does not serialize to JSON, which no type with a schema of
+            /// its own does: string keys, finite numbers.
+            #[must_use]
+            pub fn value(&self) -> ::lakekeeper::__private::serde_json::Value {
+                let value = match self { #(#value_arms),* };
+                value.expect("an audit context value serializes to JSON")
+            }
+        }
+    } else {
+        quote!()
+    };
+    // A key of the record's own `context` object can be pushed onto an event; keys of the
+    // other objects cannot, because those objects are written by Lakekeeper alone.
+    let record_context_impl = match vocabulary {
+        Vocabulary::Keys("context") => quote! {
+            impl #impl_generics ::lakekeeper::audit::RecordContextKey for #ident #ty_generics #where_clause {
+                type Emitter = crate::audit_emitter::Emitter;
+                fn wire(&self) -> ::lakekeeper::audit::WireKey<crate::audit_emitter::Emitter> {
+                    self.as_wire()
+                }
+                fn value(&self) -> ::lakekeeper::__private::serde_json::Value {
+                    #ident::value(self)
+                }
+            }
+        },
+        _ => quote!(),
+    };
+    // A value vocabulary is a type the rest of the code can name: a field holding one of its
+    // values is a `Wire<Self>`, which points at this definition. An operation's and an
+    // outcome's sets are marked, so the two cannot be passed in each other's place.
+    let vocabulary_impls = match vocabulary {
+        Vocabulary::Values { field, .. } => {
+            let marker = match field {
+                "operation" => quote! {
+                    impl #impl_generics ::lakekeeper::audit::OperationValues for #ident #ty_generics #where_clause {}
+                },
+                "outcome" => quote! {
+                    impl #impl_generics ::lakekeeper::audit::OutcomeValues for #ident #ty_generics #where_clause {}
+                },
+                _ => quote!(),
+            };
+            quote! {
+                impl #impl_generics ::lakekeeper::audit::Vocabulary for #ident #ty_generics #where_clause {
+                    type Emitter = crate::audit_emitter::Emitter;
+                    const SCHEMA_NAME: &'static str = #schema_name;
+                    fn wire(&self) -> ::lakekeeper::audit::Wire<Self> {
+                        self.as_wire()
+                    }
+                }
+
+                #marker
+            }
+        }
+        Vocabulary::Keys(_) => quote!(),
+    };
 
     Ok(quote! {
         #item
@@ -440,6 +518,8 @@ fn expand_vocabulary(
                 self.as_wire().text()
             }
 
+            #value_fn
+
             #[doc = #variants_doc]
             pub const WIRE_VARIANTS: [#wire_ty; #count] = [#(#wire_consts),*];
 
@@ -448,6 +528,10 @@ fn expand_vocabulary(
         }
 
         #conversions
+
+        #record_context_impl
+
+        #vocabulary_impls
 
         #[cfg(debug_assertions)]
         ::lakekeeper::__private::inventory::submit! {
@@ -460,9 +544,7 @@ fn expand_vocabulary(
                             text: #names,
                             doc: #docs,
                             carries: #carries,
-                            value_type: #value_types,
-                            shape: #shapes,
-                            values: #value_sets,
+                            value: #values,
                         }),*
                     ];
                     #kind_of
@@ -709,36 +791,6 @@ fn variant_context(variant: &syn::Variant, rule: Option<&str>) -> Result<Vec<Str
     Ok(carries)
 }
 
-/// The JSON type a key's value has, from
-/// `#[audit(value = "string"|"boolean"|"integer"|"array"|"object")]`.
-fn variant_value_type(attrs: &[Attribute]) -> Result<Option<String>> {
-    let Some(declared) = nested_str(attrs, "audit", "value")? else {
-        return Ok(None);
-    };
-    if !matches!(
-        declared.as_str(),
-        "string" | "boolean" | "integer" | "array" | "object"
-    ) {
-        return Err(Error::new(
-            proc_macro2::Span::call_site(),
-            format!(
-                "`value` is the JSON type this key holds on the wire: `string`, `boolean`, \
-                 `integer`, `array` or `object`. `{declared}` is none of those."
-            ),
-        ));
-    }
-    Ok(Some(declared))
-}
-
-/// The schema name a key's value carries, from `#[audit(holds = "TypeName")]`.
-///
-/// Only a key vocabulary takes it: a key names a slot in an object, and this says what shape
-/// sits in that slot. `audit_part(shape = "...")` is a different thing — it says the struct
-/// carrying it is a whole record.
-fn variant_holds(attrs: &[Attribute]) -> Result<Option<String>> {
-    nested_str(attrs, "audit", "holds")
-}
-
 fn variant_rename(attrs: &[Attribute]) -> Result<Option<String>> {
     if let Some(r) = nested_str(attrs, "audit", "rename")? {
         return Ok(Some(r));
@@ -890,8 +942,8 @@ mod tests {
         assert_eq!(
             squash(&wire),
             squash(
-                r#"WireName { text : "Success" , doc : "The operation completed." , carries : & [] , value_type : :: core :: option :: Option :: None , shape : :: core :: option :: Option :: None , values : :: core :: option :: Option :: None , } ,
-                   WireName { text : "Other" , doc : "" , carries : & [] , value_type : :: core :: option :: Option :: None , shape : :: core :: option :: Option :: None , values : :: core :: option :: Option :: None , }"#
+                r#"WireName { text : "Success" , doc : "The operation completed." , carries : & [] , value : :: core :: option :: Option :: None , } ,
+                   WireName { text : "Other" , doc : "" , carries : & [] , value : :: core :: option :: Option :: None , }"#
             ),
             "{expansion}"
         );
@@ -901,15 +953,21 @@ mod tests {
     fn keys_and_values_are_different_kinds() {
         let values = expand_str(r#"field = "outcome""#, "enum Outcome { Success }").expect("ok");
         assert!(values.contains("Kind :: Values"), "{values}");
-        assert!(values.contains("WireStr"), "{values}");
+        assert!(values.contains(":: Wire <"), "{values}");
 
         // `as_str` comes from the same expansion for both, so no vocabulary can spell a
         // name one way for the registry and another for the code that emits it.
         assert!(values.contains("fn as_str"), "{values}");
 
         assert!(values.contains(r#"field : "outcome""#), "{values}");
+        // A value vocabulary is a type a field can name, through `Wire<Self>`.
+        assert!(
+            values.contains(":: lakekeeper :: audit :: Vocabulary for"),
+            "{values}"
+        );
+        assert!(values.contains("SCHEMA_NAME"), "{values}");
 
-        let keys = expand_str(r#"keys_of = "context""#, "enum Key { SelfRead }").expect("ok");
+        let keys = expand_str(r#"keys_of = "context""#, "enum Key { SelfRead(bool) }").expect("ok");
         assert!(keys.contains("Kind :: Keys"), "{keys}");
         assert!(keys.contains(r#"object : "context""#), "{keys}");
         assert!(keys.contains("WireKey"), "{keys}");
@@ -917,6 +975,8 @@ mod tests {
         // holds a value.
         assert!(!keys.contains("AnyWireStr"), "{keys}");
         assert!(keys.contains("fn as_str"), "{keys}");
+        // A key of the record's own `context` is what an event accepts as pushed context.
+        assert!(keys.contains("RecordContextKey"), "{keys}");
     }
 
     #[test]
@@ -946,7 +1006,7 @@ mod tests {
         assert!(
             rejection(r#"keys_of = "entity""#, "enum K { A }").contains("could never be emitted")
         );
-        assert!(expand_str(r#"keys_of = "context""#, "enum K { A }").is_ok());
+        assert!(expand_str(r#"keys_of = "context""#, "enum K { A(bool) }").is_ok());
         // Unknown arguments name the ones that exist.
         assert!(rejection("nonsense", "struct S;").contains("unknown argument"));
         // A union has no describable shape.
@@ -973,78 +1033,63 @@ mod tests {
         assert!(
             rejection(
                 r#"keys_of = "context""#,
-                r#"enum K { #[audit(carries = "a")] V }"#
+                r#"enum K { #[audit(carries = "a")] V(bool) }"#
             )
             .contains("nothing sits beside them")
         );
-        // A value vocabulary is itself a closed set, so it draws from no other.
-        assert!(
-            rejection(
-                r#"field = "outcome""#,
-                r#"enum E { #[audit(values_of = "Other")] V }"#
-            )
-            .contains("itself such a set")
-        );
-        // A value is a name from a set or a document, never both.
-        assert!(
-            rejection(
-                r#"keys_of = "context""#,
-                r#"enum K { #[audit(values_of = "Other", holds = "Thing")] V }"#
-            )
-            .contains("not both")
-        );
     }
 
     #[test]
-    fn a_key_declares_the_json_type_its_value_reaches_the_wire_as() {
-        for ty in ["string", "boolean", "integer", "array", "object"] {
-            let src = format!(
-                r#"enum K {{ /// A key.
-                     #[audit(value = "{ty}")] K1 }}"#
-            );
-            let expansion = expand_str(r#"keys_of = "context""#, &src)
-                .unwrap_or_else(|e| panic!("`{ty}` is a JSON type a key may declare: {e}"));
-            assert!(
-                expansion.contains(&format!(
-                    r#"value_type : :: core :: option :: Option :: Some ("{ty}")"#
-                )),
-                "{expansion}"
-            );
-        }
-        // Anything else names a type this log does not put on the wire.
-        assert!(
-            rejection(
-                r#"keys_of = "context""#,
-                r#"enum K { #[audit(value = "number")] K1 }"#
-            )
-            .contains("is none of those")
-        );
-    }
-
-    #[test]
-    fn a_key_declares_the_closed_set_its_value_comes_from() {
+    fn a_key_holds_its_value_and_the_type_it_holds_is_published() {
         let expansion = expand_str(
             r#"keys_of = "context""#,
             r#"
             enum K {
-                /// A key whose value is one of a closed set.
-                #[audit(values_of = "RootLevelGrants")]
-                RootLevel,
-                /// A key whose value is data the request carried.
-                Name,
+                /// A flag.
+                Flag(bool),
+                /// One of a closed set.
+                Level(Wire<RootLevelGrants>),
             }"#,
         )
-        .expect("`values_of` is allowed on a key");
+        .expect("a key holding a value expands");
+        let squashed = squash(&expansion);
         assert!(
-            expansion
-                .contains(r#"values : :: core :: option :: Option :: Some ("RootLevelGrants")"#),
+            squashed.contains("subschema_for :: < bool >"),
             "{expansion}"
         );
         assert!(
-            expansion.contains(r#"text : "Name""#)
-                && expansion.contains("values : :: core :: option :: Option :: None"),
+            squashed.contains("subschema_for :: < Wire < RootLevelGrants > >"),
             "{expansion}"
         );
+        assert!(squashed.contains("fn value"), "{expansion}");
+
+        // A key of `context` or `action` holds exactly one value.
+        assert!(rejection(r#"keys_of = "context""#, "enum K { A }").contains("holds its value"));
+        assert!(
+            rejection(r#"keys_of = "context""#, "enum K { A(bool, bool) }")
+                .contains("holds its value")
+        );
+        // An entity key holds nothing: its value is always a string.
+        assert!(
+            rejection(r#"keys_of = "entity""#, "enum K { A(bool) }")
+                .contains("could never be emitted")
+                || expand_str(r#"keys_of = "entity""#, "enum K { A(bool) }").is_err()
+        );
+        // The type a key holds replaces the string declarations it used to carry.
+        for retired in [
+            r#"value = "boolean""#,
+            r#"values_of = "Set""#,
+            r#"holds = "Part""#,
+        ] {
+            assert!(
+                rejection(
+                    r#"keys_of = "context""#,
+                    &format!("enum K {{ #[audit({retired})] A(bool) }}")
+                )
+                .contains("is gone"),
+                "{retired}"
+            );
+        }
     }
 
     #[test]

@@ -107,8 +107,9 @@ pub mod audit {
     // assembles the rest.
     pub use crate::service::events::backends::audit::{
         AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, Kind,
-        OperationRecord, Registration, WireKey, WireName, WireStr, enabled, is_emitter_name,
-        is_major_minor, warn_on_retired_audit_filter,
+        OperationRecord, OperationValues, OutcomeValues, RecordContextKey, Registration,
+        Vocabulary, Wire, WireKey, WireName, enabled, is_emitter_name, is_major_minor,
+        warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::{schema, validate};
@@ -120,6 +121,7 @@ pub mod __private {
     pub use inventory;
     pub use schemars;
     pub use serde;
+    pub use serde_json;
 }
 
 crate::declare_audit_emitter!(

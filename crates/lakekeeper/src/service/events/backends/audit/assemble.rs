@@ -56,7 +56,7 @@ fn authorization(
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
-        record_type: RecordType::Authorization,
+        record_type: RecordType::Authorization.as_wire(),
         emitters: EmitterRecord::list(
             EmitterRecord::of::<crate::Lakekeeper>(),
             contributors(actions, authorizations, extra_context),
@@ -64,13 +64,13 @@ fn authorization(
         actions: self::actions(actions),
         entities: self::entities(entities),
         actor: ActorRecord::from_request(request_metadata),
-        privilege_source: request_metadata.privilege_source(),
+        privilege_source: request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(request_metadata),
         break_glass: request_metadata.break_glass_reason().map(str::to_owned),
         context: handler_context(extra_context),
         authorizations: decisions(authorizations),
         idempotency_key: idempotency_key(request_metadata),
-        decision,
+        decision: decision.as_wire(),
         failure_reason: failure.map(|(reason, _)| reason.as_wire()),
         error: failure.map(|(_, error)| ErrorRecord::from(error)),
     }
@@ -78,7 +78,7 @@ fn authorization(
 
 pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     ReplayRecord {
-        record_type: RecordType::Replay,
+        record_type: RecordType::Replay.as_wire(),
         emitters: EmitterRecord::list(
             EmitterRecord::of::<crate::Lakekeeper>(),
             contributors(&event.actions, &[], &HashMap::new()),
@@ -86,18 +86,10 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
         actions: actions(&event.actions),
         entities: entities(&event.entities),
         actor: ActorRecord::from_request(&event.request_metadata),
-        privilege_source: event.request_metadata.privilege_source(),
+        privilege_source: event.request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(&event.request_metadata),
         idempotency_key: event.idempotency_key.as_uuid().to_string(),
     }
-}
-
-/// A context value as it reaches the wire, in the JSON type it declares.
-///
-/// `ContextValue` is `untagged`, so each variant serializes as the bare value: a flag is a
-/// JSON `true`, a count a JSON number, a shaped key's part the object itself.
-fn payload(value: &crate::service::authz::ContextValue) -> serde_json::Value {
-    serde_json::to_value(value).expect("a context value serializes to JSON")
 }
 
 /// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.
@@ -146,7 +138,7 @@ pub(crate) fn action(descriptor: &ActionDescriptor) -> ActionRecord {
         context: descriptor
             .context
             .iter()
-            .map(|(key, value)| (key.as_str().to_string(), value.clone()))
+            .map(|key| (key.as_str().to_string(), key.value()))
             .collect(),
     }
 }
@@ -197,7 +189,7 @@ fn handler_context(extra_context: &HashMap<String, ContextEntry>) -> Option<Hand
         Some(HandlerContext(
             extra_context
                 .iter()
-                .map(|(key, entry)| (key.clone(), payload(&entry.value)))
+                .map(|(key, entry)| (key.clone(), entry.value.clone()))
                 .collect::<BTreeMap<_, _>>(),
         ))
     }

@@ -147,14 +147,48 @@ fn add_key_map<V: Serialize>(def: &mut Value, extension: &str, map: &BTreeMap<&s
     }
 }
 
-/// The shape each key's value carries, for the keys that declare one.
-fn key_shapes(reg: &Registration) -> BTreeMap<&str, Value> {
-    reg.kind
-        .names()
+/// What each key holds, keyed by the object and the key: the schema schemars writes for the
+/// type the key holds, from the generator the rest of the document is written with, so a part
+/// a key holds lands under `$defs` like any other.
+///
+/// The keys of `regs`, and every key of an `action` or an `entity` whoever registered it: an
+/// action of one crate carries the keys Lakekeeper declares for that object.
+type KeySchemas = BTreeMap<(&'static str, &'static str), Value>;
+
+fn key_schemas(generator: &mut SchemaGenerator, regs: &[&Registration]) -> KeySchemas {
+    let mut out = KeySchemas::new();
+    let shared = registrations(
+        |reg| matches!(reg.kind, Kind::Keys { object, .. } if matches!(object, "action" | "entity")),
+    );
+    for reg in regs.iter().copied().chain(shared) {
+        let Kind::Keys { object, names } = reg.kind else {
+            continue;
+        };
+        for name in names {
+            if let Some(schema) = name.value {
+                out.entry((object, name.text))
+                    .or_insert_with(|| schema(generator).to_value());
+            }
+        }
+    }
+    out
+}
+
+/// The keys of `reg` whose value is a whole object, each pointing at that object's definition.
+fn key_shapes(
+    reg: &Registration,
+    key_schemas: &KeySchemas,
+    vocabularies: &BTreeSet<String>,
+) -> BTreeMap<&'static str, Value> {
+    let Kind::Keys { object, names } = reg.kind else {
+        return BTreeMap::new();
+    };
+    names
         .iter()
         .filter_map(|name| {
-            name.shape
-                .map(|shape| (name.text, json!({ "$ref": format!("#/$defs/{shape}") })))
+            let schema = key_schemas.get(&(object, name.text))?;
+            let target = schema.get("$ref")?.as_str()?.rsplit('/').next()?;
+            (!vocabularies.contains(target)).then(|| (name.text, schema.clone()))
         })
         .collect()
 }
@@ -169,6 +203,12 @@ fn key_shapes(reg: &Registration) -> BTreeMap<&str, Value> {
 /// records kept being emitted.
 fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12());
+    let key_schemas = key_schemas(&mut generator, regs);
+    let vocabularies: BTreeSet<String> =
+        registrations(|reg| matches!(reg.kind, Kind::Values { .. }))
+            .iter()
+            .map(|reg| short_type_name((reg.type_name)()))
+            .collect();
     let mut defs: BTreeMap<String, Value> = BTreeMap::new();
     let mut claimed: BTreeMap<String, &'static str> = BTreeMap::new();
     let mut claim = |name: &str, type_name: &'static str| {
@@ -231,7 +271,11 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 // that declares the object has never heard of the others. A consumer reads
                 // what a key holds from the schema of whoever declared the key.
                 add_key_map(&mut def, "x-audit-descriptions", &descriptions);
-                add_key_map(&mut def, "x-audit-key-shapes", &key_shapes(reg));
+                add_key_map(
+                    &mut def,
+                    "x-audit-key-shapes",
+                    &key_shapes(reg, &key_schemas, &vocabularies),
+                );
                 let name = short_type_name((reg.type_name)());
                 claim(&name, (reg.type_name)());
                 defs.insert(name, def);
@@ -259,9 +303,8 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     for schema in defs.values_mut() {
         drop_null_from_optionals(schema);
     }
-    link_value_sets(&mut defs, regs);
-    link_carried_keys(&mut defs, regs);
-    type_nested_keys(&mut defs, regs);
+    link_carried_keys(&mut defs, regs, &key_schemas);
+    type_nested_keys(&mut defs, regs, &key_schemas);
     defs
 }
 
@@ -290,93 +333,6 @@ fn keys_of_object(regs: Vec<&'static Registration>, object: &str) -> BTreeSet<&'
         .collect()
 }
 
-/// Every `context` key is written with the type it declares.
-///
-/// The type a key holds is declared on the key — `#[audit(value = "array")]` — because no key
-/// in this log is written two ways, so saying it once is shorter and harder to get wrong than
-/// repeating it in every branch. That makes it a claim about code elsewhere, and this is what
-/// holds the claim to it: the builder a key is written with pins its type, and the two must
-/// agree.
-///
-/// Read from the source because the fact lives at the call site. A key written through
-/// `context_pairs` names its type in the `ContextValue` beside it instead.
-///
-/// # Panics
-///
-/// If a key's declared type is not the one it is written with, if a key declares none, or if
-/// the scan finds no call sites, which means it is reading the wrong tree.
-pub fn assert_declared_key_types_match_the_code<E: super::AuditEmitter>(
-    crates_dir: &std::path::Path,
-) {
-    Registration::require_registry();
-
-    let declared = declared_key_types::<E>();
-    assert_carried_keys_are_declared_keys::<E>();
-    let written = key_types_written_in_source(crates_dir);
-
-    let mut wrong = Vec::new();
-    for ((object, key), ty) in &declared {
-        let Some(seen) = written.get(&(*object, normalized(key))) else {
-            continue; // declared but written nowhere: `every_declared_context_key_is_pushed`
-        };
-        if !seen.contains(ty) {
-            wrong.push(format!(
-                "`{key}` of `{object}` declares `{ty}` and is written as {}",
-                seen.iter().copied().collect::<Vec<_>>().join(" and ")
-            ));
-        }
-    }
-    assert!(
-        wrong.is_empty(),
-        "these keys are declared as one type and written as another:\n  {}\n\n\
-         The declared type reaches the published schema, so a consumer validates against it. \
-         Change the declaration to match the builder, or the builder to match the \
-         declaration — they describe one thing.",
-        wrong.join("\n  ")
-    );
-}
-
-/// The declared value type of every key of a flattened object, from the registry.
-///
-/// # Panics
-///
-/// If a key of an `action` declares none.
-fn declared_key_types<E: super::AuditEmitter>()
--> BTreeMap<(&'static str, &'static str), &'static str> {
-    // Keyed by the object the key belongs to: one name may be a key of two objects and mean
-    // a different thing in each, so a type declared for one says nothing about the other.
-    let mut declared: BTreeMap<(&str, &str), &str> = BTreeMap::new();
-    let mut undeclared = Vec::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
-        let Kind::Keys { object, names } = reg.kind else {
-            continue;
-        };
-        for name in names {
-            match name.value_type {
-                Some(ty) => {
-                    declared.insert((object, name.text), ty);
-                }
-                // An entity field's value is a `String` in the type that carries it, so
-                // the compiler already says what it is. Every other object's keys are
-                // written through a builder that picks the type, so they say which.
-                None if matches!(object, "action" | "context") => {
-                    undeclared.push(name.text.to_string());
-                }
-                None => {}
-            }
-        }
-    }
-    assert!(
-        undeclared.is_empty(),
-        "these keys declare no value type:\n  {}\n\n\
-         A key of a flattened object sits beside its action or entity on the wire, so a \
-         consumer needs its type. Add `#[audit(value = \"string\"|\"array\"|\"object\")]`, \
-         matching the builder the key is written with.",
-        undeclared.join("\n  ")
-    );
-    declared
-}
-
 /// Every key a variant says it carries is a key of the object it sits in. Checked from the
 /// registry alone, so it is complete: a name that is not a declared key — a typo, or one
 /// renamed without its declaration — reaches the published schema as a property nothing
@@ -385,7 +341,8 @@ fn declared_key_types<E: super::AuditEmitter>()
 /// # Panics
 ///
 /// If a variant carries a key the object's vocabulary does not declare.
-fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
+pub fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
+    Registration::require_registry();
     let mut unknown = Vec::new();
     for reg in registrations(|reg| reg.emitter_name == E::NAME) {
         let Kind::Values { field, names } = reg.kind else {
@@ -418,122 +375,6 @@ fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
     );
 }
 
-/// The value types each context key is actually written with, read from the source because
-/// the fact lives at the call site.
-///
-/// # Panics
-///
-/// If the scan finds almost no call sites, which means it is reading the wrong tree.
-fn key_types_written_in_source(
-    crates_dir: &std::path::Path,
-) -> BTreeMap<(&'static str, String), BTreeSet<&'static str>> {
-    /// The push that puts a key on the record's own `context` object. The variants spell
-    /// the type they write, so the call site says it without a separate declaration.
-    const PUSH: &str = "push_extra_context";
-
-    // The key enums to look for at a call site, taken from the registry rather than named
-    // here, so a crate that declares its own `context` keys is read by the same pass.
-    let vocabularies: Vec<(&str, String)> = registrations(|_| true)
-        .iter()
-        .filter_map(|reg| match reg.kind {
-            Kind::Keys { object, .. } => {
-                Some((object, format!("{}::", short_type_name((reg.type_name)()))))
-            }
-            _ => None,
-        })
-        .collect();
-    let for_object = |want: &str| -> Vec<String> {
-        vocabularies
-            .iter()
-            .filter(|(object, _)| *object == want)
-            .map(|(_, prefix)| prefix.clone())
-            .collect()
-    };
-    let action_prefixes = for_object("action");
-    let context_prefixes = for_object("context");
-
-    let mut sources = Vec::new();
-    rust_sources(crates_dir, &mut sources);
-    let builders = [
-        ("context_string", "string"),
-        ("context_bool", "boolean"),
-        ("context_integer", "integer"),
-        ("context_list", "array"),
-        ("context_map", "object"),
-    ];
-    let values = [
-        ("ContextValue::String", "string"),
-        ("ContextValue::Bool", "boolean"),
-        ("ContextValue::Integer", "integer"),
-        ("ContextValue::List", "array"),
-        ("ContextValue::Map", "object"),
-        ("ContextValue::Object", "object"),
-    ];
-
-    // Keyed by the object, like the declarations it is compared against: the two key
-    // vocabularies may spell the same name for different objects.
-    let mut written: BTreeMap<(&'static str, String), BTreeSet<&'static str>> = BTreeMap::new();
-    for text in &sources {
-        for (builder, ty) in builders {
-            for (at, _) in text.match_indices(builder) {
-                let block: String = text[at..].chars().take(120).collect();
-                for prefix in &action_prefixes {
-                    if let Some(variant) = identifier_after(&block, prefix) {
-                        written
-                            .entry(("action", normalized(&variant)))
-                            .or_default()
-                            .insert(ty);
-                    }
-                }
-            }
-        }
-        // A key of the record's own `context` object is written by the push it is handed
-        // to, which names the type in its own name.
-        for (at, _) in text.match_indices(PUSH) {
-            let ty = match &text[at + PUSH.len()..] {
-                rest if rest.starts_with("_bool") => "boolean",
-                rest if rest.starts_with("_object") => "object",
-                // The plain push takes a string; anything else here is the declaration of
-                // one of these functions, not a call to it.
-                rest if rest.starts_with('(') => "string",
-                _ => continue,
-            };
-            let block: String = text[at..].chars().take(160).collect();
-            for prefix in &context_prefixes {
-                if let Some(variant) = identifier_after(&block, prefix) {
-                    written
-                        .entry(("context", normalized(&variant)))
-                        .or_default()
-                        .insert(ty);
-                }
-            }
-        }
-        // A key built as a pair names its type in the value constructed beside it.
-        for prefix in &action_prefixes {
-            for (at, _) in text.match_indices(prefix.as_str()) {
-                let block: String = text[at..].chars().take(160).collect();
-                let Some(variant) = identifier_after(&block, prefix) else {
-                    continue;
-                };
-                for (value, ty) in values {
-                    if block.contains(value) {
-                        written
-                            .entry(("action", normalized(&variant)))
-                            .or_default()
-                            .insert(ty);
-                    }
-                }
-            }
-        }
-    }
-    assert!(
-        written.len() >= 10,
-        "only {} keys found at a call site, so this is scanning the wrong tree",
-        written.len()
-    );
-    written
-}
-
 /// The nested key-value objects of a record: the vocabulary holding an object's keys, and
 /// the definition of that object where the emitter declaring the keys also owns the object.
 const NESTED: [(&str, &str); 1] = [("context", "HandlerContext")];
@@ -543,7 +384,11 @@ const NESTED: [(&str, &str); 1] = [("context", "HandlerContext")];
 /// The object stays open — `additionalProperties` is untouched — because another product
 /// contributes keys of its own, and the crate owning this definition has never heard of
 /// them. A key of another product is typed by the branches of that product's own schema.
-fn type_nested_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
+fn type_nested_keys(
+    defs: &mut BTreeMap<String, Value>,
+    regs: &[&Registration],
+    key_schemas: &KeySchemas,
+) {
     for (vocabulary, owner) in NESTED {
         let properties: Map<String, Value> = regs
             .iter()
@@ -553,11 +398,7 @@ fn type_nested_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) 
             })
             .flatten()
             .filter_map(|name| {
-                let mut spec = match (name.shape, name.value_type) {
-                    (Some(shape), _) => json!({ "$ref": format!("#/$defs/{shape}") }),
-                    (None, Some(ty)) => json!({ "type": ty }),
-                    (None, None) => return None,
-                };
+                let mut spec = key_schemas.get(&(vocabulary, name.text))?.clone();
                 // The key's own doc comment: a property of a published object carries its
                 // description like any other, and a test holds every property to that.
                 if !name.doc.is_empty()
@@ -598,36 +439,11 @@ fn type_nested_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) 
 /// The object is left open: a branch adds `properties`, nothing forbids what no branch
 /// names. An `action_name` from a newer release than the schema matches no branch and still
 /// validates, which is the openness a value set already promises.
-fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
-    // Which object a field belongs to, for the two flattened pairs this log has.
-
-    // A key's type is a property of the key: no key in this log is written as two types, so
-    // it is declared once on the key vocabulary and looked up here rather than repeated in
-    // every branch that names it.
-    // Keyed by the object too: a key names one thing per object, not across all of them, so
-    // the same name may be declared for an `action` and for an `entity` and mean two
-    // different things. `assert_no_object_declares_a_key_twice` allows exactly that.
-    let mut key_types: BTreeMap<(&str, &str), &str> = BTreeMap::new();
-    // The closed set a key's value is drawn from, where it is drawn from one. The vocabulary
-    // already has a definition in this document, so the key points at it instead of
-    // publishing the set a second time.
-    let mut key_values: BTreeMap<(&str, &str), &str> = BTreeMap::new();
-    // Across every emitter, unlike the branches below: the `action` and `entity` objects are
-    // Lakekeeper's and no other crate may declare keys for them, so a product's own action
-    // carries Lakekeeper's keys and must read their types from Lakekeeper's vocabulary.
-    for reg in registrations(|_| true) {
-        if let Kind::Keys { object, names } = reg.kind {
-            for name in names {
-                if let Some(ty) = name.value_type {
-                    key_types.insert((object, name.text), ty);
-                }
-                if let Some(vocabulary) = name.values {
-                    key_values.insert((object, name.text), vocabulary);
-                }
-            }
-        }
-    }
-
+fn link_carried_keys(
+    defs: &mut BTreeMap<String, Value>,
+    regs: &[&Registration],
+    key_schemas: &KeySchemas,
+) {
     for (field, owner, vocabulary, default_type) in FLATTENED {
         let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for reg in regs {
@@ -648,32 +464,17 @@ fn link_carried_keys(defs: &mut BTreeMap<String, Value>, regs: &[&Registration])
             .into_iter()
             .filter(|(_, keys)| !keys.is_empty())
             .map(|(value, keys)| {
-                let properties: Map<String, Value> = keys
-                    .into_iter()
-                    .map(|key| {
-                        let ty = key_types
-                            .get(&(vocabulary, key.as_str()))
-                            .copied()
-                            .or(default_type);
-                        let drawn_from = key_values
-                            .get(&(vocabulary, key.as_str()))
-                            .map(|name| json!({ "$ref": format!("#/$defs/{name}") }));
-                        // An array says what it holds, whether or not that is a closed set:
-                        // every one of them holds strings, and saying so costs nothing.
-                        let spec = match (ty, drawn_from) {
-                            (Some("array"), Some(item)) => {
-                                json!({ "type": "array", "items": item })
-                            }
-                            (Some("array"), None) => {
-                                json!({ "type": "array", "items": { "type": "string" } })
-                            }
-                            (_, Some(item)) => item,
-                            (Some(ty), None) => json!({ "type": ty }),
-                            (None, None) => json!({}),
-                        };
-                        (key, spec)
-                    })
-                    .collect();
+                let properties: Map<String, Value> =
+                    keys.into_iter()
+                        .map(|key| {
+                            let spec = match key_schemas.get(&(vocabulary, key.as_str())) {
+                                Some(schema) => schema.clone(),
+                                None => default_type
+                                    .map_or_else(|| json!({}), |ty| json!({ "type": ty })),
+                            };
+                            (key, spec)
+                        })
+                        .collect();
                 json!({
                     "if": { "properties": { field: { "const": value } }, "required": [field] },
                     "then": { "properties": properties }
@@ -713,63 +514,8 @@ fn pin_record_type(shape: &mut Map<String, Value>, record_type: &str) {
         return;
     };
     property.remove("type");
+    property.remove("$ref");
     property.insert("const".into(), json!(record_type));
-}
-
-/// Point every field that holds a closed set of values at the definition listing them.
-///
-/// A field's type is `WireStr` or a string stand-in, so the generator writes `"type":
-/// "string"` and the value set sits in `$defs` with nothing referring to it. A consumer then
-/// has a schema that accepts any string where the format allows two values. This links the
-/// two, which is what makes the schema check a value rather than only describe it.
-///
-/// Skipped for a field marked `x-audit-open`, whose values come from whichever emitter
-/// produced the record, and for a field fed by more than one vocabulary — `action_name` is
-/// both. Those stay plain strings, because no single definition lists what they can hold.
-fn link_value_sets(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
-    let mut by_field: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for reg in regs {
-        // Values only: a key vocabulary's names are keys of an object, not the values of a
-        // property, so there is no property for them to point at.
-        if let Kind::Values { field, .. } = reg.kind {
-            by_field
-                .entry(field)
-                .or_default()
-                .push(short_type_name((reg.type_name)()));
-        }
-    }
-    let single: BTreeMap<&str, &String> = by_field
-        .iter()
-        .filter_map(|(field, owners)| match owners.as_slice() {
-            [only] => Some((*field, only)),
-            _ => None,
-        })
-        .collect();
-
-    for schema in defs.values_mut() {
-        let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        for (name, spec) in properties.iter_mut() {
-            let Some(owner) = single.get(name.as_str()) else {
-                continue;
-            };
-            let Some(object) = spec.as_object_mut() else {
-                continue;
-            };
-            // Only a bare string. A property that already has a `$ref`, an `enum` or a
-            // `const` says what it holds, and one marked open says it cannot be listed.
-            let bare = object.get("type").and_then(Value::as_str) == Some("string")
-                && !object.contains_key("enum")
-                && !object.contains_key("const")
-                && !object.contains_key("x-audit-open");
-            if !bare {
-                continue;
-            }
-            object.remove("type");
-            object.insert("$ref".into(), json!(format!("#/$defs/{owner}")));
-        }
-    }
 }
 
 /// The crate schema of one crate: the definitions of the audit types it declares, for the
@@ -972,6 +718,52 @@ pub fn assert_no_object_declares_a_key_twice() {
          one a consumer sees. Rename one of them, or have the second use the first rather \
          than declaring its own.",
         clashes.join("\n  ")
+    );
+}
+
+/// Every value set in `schema` is pointed at by a field, so none is published with nothing
+/// saying where its values appear.
+///
+/// The sets of `action_name`, `operation` and `outcome` are exempt: those fields hold values
+/// from whichever product wrote the record, so they are open and point at no one set. So is
+/// `record_type`, which each shape pins to its one value.
+///
+/// # Panics
+///
+/// If a value set no field references.
+pub fn assert_every_value_set_is_referenced(schema: &Value) {
+    const OPEN_FIELDS: [&str; 4] = ["action_name", "operation", "outcome", "record_type"];
+    fn refs(value: &Value, out: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(target) = map.get("$ref").and_then(Value::as_str) {
+                    out.insert(target.rsplit('/').next().unwrap_or(target).to_string());
+                }
+                map.values().for_each(|child| refs(child, out));
+            }
+            Value::Array(items) => items.iter().for_each(|child| refs(child, out)),
+            _ => {}
+        }
+    }
+    let defs = schema["$defs"].as_object().expect("a schema has `$defs`");
+    let mut referenced = BTreeSet::new();
+    refs(&Value::Object(defs.clone()), &mut referenced);
+    let unreferenced: Vec<&String> = defs
+        .iter()
+        .filter(|(_, def)| def["x-audit-kind"] == "enum" && def.get("x-audit-field").is_some())
+        .filter(|(_, def)| {
+            !OPEN_FIELDS
+                .iter()
+                .any(|field| def["x-audit-field"] == *field)
+        })
+        .map(|(name, _)| name)
+        .filter(|name| !referenced.contains(name.as_str()))
+        .collect();
+    assert!(
+        unreferenced.is_empty(),
+        "these value sets are published and no field points at them: {unreferenced:?}. A field \
+         holding one of their values is a `Wire<Vocabulary>`, which is what references the set; \
+         one holding a plain string leaves the set unused."
     );
 }
 
@@ -1194,98 +986,6 @@ fn identifier_after(block: &str, prefix: &str) -> Option<String> {
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
     (!identifier.is_empty()).then_some(identifier)
-}
-
-/// Every closed set a key draws its value from is a vocabulary that emitter registers.
-///
-/// `values_of` is a reference, written as a schema name, and the branch that names the key
-/// publishes it as a `$ref`. A name nothing provides resolves to nothing, and a name that
-/// belongs to a part rather than a vocabulary would tell a consumer to expect an object
-/// where a string arrives.
-///
-/// # Panics
-///
-/// If a key names a set no value vocabulary of that emitter provides.
-pub fn assert_declared_value_sets_are_vocabularies<E: super::AuditEmitter>() {
-    Registration::require_registry();
-    let known: BTreeSet<String> = registrations(|reg| reg.emitter_name == E::NAME)
-        .iter()
-        .filter(|reg| matches!(reg.kind, Kind::Values { .. }))
-        .map(|reg| short_type_name((reg.type_name)()))
-        .collect();
-
-    let mut dangling = Vec::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
-        let Kind::Keys { object, names } = reg.kind else {
-            continue;
-        };
-        let owner = short_type_name((reg.type_name)());
-        for name in names {
-            if let Some(vocabulary) = name.values
-                && !known.contains(vocabulary)
-            {
-                dangling.push(format!(
-                    "{owner}: key `{}` of `{object}` draws its value from `{vocabulary}`, \
-                     which is no vocabulary of this emitter",
-                    name.text
-                ));
-            }
-        }
-    }
-    assert!(
-        dangling.is_empty(),
-        "these keys name a value set their emitter does not declare:\n  {}\n\n\
-         `values_of` points at a value vocabulary — an enum carrying \
-         `#[audit_part(field = \"...\")]` — by its schema name. Check the spelling, and that \
-         the type is a vocabulary rather than a part.",
-        dangling.join("\n  ")
-    );
-}
-
-/// Every shape a key declares is a type that emitter registers.
-///
-/// `#[audit(holds = "...")]` names its shape as a string, so a typo compiles and publishes a
-/// `$ref` into a customer-facing schema that resolves to nothing. Nothing else looks: the
-/// generator copies the name through, and the format checker only diffs it against the last
-/// one. This is what makes the name a reference rather than a spelling.
-///
-/// # Panics
-///
-/// If a key names a shape no registration of that emitter provides.
-pub fn assert_declared_shapes_are_registered<E: super::AuditEmitter>() {
-    Registration::require_registry();
-    let known: BTreeSet<String> = registrations(|reg| reg.emitter_name == E::NAME)
-        .iter()
-        .filter(|reg| matches!(reg.kind, Kind::Part | Kind::Context | Kind::Shape { .. }))
-        .filter_map(|reg| reg.schema_name.map(|name| name().to_string()))
-        .collect();
-
-    let mut dangling = Vec::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
-        let Kind::Keys { object, names } = reg.kind else {
-            continue;
-        };
-        let owner = short_type_name((reg.type_name)());
-        for name in names {
-            if let Some(shape) = name.shape
-                && !known.contains(shape)
-            {
-                dangling.push(format!(
-                    "{owner}: key `{}` of `{object}` holds `{shape}`, which is not registered",
-                    name.text
-                ));
-            }
-        }
-    }
-    assert!(
-        dangling.is_empty(),
-        "these keys name a shape their emitter does not declare:\n  {}\n\n\
-         `holds` is a reference to a registered type, written as its schema name. The schema \
-         points a consumer at it by `$ref`, so a name nothing provides publishes a reference \
-         that resolves to nothing. Check the spelling, and that the type carries \
-         `#[audit_part]` and belongs to this emitter.",
-        dangling.join("\n  ")
-    );
 }
 
 /// Every `context` key an emitter declares is pushed by some call under `crates_dir`.

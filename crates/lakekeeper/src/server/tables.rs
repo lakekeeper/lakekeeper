@@ -452,8 +452,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         purge: false,
                     },
                 );
-                drop_tbl_event_ctx
-                    .push_extra_context(HandlerContextKey::InvokedBy, "register_table_overwrite");
+                drop_tbl_event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
+                    "register_table_overwrite".to_string(),
+                ));
 
                 let authz_result = authorizer
                     .require_table_action(

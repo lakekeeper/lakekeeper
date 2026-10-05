@@ -19,8 +19,12 @@ use super::{
     render::AuditJson,
 };
 use crate::{
-    audit::{AnyWireStr, AuditEmitter, AuditPart, WireStr, audit_part},
+    audit::{
+        AnyWireStr, AuditEmitter, AuditPart, OperationValues, OutcomeValues, Vocabulary, Wire,
+        audit_part,
+    },
     request_metadata::PrivilegeSource,
+    service::events::AuthorizationFailureReason,
 };
 
 /// The `tracing` target of every audit record: a fixed name, not this module's path.
@@ -54,8 +58,7 @@ macro_rules! emit_stamped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
     /// Names this record's shape. Always `authorization`.
-    #[schemars(with = "String")]
-    pub(crate) record_type: RecordType,
+    pub(crate) record_type: Wire<RecordType>,
     /// Every product that contributed to this record, with the version of what each
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
@@ -67,8 +70,7 @@ pub struct AuthorizationRecord {
     /// Who made the request, as authentication established it.
     pub(crate) actor: ActorRecord,
     /// Which authority answered: the authorizer, or a bypass.
-    #[schemars(with = "String")]
-    pub(crate) privilege_source: PrivilegeSource,
+    pub(crate) privilege_source: Wire<PrivilegeSource>,
     /// The `User-Agent` header, verbatim and unverified. Absent when none was sent.
     pub(crate) user_agent: Option<String>,
     /// The stated break-glass reason. Absent unless the caller claimed one.
@@ -80,10 +82,9 @@ pub struct AuthorizationRecord {
     /// The request's `Idempotency-Key`. Absent when the caller sent none.
     pub(crate) idempotency_key: Option<String>,
     /// Whether the request was permitted.
-    #[schemars(with = "String")]
-    pub(crate) decision: Decision,
+    pub(crate) decision: Wire<Decision>,
     /// Why a denied record was denied, as the vocabulary spells it.
-    pub(crate) failure_reason: Option<WireStr<crate::Lakekeeper>>,
+    pub(crate) failure_reason: Option<Wire<AuthorizationFailureReason>>,
     /// The error the caller received. Present only on a denial that produced one.
     pub(crate) error: Option<ErrorRecord>,
 }
@@ -103,25 +104,26 @@ impl AuthorizationRecord {
         let authorizations = AuditJson::of(&self.authorizations);
         let context = self.context.as_ref().map(AuditJson::of);
         let error = self.error.as_ref().map(AuditJson::of);
-        let message = match self.decision {
-            Decision::Allowed => "Authorization succeeded event",
-            Decision::Denied => "Authorization failed event",
+        let message = if self.decision == Decision::Allowed.as_wire() {
+            "Authorization succeeded event"
+        } else {
+            "Authorization failed event"
         };
         emit_stamped!(
             {
-                record_type = self.record_type.as_str(),
+                record_type = self.record_type.text(),
                 emitters = valuable(&emitters),
                 actions = valuable(&actions),
                 entities = valuable(&entities),
                 actor = valuable(&actor),
-                privilege_source = self.privilege_source.as_str(),
+                privilege_source = self.privilege_source.text(),
                 user_agent = self.user_agent.as_deref(),
                 break_glass = self.break_glass.as_deref(),
                 context = context.as_ref().map(valuable),
                 authorizations = valuable(&authorizations),
                 idempotency_key = self.idempotency_key.as_deref(),
-                decision = self.decision.as_str(),
-                failure_reason = self.failure_reason.map(WireStr::text),
+                decision = self.decision.text(),
+                failure_reason = self.failure_reason.map(Wire::text),
                 error = error.as_ref().map(valuable),
             },
             message
@@ -134,8 +136,7 @@ impl AuthorizationRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplayRecord {
     /// Names this record's shape. Always `replay`.
-    #[schemars(with = "String")]
-    pub(crate) record_type: RecordType,
+    pub(crate) record_type: Wire<RecordType>,
     /// Every product that contributed to this record, with the version of what each
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
@@ -148,8 +149,7 @@ pub struct ReplayRecord {
     /// Who made the request, as authentication established it.
     pub(crate) actor: ActorRecord,
     /// Which authority would have answered, had one been asked.
-    #[schemars(with = "String")]
-    pub(crate) privilege_source: PrivilegeSource,
+    pub(crate) privilege_source: Wire<PrivilegeSource>,
     /// The `User-Agent` header, verbatim and unverified. Absent when none was sent.
     pub(crate) user_agent: Option<String>,
     /// The key whose stored response was served. Always present: it is what makes this a
@@ -171,12 +171,12 @@ impl ReplayRecord {
         let actor = AuditJson::of(&self.actor);
         emit_stamped!(
             {
-                record_type = self.record_type.as_str(),
+                record_type = self.record_type.text(),
                 emitters = valuable(&emitters),
                 actions = valuable(&actions),
                 entities = valuable(&entities),
                 actor = valuable(&actor),
-                privilege_source = self.privilege_source.as_str(),
+                privilege_source = self.privilege_source.text(),
                 user_agent = self.user_agent.as_deref(),
                 idempotency_key = self.idempotency_key.as_str(),
             },
@@ -192,23 +192,32 @@ impl ReplayRecord {
 /// record does not compile; `E` is what stamps the emitter on the record.
 #[derive(Debug)]
 pub struct OperationRecord<E: AuditEmitter> {
-    operation: WireStr<E>,
+    operation: AnyWireStr,
     actor: ActorRecord,
-    outcome: WireStr<E>,
+    outcome: AnyWireStr,
     context: Option<AuditJson>,
     message: &'static str,
+    _emitter: std::marker::PhantomData<E>,
 }
 
 impl<E: AuditEmitter> OperationRecord<E> {
     /// A record without context. Add one with [`OperationRecord::context`].
     #[must_use]
-    pub fn new(operation: WireStr<E>, actor: ActorRecord, outcome: WireStr<E>) -> Self {
+    ///
+    /// `operation` and `outcome` come from the emitter's own vocabularies for those two
+    /// fields, and each is accepted only in its own place.
+    pub fn new<O, C>(operation: Wire<O>, actor: ActorRecord, outcome: Wire<C>) -> Self
+    where
+        O: OperationValues + Vocabulary<Emitter = E>,
+        C: OutcomeValues + Vocabulary<Emitter = E>,
+    {
         Self {
-            operation,
+            operation: operation.into(),
             actor,
-            outcome,
+            outcome: outcome.into(),
             context: None,
             message: "Audit operation",
+            _emitter: std::marker::PhantomData,
         }
     }
 
@@ -236,11 +245,11 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Write the record.
     pub fn emit(self) {
         OperationWire {
-            record_type: RecordType::Operation,
+            record_type: RecordType::Operation.as_wire(),
             emitters: vec![EmitterRecord::of::<E>()],
-            operation: self.operation.into(),
+            operation: self.operation,
             actor: self.actor,
-            outcome: self.outcome.into(),
+            outcome: self.outcome,
             context: self.context,
         }
         .emit(self.message);
@@ -256,8 +265,7 @@ impl<E: AuditEmitter> OperationRecord<E> {
 #[derive(Debug)]
 struct OperationWire {
     /// Names this record's shape. Always `operation`.
-    #[schemars(with = "String")]
-    record_type: RecordType,
+    record_type: Wire<RecordType>,
     /// Every product that contributed to this record, with the version of what each
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
@@ -286,7 +294,7 @@ impl OperationWire {
         let actor = AuditJson::of(&self.actor);
         emit_stamped!(
             {
-                record_type = self.record_type.as_str(),
+                record_type = self.record_type.text(),
                 emitters = valuable(&emitters),
                 operation = self.operation.text(),
                 actor = valuable(&actor),

@@ -408,7 +408,7 @@ fn describe(event: &IdempotentReplayEvent) -> String {
     let mut flags = descriptor
         .context
         .iter()
-        .map(|(key, value)| format!("{key}={value}"))
+        .map(|key| format!("{}={}", key.as_str(), key.value()))
         .collect::<Vec<_>>();
     flags.sort();
     let action = if flags.is_empty() {

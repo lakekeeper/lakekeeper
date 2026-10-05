@@ -889,11 +889,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // `schedule_task` action descriptor, so stamp them into the audit
         // payload directly. Both authz-success and authz-failure events
         // surface this context.
-        event_ctx.push_extra_context(HandlerContextKey::QueueName, queue_name.to_string());
-        event_ctx.push_extra_context(
-            HandlerContextKey::EntityId,
+        event_ctx.push_extra_context(HandlerContextKey::QueueName(queue_name.to_string()));
+        event_ctx.push_extra_context(HandlerContextKey::EntityId(
             event_ctx.action().entity.as_uuid().to_string(),
-        );
+        ));
 
         let authz_result = check_schedule_task_authorization::<A, C>(
             &authorizer,

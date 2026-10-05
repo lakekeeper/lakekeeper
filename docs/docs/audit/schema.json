@@ -55,9 +55,7 @@
       "required": [
         "action_name"
       ],
-      "additionalProperties": {
-        "$ref": "#/$defs/ContextValue"
-      },
+      "additionalProperties": true,
       "description": "An `action` object: the wire name and the action's context fields.",
       "x-audit-kind": "part",
       "allOf": [
@@ -97,7 +95,8 @@
           "then": {
             "properties": {
               "deletes": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "principals": {
                 "type": "array",
@@ -112,7 +111,8 @@
                 }
               },
               "writes": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               }
             }
           }
@@ -149,7 +149,10 @@
                 }
               },
               "updated_properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -180,7 +183,10 @@
                 "type": "string"
               },
               "properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -202,7 +208,10 @@
                 "type": "string"
               },
               "properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -271,7 +280,10 @@
                 "type": "string"
               },
               "properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               },
               "table_id": {
                 "type": "string"
@@ -315,7 +327,10 @@
                 "type": "string"
               },
               "properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -523,7 +538,10 @@
                 }
               },
               "updated_properties": {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -556,8 +574,8 @@
       "type": "object",
       "properties": {
         "actor_type": {
-          "description": "One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`.",
-          "$ref": "#/$defs/ActorType"
+          "$ref": "#/$defs/ActorType",
+          "description": "One of `anonymous`, `principal`, `assumed_role`, `lakekeeper_internal`."
         },
         "principal": {
           "type": "string",
@@ -758,8 +776,8 @@
           "description": "Who made the request, as authentication established it."
         },
         "privilege_source": {
-          "description": "Which authority answered: the authorizer, or a bypass.",
-          "$ref": "#/$defs/PrivilegeSource"
+          "$ref": "#/$defs/PrivilegeSource",
+          "description": "Which authority answered: the authorizer, or a bypass."
         },
         "user_agent": {
           "type": "string",
@@ -785,8 +803,8 @@
           "description": "The request's `Idempotency-Key`. Absent when the caller sent none."
         },
         "decision": {
-          "description": "Whether the request was permitted.",
-          "$ref": "#/$defs/Decision"
+          "$ref": "#/$defs/Decision",
+          "description": "Whether the request was permitted."
         },
         "failure_reason": {
           "description": "Why a denied record was denied, as the vocabulary spells it.",
@@ -1065,44 +1083,6 @@
         "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
       }
     },
-    "ContextValue": {
-      "anyOf": [
-        {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "A set of key-value pairs (e.g. properties, `updated_properties`)."
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "A list of plain strings (e.g. `removed_properties`)."
-        },
-        {
-          "type": "object",
-          "additionalProperties": true,
-          "description": "An object. The key that carries one names its shape, which this schema defines."
-        },
-        {
-          "type": "boolean",
-          "description": "A flag the request either set or did not (e.g. `force`, `dry_run`)."
-        },
-        {
-          "type": "integer",
-          "format": "int64",
-          "description": "A count (e.g. `writes`, `deletes`)."
-        },
-        {
-          "type": "string",
-          "description": "A single string value (e.g. resource name, ID)."
-        }
-      ],
-      "description": "What a `context` key carries.\n\nA record holds context keys in two places: inside each entry of `actions`, beside\n`action_name`, and in the record's own `context` object. A key carries the same type in\neither, and which type that is is stated for that key in this schema.",
-      "x-audit-kind": "part"
-    },
     "Decision": {
       "type": "string",
       "enum": [
@@ -1279,8 +1259,8 @@
       "type": "object",
       "properties": {
         "entity_type": {
-          "description": "The kind of resource: `table`, `namespace`, `warehouse`, …",
-          "$ref": "#/$defs/EntityType"
+          "$ref": "#/$defs/EntityType",
+          "description": "The kind of resource: `table`, `namespace`, `warehouse`, …"
         }
       },
       "required": [
@@ -1362,8 +1342,8 @@
           "description": "The privilege name, verbatim from the authorizer's vocabulary."
         },
         "resource_type": {
-          "description": "The kind of resource the grant is on.",
-          "$ref": "#/$defs/ResourceType"
+          "$ref": "#/$defs/ResourceType",
+          "description": "The kind of resource the grant is on."
         },
         "resource_id": {
           "type": "string",
@@ -1607,8 +1587,8 @@
           "description": "Who made the request, as authentication established it."
         },
         "privilege_source": {
-          "description": "Which authority would have answered, had one been asked.",
-          "$ref": "#/$defs/PrivilegeSource"
+          "$ref": "#/$defs/PrivilegeSource",
+          "description": "Which authority would have answered, had one been asked."
         },
         "user_agent": {
           "type": "string",

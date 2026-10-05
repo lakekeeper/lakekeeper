@@ -77,6 +77,14 @@ fn the_committed_schema_is_the_merge_of_the_crate_schemas() {
     );
 }
 
+/// Every value set the schema publishes is one a field points at.
+#[test]
+fn every_value_set_is_referenced() {
+    schema::assert_every_value_set_is_referenced(&schema::merge_crate_schemas(
+        &committed_crate_schemas(),
+    ));
+}
+
 /// The schema customers read is the schema the tests check records against.
 ///
 /// Published as a file of the documentation site rather than rendered into prose: it is the

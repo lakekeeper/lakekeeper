@@ -28,8 +28,8 @@ use crate::{
                 APIEventActions as _, ActionContextKey, EntityDescriptor, EntityType,
                 EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
                 FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-                FIELD_NAME_WAREHOUSE_ID, UserProvidedEntity as _, UserProvidedTable,
-                synthesise_authorizations,
+                FIELD_NAME_WAREHOUSE_ID, HandlerContextKey, UserProvidedEntity as _,
+                UserProvidedTable, synthesise_authorizations,
             },
         },
         idempotency::IdempotencyKey,
@@ -385,8 +385,8 @@ fn fixture_action_with_context() -> ActionDescriptor {
 fn fixture_create_table_action() -> ActionDescriptor {
     ActionDescriptor::builder()
         .action_name(AnyWireStr::literal_for_tests("create_table"))
-        .context_string(ActionContextKey::Name, "orders")
-        .context_string(ActionContextKey::TableId, FIXTURE_TABLE_ID)
+        .context(ActionContextKey::Name("orders".to_string()))
+        .context(ActionContextKey::TableId(FIXTURE_TABLE_ID.into()))
         .build()
 }
 
@@ -555,25 +555,18 @@ fn fixture_detailed_decision(action: ActionDescriptor, entity: EntityDescriptor)
     }
 }
 
-/// Context entries attributed to Lakekeeper, the emitter whose keys these fixtures use.
-/// Context entries as the handler would have pushed them.
-///
-/// Takes a `ContextValue` rather than a string so a fixture carries the type its key
-/// declares: a flag reaches the record as a flag, as `push_extra_context_bool` writes it.
+/// Context entries as a handler pushes them: each key holding its value, attributed to the
+/// emitter that declares the key.
 fn fixture_context(
-    entries: &[(&str, crate::service::authz::ContextValue)],
+    entries: &[HandlerContextKey],
 ) -> Arc<std::collections::HashMap<String, crate::service::events::context::ContextEntry>> {
     Arc::new(
         entries
             .iter()
-            .map(|(key, value)| {
+            .map(|key| {
                 (
-                    (*key).to_string(),
-                    crate::service::events::context::ContextEntry {
-                        value: value.clone(),
-                        emitter: <crate::Lakekeeper as crate::audit::AuditEmitter>::NAME,
-                        emitter_format: <crate::Lakekeeper as crate::audit::AuditEmitter>::FORMAT,
-                    },
+                    key.as_str().to_string(),
+                    crate::service::events::context::ContextEntry::of(key),
                 )
             })
             .collect(),
@@ -728,7 +721,9 @@ fn client_supplied_map_keys() -> std::collections::BTreeSet<&'static str> {
     for reg in Registration::for_emitter::<crate::Lakekeeper>() {
         if let Kind::Keys { names, .. } = reg.kind {
             for name in names {
-                if name.value_type == Some("object") {
+                let mut generator = schemars::SchemaGenerator::default();
+                let holds = name.value.map(|schema| schema(&mut generator).to_value());
+                if holds.is_some_and(|schema| schema["type"] == "object") {
                     keys.insert(name.text);
                 }
             }
@@ -847,9 +842,8 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
                 fixture_namespace_entity(),
             ])),
             actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
-            extra_context: fixture_context(&[(
-                "invoked_by",
-                crate::service::authz::ContextValue::String("maintenance-task".to_string()),
+            extra_context: fixture_context(&[HandlerContextKey::InvokedBy(
+                "maintenance-task".to_string(),
             )]),
             authorizations: Arc::new(vec![
                 fixture_decision(fixture_read_action(), fixture_table_entity(), true),
@@ -1110,10 +1104,7 @@ fn fixture_authz_failed_with_context() {
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
             error: fixture_error(),
-            extra_context: fixture_context(&[(
-                "self_read",
-                crate::service::authz::ContextValue::Bool(false),
-            )]),
+            extra_context: fixture_context(&[HandlerContextKey::SelfRead(false)]),
             authorizations: Arc::new(vec![fixture_decision(
                 fixture_read_action(),
                 fixture_table_entity(),
@@ -1318,8 +1309,8 @@ fn code_only_hides_comments_without_hiding_code_after_a_slashed_string() {
 
 /// A bare string becomes a wire value only inside the attribute's expansion.
 ///
-/// Every value a record carries is a `WireStr`, and the only constructor is
-/// `WireStr::new`. That constructor has to be public, because the attribute expands in the
+/// Every value a record carries is a `Wire`, and the only constructor is `Wire::new`. That
+/// constructor has to be public, because the attribute expands in the
 /// crate that uses it and names the full path, and Rust has no way to offer a function to
 /// one caller alone. So the type system closes every door but this one, and this test
 /// watches it: a call anywhere else would put a string on the wire that no vocabulary enum
@@ -1351,8 +1342,11 @@ fn only_the_attribute_turns_a_bare_string_into_a_wire_value() {
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
         for (n, line) in code_only(&text).lines().enumerate() {
             // Both constructors: a key is as much a name the schema has to know as a value,
-            // and `WireKey::new` is the same door with a different sign on it.
-            if line.contains("WireStr::new") || line.contains("WireKey::new") {
+            // and `WireKey::new` is the same door with a different sign on it. A vocabulary
+            // registered by hand takes its names from the `VariantNames` list its registration
+            // reads, which is no bare string.
+            let built = line.contains("Wire::new") || line.contains("WireKey::new");
+            if built && !line.contains("VariantNames>::VARIANTS") {
                 offenders.push(format!("{}:{}: {}", relative.display(), n + 1, line.trim()));
             }
         }
@@ -2351,114 +2345,6 @@ fn no_fixture_action_carries_an_undeclared_key() {
     );
 }
 
-/// Every value a fixture writes under a key drawn from a closed set is in that set.
-///
-/// `values_of` is a claim about what the emitting code puts under the key, and the schema
-/// publishes it as a `$ref` that a consumer validates against. Nothing in the type system
-/// ties the two: the value reaches the wire as a `String`, so a hand-written spelling, or a
-/// vocabulary that gains a variant the pushing code does not use, would publish a set the
-/// records contradict. This reads the records.
-///
-/// Evidence, not proof: it sees the values some fixture exercises.
-#[test]
-fn no_fixture_value_falls_outside_its_declared_set() {
-    use crate::audit::{Kind, Registration};
-
-    // Every string under one of those keys, at any depth: the keys sit beside an action, and
-    // an action appears both at the top level and inside `authorizations[]`.
-    fn walk(
-        value: &serde_json::Value,
-        drawn_from: &std::collections::BTreeMap<&str, &str>,
-        out: &mut Vec<(String, String)>,
-    ) {
-        match value {
-            serde_json::Value::Object(map) => {
-                for (key, child) in map {
-                    if drawn_from.contains_key(key.as_str()) {
-                        match child {
-                            serde_json::Value::String(text) => {
-                                out.push((key.clone(), text.clone()));
-                            }
-                            serde_json::Value::Array(items) => out.extend(
-                                items
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_str)
-                                    .map(|text| (key.clone(), text.to_string())),
-                            ),
-                            _ => {}
-                        }
-                    }
-                    walk(child, drawn_from, out);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    walk(item, drawn_from, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // The key -> declared set, and each vocabulary's own names, both from the registry.
-    let mut drawn_from: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
-    let mut vocabulary: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
-        std::collections::BTreeMap::new();
-    for reg in Registration::for_emitter::<crate::Lakekeeper>() {
-        match reg.kind {
-            Kind::Keys { names, .. } => {
-                for name in names {
-                    if let Some(set) = name.values {
-                        drawn_from.insert(name.text, set);
-                    }
-                }
-            }
-            Kind::Values { names, .. } => {
-                vocabulary
-                    .entry(crate::audit::schema::short_type_name((reg.type_name)()))
-                    .or_default()
-                    .extend(names.iter().map(|name| name.text));
-            }
-            Kind::Part | Kind::Context | Kind::Shape { .. } => {}
-        }
-    }
-    assert!(
-        !drawn_from.is_empty(),
-        "no key declares a value set, so this is checking nothing"
-    );
-
-    let mut checked = 0usize;
-    let mut outside = Vec::new();
-    for fixture in FIXTURE_NAMES {
-        let mut seen = Vec::new();
-        walk(&read_fixture(fixture), &drawn_from, &mut seen);
-        for (key, value) in seen {
-            let set = drawn_from[key.as_str()];
-            let Some(names) = vocabulary.get(set) else {
-                continue; // a vocabulary of another emitter
-            };
-            checked += 1;
-            if !names.contains(value.as_str()) {
-                outside.push(format!(
-                    "{fixture}: `{key}` is `{value}`, which `{set}` does not name"
-                ));
-            }
-        }
-    }
-    assert!(
-        checked > 0,
-        "no fixture wrote a value under a key that declares a set"
-    );
-    assert!(
-        outside.is_empty(),
-        "these fixture values fall outside the set their key declares:\n  {}\n\n\
-         The schema points a consumer at that vocabulary, so a value outside it is one their \
-         validator rejects. Emit the vocabulary's own `as_wire()`, or correct the \
-         `values_of` on the key.",
-        outside.join("\n  ")
-    );
-}
-
 /// Every key a handler writes beside an action is one that action declares.
 ///
 /// The fixture guard above checks the same thing against emitted records, so it is limited
@@ -2470,27 +2356,10 @@ fn every_event_actions_key_is_declared() {
     );
 }
 
-/// Every key's declared value type is the one the emitting code writes.
+/// Every key an action says it carries is a key the action object declares.
 #[test]
-fn every_declared_key_type_matches_the_code() {
-    crate::audit::schema::assert_declared_key_types_match_the_code::<crate::Lakekeeper>(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
-    );
-}
-
-/// Every closed set a key draws its value from is a vocabulary this emitter registers.
-#[test]
-fn every_declared_value_set_is_a_vocabulary() {
-    crate::audit::schema::assert_declared_value_sets_are_vocabularies::<crate::Lakekeeper>();
-}
-
-/// Every shape a key declares names a type this emitter registers.
-///
-/// Lakekeeper declares no shaped key today, so this holds vacuously — and bites the moment
-/// one is added with a name nothing provides.
-#[test]
-fn every_declared_shape_is_registered() {
-    crate::audit::schema::assert_declared_shapes_are_registered::<crate::Lakekeeper>();
+fn every_carried_key_is_a_declared_key() {
+    crate::audit::schema::assert_carried_keys_are_declared_keys::<crate::Lakekeeper>();
 }
 
 /// Every `context` key this crate declares reaches a `push_extra_context` call.
@@ -2743,10 +2612,7 @@ fn maximal_authorization() -> AuthorizationRecord {
         actions: Arc::new(vec![fixture_read_action()]),
         failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
         error: fixture_error(),
-        extra_context: fixture_context(&[(
-            "self_read",
-            crate::service::authz::ContextValue::Bool(true),
-        )]),
+        extra_context: fixture_context(&[HandlerContextKey::SelfRead(true)]),
         authorizations: Arc::new(vec![fixture_detailed_decision(
             fixture_read_action(),
             fixture_table_entity(),

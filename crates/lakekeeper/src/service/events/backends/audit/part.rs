@@ -17,7 +17,7 @@ pub trait AuditPart: Serialize + schemars::JsonSchema {
 ///
 /// A pair rather than two slices: the name and its description cannot fall out of step, and
 /// nothing has to check that two lists are the same length.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct WireName {
     /// The name as it reaches the wire.
     pub text: &'static str,
@@ -34,33 +34,20 @@ pub struct WireName {
     /// with `#[audit(expands_to = "a, b")]`: the names cannot be read off the field, and a
     /// test holds that declaration against what the emitting code actually writes.
     pub carries: &'static [&'static str],
-    /// The JSON type this key's value has on the wire, or `None` where none is declared.
-    ///
-    /// A property of the key rather than of the action carrying it: no key in this log is
-    /// written as two types, so saying it once here is both shorter and harder to get wrong
-    /// than repeating it in every branch that names the key.
-    pub value_type: Option<&'static str>,
-    /// For a key whose value is an object, the schema name of that object; `None` for a key
-    /// whose value is a plain string.
-    ///
-    /// A key vocabulary names the keys of `context`, and the schema of what sits under a key
-    /// cannot be reached from the object's own definition: the object is shared, and the
-    /// crate that declares the key may be one the crate that declares the object has never
-    /// heard of. So the key carries the name of its value's shape, and the schema of the
-    /// crate that declares both puts the two together.
-    pub shape: Option<&'static str>,
-    /// For a key whose value is drawn from a closed set, the schema name of the vocabulary
-    /// holding that set; `None` for a key whose value is data the request carried.
-    ///
-    /// The value is still a string on the wire — this says *which* strings. A consumer
-    /// routing on `root_level` needs to know it is `included` or `excluded` and nothing
-    /// else, and the vocabulary that settles it is already in the schema; without this the
-    /// key reaches them as an unconstrained string and the set is published beside it with
-    /// nothing joining the two.
-    ///
-    /// Distinct from `shape`, which names a whole object serialized under the key. A value
-    /// is one or the other: a name from a set, or a document.
-    pub values: Option<&'static str>,
+    /// The schema of what a key holds, from the type it holds. `None` for a name that is a
+    /// value, or a key whose value is always a string, as an entity's are.
+    pub value: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
+}
+
+/// A key of an authorization record's own `context` object, holding its value. Implemented by
+/// `#[audit_part(keys_of = "context")]`, so only such a key can be pushed onto an event.
+pub trait RecordContextKey {
+    /// The emitter whose vocabulary declares the key.
+    type Emitter: AuditEmitter;
+    /// The key's name on the wire.
+    fn wire(&self) -> WireKey<Self::Emitter>;
+    /// The value the key carries, as it reaches the wire.
+    fn value(&self) -> serde_json::Value;
 }
 
 impl WireName {
@@ -85,9 +72,7 @@ impl WireName {
             text: "",
             doc: "",
             carries: &[],
-            value_type: None,
-            shape: None,
-            values: None,
+            value: None,
         }; N];
         let mut i = 0;
         while i < N {
@@ -95,9 +80,7 @@ impl WireName {
                 text: texts[i],
                 doc: "",
                 carries: &[],
-                value_type: None,
-                shape: None,
-                values: None,
+                value: None,
             };
             i += 1;
         }
@@ -109,7 +92,7 @@ impl WireName {
 ///
 /// The data belongs to the variant that has it, so a part cannot be read as if it carried
 /// names and a key vocabulary cannot be read as if its names were a field's values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Kind {
     /// A top-level record structure with an `emit()`, carrying the `record_type` value that
     /// names it.
@@ -254,25 +237,98 @@ impl fmt::Debug for Registration {
     }
 }
 
-/// A closed-set value as it reaches the wire, tied to the emitter whose vocabulary it belongs
-/// to. Obtainable only from a value vocabulary's generated `as_wire()`.
+/// A value vocabulary: an enum whose variant names are the values of one wire field.
+/// Implemented by `#[audit_part(field = "...")]`, and by hand for a vocabulary whose enum
+/// lives in a crate that cannot carry the attribute.
+pub trait Vocabulary: Sized + 'static {
+    /// The emitter whose vocabulary this is.
+    type Emitter: AuditEmitter;
+    /// The vocabulary's name under `$defs`, which a field holding one of its values points at.
+    const SCHEMA_NAME: &'static str;
+    /// This value as it reaches the wire.
+    fn wire(&self) -> Wire<Self>;
+}
+
+/// The vocabulary of an operation record's `operation`, so that one cannot be passed where an
+/// `outcome` belongs. Implemented by `#[audit_part(field = "operation")]`.
+pub trait OperationValues: Vocabulary {}
+
+/// The vocabulary of an operation record's `outcome`. Implemented by
+/// `#[audit_part(field = "outcome")]`.
+pub trait OutcomeValues: Vocabulary {}
+
+/// A value from the vocabulary `T` as it reaches the wire. Obtainable only from the
+/// vocabulary's generated `as_wire()`.
 ///
-/// The emitter is known at compile time here and costs nothing to carry, so mixing two
-/// emitters' vocabularies in one record does not compile. Where it cannot be known, the value
-/// is an [`AnyWireStr`] and the emitter is a field instead. Folding the two into one type with
-/// a default parameter would hide that difference behind a field that is dead whenever the
-/// emitter is known.
-///
-/// A [`WireKey`] is the same idea for a name that is a key rather than a value.
-pub struct WireStr<E: AuditEmitter> {
+/// Serializes as the value's name, and its schema is a reference to `T`'s definition, so a
+/// field holding one points at the set it is drawn from. The type says which set, so a value
+/// from one vocabulary cannot be put in a field that holds another.
+pub struct Wire<T> {
     text: &'static str,
-    _emitter: PhantomData<E>,
+    _vocabulary: PhantomData<fn() -> T>,
+}
+
+impl<T> Wire<T> {
+    /// Constructed by `#[audit_part]`-generated code. Not part of the public API.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            _vocabulary: PhantomData,
+        }
+    }
+
+    /// The value as written to the wire.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        self.text
+    }
+}
+
+impl<T> Clone for Wire<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Wire<T> {}
+impl<T> PartialEq for Wire<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+impl<T> Eq for Wire<T> {}
+impl<T> fmt::Debug for Wire<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Wire({:?})", self.text)
+    }
+}
+impl<T> fmt::Display for Wire<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.text)
+    }
+}
+impl<T> Serialize for Wire<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.text)
+    }
+}
+impl<T: Vocabulary> schemars::JsonSchema for Wire<T> {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Owned(format!("Wire<{}>", T::SCHEMA_NAME))
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "$ref": format!("#/$defs/{}", T::SCHEMA_NAME) })
+    }
 }
 
 /// A key of an audit object as it reaches the wire, tied to the emitter whose vocabulary it
 /// belongs to. Obtainable only from a key enum's generated `as_wire()`.
 ///
-/// Convertible into neither [`WireStr`] nor [`AnyWireStr`], and not serializable, so a key
+/// Convertible into neither [`Wire`] nor [`AnyWireStr`], and not serializable, so a key
 /// cannot be passed where a record expects a value. That stops the mix-up, not every route to
 /// the string: [`Self::text`] yields one, as does the `as_str` every key enum carries, and
 /// either can be written wherever a `&'static str` is accepted. What the type buys is that the
@@ -330,31 +386,13 @@ macro_rules! wire_name_impls {
     };
 }
 
-wire_name_impls!(WireStr);
 wire_name_impls!(WireKey);
 
-impl<E: AuditEmitter> Serialize for WireStr<E> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.text)
-    }
-}
-impl<E: AuditEmitter> schemars::JsonSchema for WireStr<E> {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("WireStr")
-    }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string" })
-    }
-}
-
 /// A wire value whose emitter is known only by name: what a core field that accepts values
-/// from several emitters holds, such as `action_name`. Obtainable only from a [`WireStr`],
-/// so it still cannot be a literal.
+/// from several emitters holds, such as `action_name`. Obtainable only from a [`Wire`], so it
+/// still cannot be a literal.
 ///
-/// The erased half of the pair described on [`WireStr`]. It exists because two places cannot
+/// The erased half of [`Wire`], whose emitter is in its type. It exists because two places cannot
 /// name their emitter in a type: an action's name, which any authorizer crate supplies, and a
 /// context key pushed by a crate this one does not know.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -400,12 +438,12 @@ impl AnyWireStr {
     }
 }
 
-impl<E: AuditEmitter> From<WireStr<E>> for AnyWireStr {
-    fn from(value: WireStr<E>) -> Self {
+impl<T: Vocabulary> From<Wire<T>> for AnyWireStr {
+    fn from(value: Wire<T>) -> Self {
         Self {
             text: value.text,
-            emitter: E::NAME,
-            emitter_format: E::FORMAT,
+            emitter: <T::Emitter as AuditEmitter>::NAME,
+            emitter_format: <T::Emitter as AuditEmitter>::FORMAT,
         }
     }
 }
@@ -562,7 +600,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum ProbeKey {
         /// The only key.
-        FirstKey,
+        FirstKey(bool),
     }
 
     /// A part declared the way any crate declares one.
@@ -577,7 +615,7 @@ mod tests {
 
     #[test]
     fn a_vocabulary_enum_yields_serde_renamed_wire_values_tied_to_the_crate_emitter() {
-        let good: WireStr<Lakekeeper> = ProbeOutcome::AllGood.as_wire();
+        let good: Wire<ProbeOutcome> = ProbeOutcome::AllGood.as_wire();
         assert_eq!(good.text(), "all_good");
         assert_eq!(ProbeOutcome::Renamed.as_wire().text(), "x-y");
         assert_eq!(
@@ -599,9 +637,9 @@ mod tests {
 
     #[test]
     fn a_key_vocabulary_yields_a_key_type_that_no_value_field_accepts() {
-        let key: WireKey<Lakekeeper> = ProbeKey::FirstKey.as_wire();
+        let key: WireKey<Lakekeeper> = ProbeKey::FirstKey(true).as_wire();
         assert_eq!(key.text(), "first_key");
-        assert_eq!(ProbeKey::FirstKey.as_str(), "first_key");
+        assert_eq!(ProbeKey::FirstKey(true).as_str(), "first_key");
         assert_eq!(ProbeKey::WIRE_NAMES, ["first_key"]);
         assert_eq!(key.to_string(), "first_key");
         // The guarantee is in what is missing: `WireKey` implements neither `Serialize` nor
@@ -635,20 +673,17 @@ mod tests {
         assert!(matches!(key.kind, Kind::Keys { .. }));
         assert_eq!(key.kind.wire_place(), Some("probe"));
         // Each name carries its own description, so the two cannot fall out of step.
-        assert_eq!(
-            key.kind.names(),
-            [WireName {
-                text: "first_key",
-                doc: "The only key.",
-                carries: &[],
-                value_type: None,
-                shape: None,
-                values: None
-            }]
-        );
+        let [name] = key.kind.names() else {
+            panic!("one key: {:?}", key.kind.names());
+        };
+        assert_eq!((name.text, name.doc), ("first_key", "The only key."));
+        assert!(name.carries.is_empty());
+        let mut generator = schemars::SchemaGenerator::default();
+        let held = (name.value.expect("a key of `probe` holds its value"))(&mut generator);
+        assert_eq!(held.to_value(), serde_json::json!({ "type": "boolean" }));
 
         let part = by_name("ProbePart");
-        assert_eq!(part.kind, Kind::Part);
+        assert!(matches!(part.kind, Kind::Part));
         assert_eq!(part.kind.wire_place(), None);
         assert!(part.kind.names().is_empty());
     }
