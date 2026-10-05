@@ -325,11 +325,11 @@ paths:
             default: false
         - name: purge
           in: query
-          description: If recursive is true, also deletes table and view data. If false, only metadata is dropped from the catalog, table location remains untouched. Defaults to true for all tables managed by Lakekeeper.
+          description: If true, also delete data. With `recursive=true`, the files of dropped tables and views are queued for deletion. On ADLS Gen2 and OneLake, empty directories of the dropped namespaces are removed.
           required: false
           schema:
             type: boolean
-            default: true
+            default: false
       responses:
         204:
           description: Success, no content

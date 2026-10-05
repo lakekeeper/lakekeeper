@@ -83,6 +83,14 @@ impl AdlsLocation {
                     format!("ADLS path segment `{path_segment}` must not contain slashes."),
                 ));
             }
+            // The SDK builds request URLs as `https`, where `\` is a path separator, so
+            // `..\..` would address a parent directory.
+            if path_segment.contains('\\') {
+                return Err(InvalidLocationError::new(
+                    location_dbg.clone(),
+                    format!("ADLS path segment `{path_segment}` must not contain backslashes."),
+                ));
+            }
             // Reject segments whose decoded form would create silent
             // path-divergence bugs. Our `Location` stores the raw URL input,
             // but `url::Url::parse` (used by the SDK during request-URL
@@ -692,6 +700,9 @@ mod test {
             // encoded slash — ambiguous nesting once decoded
             "abfss://filesystem@account0name.dfs.core.windows.net/foo/%2F/bar",
             "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%2Fy/bar",
+            // backslash — a path separator in the request URL
+            r"abfss://filesystem@account0name.dfs.core.windows.net/foo/x/..\..\bar",
+            r"abfss://filesystem@account0name.dfs.core.windows.net/foo/x\y",
         ] {
             let loc = Location::from_str(bad).unwrap();
             let res = AdlsLocation::try_from_location(&loc, false);
@@ -702,6 +713,7 @@ mod test {
         for ok in [
             "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%20y/bar",
             "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%2Ey/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%5Cy/bar",
         ] {
             let loc = Location::from_str(ok).unwrap();
             AdlsLocation::try_from_location(&loc, false)
