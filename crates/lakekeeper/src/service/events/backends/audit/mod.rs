@@ -23,7 +23,7 @@ pub use parts::{
     GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord, UserSubjectRecord,
 };
 pub use render::AuditJson;
-pub use shapes::{AuthorizationRecord, OperationRecord, ReplayRecord};
+pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
 
 use crate::service::events::{
     AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener, GrantsChangedEvent,
@@ -61,6 +61,9 @@ use crate::service::events::{
 /// See the audit-log section of `docs/docs/developer-guide.md` for what to do when
 /// the format changes, and `docs/docs/logging.md` for the consumer-facing contract.
 pub const AUDIT_FORMAT: &str = "1.0";
+
+/// The `event_source` every audit record carries: what marks a log line as one.
+pub const EVENT_SOURCE: &str = "audit";
 
 /// Whether `s` is exactly `MAJOR.MINOR`. Hand-rolled over bytes because `==` on `&str` is
 /// not const-evaluable (rust-lang/rust#143874).
@@ -250,13 +253,12 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let actor = ActorRecord::from_request(&event.request_metadata);
         // One record per triple, not one per request: the batch is a dispatch
         // optimisation, while the audit trail is answered per grant.
         for spec in &event.removed {
             OperationRecord::new(
                 AuditOperation::GrantRevoked.as_wire(),
-                actor.clone(),
+                &*event.request_metadata,
                 AuditOutcome::Success.as_wire(),
             )
             .context(GrantContextRecord::new(
@@ -270,7 +272,7 @@ impl EventListener for AuditEventListener {
         for spec in &event.created {
             OperationRecord::new(
                 AuditOperation::GrantCreated.as_wire(),
-                actor.clone(),
+                &*event.request_metadata,
                 AuditOutcome::Success.as_wire(),
             )
             .context(GrantContextRecord::new(
@@ -512,6 +514,15 @@ pub mod contract {
             {
                 out.push(format!("`entity_type` is `{kind}`, not in `EntityType`"));
             }
+        }
+
+        let time = record.get("time").and_then(serde_json::Value::as_str);
+        if !time.is_some_and(|time| {
+            time.ends_with('Z') && chrono::DateTime::parse_from_rfc3339(time).is_ok()
+        }) {
+            out.push(format!(
+                "`time` is {time:?}: every record carries when it happened, as RFC 3339 in UTC"
+            ));
         }
 
         out.extend(failure_reason_violations(record));

@@ -126,18 +126,41 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
     }
 }
 
-/// The definition of the shape `record_type` names, or `None` when the schema declares none.
+/// The `time` a compared record carries in place of its own.
+pub const PINNED_TIME: &str = "2026-01-01T00:00:00.000000Z";
+
+/// Check a captured record's `time` and put [`PINNED_TIME`] in its place, so a record can be
+/// compared with a committed one. The clock has no test seam, so the comparison pins what can
+/// be pinned: that the field is there, and that it is RFC 3339 in UTC.
+///
+/// # Panics
+///
+/// If the record has no `time`, or one that is not RFC 3339 in UTC.
+pub fn pin_time(record: &mut Value, whence: &str) {
+    let time = record.get("time").and_then(Value::as_str);
+    assert!(
+        time.is_some_and(|time| {
+            time.ends_with('Z') && chrono::DateTime::parse_from_rfc3339(time).is_ok()
+        }),
+        "{whence}: `time` is {time:?}, not RFC 3339 in UTC"
+    );
+    record["time"] = PINNED_TIME.into();
+}
+
+/// The definition of the shape `record_type` names, or `None` when the schema declares none:
+/// the one whose `record_type` property is pinned to that value.
 #[must_use]
 pub fn shape_of<'a>(schema: &'a Value, record_type: &str) -> Option<(&'a str, &'a Value)> {
     schema["$defs"].as_object()?.iter().find_map(|(name, def)| {
-        (def["x-audit-record-type"] == record_type).then_some((name.as_str(), def))
+        (def["properties"]["record_type"]["const"] == record_type).then_some((name.as_str(), def))
     })
 }
 
-/// Validate a whole record against the shape its `record_type` names.
+/// Validate a whole record, as a log line carries it, against the schema's root.
 ///
-/// The envelope the subscriber owns is not the emitter's to promise, so it is removed first;
-/// what remains is the record, and the shape describes all of it.
+/// The root is the definition of any audit record: it holds the two stamps and routes on
+/// `record_type` to the shape that describes the rest. The keys the log subscriber adds are
+/// no shape's, and no shape forbids them, so the line is checked as it is.
 ///
 /// # Panics
 ///
@@ -146,18 +169,15 @@ pub fn assert_valid_record(schema: &Value, record: &Value, whence: &str) {
     let record_type = record["record_type"].as_str().unwrap_or_else(|| {
         panic!("{whence}: no `record_type`, so nothing says which shape to check it against")
     });
-    let (def, _) = shape_of(schema, record_type).unwrap_or_else(|| {
-        panic!("{whence}: `record_type` is `{record_type}`, which no shape in the schema names")
-    });
-    let mut body = record.clone();
-    if let Some(object) = body.as_object_mut() {
-        for envelope in super::contract::ENVELOPE_KEYS {
-            object.remove(*envelope);
-        }
-        // Stamped by the emitter on every record whatever its shape, so no shape lists them.
-        object.remove("event_source");
-        object.remove("audit_format");
-    }
-    assert_valid_part(schema, def, &body, &format!("{whence}: {record_type}"));
+    assert!(
+        shape_of(schema, record_type).is_some(),
+        "{whence}: `record_type` is `{record_type}`, which no shape in the schema names"
+    );
+    assert_valid_part(
+        schema,
+        super::schema::AUDIT_RECORD,
+        record,
+        &format!("{whence}: {record_type}"),
+    );
     assert_record_parts_valid(schema, record, whence);
 }

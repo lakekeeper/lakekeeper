@@ -8,6 +8,8 @@
       "format": "1.0"
     }
   ],
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
   "operation": "admission_decided",
   "actor": {
     "actor_type": "assumed_role",
@@ -25,7 +27,6 @@
     "status": 403,
     "error_type": "ExternalEnforceForbidden",
     "message": "Principal is not admitted to this instance",
-    "error_id": "019684ff-0000-7000-8000-000000000006",
-    "request_id": "019684ff-0000-7000-8000-000000000005"
+    "error_id": "019684ff-0000-7000-8000-000000000006"
   }
 }

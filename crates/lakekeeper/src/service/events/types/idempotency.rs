@@ -30,6 +30,8 @@ use crate::{
 pub struct IdempotentReplayEvent {
     /// Request metadata of the *retry*, not of the request that did the work.
     pub request_metadata: Arc<RequestMetadata>,
+    /// When the event happened: when it was built, not when a listener got to it.
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 
     /// The entities this request named, as the caller spelled them. A replay
     /// resolves nothing, so at every current call site this is an identifier

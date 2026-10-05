@@ -132,6 +132,45 @@ impl EmitterRecord {
     }
 }
 
+/// When a record's event happened, in UTC.
+///
+/// Written as RFC 3339 with microseconds and a `Z`, so every record spells a time the same
+/// way and a lexical sort is a time sort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordTime(chrono::DateTime<chrono::Utc>);
+
+impl RecordTime {
+    /// Now.
+    #[must_use]
+    pub fn now() -> Self {
+        Self(chrono::Utc::now())
+    }
+}
+
+impl From<chrono::DateTime<chrono::Utc>> for RecordTime {
+    fn from(time: chrono::DateTime<chrono::Utc>) -> Self {
+        Self(time)
+    }
+}
+
+impl serde::Serialize for RecordTime {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+    }
+}
+
+impl schemars::JsonSchema for RecordTime {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("RecordTime")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "format": "date-time" })
+    }
+}
+
 /// The role an `assumed_role` actor acts as.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]

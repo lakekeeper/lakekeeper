@@ -12,7 +12,7 @@ use super::{
     Decision,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, EmitterRecord, EntityRecord, ErrorRecord,
-        HandlerContext,
+        HandlerContext, RecordTime,
     },
     render::AuditJson,
 };
@@ -21,8 +21,8 @@ use crate::{
         AnyWireStr, AuditEmitter, AuditPart, OperationValues, OutcomeValues, Vocabulary, Wire,
         audit_part,
     },
-    request_metadata::PrivilegeSource,
-    service::events::AuthorizationFailureReason,
+    request_metadata::{PrivilegeSource, RequestId, RequestMetadata},
+    service::{admission::AdmissionTrigger, events::AuthorizationFailureReason},
 };
 
 /// An authorization record: was this caller permitted to do these actions on these entities?
@@ -33,6 +33,12 @@ pub struct AuthorizationRecord {
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
     pub(crate) emitters: Vec<EmitterRecord>,
+    /// The request this record belongs to: the `x-request-id` the caller sent, or the one
+    /// Lakekeeper generated and returned in that header.
+    pub(crate) request_id: RequestId,
+    /// When the event happened, in UTC: when the request was decided or answered, not when
+    /// the line was written.
+    pub(crate) time: RecordTime,
     /// The actions evaluated, always a list however many there are.
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities they were evaluated against, always a list.
@@ -67,6 +73,12 @@ pub struct ReplayRecord {
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
     pub(crate) emitters: Vec<EmitterRecord>,
+    /// The request this record belongs to: the `x-request-id` the caller sent, or the one
+    /// Lakekeeper generated and returned in that header.
+    pub(crate) request_id: RequestId,
+    /// When the event happened, in UTC: when the request was decided or answered, not when
+    /// the line was written.
+    pub(crate) time: RecordTime,
     /// The actions the replayed request named, always a list.
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities it named, always a list. As the caller wrote them: a replay resolves
@@ -83,6 +95,47 @@ pub struct ReplayRecord {
     pub(crate) idempotency_key: String,
 }
 
+/// Who and which request an operation record belongs to.
+///
+/// From the request it serves — a `&RequestMetadata`, or the `AdmissionTrigger` of an admission
+/// gate — which names both. An operation no request triggered says so with
+/// [`RecordOrigin::without_request`], so a record cannot lose its request by accident.
+#[derive(Debug, Clone)]
+pub struct RecordOrigin {
+    actor: ActorRecord,
+    request_id: Option<RequestId>,
+}
+
+impl RecordOrigin {
+    /// An operation no request triggered: a background sync, or a lookup made for a user who
+    /// is not the caller.
+    #[must_use]
+    pub fn without_request(actor: ActorRecord) -> Self {
+        Self {
+            actor,
+            request_id: None,
+        }
+    }
+}
+
+impl From<&RequestMetadata> for RecordOrigin {
+    fn from(request: &RequestMetadata) -> Self {
+        Self {
+            actor: ActorRecord::from_request(request),
+            request_id: Some(request.request_id().clone()),
+        }
+    }
+}
+
+impl From<AdmissionTrigger<'_>> for RecordOrigin {
+    fn from(trigger: AdmissionTrigger<'_>) -> Self {
+        Self {
+            actor: trigger.actor_record(),
+            request_id: Some(trigger.request_id().clone()),
+        }
+    }
+}
+
 /// An operation record: something the system did that touches identity or access, with no
 /// permission decision of its own. The one shape any crate can emit.
 ///
@@ -91,7 +144,8 @@ pub struct ReplayRecord {
 #[derive(Debug)]
 pub struct OperationRecord<E: AuditEmitter> {
     operation: AnyWireStr,
-    actor: ActorRecord,
+    time: RecordTime,
+    origin: RecordOrigin,
     outcome: AnyWireStr,
     context: Option<AuditJson>,
     message: &'static str,
@@ -104,14 +158,15 @@ impl<E: AuditEmitter> OperationRecord<E> {
     ///
     /// `operation` and `outcome` come from the emitter's own vocabularies for those two
     /// fields, and each is accepted only in its own place.
-    pub fn new<O, C>(operation: Wire<O>, actor: ActorRecord, outcome: Wire<C>) -> Self
+    pub fn new<O, C>(operation: Wire<O>, origin: impl Into<RecordOrigin>, outcome: Wire<C>) -> Self
     where
         O: OperationValues + Vocabulary<Emitter = E>,
         C: OutcomeValues + Vocabulary<Emitter = E>,
     {
         Self {
             operation: operation.into(),
-            actor,
+            time: RecordTime::now(),
+            origin: origin.into(),
             outcome: outcome.into(),
             context: None,
             message: "Audit operation",
@@ -145,8 +200,10 @@ impl<E: AuditEmitter> OperationRecord<E> {
     pub fn emit(self) {
         OperationWire {
             emitters: vec![EmitterRecord::of::<E>()],
+            request_id: self.origin.request_id,
+            time: self.time,
             operation: self.operation,
-            actor: self.actor,
+            actor: self.origin.actor,
             outcome: self.outcome,
             context: self.context,
         }
@@ -166,6 +223,10 @@ struct OperationWire {
     /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
     /// name, always a list however many there are.
     emitters: Vec<EmitterRecord>,
+    /// The request this record belongs to. Absent for an operation no request triggered.
+    request_id: Option<RequestId>,
+    /// When the operation happened, in UTC.
+    time: RecordTime,
     /// What was done, from the emitter's own vocabulary.
     operation: AnyWireStr,
     /// Who made the request, as authentication established it.

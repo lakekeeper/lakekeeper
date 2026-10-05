@@ -678,7 +678,7 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                 #(let #fields = ::lakekeeper::audit::AuditJson::present(&self.#fields);)*
                 ::tracing::info!(
                     target: crate::audit::AUDIT_TARGET,
-                    event_source = "audit",
+                    event_source = crate::service::events::backends::audit::EVENT_SOURCE,
                     audit_format = crate::service::events::backends::audit::AUDIT_FORMAT,
                     record_type = #record_type,
                     #(#fields = #fields.as_ref().map(::tracing::field::valuable),)*

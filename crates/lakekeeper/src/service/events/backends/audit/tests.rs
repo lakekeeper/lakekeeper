@@ -136,6 +136,7 @@ fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededE
     ]);
     AuthorizationSucceededEvent {
         request_metadata: Arc::new(request_metadata),
+        occurred_at: chrono::Utc::now(),
         entities,
         actions,
         extra_context: Arc::new(std::collections::HashMap::new()),
@@ -194,6 +195,14 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     // fixture says: the fixture pins the sample, the schema pins the declaration.
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     crate::audit::validate::assert_valid_record(&schema, emitted, name);
+    let mut emitted = emitted.clone();
+    assert!(
+        super::contract::violations(&emitted).is_empty(),
+        "{name}: {:?}",
+        super::contract::violations(&emitted)
+    );
+    crate::audit::validate::pin_time(&mut emitted, name);
+    let emitted = &emitted;
     let path = fixture_path(name);
 
     if std::env::var_os("LAKEKEEPER_UPDATE_AUDIT_FIXTURES").is_some() {
@@ -504,6 +513,7 @@ fn fixture_succeeded_event(
     ));
     AuthorizationSucceededEvent {
         request_metadata: Arc::new(request_metadata),
+        occurred_at: chrono::Utc::now(),
         entities,
         actions,
         extra_context,
@@ -581,6 +591,11 @@ fn fixture_metadata() -> RequestMetadata {
             crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
         ))
         .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
+        .request_id(
+            FIXTURE_REQUEST_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )
         .build()
 }
 
@@ -819,7 +834,13 @@ fn the_fixture_directory_matches_the_declared_set() {
 fn fixture_authz_succeeded_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(fixture_succeeded_event(
-            RequestMetadataTestBuilder::builder().build(),
+            RequestMetadataTestBuilder::builder()
+                .request_id(
+                    FIXTURE_REQUEST_ID
+                        .parse::<uuid::Uuid>()
+                        .expect("fixed test uuid"),
+                )
+                .build(),
             EventEntities::one(fixture_table_entity()),
             vec![fixture_read_action()],
             fixture_context(&[]),
@@ -837,6 +858,7 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
             request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::many([
                 fixture_table_entity(),
                 fixture_namespace_entity(),
@@ -1078,6 +1100,7 @@ fn fixture_authz_failed_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::one(fixture_table_entity())),
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
@@ -1100,6 +1123,7 @@ fn fixture_authz_failed_with_context() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::one(fixture_table_entity())),
             actions: Arc::new(vec![fixture_read_action()]),
             failure_reason: crate::service::events::AuthorizationFailureReason::CannotSeeResource,
@@ -1128,6 +1152,7 @@ fn fixture_authz_failed_admission_gate() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::many([
                 fixture_table_entity(),
                 fixture_namespace_entity(),
@@ -1193,6 +1218,7 @@ fn fixture_idempotent_replay() {
     let record = emit_and_capture_one(|| {
         AuditEventListener.idempotent_replay_served(IdempotentReplayEvent {
             request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(entities),
             actions: Arc::new(vec![fixture_drop_action()]),
             idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY)
@@ -1390,7 +1416,11 @@ impl AdmissionGate for FixtureGate {
 fn fixture_admission_metadata(actor: Actor) -> RequestMetadata {
     RequestMetadataTestBuilder::builder()
         .actor(actor)
-        .request_id(FIXTURE_REQUEST_ID.parse().expect("fixed test uuid"))
+        .request_id(
+            FIXTURE_REQUEST_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )
         .build()
 }
 
@@ -1569,7 +1599,9 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
     let record = emit_and_capture_one(|| async {
         crate::audit::OperationRecord::new(
             OperationProbe::ProbeOperation.as_wire(),
-            crate::audit::ActorRecord::principal(&user_id),
+            crate::audit::RecordOrigin::without_request(crate::audit::ActorRecord::principal(
+                &user_id,
+            )),
             OutcomeProbe::Success.as_wire(),
         )
         .message("probe")
@@ -1604,6 +1636,38 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
 /// These are the same rules the corpus test in `lakekeeper-integration-tests` applies to
 /// records from real requests, shared rather than copied. Running them here costs
 /// nothing and needs no database, so the cheap half of the check is always on.
+/// The document validates a whole record from its root, so a consumer can point a stock
+/// validator at the file without routing first.
+#[test]
+fn the_schema_root_validates_a_whole_record() {
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let validator = jsonschema::validator_for(&schema).expect("the schema is a valid schema");
+    let record = read_fixture("authz_failed_single");
+    assert!(
+        validator.is_valid(&record),
+        "a committed record validates from the root"
+    );
+
+    // The stamps are the root's own: a record without one is no audit record.
+    let mut unstamped = record.clone();
+    unstamped
+        .as_object_mut()
+        .expect("object")
+        .remove("audit_format");
+    assert!(!validator.is_valid(&unstamped));
+
+    // The root routes to the shape, so a shape's own rules apply.
+    let mut wrong = record.clone();
+    wrong["decision"] = serde_json::json!(true);
+    assert!(!validator.is_valid(&wrong));
+
+    // A record type this schema does not know still validates against what every record
+    // shares, as a newer value of any set does.
+    let mut newer = record;
+    newer["record_type"] = serde_json::json!("from_a_newer_release");
+    assert!(validator.is_valid(&newer));
+}
+
 #[test]
 fn every_committed_fixture_satisfies_the_format_contract() {
     for name in FIXTURE_NAMES {
@@ -2001,6 +2065,11 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
 /// cannot demonstrate.
 fn replay_event(warehouse_id: WarehouseId, actor: Actor) -> IdempotentReplayEvent {
     let request_metadata = RequestMetadataTestBuilder::builder()
+        .request_id(
+            FIXTURE_REQUEST_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )
         .actor(actor)
         .user_agent(UserAgent::parse("Apache-Spark/3.5.1"))
         .build();
@@ -2016,6 +2085,7 @@ fn replay_event(warehouse_id: WarehouseId, actor: Actor) -> IdempotentReplayEven
 
     IdempotentReplayEvent {
         request_metadata: Arc::new(request_metadata),
+        occurred_at: chrono::Utc::now(),
         entities: Arc::new(entities),
         actions: Arc::new(vec![
             CatalogTableAction::Drop {
@@ -2539,7 +2609,11 @@ fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
         .as_object()
         .expect("$defs")
         .values()
-        .filter_map(|d| d["x-audit-record-type"].as_str().map(str::to_owned))
+        .filter_map(|d| {
+            d["properties"]["record_type"]["const"]
+                .as_str()
+                .map(str::to_owned)
+        })
         .collect();
     declared.sort();
     let mut vocabulary: Vec<String> = RecordType::WIRE_NAMES

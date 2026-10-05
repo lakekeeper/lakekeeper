@@ -25,6 +25,7 @@ use crate::{
 pub(crate) fn authorization_succeeded(event: &AuthorizationSucceededEvent) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
+        event.occurred_at,
         &event.actions,
         &event.entities,
         &event.extra_context,
@@ -37,6 +38,7 @@ pub(crate) fn authorization_succeeded(event: &AuthorizationSucceededEvent) -> Au
 pub(crate) fn authorization_failed(event: &AuthorizationFailedEvent) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
+        event.occurred_at,
         &event.actions,
         &event.entities,
         &event.extra_context,
@@ -46,8 +48,10 @@ pub(crate) fn authorization_failed(event: &AuthorizationFailedEvent) -> Authoriz
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn authorization(
     request_metadata: &RequestMetadata,
+    occurred_at: chrono::DateTime<chrono::Utc>,
     actions: &[ActionDescriptor],
     entities: &EventEntities,
     extra_context: &HashMap<String, ContextEntry>,
@@ -62,6 +66,8 @@ fn authorization(
         ),
         actions: self::actions(actions),
         entities: self::entities(entities),
+        request_id: request_metadata.request_id().clone(),
+        time: occurred_at.into(),
         actor: ActorRecord::from_request(request_metadata),
         privilege_source: request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(request_metadata),
@@ -83,6 +89,8 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
         ),
         actions: actions(&event.actions),
         entities: entities(&event.entities),
+        request_id: event.request_metadata.request_id().clone(),
+        time: event.occurred_at.into(),
         actor: ActorRecord::from_request(&event.request_metadata),
         privilege_source: event.request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(&event.request_metadata),

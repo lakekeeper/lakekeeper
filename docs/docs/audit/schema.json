@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Audit records emitted by lakekeeper",
+  "$ref": "#/$defs/AuditRecord",
   "x-audit-emitter": {
     "name": "lakekeeper",
     "format": "1.0"
@@ -632,10 +633,6 @@
         "error_id": {
           "type": "string",
           "description": "The id the caller can quote to correlate with this record."
-        },
-        "request_id": {
-          "type": "string",
-          "description": "The request this rejection belongs to, repeated out of the span so the record stands\nalone."
         }
       },
       "required": [
@@ -643,10 +640,9 @@
         "status",
         "error_type",
         "message",
-        "error_id",
-        "request_id"
+        "error_id"
       ],
-      "description": "Context for the admission-rejection audit record: which gate refused the request, on what\ngrounds, and what the caller was told.\n\n`error_id` is the id the caller was handed, so a user's report resolves to this record.\n`request_id` is repeated out of the span, so the record stands alone.",
+      "description": "Context for the admission-rejection audit record: which gate refused the request, on what\ngrounds, and what the caller was told.\n\n`error_id` is the id the caller was handed, so a user's report resolves to this record. The\nrequest it belongs to is the record's own `request_id`.",
       "x-audit-kind": "context"
     },
     "AssignmentAction": {
@@ -714,6 +710,78 @@
         "unavailable": "An admission gate could not reach an upstream it needs and failed closed.\nSeparate from `forbidden` so an outage of that upstream reads as an outage\nrather than as a wave of denials."
       }
     },
+    "AuditRecord": {
+      "type": "object",
+      "description": "An audit record, whatever its shape. `record_type` names the shape that describes the rest of it.",
+      "properties": {
+        "event_source": {
+          "const": "audit",
+          "description": "Marks the line as an audit record. Always `audit`."
+        },
+        "audit_format": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "The `MAJOR.MINOR` version of the record's shape. Compare each half as an integer."
+        },
+        "record_type": {
+          "type": "string",
+          "description": "Which shape the record has. A value this schema does not list is a newer record type."
+        }
+      },
+      "required": [
+        "event_source",
+        "audit_format",
+        "record_type"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "authorization"
+              }
+            },
+            "required": [
+              "record_type"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/AuthorizationRecord"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "operation"
+              }
+            },
+            "required": [
+              "record_type"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/OperationRecord"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "record_type": {
+                "const": "replay"
+              }
+            },
+            "required": [
+              "record_type"
+            ]
+          },
+          "then": {
+            "$ref": "#/$defs/ReplayRecord"
+          }
+        }
+      ],
+      "x-audit-kind": "part"
+    },
     "AuthnAction": {
       "type": "string",
       "enum": [
@@ -756,6 +824,15 @@
             "$ref": "#/$defs/EmitterRecord"
           },
           "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened, in UTC: when the request was decided or answered, not when\nthe line was written."
         },
         "actions": {
           "type": "array",
@@ -818,6 +895,8 @@
       "required": [
         "record_type",
         "emitters",
+        "request_id",
+        "time",
         "actions",
         "entities",
         "actor",
@@ -826,8 +905,7 @@
         "decision"
       ],
       "description": "An authorization record: was this caller permitted to do these actions on these entities?",
-      "x-audit-kind": "shape",
-      "x-audit-record-type": "authorization"
+      "x-audit-kind": "shape"
     },
     "CatalogGenericTableAction": {
       "type": "string",
@@ -1455,6 +1533,15 @@
           },
           "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
         },
+        "request_id": {
+          "description": "The request this record belongs to. Absent for an operation no request triggered.",
+          "$ref": "#/$defs/RequestId"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the operation happened, in UTC."
+        },
         "operation": {
           "type": "string",
           "x-audit-open": true,
@@ -1476,13 +1563,13 @@
       "required": [
         "record_type",
         "emitters",
+        "time",
         "operation",
         "actor",
         "outcome"
       ],
       "description": "An operation record: something the system did that touches identity or access, with no\npermission decision of its own. Any emitter can produce one.",
-      "x-audit-kind": "shape",
-      "x-audit-record-type": "operation"
+      "x-audit-kind": "shape"
     },
     "PermissionAction": {
       "type": "string",
@@ -1568,6 +1655,15 @@
           },
           "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
         },
+        "request_id": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened, in UTC: when the request was decided or answered, not when\nthe line was written."
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -1602,6 +1698,8 @@
       "required": [
         "record_type",
         "emitters",
+        "request_id",
+        "time",
         "actions",
         "entities",
         "actor",
@@ -1609,8 +1707,12 @@
         "idempotency_key"
       ],
       "description": "A replay record: a retry answered from an idempotency record, so no authorization ran.",
-      "x-audit-kind": "shape",
-      "x-audit-record-type": "replay"
+      "x-audit-kind": "shape"
+    },
+    "RequestId": {
+      "type": "string",
+      "description": "The id of one request, as everything that names the request carries it: the response's\n`x-request-id`, the log lines written while serving it, its audit records and its events.\n\nThe client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7\ngenerated for the request. Decided once, by the router's `SetRequestId` layer, and read\nfrom there, so no layer can name the request differently.",
+      "x-audit-kind": "part"
     },
     "ResourceType": {
       "type": "string",

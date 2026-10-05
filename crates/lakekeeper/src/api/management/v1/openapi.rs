@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::LazyLock};
 
 use utoipa::{
     OpenApi, PartialSchema, ToSchema,
-    openapi::{ComponentsBuilder, KnownFormat, RefOr, Schema, security::SecurityScheme},
+    openapi::{ComponentsBuilder, RefOr, Schema, security::SecurityScheme},
 };
 
 use crate::{
@@ -1399,16 +1399,15 @@ fn fix_task_queue_config_paths(
             .header(
                 "x-request-id",
                 utoipa::openapi::HeaderBuilder::new()
-                    .schema(
-                        utoipa::openapi::schema::Object::builder()
-                            .schema_type(utoipa::openapi::schema::SchemaType::new(
-                                utoipa::openapi::schema::Type::String,
-                            ))
-                            .format(Some(utoipa::openapi::schema::SchemaFormat::KnownFormat(
-                                KnownFormat::Uuid,
-                            ))),
-                    )
-                    .description(Some("Request identifier, add this to your bug reports."))
+                    .schema(utoipa::openapi::schema::Object::builder().schema_type(
+                        utoipa::openapi::schema::SchemaType::new(
+                            utoipa::openapi::schema::Type::String,
+                        ),
+                    ))
+                    .description(Some(
+                        "Request identifier, add this to your bug reports. The `x-request-id` \
+                         the client sent, whatever its form, or one generated for the request.",
+                    ))
                     .build(),
             );
         get.responses

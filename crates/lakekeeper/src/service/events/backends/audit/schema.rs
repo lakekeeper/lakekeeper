@@ -230,7 +230,6 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 if let Some(object) = schema.as_object_mut() {
                     object.insert("x-audit-kind".into(), json!(reg.kind.as_str()));
                     if let Kind::Shape { record_type } = reg.kind {
-                        object.insert("x-audit-record-type".into(), json!(record_type));
                         pin_record_type(object, record_type);
                     }
                 }
@@ -303,6 +302,7 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     for schema in defs.values_mut() {
         drop_null_from_optionals(schema);
     }
+    add_audit_record(&mut defs, regs);
     link_carried_keys(&mut defs, regs, &key_schemas);
     type_nested_keys(&mut defs, regs, &key_schemas);
     defs
@@ -420,7 +420,8 @@ fn type_nested_keys(
             json!({
                 "type": "object",
                 "additionalProperties": true,
-                "description": "The keys this product contributes to the record's `context`                                 object. Another product's keys are described by its own schema.",
+                "description": "The keys this product contributes to the record's `context` object. Another product's keys are described by its own schema.",
+                "x-audit-kind": "part",
             })
         });
         if let Some(object) = def.as_object_mut() {
@@ -490,13 +491,95 @@ fn link_carried_keys(
         let def = defs.entry(owner.to_owned()).or_insert_with(|| {
             json!({
                 "type": "object",
-                "description": "Which `context` keys this product's actions carry. Another                                 product's actions are described by its own schema.",
+                "description": "Which `context` keys this product's actions carry. Another product's actions are described by its own schema.",
+                "x-audit-kind": "part",
             })
         });
         if let Some(object) = def.as_object_mut() {
             object.insert("allOf".into(), json!(conditionals));
         }
     }
+}
+
+/// The name under `$defs` of the definition every record matches, and the document root.
+pub const AUDIT_RECORD: &str = "AuditRecord";
+
+/// Add [`AUDIT_RECORD`], the definition of any audit record, when `regs` declare shapes.
+///
+/// It holds what every record carries whatever its shape — the two stamps and `record_type`
+/// — and routes on `record_type` to the shape that describes the rest, one `if`/`then` per
+/// shape. A record of a type this schema does not know still validates against what it
+/// shares with every record, as a value set's newer value does.
+fn add_audit_record(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) {
+    let shapes: Vec<(String, &str)> = regs
+        .iter()
+        .filter_map(|reg| match reg.kind {
+            Kind::Shape { record_type } => Some((reg.schema_name?().to_string(), record_type)),
+            _ => None,
+        })
+        .collect();
+    if shapes.is_empty() {
+        return;
+    }
+    let branches: Vec<Value> = shapes
+        .iter()
+        .map(|(def, record_type)| {
+            json!({
+                "if": {
+                    "properties": { "record_type": { "const": record_type } },
+                    "required": ["record_type"]
+                },
+                "then": { "$ref": format!("#/$defs/{def}") }
+            })
+        })
+        .collect();
+    defs.insert(
+        AUDIT_RECORD.to_string(),
+        json!({
+            "type": "object",
+            "description": "An audit record, whatever its shape. `record_type` names the shape that describes the rest of it.",
+            "properties": {
+                "event_source": {
+                    "const": super::EVENT_SOURCE,
+                    "description": "Marks the line as an audit record. Always `audit`."
+                },
+                "audit_format": {
+                    "type": "string",
+                    "pattern": "^[0-9]+\\.[0-9]+$",
+                    "description": "The `MAJOR.MINOR` version of the record's shape. Compare each half as an integer."
+                },
+                "record_type": {
+                    "type": "string",
+                    "description": "Which shape the record has. A value this schema does not list is a newer record type."
+                }
+            },
+            "required": ["event_source", "audit_format", "record_type"],
+            "allOf": branches,
+            "x-audit-kind": "part"
+        }),
+    );
+}
+
+/// An emitter's schema document: its definitions, and as its root the definition of any record
+/// when it declares one.
+fn document(
+    title: &str,
+    emitter: Value,
+    extra: Option<(&str, &str)>,
+    defs: Map<String, Value>,
+) -> Value {
+    let mut doc = Map::new();
+    doc.insert("$schema".into(), json!(SCHEMA_DIALECT));
+    doc.insert("title".into(), json!(title));
+    if defs.contains_key(AUDIT_RECORD) {
+        doc.insert("$ref".into(), json!(format!("#/$defs/{AUDIT_RECORD}")));
+    }
+    doc.insert("x-audit-emitter".into(), emitter);
+    if let Some((key, value)) = extra {
+        doc.insert(key.into(), json!(value));
+    }
+    doc.insert("$defs".into(), Value::Object(defs));
+    Value::Object(doc)
 }
 
 /// Give a shape its `record_type`, pinned to the one value it carries.
@@ -543,13 +626,12 @@ pub fn crate_schema(defining_crate: &str) -> Value {
         "crate `{defining_crate}` registers types for more than one emitter"
     );
     let defs = definitions(&regs);
-    json!({
-        "$schema": SCHEMA_DIALECT,
-        "title": format!("Audit types declared by crate {defining_crate}"),
-        "x-audit-emitter": { "name": emitter, "format": format },
-        "x-audit-crate": defining_crate,
-        "$defs": Value::Object(defs.into_iter().collect::<Map<_, _>>()),
-    })
+    document(
+        &format!("Audit types declared by crate {defining_crate}"),
+        json!({ "name": emitter, "format": format }),
+        Some(("x-audit-crate", defining_crate)),
+        defs.into_iter().collect(),
+    )
 }
 
 /// Merge the committed crate schemas of one emitter into its schema.
@@ -580,13 +662,13 @@ pub fn merge_crate_schemas(crate_schemas: &[Value]) -> Value {
             defs.insert(name.clone(), def.clone());
         }
     }
-    let name = emitter["name"].as_str().unwrap_or("?");
-    json!({
-        "$schema": SCHEMA_DIALECT,
-        "title": format!("Audit records emitted by {name}"),
-        "x-audit-emitter": emitter,
-        "$defs": Value::Object(defs.into_iter().collect::<Map<_, _>>()),
-    })
+    let name = emitter["name"].as_str().unwrap_or("?").to_string();
+    document(
+        &format!("Audit records emitted by {name}"),
+        emitter,
+        None,
+        defs.into_iter().collect(),
+    )
 }
 
 /// The type's name without module path or generics: the key it gets under `$defs`.
@@ -613,12 +695,12 @@ pub fn audit_schema_for(emitter: &str) -> Value {
         .unwrap_or_else(|| panic!("no audit types registered for emitter `{emitter}`"));
     let format = first.emitter_format;
     let defs = definitions(&regs);
-    json!({
-        "$schema": SCHEMA_DIALECT,
-        "title": format!("Audit records emitted by {emitter}"),
-        "x-audit-emitter": { "name": emitter, "format": format },
-        "$defs": Value::Object(defs.into_iter().collect::<Map<_, _>>()),
-    })
+    document(
+        &format!("Audit records emitted by {emitter}"),
+        json!({ "name": emitter, "format": format }),
+        None,
+        defs.into_iter().collect(),
+    )
 }
 
 /// The schema as a pretty-printed document with a trailing newline, as committed.

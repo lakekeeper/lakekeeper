@@ -1959,8 +1959,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -7376,8 +7375,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -7437,8 +7435,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:

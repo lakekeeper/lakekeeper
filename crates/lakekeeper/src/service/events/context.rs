@@ -1371,6 +1371,7 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
                     }));
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
+                    occurred_at: chrono::Utc::now(),
                     entities,
                     actions,
                     extra_context: Arc::new(self.extra_context.clone()),
@@ -1401,6 +1402,7 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     pub fn emit_idempotent_replay(self, idempotency_key: IdempotencyKey) {
         let event = IdempotentReplayEvent {
             request_metadata: self.request_metadata,
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(self.user_provided_entity.event_entities()),
             actions: Arc::new(self.action.event_actions()),
             idempotency_key,
@@ -1473,6 +1475,7 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         }));
         let event = AuthorizationFailedEvent {
             request_metadata: self.request_metadata.clone(),
+            occurred_at: chrono::Utc::now(),
             entities,
             actions,
             failure_reason,

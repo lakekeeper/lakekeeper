@@ -80,6 +80,8 @@ impl AuthorizationError {
 pub struct AuthorizationFailedEvent {
     /// Request metadata including the actor who attempted the action
     pub request_metadata: Arc<RequestMetadata>,
+    /// When the event happened: when it was built, not when a listener got to it.
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,
@@ -111,6 +113,8 @@ pub struct AuthorizationFailedEvent {
 pub struct AuthorizationSucceededEvent {
     /// Request metadata including the actor who attempted the action
     pub request_metadata: Arc<RequestMetadata>,
+    /// When the event happened: when it was built, not when a listener got to it.
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,

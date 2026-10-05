@@ -25,15 +25,15 @@ The record's overall shape is always Lakekeeper's, and `audit_format` always gov
 
 ## Validating a record
 
-The document holds definitions only. It has no root schema, because which shape applies depends on the record — so pointing a validator at the file itself accepts anything. Route on `record_type` first, then validate against the definition that names it:
+Point a validator at the file and it checks a whole record, as the log line carries it. The document's root is `#/$defs/AuditRecord`: it requires `event_source`, `audit_format` and `record_type`, and routes on `record_type` to the definition of that shape, which describes the rest of the record. A record whose `record_type` this copy of the schema does not list is a newer record type: it is checked against what every record shares, and passes.
 
-| `record_type`   | Validate against              |
+Each shape pins its `record_type` with `const`. Point a code generator at the shape definitions:
+
+| `record_type`   | Shape                         |
 |-----------------|-------------------------------|
 | `authorization` | `#/$defs/AuthorizationRecord` |
 | `replay`        | `#/$defs/ReplayRecord`        |
 | `operation`     | `#/$defs/OperationRecord`     |
-
-Each shape carries its own value under `x-audit-record-type`, so a consumer can build that table from the document rather than hard-coding it. Point a code generator at the same three definitions.
 
 ## Values outside the list
 
@@ -47,19 +47,18 @@ The exposure is small by construction. Of the value sets this document defines, 
 
 Three fields are not linked at all, and carry `x-audit-open` instead: `action_name`, `operation` and `outcome`. Their values come from whichever product contributed them — `emitters` names every product a record carries something of — so no single product's schema can list them.
 
-A shape describes the record, not the log line. Your log subscriber adds its own keys around it — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — and no shape lists them, because Lakekeeper does not choose them. No shape forbids them either, so a captured line validates with them still attached. The two keys stamped on every record, `event_source` and `audit_format`, are likewise in no shape: they are on every record whatever its shape.
+A shape describes the record, not the log line. Your log subscriber adds its own keys around it — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — and no shape lists them, because Lakekeeper does not choose them. No shape forbids them either, so a captured line validates with them still attached. The two keys stamped on every record, `event_source` and `audit_format`, are in the root definition, since every record carries them whatever its shape.
 
 For what the records *mean* — which family answers which question, when a field appears, worked examples and `jq` recipes — see [Audit Logs](../logging.md#audit-logs).
 
 ## Reading the audit-specific annotations
 
-The schema carries nine extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
+The schema carries seven extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
 
 | Keyword | On | Meaning |
 |---|---|---|
 | `x-audit-emitter` | the document | The product this schema describes, and the version of what it contributes |
 | `x-audit-kind` | each definition | `shape` for a whole record, `part` for a nested object, `context` for an operation's own detail, `enum` for a closed set of values, `keys` for a closed set of object keys |
-| `x-audit-record-type` | each `shape` | The `record_type` value that names this shape, which is what a consumer routes on |
 | `x-audit-field` | each `enum` | The field whose values these are. Several fields draw from more than one set, so the set alone does not tell you where it is used |
 | `x-audit-keys-of` | each `keys` | The object whose keys these are |
 | `x-audit-descriptions` | an `enum` or `keys` | What each name means, keyed by the name. Present for the names that carry a description; a name absent from the map has none |

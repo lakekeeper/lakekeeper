@@ -101,6 +101,7 @@ Every record carries two versions, and they answer different questions.
       "format": "2.1"
     }
   ],
+  "time": "2026-02-15T14:20:50.758690Z",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -187,6 +188,8 @@ Discriminate on `record_type`, which every record carries and which is the only 
 | `event_source`         | String          | Always `"audit"`                  |
 | `record_type`          | String          | Always `"authorization"` for this shape. The field every record carries and the one to route on. |
 | `emitters`             | Array           | Every product this record carries something of, and the version of what each contributes, sorted by name: `[{"name": "lakekeeper", "format": "1.0"}]`. See [Two version numbers](#audit-emitter). |
+| `request_id`           | String          | The request this record belongs to: the `x-request-id` the caller sent, whatever its form, or the id Lakekeeper generated and returned in that response header. The same value is on the request's log lines and on the CloudEvents it publishes. |
+| `time`                 | String          | When the request was decided, in UTC, as RFC 3339 with microseconds: `2026-02-15T14:20:50.758690Z`. Taken when the decision is made, so it can precede the subscriber's `timestamp`, which is when the line was written. |
 | `actions`              | Array           | Operation(s) attempted, always an array however many there are. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields describing what the caller requested. See [Action Format](#action-format) below. |
 | `entities`             | Array           | Resource(s) accessed, always an array however many there are. Each entity contains `entity_type` and type-specific fields (e.g., `warehouse_id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
@@ -452,6 +455,8 @@ An absent field is left out rather than written as `null`, here as everywhere el
       "format": "1.0"
     }
   ],
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-02-15T14:20:50.758690Z",
   "actions": [
     {
       "action_name": "create_warehouse",
@@ -508,6 +513,8 @@ An absent field is left out rather than written as `null`, here as everywhere el
       "format": "1.0"
     }
   ],
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-02-15T14:21:10.123456Z",
   "actions": [
     {
       "action_name": "drop"
@@ -576,6 +583,8 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
       "format": "1.0"
     }
   ],
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-04-07T17:58:34.358975Z",
   "actions": [
     {
       "action_name": "introspect_permissions"
@@ -648,6 +657,8 @@ Emitted for operations that produce no authorization decision of their own — L
 | Field          | Type   | Description                                        |
 |----------------|--------|----------------------------------------------------|
 | `event_source` | String | Always `"audit"`                                   |
+| `request_id`   | String | The request the operation belongs to, as on authorization records. Absent for an operation no request triggered, such as a background role sync |
+| `time`         | String | When the operation happened, in UTC, as on authorization records |
 | `operation`    | String | Machine-readable name of the operation (e.g., `"ldap_resolve_roles"`) |
 | `actor`        | Object | Same shape as authorization events, and the same four shapes: `{"actor_type": "principal", "principal": "oidc~…"}` is the common one, but `assumed_role` adds a nested `assumed_role` object, while `anonymous` and `lakekeeper_internal` carry `actor_type` alone. Read `actor_type` before reading `principal` — the four shapes and their fields are tabulated under [Authorization Events](#authorization-events). Which shapes a given operation can produce depends on how it obtains the actor. `admission_decided` and the grant records (`grant_created`, `grant_revoked`) render the request's resolved actor, so any of the shapes can appear. On the grant records, the `assumed_role` of an assumed-role caller is the role that holds the grant; on `admission_decided`, which is written before the `x-assume-role` check, it is the role the request asked to assume, not yet authorized — for a caller acting as a role the `assumed_role` object is where the acting identity is, and `principal` alone under-reports it. Only operations that name a user directly rather than taking it from the request are always `principal` |
 | `outcome`      | String | Result of the operation. Component-specific; see individual operation docs below |
@@ -703,7 +714,6 @@ This record names the principal. The error response does not, because responses 
 | `error_type`  | The gate's error type, e.g. `ExternalEnforceForbidden` |
 | `message`     | The gate's own wording, as the caller received it. What separates two rejections sharing an `error_type` — the same gate failing closed on a missing precondition rather than on an unreachable upstream. Not to be confused with the envelope `message` at the top level of every log line |
 | `error_id`    | The id the caller received in the response body. Use it to match a user's report to this record |
-| `request_id`  | The request this decision belongs to |
 
 This is the **only** record of a rejection. The generic [error-response log](#2-error-response-logs) is skipped for it, because that line would repeat the decision without the principal.
 
@@ -727,6 +737,8 @@ These records also carry the top-level `actions`, `entities`, `privilege_source`
 
 | Field             | Description                                                                 |
 |-------------------|-----------------------------------------------------------------------------|
+| `request_id`      | The request that was answered from the record                               |
+| `time`            | When the request was answered, in UTC                                       |
 | `idempotency_key` | The key whose record served the request                                     |
 | `actions`         | The actions the retry asked for, in the same shape as an authorization event |
 | `entities`        | The targets the retry named, in the same shape as an authorization event     |
@@ -788,6 +800,7 @@ These records are audit-log only. Like the grant records above, they are never p
       "format": "1.0"
     }
   ],
+  "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -822,6 +835,7 @@ These records are audit-log only. Like the grant records above, they are never p
       "format": "1.0"
     }
   ],
+  "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -856,6 +870,7 @@ These records are audit-log only. Like the grant records above, they are never p
       "format": "1.0"
     }
   ],
+  "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -891,6 +906,7 @@ These records are audit-log only. Like the grant records above, they are never p
       "format": "1.0"
     }
   ],
+  "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -939,6 +955,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
       "format": "1.0"
     }
   ],
+  "time": "2026-03-07T10:00:00.000000Z",
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -972,6 +989,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
       "format": "1.0"
     }
   ],
+  "time": "2026-03-07T10:00:01.000000Z",
   "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
@@ -1019,6 +1037,7 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
       "format": "1.0"
     }
   ],
+  "time": "2026-03-07T11:30:00.000000Z",
   "operation": "cached_role_provider",
   "actor": {
     "actor_type": "principal",

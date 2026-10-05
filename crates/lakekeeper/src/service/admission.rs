@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::{
     XXHashSet,
-    request_metadata::RequestMetadata,
+    request_metadata::{RequestId, RequestMetadata},
     service::{
         Actor, RoleIdent, UserId,
         authn::InternalActor,
@@ -389,7 +389,7 @@ impl<'a> AdmissionContext<'a> {
 #[derive(Clone, Copy)]
 pub struct AdmissionTrigger<'a> {
     actor: &'a InternalActor,
-    request_id: Uuid,
+    request_id: &'a RequestId,
 }
 
 // The actor's kind only: an assumed role carries its project, name and
@@ -427,7 +427,7 @@ impl<'a> AdmissionTrigger<'a> {
 
     /// The triggering request's id.
     #[must_use]
-    pub fn request_id(&self) -> Uuid {
+    pub fn request_id(&self) -> &'a RequestId {
         self.request_id
     }
 }
@@ -523,7 +523,7 @@ impl AdmissionGates {
                     if crate::audit::enabled() {
                         crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
-                            ctx.triggered_by.actor_record(),
+                            ctx.triggered_by,
                             rejection.kind.label().as_wire(),
                         )
                         .context(AdmissionRejectedContext {
@@ -533,7 +533,6 @@ impl AdmissionGates {
                             error_type: rejection.error_type,
                             message: rejection.message.as_ref(),
                             error_id: rejection.error_id.to_string(),
-                            request_id: ctx.triggered_by.request_id().to_string(),
                         })
                         .message("Request rejected by admission gate")
                         .emit();
@@ -580,8 +579,8 @@ fn outcome_label(result: &Result<GateDecision, AdmissionRejection>) -> &'static 
 /// Context for the admission-rejection audit record: which gate refused the request, on what
 /// grounds, and what the caller was told.
 ///
-/// `error_id` is the id the caller was handed, so a user's report resolves to this record.
-/// `request_id` is repeated out of the span, so the record stands alone.
+/// `error_id` is the id the caller was handed, so a user's report resolves to this record. The
+/// request it belongs to is the record's own `request_id`.
 #[crate::audit::audit_part(context)]
 struct AdmissionRejectedContext<'a> {
     /// The gate that rejected the request.
@@ -600,9 +599,6 @@ struct AdmissionRejectedContext<'a> {
     message: &'a str,
     /// The id the caller can quote to correlate with this record.
     error_id: String,
-    /// The request this rejection belongs to, repeated out of the span so the record stands
-    /// alone.
-    request_id: String,
 }
 
 fn record_gate_duration(
@@ -860,11 +856,7 @@ mod tests {
                     .as_str()
                     .is_some_and(|s| !s.is_empty())
             );
-            assert!(
-                record["context"]["request_id"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-            );
+            assert!(record["request_id"].as_str().is_some_and(|s| !s.is_empty()));
             assert!(
                 record["context"]["message"]
                     .as_str()
