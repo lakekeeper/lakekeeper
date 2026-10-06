@@ -409,10 +409,28 @@ def fixtures_at(rev: str) -> dict[str, object]:
     # No `except`: `git ls-tree` exits 0 with empty output when nothing is there, so a
     # non-zero exit is a real failure and must not be read as "no fixtures".
     listing = _git("ls-tree", "-r", "--name-only", rev, "--", prefix)
-    out = {}
-    for path in listing.splitlines():
-        if path.endswith(".json"):
-            out[path.rsplit("/", 1)[-1][: -len(".json")]] = json.loads(_git("show", f"{rev}:{path}"))
+    return {
+        name: json.loads(_git("show", f"{rev}:{path}"))
+        for name, path in fixture_names(listing.splitlines(), rev).items()
+    }
+
+
+def fixture_names(paths: list[str], rev: str) -> dict[str, str]:
+    """The fixture paths among `paths`, keyed by file name without `.json`.
+
+    Fixtures are compared by name, so two with one name would hide each other: an error.
+    """
+    out: dict[str, str] = {}
+    for path in paths:
+        if not path.endswith(".json"):
+            continue
+        name = path.rsplit("/", 1)[-1][: -len(".json")]
+        if name in out:
+            raise CheckFailed(
+                f"::error::two fixtures named `{name}.json` at {rev}: {out[name]} and {path}. "
+                f"Fixtures are compared by file name, so each name must be unique."
+            )
+        out[name] = path
     return out
 
 
@@ -567,8 +585,9 @@ def canonical(spec: object) -> object:
     """`spec` with its prose stripped and its equivalent spellings made equal.
 
     A `oneOf` or `anyOf` whose branches are all constants is a closed list of values, the same
-    statement as an `enum`, so it becomes one. A list of types is a set. Everything else is
-    kept, so a difference the diff below does not understand still shows as a difference.
+    statement as an `enum`, so it becomes one. Lists whose order means nothing are sorted:
+    types, `required`, value lists and branches. Everything else is kept, so a difference the
+    diff below does not understand still shows as a difference.
     """
     if isinstance(spec, list):
         return [canonical(item) for item in spec]
@@ -590,8 +609,13 @@ def canonical(spec: object) -> object:
             types = {branch.get("type") for branch in branches}
             if len(types) == 1 and None not in types:
                 out.setdefault("type", types.pop())
-    if isinstance(out.get("type"), list):
-        out["type"] = sorted(out["type"])
+    # Lists whose order carries no meaning compare as sets.
+    for key in ("type", "required", "enum", "x-audit-values"):
+        if isinstance(out.get(key), list):
+            out[key] = sorted(out[key], key=json.dumps)
+    for key in ("oneOf", "anyOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = sorted(out[key], key=lambda branch: json.dumps(branch, sort_keys=True))
     return out
 
 
@@ -610,13 +634,17 @@ def _branch_key(branch: object) -> str | None:
     if not isinstance(branch, dict):
         return None
     if "const" in branch:
-        return f"const {json.dumps(branch['const'])}"
+        return f"={json.dumps(branch['const'])}"
     tag = (branch.get("properties") or {}).get("type")
     if isinstance(tag, dict) and "const" in tag:
-        return f"type {json.dumps(tag['const'])}"
-    for matched in ((branch.get("if") or {}).get("properties") or {}).values():
-        if isinstance(matched, dict) and "const" in matched:
-            return str(matched["const"])
+        return f"type={json.dumps(tag['const'])}"
+    matched = {
+        prop: spec["const"]
+        for prop, spec in ((branch.get("if") or {}).get("properties") or {}).items()
+        if isinstance(spec, dict) and "const" in spec
+    }
+    if matched:
+        return " ".join(f"{prop}={json.dumps(value)}" for prop, value in sorted(matched.items()))
     if "$ref" in branch:
         return f"$ref {branch['$ref']}"
     return None
@@ -652,8 +680,9 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
     if not (isinstance(base, dict) and isinstance(head, dict)):
         out.append(("major", path, "changed"))
         return
+    start = len(out)
     handled = {"properties", "required", "enum", "x-audit-values", "oneOf", "anyOf", "allOf",
-               "items", "additionalProperties", "$defs", "then", "if"}
+               "items", "additionalProperties"}
 
     b_props, h_props = base.get("properties") or {}, head.get("properties") or {}
     b_req, h_req = set(base.get("required") or []), set(head.get("required") or [])
@@ -701,8 +730,8 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
         if not isinstance(b_branches, list) or not isinstance(h_branches, list):
             out.append(("major", path, f"`{key}` added" if b_branches is None else f"`{key}` removed"))
             continue
-        b_keyed = {k: v for v in b_branches if (k := _branch_key(v)) is not None}
-        h_keyed = {k: v for v in h_branches if (k := _branch_key(v)) is not None}
+        b_keyed, b_untagged = _split_branches(b_branches)
+        h_keyed, h_untagged = _split_branches(h_branches)
         added_level = "minor" if key == "allOf" else "major"
         for gone in sorted(set(b_keyed) - set(h_keyed)):
             out.append(("major", f"{path}[{gone}]", "branch removed"))
@@ -712,12 +741,13 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
             b_branch, h_branch = b_keyed[both], h_keyed[both]
             if key == "allOf":
                 diff_schemas(b_branch.get("then"), h_branch.get("then"), f"{path}[{both}]", out)
-                if fingerprint(b_branch.get("if")) != fingerprint(h_branch.get("if")):
-                    out.append(("major", f"{path}[{both}]", "matches differently"))
+                rest = lambda branch: {k: v for k, v in branch.items() if k != "then"}
+                if fingerprint(rest(b_branch)) != fingerprint(rest(h_branch)):
+                    out.append(("major", f"{path}[{both}]", "condition changed"))
             else:
                 diff_schemas(b_branch, h_branch, f"{path}[{both}]", out)
-        b_rest = Counter(fingerprint(v) for v in b_branches if _branch_key(v) is None)
-        h_rest = Counter(fingerprint(v) for v in h_branches if _branch_key(v) is None)
+        b_rest = Counter(fingerprint(v) for v in b_untagged)
+        h_rest = Counter(fingerprint(v) for v in h_untagged)
         for gone in sorted((b_rest - h_rest).elements()):
             out.append(("major", path, f"lost the untagged branch {gone}"))
         for added in sorted((h_rest - b_rest).elements()):
@@ -734,6 +764,20 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
     for key in sorted((set(base) | set(head)) - handled - PROSE_KEYWORDS):
         if fingerprint(base.get(key)) != fingerprint(head.get(key)):
             out.append(("major", path, f"`{key}` went from {json.dumps(base.get(key))} to {json.dumps(head.get(key))}"))
+
+    # The two differ, so a rule that named nothing has missed something.
+    if len(out) == start:
+        out.append(("major", path, "changed in a way no rule names"))
+
+
+def _split_branches(branches: list) -> tuple[dict, list]:
+    """Branches paired by `_branch_key`, and the rest. Two branches with one key on the same
+    side go to the rest, so neither hides the other."""
+    keys = [_branch_key(branch) for branch in branches]
+    counts = Counter(key for key in keys if key is not None)
+    keyed = {key: branch for key, branch in zip(keys, branches) if key is not None and counts[key] == 1}
+    rest = [branch for key, branch in zip(keys, branches) if key is None or counts[key] > 1]
+    return keyed, rest
 
 
 def schema_findings(base: dict, head: dict) -> list[tuple[str, str, str]]:
@@ -1805,7 +1849,7 @@ def self_test() -> int:
     check("schema: the first conditional is additive", verdict({"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}, {"A": drop}), "additive")
     check("schema: dropping every branch is breaking", verdict({"A": drop}, {"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}), "breaking")
     check("schema: a key losing its value set is breaking", verdict({"A": drop_set}, {"A": drop_open}), "breaking")
-    check("schema: the action that lost a key is named by its path", names({"A": drop}, {"A": drop_one}, "`A[drop].purge` removed"), True)
+    check("schema: the action that lost a key is named by its path", names({"A": drop}, {"A": drop_one}, '`A[action_name="drop"].purge` removed'), True)
 
     # A map whose values change type: what a free-form `context` object holds.
     free_map = {"type": "object", "additionalProperties": {"type": "string"}}
@@ -1825,11 +1869,44 @@ def self_test() -> int:
     retagged = {"oneOf": [{"type": "object", "properties": {"type": {"const": "rule"}, "policy-id": {"type": "string"}}}]}
     two_kinds = {"oneOf": factor["oneOf"] + [{"type": "object", "properties": {"type": {"const": "rule"}}}]}
     check("schema: a rename inside a tagged branch is breaking", verdict({"F": factor}, {"F": renamed}), "breaking")
-    check("schema: the renamed branch property is named by its path", names({"F": factor}, {"F": renamed}, '`F[type "policy"].policy-id` removed'), True)
+    check("schema: the renamed branch property is named by its path", names({"F": factor}, {"F": renamed}, '`F[type="policy"].policy-id` removed'), True)
     check("schema: a field added to a tagged branch is additive", verdict({"F": factor}, {"F": widened}), "additive")
     check("schema: an unchanged tagged branch is no change", verdict({"F": factor}, {"F": factor}), "none")
     check("schema: a renamed tag is breaking", verdict({"F": factor}, {"F": retagged}), "breaking")
     check("schema: a tagged branch added is breaking", verdict({"F": factor}, {"F": two_kinds}), "breaking")
+
+    # Fails closed: a difference no rule names is still a difference.
+    nested = {"type": "object", "$defs": {"X": {"type": "string"}}}
+    check("schema: a nested `$defs` changed is breaking", verdict({"N": nested}, {"N": {**nested, "$defs": {"X": {"type": "integer"}}}}), "breaking")
+    cond = {"type": "object", "if": {"properties": {"a": {"const": 1}}}, "then": {"required": ["b"]}}
+    check("schema: a definition's own `then` changed is breaking", verdict({"C": cond}, {"C": {**cond, "then": {"required": ["c"]}}}), "breaking")
+    with_else = carries(drop={"force": {"type": "boolean"}})
+    with_else_changed = json.loads(json.dumps(with_else))
+    with_else_changed["allOf"][0]["else"] = {"required": ["x"]}
+    check("schema: an `else` on a paired branch is breaking", verdict({"A": with_else}, {"A": with_else_changed}), "breaking")
+    # Branches matching the same constant on different properties, or a number and a string,
+    # are different branches.
+    def branch(prop: str, value: object, key: str) -> dict:
+        return {"if": {"properties": {prop: {"const": value}}}, "then": {"properties": {key: {"type": "string"}}}}
+    two_props = {"type": "object", "allOf": [branch("action_name", "read", "a"), branch("relation", "read", "b")]}
+    two_props_changed = {"type": "object", "allOf": [branch("action_name", "read", "a"), branch("relation", "read", "c")]}
+    check("schema: a branch on another property with the same constant is seen", verdict({"P": two_props}, {"P": two_props_changed}), "breaking")
+    num_str = {"type": "object", "allOf": [branch("k", 1, "a"), branch("k", "1", "b")]}
+    num_str_changed = {"type": "object", "allOf": [branch("k", 1, "a"), branch("k", "1", "c")]}
+    check("schema: a number and a string constant are different branches", verdict({"P": num_str}, {"P": num_str_changed}), "breaking")
+    # Order carries no meaning in these lists.
+    reordered = {**actor, "required": list(reversed(actor_req["required"]))}
+    check("schema: reordering `required` is no change", verdict({"A": actor_req}, {"A": reordered}), "none")
+    check("schema: reordering branches is no change", verdict({"A": drop_and_commit}, {"A": {**drop_and_commit, "allOf": list(reversed(drop_and_commit["allOf"]))}}), "none")
+
+    # Fixtures are compared by name, so one name twice at a revision is refused.
+    check("fixtures: unique names are indexed", fixture_names(["f/a.json", "f/v1/b.json", "f/README.md"], "r"), {"a": "f/a.json", "b": "f/v1/b.json"})
+    duplicate_refused = False
+    try:
+        fixture_names(["f/a.json", "f/v1/a.json"], "r")
+    except CheckFailed:
+        duplicate_refused = True
+    check("fixtures: a name twice is refused", duplicate_refused, True)
 
     # What a branch owes the release notes. Pure in its four maps, so every case is testable
     # here.
