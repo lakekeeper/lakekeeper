@@ -201,8 +201,7 @@ Two things follow from the version being derived rather than bumped. Withdrawing
 | A wire value built from a bare string                     | the constructor test                                |
 | A record emitted outside the shapes module                | the emission site test                              |
 | A field added, moved or retyped where a fixture covers it | the fixture comparison                              |
-| A captured record whose objects do not match the schema   | the part validation in the fixture and corpus tests |
-| A rule that holds for every record                        | the contract rules                                  |
+| A captured record that does not match the schema          | whole-record validation in the fixture and corpus tests |
 | A handler that stops emitting                             | the corpus test                                     |
 | A change with no fragment, or an understated one          | `just check-audit-format`                           |
 | `AUDIT_FORMAT` not equal to what the fragments imply      | `just check-audit-format`                           |
@@ -219,7 +218,7 @@ A fixture is compared by value, so everything in the record has to be determinis
 
 Comparison of fixtures is on field paths and JSON types rather than values, and containers record their own type, so `{}`, `[]` and an absent field stay distinguishable. A changed fixture *value* is reported but not classified, because nothing can tell a renamed wire value from a more realistic test input, and fixtures present in only one revision are not compared. Neither demands a fragment: both fire on changes that did nothing to the format.
 
-**Extend the corpus test while you are here.** `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` drives real requests through the service layer and checks rules that hold for *any* record, plus validation of every part against the committed schema. It catches the one thing the schema cannot: a handler that stops emitting at all, which every schema test passes happily. Drive one more call through `CatalogServer` or `ApiServer`, raise `EXPECTED_RECORDS` by however many records it emits, and the existing rules apply to whatever it produced. That count is exact because it is also what catches capture silently going to zero. Run it with `just test-audit-corpus`, which needs the local Postgres from the [Initial setup](#initial-setup). Keep every test in that file on a current-thread runtime: capture is thread-local, so `flavor = "multi_thread"` would capture nothing.
+**Extend the corpus test while you are here.** `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` drives real requests through the service layer and validates every record it captures against the committed schema. It catches the one thing the schema cannot: a handler that stops emitting at all, which every schema test passes happily. Drive one more call through `CatalogServer` or `ApiServer`, raise `EXPECTED_RECORDS` by however many records it emits, and the schema validates whatever it produced. That count is exact because it is also what catches capture silently going to zero. Run it with `just test-audit-corpus`, which needs the local Postgres from the [Initial setup](#initial-setup). Keep every test in that file on a current-thread runtime: capture is thread-local, so `flavor = "multi_thread"` would capture nothing.
 
 Outside `audit_format` entirely: the fields the subscriber adds — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — belong to `tracing-subscriber` and can move on a dependency upgrade. They are stripped before comparison, and `docs/docs/logging.md` states that as a contract.
 

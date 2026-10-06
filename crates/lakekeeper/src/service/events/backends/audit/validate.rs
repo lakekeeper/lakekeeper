@@ -5,6 +5,33 @@
 
 use serde_json::{Value, json};
 
+/// Keys the log subscriber adds, which `AUDIT_FORMAT` deliberately does not cover.
+pub const ENVELOPE_KEYS: &[&str] = &[
+    "timestamp",
+    "level",
+    "message",
+    "target",
+    "span",
+    "spans",
+    "filename",
+    "line_number",
+];
+
+/// Strip the subscriber-owned envelope, leaving only the fields `AUDIT_FORMAT` makes promises
+/// about, in the order they were emitted.
+///
+/// `retain` keeps the order: with `serde_json`'s `preserve_order` feature (which this
+/// workspace enables) a `Map` is index-backed and `remove` is a *swap*-remove, which would
+/// shuffle the surviving fields. A fixture that reads in wire order is a fixture a reviewer can
+/// check against a real log line.
+#[must_use]
+pub fn contract_fields(mut record: Value) -> Value {
+    if let Some(object) = record.as_object_mut() {
+        object.retain(|key, _| !ENVELOPE_KEYS.contains(&key.as_str()));
+    }
+    record
+}
+
 /// Validate `value` against the definition `def` of `schema`, naming every violation.
 ///
 /// # Panics

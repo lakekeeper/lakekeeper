@@ -164,6 +164,20 @@ pub enum AuthorizationFailureReason {
     InvalidRequestData,
 }
 
+impl AuthorizationFailureReason {
+    /// Whether the request was evaluated and refused, as opposed to never reaching a verdict:
+    /// a backend failure or bad input is not a refusal.
+    #[must_use]
+    pub const fn is_definitive(&self) -> bool {
+        match self {
+            Self::ActionForbidden | Self::ResourceNotFound | Self::CannotSeeResource => true,
+            Self::InternalAuthorizationError
+            | Self::InternalCatalogError
+            | Self::InvalidRequestData => false,
+        }
+    }
+}
+
 /// Delegates `AuthorizationFailureSource` to inner types of an enum.
 /// All variants must be newtype variants wrapping a type that implements `AuthorizationFailureSource`.
 macro_rules! delegate_authorization_failure_source {

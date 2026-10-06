@@ -61,8 +61,7 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        authz::AllowAllAuthorizer,
-        events::backends::audit::{AuditEventListener, contract},
+        authz::AllowAllAuthorizer, events::backends::audit::AuditEventListener,
         idempotency::IdempotencyKey,
     },
 };
@@ -126,7 +125,7 @@ fn audit_records(logs: &CapturedLogs) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|record| record.get("event_source").and_then(|v| v.as_str()) == Some("audit"))
-        .map(contract::contract_fields)
+        .map(lakekeeper::audit::validate::contract_fields)
         .collect()
 }
 
@@ -411,7 +410,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .expect("the committed schema is JSON");
     for (index, record) in records.iter().enumerate() {
-        contract::assert_satisfies(record, &format!("record {index}"));
         lakekeeper::audit::validate::assert_valid_record(
             &committed_schema,
             record,

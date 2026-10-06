@@ -416,6 +416,13 @@ fn link_carried_keys(
     key_schemas: &KeySchemas,
 ) {
     for (field, owner, vocabulary, default_type) in FLATTENED {
+        // A key sits beside the field that names its object, so it may not spell that field:
+        // both would land on one name with unrelated meanings.
+        assert!(
+            !keys_of_object(registrations(|_| true), vocabulary).contains(field),
+            "a `{vocabulary}` key is spelled `{field}`, which is already a field of the object \
+             it is flattened into. Rename the variant."
+        );
         let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for reg in regs {
             let Kind::Values {

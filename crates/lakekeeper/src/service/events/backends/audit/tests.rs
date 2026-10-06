@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 
-use super::{contract::contract_fields, *};
+use super::*;
 use crate::{
     WarehouseId,
     api::management::v1::grant::{
         ApplyGrants, ApplyGrantsRequest, RevokeSubtreeGrants, RevokeSubtreeGrantsRequest,
     },
-    audit::AnyWireStr,
+    audit::{AnyWireStr, validate::contract_fields},
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
@@ -193,11 +193,6 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     crate::audit::validate::assert_valid_record(&schema, emitted, name);
     let mut emitted = emitted.clone();
-    assert!(
-        super::contract::violations(&emitted).is_empty(),
-        "{name}: {:?}",
-        super::contract::violations(&emitted)
-    );
     crate::audit::validate::pin_time(&mut emitted, name);
     let emitted = &emitted;
     let path = fixture_path(name);
@@ -770,7 +765,7 @@ fn every_emitted_audit_field_is_documented() {
     // never sees them. They are still on the wire, and `logging.md` restates the list —
     // this makes the Rust constant the one that decides what that list says.
     keys.extend(
-        super::contract::ENVELOPE_KEYS
+        crate::audit::validate::ENVELOPE_KEYS
             .iter()
             .map(|key| (*key).to_string()),
     );
@@ -1668,13 +1663,6 @@ fn the_schema_root_validates_a_whole_record() {
     assert!(validator.is_valid(&newer));
 }
 
-#[test]
-fn every_committed_fixture_satisfies_the_format_contract() {
-    for name in FIXTURE_NAMES {
-        super::contract::assert_satisfies(&read_fixture(name), &format!("fixture {name}"));
-    }
-}
-
 /// Every per-decision entry in a fixture names an action and an entity that the same record
 /// lists at the top level.
 ///
@@ -1873,158 +1861,6 @@ fn determined_by_is_empty_rather_than_absent() {
     assert_eq!(
         decision_keys(&auth),
         vec!["action", "entity", "allowed", "determined_by"]
-    );
-}
-
-/// Every rule in [`contract`] is only ever run against records that satisfy it: every
-/// fixture passes, and so does every record the corpus test captures. That verifies nothing
-/// about the rules themselves — one could be deleted, or stop matching, and the whole suite
-/// would stay green. A rule that looks right and never fires is what these cases catch.
-///
-/// Each case starts from a committed fixture and breaks one thing.
-fn violations_after(
-    fixture: &str,
-    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
-) -> Vec<String> {
-    let mut record = read_fixture(fixture);
-    mutate(record.as_object_mut().expect("a fixture is a JSON object"));
-    super::contract::violations(&record)
-}
-
-#[test]
-fn contract_rejects_a_record_that_is_not_audit() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r.insert("event_source".into(), "app".into());
-    });
-    assert_eq!(found, vec!["`event_source` is not \"audit\""]);
-}
-
-#[test]
-fn contract_rejects_a_record_with_no_version() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r.remove("audit_format");
-    });
-    assert_eq!(
-        found,
-        vec!["no `audit_format`: every audit record must declare its wire format version"]
-    );
-}
-
-#[test]
-fn contract_rejects_an_entity_key_outside_the_enum() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r["entities"][0]["not-a-field"] = "x".into();
-    });
-    assert_eq!(
-        found,
-        vec![
-            "entity keys not in `EntityField`: [\"not-a-field\"]. Every key an entity can \
-             carry must be a variant of that enum, so the key space stays enumerable and \
-             documentable"
-        ]
-    );
-}
-
-/// Per-decision entries carry their own entity. The field check reads those too, so a bogus
-/// field cannot hide one level down.
-#[test]
-fn contract_rejects_an_entity_key_inside_a_per_decision_entry() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r["authorizations"][0]["entity"]["not-a-field"] = "x".into();
-    });
-    assert_eq!(
-        found,
-        vec![
-            "entity keys not in `EntityField`: [\"not-a-field\"]. Every key an entity can \
-             carry must be a variant of that enum, so the key space stays enumerable and \
-             documentable"
-        ]
-    );
-}
-
-#[test]
-fn contract_rejects_an_action_context_key_outside_the_enum() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r["actions"][0]["not-a-context-key"] = "x".into();
-    });
-    assert_eq!(
-        found,
-        vec![
-            "action context keys not in `ActionContextKey`: [\"not-a-context-key\"]. Add a \
-             variant rather than a bare literal, so the key is enumerable and the \
-             documentation test sees it"
-        ]
-    );
-}
-
-#[test]
-fn contract_rejects_an_unknown_entity_type() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r["entities"][0]["entity_type"] = "banana".into();
-    });
-    assert_eq!(
-        found,
-        vec!["`entity_type` is `banana`, not in `EntityType`"]
-    );
-}
-
-/// `properties` is client input. A caller who names a table property `entity_type` is not
-/// making a claim about the audit format, and must not fail the contract.
-#[test]
-fn contract_ignores_client_property_keys_that_collide_with_its_own() {
-    let found = violations_after("authz_succeeded_single", |r| {
-        r["actions"][0]["properties"] = serde_json::json!({
-            "entity_type": "banana",
-            "not-a-field": "x",
-        });
-    });
-    assert_eq!(found, Vec::<String>::new());
-}
-
-#[test]
-fn contract_rejects_a_failure_reason_on_a_record_that_was_not_denied() {
-    let found = violations_after("authz_failed_single", |r| {
-        r.insert("decision".into(), "allowed".into());
-    });
-    assert_eq!(
-        found,
-        vec!["`failure_reason` is present but `decision` is not `denied`"]
-    );
-}
-
-/// The definitive-denial rule reads the variant from the string, so a re-encoding would
-/// retire it silently. It must trip instead.
-#[test]
-fn contract_rejects_a_re_encoded_failure_reason() {
-    let found = violations_after("authz_failed_single", |r| {
-        r.insert(
-            "failure_reason".into(),
-            serde_json::json!({ "action_forbidden": [] }),
-        );
-    });
-    assert_eq!(
-        found,
-        vec![
-            "`failure_reason` is `{\"action_forbidden\":[]}`, not a string. The \
-             definitive-denial rule reads the variant from that string, so a re-encoding \
-             disables it: teach that rule the new encoding, then update this one"
-        ]
-    );
-}
-
-/// The rule that caught a real committed fixture: a denial the request was evaluated for
-/// cannot carry a per-decision entry claiming it was allowed.
-#[test]
-fn contract_rejects_a_definitive_denial_that_claims_allowed() {
-    let found = violations_after("authz_failed_single", |r| {
-        r["authorizations"][0]["allowed"] = true.into();
-    });
-    assert_eq!(
-        found,
-        vec![
-            "a definitive denial carries an `authorizations` entry with `allowed: true`. The \
-             emitter cannot produce that, so either the record is wrong or this rule is"
-        ]
     );
 }
 
@@ -2435,34 +2271,6 @@ fn every_declared_context_key_is_pushed() {
     );
 }
 
-/// A key flattened into an object may not spell a field that object already has.
-///
-/// An `entity` object carries `entity_type` and then every `EntityField` key beside it; an
-/// `action` object carries `action_name` and then every `ActionContextKey` key. A key that
-/// spelled one of those would land on the same name with an unrelated meaning — and the
-/// contract rules would not notice, because they accept the object's own field as a known
-/// key and cannot tell the two apart once both are strings in one map.
-#[test]
-fn no_flattened_key_spells_a_field_of_the_object_it_lands_in() {
-    use crate::audit::{Kind, Registration};
-    Registration::require_registry();
-    // The two objects that flatten a key set beside a field of their own. A third would be a
-    // third line here; there is no way to derive the pairing, because which field a struct
-    // carries next to its `#[serde(flatten)]` map is a fact about that struct.
-    for (object, own_field) in [("entity", "entity_type"), ("action", "action_name")] {
-        for reg in Registration::all()
-            .filter(|r| matches!(r.kind, Kind::Keys { object: o, .. } if o == object))
-        {
-            assert!(
-                !reg.kind.names().iter().any(|name| name.text == own_field),
-                "{} declares the key `{own_field}`, which is already a field of the \
-                 `{object}` object it is flattened into. Rename the variant.",
-                (reg.type_name)()
-            );
-        }
-    }
-}
-
 /// The schema this crate's registry generates is a valid, self-contained document: every
 /// `$ref` resolves, every part has a description on every property, and every registered
 /// type appears under `$defs`.
@@ -2754,54 +2562,6 @@ fn an_operation_record_from_another_emitter_satisfies_the_shape() {
         !is_valid_part(&schema, "OperationRecord", &body),
         "`record_type` must pin the shape, so a record naming another one is rejected"
     );
-}
-
-#[test]
-fn every_record_matches_the_shape_its_type_names() {
-    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
-    let defs = schema["$defs"].as_object().expect("$defs");
-    let shapes: std::collections::BTreeMap<&str, &serde_json::Value> = defs
-        .iter()
-        .filter(|(_, d)| d["x-audit-kind"] == "shape")
-        .map(|(name, d)| (name.as_str(), d))
-        .collect();
-    assert_eq!(
-        shapes.len(),
-        3,
-        "one definition per shape: {:?}",
-        shapes.keys()
-    );
-
-    for name in FIXTURE_NAMES {
-        let record = read_fixture(name);
-        let record_type = record["record_type"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{name} carries no `record_type`"));
-        let (_, shape) = shapes
-            .iter()
-            .find(|(shape_name, _)| {
-                shape_name.to_lowercase() == format!("{}record", record_type.replace('_', ""))
-            })
-            .unwrap_or_else(|| panic!("{name} says `{record_type}`, which names no shape"));
-
-        let properties = shape["properties"].as_object().expect("properties");
-        let envelope = ["event_source", "audit_format"];
-        for key in record.as_object().expect("an object").keys() {
-            assert!(
-                envelope.contains(&key.as_str()) || properties.contains_key(key),
-                "{name} carries `{key}`, which `{record_type}` does not describe. Add it to \
-                 the shape struct, or stop emitting it."
-            );
-        }
-        for required in shape["required"].as_array().into_iter().flatten() {
-            let required = required.as_str().expect("a property name");
-            assert!(
-                record.get(required).is_some(),
-                "`{record_type}` promises `{required}` on every record, and {name} has none. \
-                 Make the field optional, or emit it."
-            );
-        }
-    }
 }
 
 /// Every complete audit record shown in `docs/docs/logging.md` validates against the schema.

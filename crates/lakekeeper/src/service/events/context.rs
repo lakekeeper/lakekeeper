@@ -1604,23 +1604,9 @@ pub(crate) fn synthesise_authorizations(
     out
 }
 
-/// Map a top-level [`AuthorizationFailureReason`] to the per-entry `allowed`
-/// value used when synthesising a default `authorizations[]` list for a
-/// failed event.
-///
-/// Definitive denials (`ActionForbidden`, `ResourceNotFound`,
-/// `CannotSeeResource`) become `Some(false)`. Outcomes where the system
-/// could not actually decide (`InternalAuthorizationError`,
-/// `InternalCatalogError`, `InvalidRequestData`) become `None`, so the audit
-/// log records "we never reached a verdict" instead of misrepresenting a
-/// backend failure as an explicit deny.
+/// The per-entry `allowed` value when synthesising a default `authorizations[]` list for a
+/// failed event: `false` for a definitive denial, and `None` where the system never reached a
+/// verdict, so a backend failure is not recorded as an explicit deny.
 fn synthesised_allowed_for_failure(reason: &AuthorizationFailureReason) -> Option<bool> {
-    match reason {
-        AuthorizationFailureReason::ActionForbidden
-        | AuthorizationFailureReason::ResourceNotFound
-        | AuthorizationFailureReason::CannotSeeResource => Some(false),
-        AuthorizationFailureReason::InternalAuthorizationError
-        | AuthorizationFailureReason::InternalCatalogError
-        | AuthorizationFailureReason::InvalidRequestData => None,
-    }
+    reason.is_definitive().then_some(false)
 }
