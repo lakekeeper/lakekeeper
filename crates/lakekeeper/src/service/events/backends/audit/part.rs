@@ -168,8 +168,7 @@ impl Kind {
 /// `#[cfg(debug_assertions)]`, so a release binary carries no registry and none of the
 /// schema-generation code the entries keep alive. Every reader of the registry runs in the
 /// dev profile: the unit tests, `just update-audit-schema`, and any tooling built on
-/// [`Registration::all`]. In a `--release` test build the registry is empty; call
-/// [`Registration::require_registry`] first so the failure names the cause.
+/// [`Registration::all`], which in a `--release` build panics and names the cause.
 pub struct Registration {
     /// The type's role, and whatever that role carries.
     pub kind: Kind,
@@ -200,25 +199,20 @@ impl Registration {
         cfg!(debug_assertions)
     }
 
-    /// Stops a registry-dependent test in a build that has no registry, with the reason.
+    /// Every registration linked into this binary, all emitters.
     ///
     /// # Panics
     ///
-    /// In a build without `debug_assertions`, always. That is the point: the registry is a
-    /// debug-build facility, and a test that reads it in `--release` would otherwise fail on
-    /// "type X is not registered" and send the reader looking for a bug that is not there.
-    pub fn require_registry() {
+    /// In a build without `debug_assertions`, always: `#[audit_part]` registers types behind
+    /// that flag, so a release build has no registry, and a reader would otherwise fail on
+    /// "type X is not registered" and look for a bug that is not there.
+    pub fn all() -> impl Iterator<Item = &'static Registration> {
         assert!(
             Self::available(),
             "the audit registry exists in debug builds only: `#[audit_part]` registers types \
              behind `cfg(debug_assertions)`. Run registry and schema tests in the dev profile, \
              not with `--release`."
         );
-    }
-
-    /// Every registration linked into this binary, all emitters. Empty in release builds; see
-    /// [`Registration::require_registry`].
-    pub fn all() -> impl Iterator<Item = &'static Registration> {
         inventory::iter::<Registration>.into_iter()
     }
 
@@ -641,7 +635,6 @@ mod tests {
 
     #[test]
     fn declared_types_are_registered_with_this_crate_emitter() {
-        Registration::require_registry();
         let regs: Vec<&Registration> = Registration::for_emitter::<Lakekeeper>().collect();
         let by_name = |needle: &str| {
             regs.iter()
@@ -682,7 +675,6 @@ mod tests {
 
     #[test]
     fn a_registered_schema_carries_the_doc_comments() {
-        Registration::require_registry();
         let reg = Registration::for_emitter::<Lakekeeper>()
             .find(|r| {
                 (r.type_name)()
@@ -703,7 +695,6 @@ mod tests {
 
     #[test]
     fn every_registration_of_this_emitter_comes_from_this_workspace() {
-        Registration::require_registry();
         for reg in Registration::for_emitter::<Lakekeeper>() {
             assert!(
                 matches!(

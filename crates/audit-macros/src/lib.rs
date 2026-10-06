@@ -52,8 +52,8 @@
 //! Registry entries exist in **debug builds only**: the entry is behind
 //! `#[cfg(debug_assertions)]`, so release binaries carry neither the registry nor the
 //! schema-generation code it keeps alive. Tests that read the registry run in the dev profile;
-//! in a `--release` test build the registry is empty, and
-//! `lakekeeper::audit::Registration::require_registry()` says so instead of failing obscurely.
+//! in a `--release` build `lakekeeper::audit::Registration::all()` panics and says so instead of
+//! failing obscurely.
 //!
 //! Rules enforced at expansion: no type or const generic parameters (lifetimes are fine and
 //! become `'static` in the registry); every named field of a part or context has a doc

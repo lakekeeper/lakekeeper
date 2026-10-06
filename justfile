@@ -121,16 +121,11 @@ update-audit-fixtures:
 # Generated from the registry of every in-repo crate that declares audit types. That registry
 # exists in debug builds only, which is why these run in the dev profile. Review the diff — it
 # is what consumers will see.
-# Recompute AUDIT_FORMAT, then regenerate audit-format/schema.json and its published copy
+# Recompute AUDIT_FORMAT, then regenerate the published schema, docs/docs/audit/schema.json,
+# from the registry of a test binary that links every crate declaring audit types
 update-audit-schema:
     python3 .github/scripts/check-audit-format.py --write-version
-    # Each crate writes the crate schema of the types it declares, from its own registry.
-    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper --lib the_committed_crate_schema
-    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
-    # Then the crate schemas are merged into the emitter's schema and the published copy.
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema
-    cargo test -p lakekeeper --lib the_committed_crate_schema
-    cargo test -p lakekeeper-authz-openfga --lib the_committed_crate_schema
     cargo test -p lakekeeper-integration-tests --test audit_schema
 
 # Both baselines are frozen snapshots of the audit format before the current shape change, and
@@ -138,7 +133,7 @@ update-audit-schema:
 # List what the audit format change has done so far, for the release note
 audit-format-since-baseline:
     @echo "=== declared types ==="
-    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/schema-baseline.json audit-format/schema.json
+    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/schema-baseline.json docs/docs/audit/schema.json
     @echo "=== top-level record shapes ==="
     @python3 .github/scripts/check-audit-format.py --summarise-records crates/lakekeeper/src/service/events/backends/audit/fixtures/v1 /tmp/lakekeeper-records-head.json
     @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/records-baseline.json /tmp/lakekeeper-records-head.json

@@ -2358,62 +2358,7 @@ fn the_generated_schema_is_self_contained_and_documented() {
             );
         }
     }
-    // The schema is published to customers, so its prose is prose. A rustdoc link renders as
-    // itself there, in either form: the labelled `[`Forbidden`](Self::Forbidden)` and the
-    // shortcut `[`SourceSystemTarget::To`]` are both Rust syntax nobody outside this
-    // repository can follow. Matching on "[`" rather than on a bare bracket keeps a legitimate
-    // mention such as `authorizations[]` out of it.
-    let mut rust_syntax = Vec::new();
-    collect_descriptions(&schema, "", &mut rust_syntax);
-    let offenders: Vec<&(String, String)> = rust_syntax
-        .iter()
-        .filter(|(_, text)| text.contains("[`"))
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "these descriptions carry rustdoc link syntax, which reaches customers verbatim. \
-         Write the name as prose or in backticks instead: {offenders:#?}"
-    );
-}
-
-/// Every description in a schema, with the path it sits at.
-fn collect_descriptions(value: &serde_json::Value, path: &str, out: &mut Vec<(String, String)>) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, child) in map {
-                let here = format!("{path}/{key}");
-                match child.as_str() {
-                    Some(text) if key == "description" => out.push((here, text.to_owned())),
-                    _ => collect_descriptions(child, &here, out),
-                }
-            }
-            if let Some(descriptions) = map.get("x-audit-descriptions").and_then(|d| d.as_object())
-            {
-                for (name, text) in descriptions {
-                    if let Some(text) = text.as_str() {
-                        out.push((format!("{path}/{name}"), text.to_owned()));
-                    }
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for (i, child) in items.iter().enumerate() {
-                collect_descriptions(child, &format!("{path}[{i}]"), out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// This crate's crate schema is what its registry generates. `just update-audit-schema` writes
-/// it with `LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1`; the integration tests merge every crate's crate
-/// schema into the emitter's schema.
-#[test]
-fn the_committed_crate_schema_matches_the_registry() {
-    crate::audit::schema::assert_crate_schema_committed(
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_MANIFEST_DIR"),
-    );
+    crate::audit::schema::assert_descriptions_are_prose(&schema);
 }
 
 /// The schema's description of a record's shape is what the emitter actually writes.

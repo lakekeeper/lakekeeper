@@ -42,9 +42,10 @@ from pathlib import Path
 
 AUDIT_DIR = "crates/lakekeeper/src/service/events/backends/audit"
 
-# The committed schema of the emitter this repository owns: what the registry generates,
-# committed by `just update-audit-schema`. Diffed across the merge base like the fixtures.
-SCHEMA_PATH = "audit-format/schema.json"
+# The published schema of the emitter this repository owns: what the registry generates,
+# written by `just update-audit-schema` to the file customers download. Diffed across the merge
+# base like the fixtures.
+SCHEMA_PATH = "docs/docs/audit/schema.json"
 
 # Optional per-repository overrides of the paths above, so a crate outside this repository
 # runs the same checker against its own schema and declaration. Read once, from the working
@@ -56,22 +57,16 @@ CONFIG_PATH = "audit-format/config.json"
 VERSION_CONST = "AUDIT_FORMAT"
 VERSION_SEARCH_PATH = "crates/"
 
-# The copy of the schema published to the documentation site: the file customers download.
-# Written beside the schema by the same command, so a schema that moved without it means one
-# of the two was not regenerated.
-PUBLISHED_SCHEMA_PATH = "docs/docs/audit/schema.json"
-
 
 def load_config() -> None:
     """Override the path constants from `CONFIG_PATH`, if the file exists.
 
     Everything this checker needs to find is named here, so the script runs unchanged in a
     repository laid out differently: the declaration it reads the version from, the tree it
-    searches for that declaration, the schema, its published copy, the baseline and the
-    fragments. The defaults are Lakekeeper's, so this repository needs no config file.
+    searches for that declaration, the schema, the baseline and the fragments. The defaults are Lakekeeper's, so this repository needs no config file.
     """
     global AUDIT_DIR, SCHEMA_PATH, BASELINE_PATH, FRAGMENT_DIR
-    global VERSION_CONST, VERSION_SEARCH_PATH, PUBLISHED_SCHEMA_PATH
+    global VERSION_CONST, VERSION_SEARCH_PATH
     global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
     if not path.is_file():
@@ -86,7 +81,6 @@ def load_config() -> None:
     SCHEMA_PATH = config.get("schema", SCHEMA_PATH)
     BASELINE_PATH = config.get("baseline", BASELINE_PATH)
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
-    PUBLISHED_SCHEMA_PATH = config.get("published_schema", PUBLISHED_SCHEMA_PATH)
     VERSION_CONST = config.get("version_const", VERSION_CONST)
     VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
     GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
@@ -557,25 +551,6 @@ def file_at(rev: str, path: str) -> str | None:
     if not _git("ls-tree", "-r", "--name-only", rev, "--", path).strip():
         return None
     return _git("show", f"{rev}:{path}")
-
-
-def require_published_schema_regenerated(merge_base: str, head_ref: str) -> None:
-    """Refuse a schema change whose published copy did not move with it.
-
-    Both are written by the same command, so one changing without the other means one was
-    regenerated and committed and the other was not. The stale half is the one customers
-    download.
-
-    Silent when the repository publishes no copy: not every emitter does.
-    """
-    base = file_at(merge_base, PUBLISHED_SCHEMA_PATH)
-    head = file_at(head_ref, PUBLISHED_SCHEMA_PATH)
-    if base is None or head is None or base != head:
-        return
-    raise CheckFailed(
-        f"::error::{SCHEMA_PATH} changed and {PUBLISHED_SCHEMA_PATH} did not. The published "
-        f"copy is written from it; run `just update-audit-schema` and commit both."
-    )
 
 
 def emitter_of(schema: dict) -> tuple[str | None, str | None]:
@@ -1058,8 +1033,6 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
         moved = "" if base_format == head_format else f" -> {head_format}"
         print(f"Schema:     emitter `{name}`, format {base_format}{moved}")
     schema_kind, reasons = classify_schema(base_schema, head_schema)
-    if reasons:
-        require_published_schema_regenerated(merge_base, head_ref)
     for reason in reasons:
         print(f"Schema:     {reason}")
     print(

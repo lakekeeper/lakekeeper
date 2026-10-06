@@ -730,17 +730,17 @@ pub enum ManagementAction {
     ListTasks,
     ControlTasks,
     ScheduleTask,
-    /// Context assembled by the handler from the request body: see `ApplyGrants` in
-    /// `api::management::v1::grant`, whose fields these keys are.
+    /// Apply a set of grants and revocations to one resource.
+    // The handler assembles the context from the request body: see `ApplyGrants` in
+    // `api::management::v1::grant`, whose fields these keys are.
     #[audit(carries = "deletes, principals, privileges, writes")]
     ApplyGrants,
-    /// Context assembled by the handler from the request body and the scope its gate is
-    /// asked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields
-    /// these keys are.
-    ///
-    /// The six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated
-    /// here rather than left to the `Catalog*Action` variants that share this wire name, so
-    /// what this action carries does not depend on another vocabulary keeping its own.
+    /// Revoke the grants in a range beneath one resource.
+    // The handler assembles the context from the request body and the scope its gate is asked
+    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields these keys
+    // are. The six scope keys are the ones `SubtreeGrantScope::context` writes. They are
+    // declared on this variant as well as on the `Catalog*Action` variants that share this wire
+    // name, so what this action carries does not depend on another vocabulary keeping its own.
     #[audit(
         carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
                    privilege_scope, privileges, resource_types, root_level"

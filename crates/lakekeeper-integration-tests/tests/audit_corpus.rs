@@ -404,7 +404,8 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
 
     let committed_schema: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../audit-format/schema.json"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/docs/audit/schema.json"),
         )
         .expect("the committed audit schema; generate it with `just update-audit-schema`"),
     )

@@ -1546,8 +1546,8 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
-        "apply_grants": "Context assembled by the handler from the request body: see `ApplyGrants` in\n`api::management::v1::grant`, whose fields these keys are.",
-        "revoke_subtree_grants": "Context assembled by the handler from the request body and the scope its gate is\nasked with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields\nthese keys are.\n\nThe six scope keys are the ones `SubtreeGrantScope::context` writes. They are stated\nhere rather than left to the `Catalog*Action` variants that share this wire name, so\nwhat this action carries does not depend on another vocabulary keeping its own."
+        "apply_grants": "Apply a set of grants and revocations to one resource.",
+        "revoke_subtree_grants": "Revoke the grants in a range beneath one resource."
       }
     },
     "OperationRecord": {

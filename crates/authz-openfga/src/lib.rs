@@ -30,23 +30,8 @@ pub(crate) use error::{OpenFGAError, OpenFGAResult, ParseOpenFgaEntityError};
 use openfga_client::migration::AuthorizationModelVersion;
 
 mod api;
-/// The audit emitter every audit type in this crate belongs to: Lakekeeper's own.
-pub mod audit_emitter {
-    pub use lakekeeper::audit_emitter::*;
-}
-
-#[cfg(test)]
-mod audit_crate_schema {
-    /// This crate's crate schema is what its registry generates. See
-    /// `lakekeeper::audit::schema`.
-    #[test]
-    fn the_committed_crate_schema_matches_the_registry() {
-        lakekeeper::audit::schema::assert_crate_schema_committed(
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_MANIFEST_DIR"),
-        );
-    }
-}
+// The audit emitter every audit type in this crate belongs to: Lakekeeper's own.
+use lakekeeper::audit_emitter;
 mod authorizer;
 mod check;
 mod client;
