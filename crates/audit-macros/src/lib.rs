@@ -1099,7 +1099,7 @@ mod tests {
         assert!(
             rejection(
                 r#"keys_of = "context""#,
-                r#"enum K { #[audit(carries = "a")] A(bool) }"#
+                r#"enum K { #[doc = "A key."] #[audit(carries = "a")] A(bool) }"#
             )
             .contains("`carries` is not an `#[audit]` key on a variant")
         );
@@ -1185,7 +1185,11 @@ mod tests {
         );
         assert!(values.contains("SCHEMA_NAME"), "{values}");
 
-        let keys = expand_str(r#"keys_of = "context""#, "enum Key { SelfRead(bool) }").expect("ok");
+        let keys = expand_str(
+            r#"keys_of = "context""#,
+            r#"enum Key { #[doc = "Whether it is the caller."] SelfRead(bool) }"#,
+        )
+        .expect("ok");
         assert!(keys.contains("Kind :: Keys"), "{keys}");
         assert!(keys.contains(r#"object : "context""#), "{keys}");
         assert!(keys.contains("WireKey"), "{keys}");
@@ -1224,7 +1228,17 @@ mod tests {
         assert!(
             rejection(r#"keys_of = "entity""#, "enum K { A }").contains("could never be emitted")
         );
-        assert!(expand_str(r#"keys_of = "context""#, "enum K { A(bool) }").is_ok());
+        assert!(
+            expand_str(
+                r#"keys_of = "context""#,
+                r#"enum K { #[doc = "A key."] A(bool) }"#
+            )
+            .is_ok()
+        );
+        // A key is a documented property of its object.
+        assert!(
+            rejection(r#"keys_of = "context""#, "enum K { A(bool) }").contains("no doc comment")
+        );
         // `closed` describes the values of a field, so it needs one.
         assert!(rejection(r#"keys_of = "context", closed"#, "enum K { A }").contains("closed"));
         assert!(
@@ -1281,10 +1295,19 @@ mod tests {
         assert!(squashed.contains("fn value"), "{expansion}");
 
         // A key of `context` or `action` holds exactly one value.
-        assert!(rejection(r#"keys_of = "context""#, "enum K { A }").contains("holds its value"));
         assert!(
-            rejection(r#"keys_of = "context""#, "enum K { A(bool, bool) }")
-                .contains("holds its value")
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[doc = "A key."] A }"#
+            )
+            .contains("holds its value")
+        );
+        assert!(
+            rejection(
+                r#"keys_of = "context""#,
+                r#"enum K { #[doc = "A key."] A(bool, bool) }"#
+            )
+            .contains("holds its value")
         );
         // An entity key holds nothing: its value is always a string.
         assert!(
