@@ -27,7 +27,7 @@ use uuid::Uuid;
 use super::{
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},
-    user::{DbUserLastUpdatedWith, DbUserType},
+    user::{DbUserLastUpdatedWith, DbUserType, UserRow, user_rows, user_write},
 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -151,10 +151,19 @@ pub(crate) async fn sync_role_members_by_ident(
     // application server.
     let synced_at = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
 
-    // Deleted users stay deleted and get no assignment.
-    let deleted_ids: Vec<String> = sqlx::query!(
+    // Deleted users stay deleted and get no assignment. The locked rows are also what
+    // the user lifecycle events report as the previous row.
+    let before: HashMap<String, (UserRow, bool)> = sqlx::query!(
         r#"
-        SELECT id, deleted_at IS NOT NULL AS "deleted!"
+        SELECT
+            id,
+            name,
+            email,
+            last_updated_with AS "last_updated_with: DbUserLastUpdatedWith",
+            user_type AS "user_type: DbUserType",
+            created_at,
+            updated_at,
+            deleted_at IS NOT NULL AS "deleted!"
         FROM users
         WHERE id = ANY($1::TEXT[])
         ORDER BY id
@@ -166,9 +175,29 @@ pub(crate) async fn sync_role_members_by_ident(
     .await
     .map_err(|e| SyncRoleMembersError::from(e.into_catalog_backend_error()))?
     .into_iter()
-    .filter(|r| r.deleted)
-    .map(|r| r.id)
+    .map(|r| {
+        (
+            r.id.clone(),
+            (
+                UserRow {
+                    id: r.id,
+                    name: r.name,
+                    email: r.email,
+                    last_updated_with: r.last_updated_with,
+                    user_type: r.user_type,
+                    created_at: r.created_at,
+                    updated_at: r.updated_at,
+                },
+                r.deleted,
+            ),
+        )
+    })
     .collect();
+    let deleted_ids: Vec<String> = before
+        .iter()
+        .filter(|(_, (_, deleted))| *deleted)
+        .map(|(id, _)| id.clone())
+        .collect();
 
     let row = sqlx::query!(
         r#"
@@ -227,6 +256,7 @@ pub(crate) async fn sync_role_members_by_ident(
               AND (users.name      IS DISTINCT FROM EXCLUDED.name
                 OR users.email     IS DISTINCT FROM EXCLUDED.email
                 OR users.user_type IS DISTINCT FROM EXCLUDED.user_type)
+            RETURNING id, (xmax = 0) AS created
         ),
         -- Remove members no longer in the desired set.
         -- References user_input (all requested users) rather than upserted_users
@@ -256,7 +286,9 @@ pub(crate) async fn sync_role_members_by_ident(
             (SELECT id        FROM role_id)                                                       AS "role_id!: Uuid",
             (SELECT synced_at FROM sync_ts)                                                       AS "synced_at!",
             (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM added_members)   AS "added_ids!: Vec<String>",
-            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS "removed_ids!: Vec<String>"
+            (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS "removed_ids!: Vec<String>",
+            (SELECT COALESCE(array_agg(id ORDER BY id), ARRAY[]::TEXT[]) FROM upserted_users)      AS "written_ids!: Vec<String>",
+            (SELECT COALESCE(array_agg(created ORDER BY id), ARRAY[]::BOOLEAN[]) FROM upserted_users) AS "written_created!: Vec<bool>"
         "#,
         role.name as Option<&str>,
         role.description as Option<&str>,
@@ -276,6 +308,20 @@ pub(crate) async fn sync_role_members_by_ident(
     .map_err(map_role_upsert_error::<SyncRoleMembersError>)?;
 
     let role_id = RoleId::new(row.role_id);
+
+    let mut written = user_rows(&row.written_ids, transaction)
+        .await
+        .map_err(|e| SyncRoleMembersError::from(e.into_catalog_backend_error()))?;
+    let mut before = before;
+    let mut user_writes = Vec::with_capacity(row.written_ids.len());
+    for (id, created) in row.written_ids.iter().zip(row.written_created) {
+        let after = written.remove(id).ok_or_else(|| {
+            DatabaseIntegrityError::new(format!("user `{id}` written by the sync is missing"))
+        })?;
+        if let Some(write) = user_write(created, after, before.remove(id))? {
+            user_writes.push(write);
+        }
+    }
 
     let added = row
         .added_ids
@@ -315,6 +361,7 @@ pub(crate) async fn sync_role_members_by_ident(
         removed,
         skipped_deleted,
         synced_at: row.synced_at,
+        user_writes,
     })
 }
 
@@ -361,14 +408,42 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     // application server.
     let synced_at = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
 
-    let user_deleted = sqlx::query_scalar!(
-        r#"SELECT deleted_at IS NOT NULL AS "deleted!" FROM users WHERE id = $1 FOR NO KEY UPDATE"#,
+    // The locked row is also what the user lifecycle event reports as the previous row.
+    let before = sqlx::query!(
+        r#"
+        SELECT
+            id,
+            name,
+            email,
+            last_updated_with AS "last_updated_with: DbUserLastUpdatedWith",
+            user_type AS "user_type: DbUserType",
+            created_at,
+            updated_at,
+            deleted_at IS NOT NULL AS "deleted!"
+        FROM users
+        WHERE id = $1
+        FOR NO KEY UPDATE
+        "#,
         user.user_id.to_string(),
     )
     .fetch_optional(&mut **transaction)
     .await
     .map_err(map_user_sync_error)?
-    .unwrap_or(false);
+    .map(|r| {
+        (
+            UserRow {
+                id: r.id,
+                name: r.name,
+                email: r.email,
+                last_updated_with: r.last_updated_with,
+                user_type: r.user_type,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+            r.deleted,
+        )
+    });
+    let user_deleted = before.as_ref().is_some_and(|(_, deleted)| *deleted);
     let kept_deleted = user_deleted && sync_for == SyncFor::OtherUser;
 
     let row = sqlx::query!(
@@ -389,6 +464,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                    CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END
                 OR users.user_type IS DISTINCT FROM COALESCE($5, users.user_type)
                 OR users.deleted_at IS NOT NULL)
+            RETURNING (xmax = 0) AS created
         ),
         role_input AS (
             SELECT u.name, u.description, u.source_id
@@ -459,7 +535,8 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
             (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM added_assignments)   AS "added_ids!: Vec<Uuid>",
             (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM removed_assignments) AS "removed_ids!: Vec<Uuid>",
             (SELECT COALESCE(array_agg(id ORDER BY source_id), ARRAY[]::UUID[]) FROM role_ids)          AS "role_ids!: Vec<Uuid>",
-            (SELECT COALESCE(array_agg(source_id ORDER BY source_id), ARRAY[]::TEXT[]) FROM role_ids)   AS "role_source_ids!: Vec<String>"
+            (SELECT COALESCE(array_agg(source_id ORDER BY source_id), ARRAY[]::TEXT[]) FROM role_ids)   AS "role_source_ids!: Vec<String>",
+            (SELECT created FROM upserted_user)                                                         AS "user_created?: bool"
         "#,
         user.user_id.to_string(),
         user.name as Option<&str>,
@@ -510,6 +587,23 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         Some(synced_at)
     };
 
+    let user_write = match row.user_created {
+        None => None,
+        Some(created) => {
+            let id = user.user_id.to_string();
+            let after = user_rows(std::slice::from_ref(&id), transaction)
+                .await
+                .map_err(map_user_sync_error)?
+                .remove(&id)
+                .ok_or_else(|| {
+                    DatabaseIntegrityError::new(format!(
+                        "user `{id}` written by the sync is missing"
+                    ))
+                })?;
+            user_write(created, after, before)?
+        }
+    };
+
     let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
     let requested_roles = roles
         .iter()
@@ -539,6 +633,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         synced_at,
         all_roles: all_assignments.roles,
         provider_sync_times: all_assignments.provider_sync_times,
+        user_write,
     })
 }
 
@@ -3220,7 +3315,7 @@ mod tests {
             .await
             .unwrap();
         t.commit().await.unwrap();
-        assert_eq!(affected, Some(vec![role]));
+        assert_eq!(affected.map(|d| d.affected_roles), Some(vec![role]));
 
         // The assignment is gone — the user is no longer a member.
         assert_eq!(
@@ -7069,7 +7164,7 @@ mod tests {
         };
         let (affected, ()) = tokio::join!(delete, commit_sync);
 
-        assert_eq!(affected, Some(vec![role_id]));
+        assert_eq!(affected.map(|d| d.affected_roles), Some(vec![role_id]));
         assert_eq!(
             user_row(&pool, &user_id).await,
             (Some("Deleted User".to_string()), true)

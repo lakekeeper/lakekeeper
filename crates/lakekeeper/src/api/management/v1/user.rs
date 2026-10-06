@@ -19,7 +19,7 @@ use crate::{
             RequireServerActionError,
         },
         events::{
-            APIEventContext, GrantsChangedEvent,
+            APIEventContext, GrantsChangedEvent, UserDeletedEvent,
             context::{HandlerContextKey, ServerActionSearchUsers},
         },
     },
@@ -366,6 +366,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         tracing::debug!("User created: {:?}", user);
 
         t.commit().await?;
+        context
+            .v1_state
+            .events
+            .users_written_async(user.write(), Some(&event_ctx.request_metadata_arc()));
 
         Ok(user)
     }
@@ -501,7 +505,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = authorizer
             .require_user_action(event_ctx.request_metadata(), &user_id, *event_ctx.action())
             .await;
-        event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
         let email = request.email.as_deref().filter(|e| !e.is_empty());
@@ -519,10 +523,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         if matches!(user, CreateOrUpdateUserResponse::Created(_)) {
             t.rollback().await?;
-            Err(ErrorModel::not_found("User does not exist", "UserNotFound", None).into())
-        } else {
-            t.commit().await
+            return Err(ErrorModel::not_found("User does not exist", "UserNotFound", None).into());
         }
+        t.commit().await?;
+        context
+            .v1_state
+            .events
+            .users_written_async(user.write(), Some(&event_ctx.request_metadata_arc()));
+        Ok(())
     }
 
     async fn delete_user(
@@ -549,7 +557,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         // Soft-deletes the user AND removes their role assignments.
-        let Some(_) = C::delete_user(user_id.clone(), t.transaction()).await? else {
+        let Some(deleted) = C::delete_user(user_id.clone(), t.transaction()).await? else {
             return Err(ErrorModel::not_found(
                 format!("User with id {} not found.", user_id.clone()),
                 "UserNotFound",
@@ -582,6 +590,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
             committed?;
+            events.user_deleted_async(UserDeletedEvent {
+                user: Arc::new(deleted.user),
+                request_metadata: Arc::clone(&request_metadata),
+            });
             // One event, not one per grant: a user can hold an unbounded number.
             if !revoked_grants.is_empty() {
                 events

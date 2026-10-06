@@ -9,6 +9,7 @@ use futures::FutureExt;
 use tokio::sync::RwLock;
 
 use super::types;
+use crate::{api::RequestMetadata, service::UserWrite};
 
 pub(crate) const METRIC_EVENT_LISTENER_DURATION_SECONDS: &str =
     "lakekeeper_event_listener_duration_seconds";
@@ -305,6 +306,60 @@ impl EventDispatcher {
 
     pub(crate) async fn role_updated(&self, event: types::UpdateRoleEvent) {
         dispatch_event!(self, role_updated, event);
+    }
+
+    // ===== User Events =====
+    //
+    // A request never awaits a user event: the only entry points spawn. The per-event
+    // methods are private to this module, so no caller can await one by mistake.
+
+    async fn user_created(&self, event: types::UserCreatedEvent) {
+        dispatch_event!(self, user_created, event);
+    }
+
+    async fn user_updated(&self, event: types::UserUpdatedEvent) {
+        dispatch_event!(self, user_updated, event);
+    }
+
+    async fn user_deleted(&self, event: types::UserDeletedEvent) {
+        dispatch_event!(self, user_deleted, event);
+    }
+
+    /// Dispatch the events of `writes`, in order, on a spawned task. Call after the
+    /// write committed.
+    pub(crate) fn users_written_async(
+        &self,
+        writes: impl IntoIterator<Item = UserWrite>,
+        request_metadata: Option<&Arc<RequestMetadata>>,
+    ) {
+        let events: Vec<_> = writes
+            .into_iter()
+            .map(|write| types::UserWrittenEvent::new(write, request_metadata.cloned()))
+            .collect();
+        if events.is_empty() {
+            return;
+        }
+        let dispatcher = self.clone();
+        tokio::spawn(async move {
+            for event in events {
+                match event {
+                    types::UserWrittenEvent::Created(event) => {
+                        dispatcher.user_created(event).await;
+                    }
+                    types::UserWrittenEvent::Updated(event) => {
+                        dispatcher.user_updated(event).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Dispatch `event` on a spawned task. Call after the delete committed.
+    pub(crate) fn user_deleted_async(&self, event: types::UserDeletedEvent) {
+        let dispatcher = self.clone();
+        tokio::spawn(async move {
+            dispatcher.user_deleted(event).await;
+        });
     }
 
     // ===== Tag Definition Events =====
@@ -683,6 +738,25 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a role has been successfully updated
     async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== User Events =====
+
+    /// Invoked after a user was created, from every write path: the management API,
+    /// first-touch self-provisioning, bootstrap, and role-provider syncs
+    async fn user_created(&self, _event: types::UserCreatedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a user's name, email or type changed, or a deleted user was
+    /// created again
+    async fn user_updated(&self, _event: types::UserUpdatedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a user was deleted
+    async fn user_deleted(&self, _event: types::UserDeletedEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

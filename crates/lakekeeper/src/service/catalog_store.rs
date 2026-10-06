@@ -1358,13 +1358,13 @@ where
 
     /// Soft-deletes the user and removes their role assignments + provider sync
     /// log (so a deleted user is no member of any role, matching the OpenFGA
-    /// authorizer). Returns `None` if absent, else the roles the user was
-    /// assigned to. The caller evicts the user's effective-roles cache after
-    /// commit.
+    /// authorizer). Returns `None` if absent, else the row as it was before the
+    /// delete and the roles the user was assigned to. The caller evicts the user's
+    /// effective-roles cache after commit.
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<Vec<RoleId>>>;
+    ) -> Result<Option<DeletedUser>>;
 
     // ---------------- Endpoint Statistics ----------------
     /// Get endpoint statistics for the project
