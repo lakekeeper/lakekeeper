@@ -65,6 +65,7 @@ def load_config() -> None:
     matches and the release notes file. The defaults are Lakekeeper's, so this repository needs no config file.
     """
     global AUDIT_DIR, SCHEMA_PATH, FRAGMENT_DIR, RELEASE_TAG_PATTERN, RELEASE_NOTES_PATH
+    global RELEASE_TABLE_PATH
     global VERSION_CONST, VERSION_SEARCH_PATH
     global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
@@ -80,6 +81,7 @@ def load_config() -> None:
     SCHEMA_PATH = config.get("schema", SCHEMA_PATH)
     RELEASE_TAG_PATTERN = config.get("release_tag_pattern", RELEASE_TAG_PATTERN)
     RELEASE_NOTES_PATH = config.get("release_notes", RELEASE_NOTES_PATH)
+    RELEASE_TABLE_PATH = config.get("release_table", RELEASE_TABLE_PATH)
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
     VERSION_CONST = config.get("version_const", VERSION_CONST)
     VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
@@ -193,6 +195,10 @@ RELEASE_TAG_PATTERN = r"v(\d+)\.(\d+)\.(\d+)"
 
 # Where the release notes live, for the check that a fragment reached them before it goes.
 RELEASE_NOTES_PATH = "site/docs/about/release-notes.md"
+
+# The page whose table says which format each release emits, or `None` for a repository
+# without one.
+RELEASE_TABLE_PATH: str | None = "docs/docs/logging.md"
 
 # `none` is a level, not the absence of one: a new action value changes nothing about the
 # format but is still worth a line in the release notes. Ranked so that `max` over a set of
@@ -1318,9 +1324,9 @@ def do_release(version: str) -> int:
     # format does the version I am running emit?". Printed, because the table is prose.
     tags = release_tags("HEAD")
     previous = declared_version(tags[-2]) if len(tags) > 1 else None
-    if declared != previous:
+    if declared != previous and RELEASE_TABLE_PATH is not None:
         print()
-        print("Add this row to the release table in docs/docs/logging.md:")
+        print(f"Add this row to the release table in {RELEASE_TABLE_PATH}:")
         print()
         print(f"| {version} | `{show(declared)}` |")
     return 0
