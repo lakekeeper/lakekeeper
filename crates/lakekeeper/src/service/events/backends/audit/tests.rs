@@ -5,8 +5,9 @@ use iceberg::{NamespaceIdent, TableIdent};
 
 use super::*;
 use crate::{
-    api::management::v1::grant::{
-        ApplyGrants, ApplyGrantsRequest, RevokeSubtreeGrants, RevokeSubtreeGrantsRequest,
+    api::management::v1::{
+        check::UserOrRole as AuthzUserOrRole,
+        grant::{ApplyGrants, ApplyGrantsRequest, RevokeSubtreeGrants, RevokeSubtreeGrantsRequest},
     },
     audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
@@ -18,8 +19,9 @@ use crate::{
         authn::{Actor, UserId},
         authz::{
             ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, RoleSourceSystem,
-            SubtreeGrantScope, UserOrRoleId,
+            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
+            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
+            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization,
@@ -572,6 +574,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
+    "authz_succeeded_project_subtree_grants",
     "authz_succeeded_apply_grants",
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
@@ -1005,6 +1008,47 @@ fn fixture_authz_succeeded_create_role_source_system() {
 
     assert_matches_fixture(
         "authz_succeeded_create_role_source_system",
+        &contract_fields(record),
+    );
+}
+
+/// `GET /management/v1/grants` about another principal: `read_subtree_grants` on the
+/// project entity, with the six scope fields and `self-read: false`. Built from the real
+/// action, with the scope that listing asks.
+#[test]
+fn fixture_authz_succeeded_project_subtree_grants() {
+    let action = CatalogProjectAction::ReadSubtreeGrants {
+        scope: Some(SubtreeGrantScope {
+            resource_types: SubtreeResourceTypes::new(
+                <ResourceType as strum::VariantArray>::VARIANTS
+                    .iter()
+                    .copied()
+                    .filter(|kind| *kind != ResourceType::Server)
+                    .collect(),
+            )
+            .expect("a project holds at least one resource kind"),
+            root_level: RootLevelGrants::Included,
+            privileges: SubtreeGrantPrivileges::Every {},
+            principal: SubtreeGrantPrincipal::One(AuthzUserOrRole::User(UserId::new_unchecked(
+                "oidc", "bob",
+            ))),
+            dry_run: false,
+        }),
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(EntityDescriptor::new(EntityType::Project).field(
+                FIELD_NAME_PROJECT_ID,
+                &"00000000-0000-0000-0000-000000000000",
+            )),
+            vec![action.action_descriptor()],
+            fixture_context(&[HandlerContextKey::SelfRead(false)]),
+        ))
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_project_subtree_grants",
         &contract_fields(record),
     );
 }

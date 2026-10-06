@@ -141,28 +141,32 @@ impl FromStr for GcsLocation {
 /// Validate the GCS bucket name according to GCS naming conventions.
 ///
 /// # Errors
-/// * If the bucket name has less than 3 or more than 63 characters.
-/// * If the bucket name contains invalid characters (must be lowercase letters, numbers, dots, and hyphens).
+/// * If the bucket name has less than 3 characters, more than 222 characters, or a dot-separated component with more than 63 characters.
+/// * If the bucket name contains invalid characters (must be lowercase letters, numbers, dots, underscores, and hyphens).
 /// * If the bucket name does not start and end with a letter or number.
 /// * If the bucket name contains two adjacent periods.
 /// * If the bucket name is an IP address in dotted-decimal notation.
 /// * If the bucket name starts with the "goog" prefix.
 pub fn validate_bucket_name(bucket: &str) -> Result<(), InvalidGCSBucketName> {
-    // Bucket names must be between 3 (min) and 63 (max) characters long.
-    if bucket.len() < 3 || bucket.len() > 63 {
+    // Bucket names must contain 3-63 characters. Names containing dots can contain up to 222
+    // characters, but each dot-separated component can be no longer than 63 characters.
+    if bucket.len() < 3
+        || bucket.len() > 222
+        || bucket.split('.').any(|component| component.len() > 63)
+    {
         return Err(InvalidGCSBucketName {
-            reason: "must be between 3 and 63 characters long.".to_string(),
+            reason: "must be between 3 and 63 characters long, or up to 222 characters if it contains dots (each dot-separated part at most 63 characters).".to_string(),
             bucket: bucket.to_string(),
         });
     }
 
-    // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
+    // Bucket names can consist only of lowercase letters, numbers, dots (.), underscores (_), and hyphens (-).
     if !bucket
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
     {
         return Err(InvalidGCSBucketName {
-            reason: "can consist only of lowercase letters, numbers, dots (.), and hyphens (-)."
+            reason: "can consist only of lowercase letters, numbers, dots (.), underscores (_), and hyphens (-)."
                 .to_string(),
             bucket: bucket.to_string(),
         });
@@ -219,6 +223,109 @@ pub fn validate_bucket_name(bucket: &str) -> Result<(), InvalidGCSBucketName> {
 pub(crate) mod test {
     use super::*;
 
+    #[test]
+    fn test_valid_dotted_bucket_name_lengths() {
+        for bucket in [
+            "a.b".to_string(),
+            format!("{}.{}", "a".repeat(31), "b".repeat(32)),
+            format!("{}.{}", "a".repeat(63), "b".repeat(63)),
+            format!(
+                "{}.{}.{}.{}",
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(30)
+            ),
+        ] {
+            assert!(validate_bucket_name(&bucket).is_ok(), "{bucket}");
+        }
+    }
+
+    #[test]
+    fn test_invalid_dotted_bucket_name_lengths() {
+        for bucket in [
+            "a".repeat(64),
+            format!("{}.b", "a".repeat(64)),
+            format!("a.{}.b", "b".repeat(64)),
+            format!("a.{}", "b".repeat(64)),
+            format!(
+                "{}.{}.{}.{}",
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(31)
+            ),
+        ] {
+            assert!(validate_bucket_name(&bucket).is_err(), "{bucket}");
+        }
+    }
+
+    #[test]
+    fn test_location_with_long_dotted_bucket() {
+        let bucket = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(30)
+        );
+        let location = GcsLocation::new(&bucket, &["warehouse", "file.parquet"]).unwrap();
+        assert_eq!(location.bucket_name(), bucket);
+        assert_eq!(location.object_name(), "warehouse/file.parquet");
+        assert_eq!(
+            location.as_str(),
+            format!("gs://{bucket}/warehouse/file.parquet")
+        );
+
+        let parsed = GcsLocation::try_from_str(location.as_str()).unwrap();
+        assert_eq!(parsed, location);
+    }
+
+    #[test]
+    fn test_valid_bucket_names_with_underscores() {
+        for bucket in [
+            "a_b",
+            "my_bucket",
+            "my__bucket",
+            "1_bucket_2",
+            "my_bucket.logs-1",
+        ] {
+            assert!(validate_bucket_name(bucket).is_ok(), "{bucket}");
+        }
+
+        let bucket = format!("a{}b", "_".repeat(61));
+        assert!(validate_bucket_name(&bucket).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_bucket_names_with_underscores() {
+        for bucket in [
+            "_my-bucket",
+            "my-bucket_",
+            "___",
+            "My_bucket",
+            "my_ bucket",
+            "goog_bucket",
+            "my_..bucket",
+        ] {
+            assert!(validate_bucket_name(bucket).is_err(), "{bucket}");
+        }
+
+        let bucket = format!("a{}b", "_".repeat(62));
+        assert!(validate_bucket_name(&bucket).is_err());
+    }
+
+    #[test]
+    fn test_location_with_bucket_underscores() {
+        let location = GcsLocation::new("my_bucket", &["warehouse", "file.parquet"]).unwrap();
+        assert_eq!(location.bucket_name(), "my_bucket");
+        assert_eq!(location.object_name(), "warehouse/file.parquet");
+        assert_eq!(location.as_str(), "gs://my_bucket/warehouse/file.parquet");
+
+        let parsed = GcsLocation::try_from_str(location.as_str()).unwrap();
+        assert_eq!(parsed, location);
+    }
+
     // Bucket names: Your bucket names must meet the following requirements:
     //
     // Bucket names can only contain lowercase letters, numeric characters, dashes (-), underscores (_), and dots (.). Spaces are not allowed. Names containing dots require verification.
@@ -235,10 +342,10 @@ pub(crate) mod test {
         assert!(validate_bucket_name("123-valid-bucket-name").is_ok());
         assert!(validate_bucket_name("valid-bucket-name-123").is_ok());
         assert!(validate_bucket_name("valid.bucket.name.123").is_ok());
+        assert!(validate_bucket_name("valid_bucket_name").is_ok());
 
         // Invalid bucket names
         assert!(validate_bucket_name("Invalid-Bucket-Name").is_err()); // Uppercase letters
-        assert!(validate_bucket_name("invalid_bucket_name").is_err()); // Underscores
         assert!(validate_bucket_name("invalid bucket name").is_err()); // Spaces
         assert!(validate_bucket_name("invalid..bucket..name").is_err()); // Adjacent periods
         assert!(validate_bucket_name("invalid-bucket-name-").is_err()); // Ends with hyphen

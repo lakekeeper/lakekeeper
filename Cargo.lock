@@ -4148,8 +4148,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.23.2"
-source = "git+https://github.com/lakekeeper/console?rev=v0.23.2#b838881d7295d3117c7e42eeb3fd8b8355e623ad"
+version = "0.25.1"
+source = "git+https://github.com/lakekeeper/console?rev=v0.25.1#a1111e88cb662217b50edf2752a3dd2f59f9e67f"
 dependencies = [
  "flate2",
  "fs_extra",
@@ -8886,9 +8886,9 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.15"
+version = "0.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+checksum = "4d93c89cdc2d3a63c3ec48ffe926931bdc069eafa8e4402fe6d8f790c9d1e576"
 
 [[package]]
 name = "yansi"

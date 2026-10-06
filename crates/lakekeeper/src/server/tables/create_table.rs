@@ -114,7 +114,6 @@ impl<A: Authorizer> TableCreationGuard<A> {
 /// Load a table from the catalog
 pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
-    // mut because we need to change location
     request: CreateTableRequest,
     data_access: impl Into<DataAccessMode> + Send,
     state: ApiContext<State<A, C, S>>,
@@ -193,8 +192,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
 #[allow(clippy::too_many_lines)]
 async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
-    // mut because we need to change location
-    mut request: CreateTableRequest,
+    request: CreateTableRequest,
     data_access: impl Into<DataAccessMode> + Send,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
@@ -269,10 +267,6 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         storage_profile,
     )?;
 
-    // Update the request for event
-    request.location = Some(table_location.to_string());
-    let request = request; // Make it non-mutable again for our sanity
-
     // If stage-create is true, we should not create the metadata file
     let metadata_location = if request.stage_create.unwrap_or(false) {
         None
@@ -288,7 +282,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     let table_metadata = create_table_request_into_table_metadata(
         table_id,
-        request.clone(),
+        CreateTableRequest {
+            location: Some(table_location.to_string()),
+            ..request.clone()
+        },
         &warehouse.allowed_format_versions,
         warehouse.default_format_version,
     )?;
@@ -467,7 +464,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         metadata_location.map(Arc::new),
         data_access,
         table.name,
-        Arc::new(request),
+        Arc::new(CreateTableRequest {
+            location: Some(table_location.to_string()),
+            ..request
+        }),
     );
 
     emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);

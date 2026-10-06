@@ -1014,6 +1014,7 @@
         "list_warehouses",
         "modify_task_queue_config",
         "read_grants",
+        "read_subtree_grants",
         "rename",
         "search_roles"
       ],
@@ -1022,7 +1023,8 @@
       "x-audit-descriptions": {
         "create_tag": "Create a new governance tag definition in this project.",
         "list_tags": "List tag definitions in this project.",
-        "read_grants": "Can list the grants held on this project."
+        "read_grants": "Can list the grants held on this project.",
+        "read_subtree_grants": "Can list every grant one principal holds anywhere in this project: on the project,\nits warehouses, namespaces, tables, views, generic tables and tag definitions.\nCovers more than `read_grants`, which covers the project's own grants. Not listed in\nproject actions where the authorizer keeps its own grants (OpenFGA), because the\nlisting is not available there.\n\n`scope` states what the listing covers, on the same terms as the warehouse's\n`read_subtree_grants`. Every enforced check carries it; an absent scope is the\nbase-capability question permission introspection asks."
       }
     },
     "CatalogRoleAction": {

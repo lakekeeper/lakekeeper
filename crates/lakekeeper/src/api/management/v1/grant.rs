@@ -78,9 +78,10 @@ use crate::{
             CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp,
             GrantResource, GrantRevokeCandidates, GrantRow, GrantSpec, GrantTarget,
             PrivilegeDescriptor, RequireTagActionError, ResourceType,
-            RoleAssignee as AuthzRoleAssignee, SubtreeGrantFilter, SubtreeGrantPrincipal,
-            SubtreeGrantPrivileges, SubtreeGrantRoot, SubtreeGrantScope, SubtreePrivilegeNames,
-            SubtreeResourceTypes, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            RoleAssignee as AuthzRoleAssignee, RootLevelGrants, SubtreeGrantFilter,
+            SubtreeGrantPrincipal, SubtreeGrantPrivileges, SubtreeGrantRoot, SubtreeGrantScope,
+            SubtreePrivilegeNames, SubtreeResourceTypes, UserOrRole as AuthzUserOrRole,
+            UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -696,8 +697,8 @@ impl axum::response::IntoResponse for RevokeSubtreeGrantsResponse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetGrantAccessQuery {
     /// Report which privileges this user may administer, instead of the caller. Requires
-    /// authority to read the resource's grants, since it discloses another principal's
-    /// access. Mutually exclusive with `principalRole`.
+    /// permission to check what others may do on the resource
+    /// (`403 CannotInspectPermissions` otherwise). Mutually exclusive with `principalRole`.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<String>))]
     pub principal_user: Option<UserId>,
@@ -971,6 +972,34 @@ fn validate_write_principals(
     Ok(())
 }
 
+/// Refuses a server grant to a role where grants are stored in the catalog. Roles belong
+/// to a project, so a role holding a server grant would hand server-wide authority to
+/// whoever manages that project's role members. An authorizer that keeps its own grants
+/// follows its own model, so its two grant surfaces agree. Deletes stay allowed.
+fn validate_server_write_principals<A: Authorizer>(
+    authorizer: &A,
+    request: &ApplyGrantsRequest,
+) -> Result<()> {
+    if authorizer.grants().is_some() {
+        return Ok(());
+    }
+    let role = request
+        .writes
+        .iter()
+        .find_map(|entry| match &entry.principal {
+            UserOrRole::Role(assignee) => Some(assignee.role_id()),
+            UserOrRole::User(_) => None,
+        });
+    if let Some(role) = role {
+        return Err(bad_request(
+            format!("Role `{role}` cannot hold a server grant: grant server privileges to users"),
+            "ServerGrantToRole",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Shared apply / list bodies
 // ---------------------------------------------------------------------------
@@ -1072,10 +1101,9 @@ async fn require_grant_authority<A: Authorizer>(
 ///
 /// One batch call, so eight or nine privileges cost one round trip to the authorizer.
 ///
-/// `for_user` must already have passed the read gate: answering for another principal
-/// discloses that principal's access, and each caller enforces that with its own
-/// resource's `ReadGrants` action, which it is the only one holding the resolved entity
-/// for. See [`grant_read_is_delegated`].
+/// Answering for another principal discloses that principal's access. The authorizer
+/// gates that itself, as it does for the action-check endpoints, so one question is
+/// decided by one action wherever it is asked.
 async fn allowed_privileges<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
@@ -1305,6 +1333,29 @@ fn covered_kinds(include_warehouse_level: bool) -> SubtreeResourceTypes {
     }
 }
 
+/// The scope the project-wide listing is asked with: one principal's grants on every
+/// kind a project holds, the project's own included, whatever their privilege.
+fn project_listing_scope(principal: &UserOrRoleId) -> SubtreeGrantScope {
+    // Every kind but the server: a kind added later is in reach without an edit here.
+    static PROJECT_KINDS: LazyLock<SubtreeResourceTypes> = LazyLock::new(|| {
+        SubtreeResourceTypes::new(
+            <ResourceType as strum::VariantArray>::VARIANTS
+                .iter()
+                .copied()
+                .filter(|kind| *kind != ResourceType::Server)
+                .collect(),
+        )
+        .expect("a project holds at least one resource kind")
+    });
+    SubtreeGrantScope {
+        resource_types: PROJECT_KINDS.clone(),
+        root_level: RootLevelGrants::Included,
+        privileges: SubtreeGrantPrivileges::Every {},
+        principal: SubtreeGrantPrincipal::One(UserOrRole::from(principal)),
+        dry_run: false,
+    }
+}
+
 /// Read one page of the subtree and render it.
 ///
 /// `ReadSubtreeGrants` on the root covers every member, so the page is returned as read:
@@ -1424,7 +1475,8 @@ async fn list_and_render<A: Authorizer, C: CatalogStore>(
 /// nothing the caller does not already have. The per-resource listings still require the
 /// level's *can-see* action instead, so that the authorizer — not this endpoint — decides
 /// whether the resource exists for this caller. Every other listing reads someone else's
-/// access and needs authority to read the resource's grants.
+/// access and needs authority to read the resource's grants (the project-wide listing:
+/// the project's `ReadSubtreeGrants`).
 ///
 /// Self is the *acting* identity, the same one [`Authorizer::are_allowed_grants`] folds to
 /// `None`. Under an assumed role that is the role, not the user behind it: a token narrowed
@@ -1440,24 +1492,6 @@ fn is_self_read(principal: Option<&UserOrRoleId>, request_metadata: &RequestMeta
         .actor()
         .to_user_or_role()
         .is_some_and(|actor| UserOrRoleId::from(&actor) == *principal)
-}
-
-/// Whether this request asks about a principal other than the acting one.
-///
-/// Answering for another principal discloses that principal's access, so the actor must
-/// hold grant-read authority on the resource. Naming the acting identity — or naming
-/// nobody, which on these endpoints asks about the actor — discloses nothing new and is
-/// exempt. Note the contrast with [`is_self_read`]: on a *listing*, naming nobody asks
-/// about everybody and is the case that most needs the gate.
-///
-/// Self is the *acting* identity, the same one
-/// [`Authorizer::are_allowed_grants`](crate::service::authz::AuthZGrantOps::are_allowed_grants)
-/// folds to `None`, so this endpoint and the authorizer decide on one identity.
-fn grant_read_is_delegated(
-    for_user: Option<&AuthzUserOrRole>,
-    request_metadata: &RequestMetadata,
-) -> bool {
-    for_user.is_some() && request_metadata.actor().to_user_or_role().as_ref() != for_user
 }
 
 fn render_grant<A: Authorizer>(authorizer: &A, row: GrantRow) -> GrantResponse {
@@ -2231,18 +2265,21 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
 
         // Asking about yourself is free — the same self-introspection allowance the
-        // action endpoints make. Any other principal reads someone else's access and
-        // needs the project-level gate. Unlike the per-resource listings there is no
-        // resource to be allowed to see, so the self path falls back to the project's
-        // can-see action rather than to no check at all: `project_id` comes from
-        // `x-project-id`, and an unchecked path would answer for a project the caller
-        // has no relation to.
+        // action endpoints make. Any other principal reads someone else's access across
+        // the whole project, which is the project's subtree read, not its `ReadGrants`:
+        // that one covers the project's own grants. Unlike the per-resource listings
+        // there is no resource to be allowed to see, so the self path falls back to the
+        // project's can-see action rather than to no check at all: `project_id` comes
+        // from `x-project-id`, and an unchecked path would answer for a project the
+        // caller has no relation to.
         let is_self = is_self_read(Some(&principal), &request_metadata);
 
         let required = if is_self {
             CatalogProjectAction::GetMetadata
         } else {
-            CatalogProjectAction::ReadGrants
+            CatalogProjectAction::ReadSubtreeGrants {
+                scope: Some(project_listing_scope(&principal)),
+            }
         };
         let mut event_ctx = APIEventContext::for_project(
             request_metadata.into(),
@@ -2340,13 +2377,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         validate_request_shape(&request)?;
         validate_write_privileges(&authorizer, ResourceType::Server, &request)?;
+        validate_server_write_principals(&authorizer, &request)?;
         // Before the gate, and deliberately cannot fail: the authority check carries
         // resolved grantees. See `resolve_grantee_roles`.
         let grantee_roles = resolve_grantee_roles::<C>(&request, catalog_state.clone()).await?;
-        // No principal validation: roles are project-scoped and the server is not in a
-        // project, so there is no project to resolve a role against. Role principals
-        // stay allowed because the assignment API already grants server relations to
-        // roles, and refusing them here would lose that capability.
 
         let event_ctx = APIEventContext::for_server(
             request_metadata.into(),
@@ -3226,15 +3260,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let authz_result = async {
             let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .require_server_action(
-                        event_ctx.request_metadata(),
-                        None,
-                        CatalogServerAction::ReadGrants,
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3272,15 +3297,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let authz_result = async {
             let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .require_project_action(
-                        event_ctx.request_metadata(),
-                        &project_id,
-                        CatalogProjectAction::ReadGrants,
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3329,16 +3345,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             let resolved = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
             ensure_warehouse_in_project(warehouse_id, &resolved.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .require_warehouse_action(
-                        event_ctx.request_metadata(),
-                        warehouse_id,
-                        Ok(Some(resolved.clone())),
-                        CatalogWarehouseAction::ReadGrants,
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3392,17 +3398,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .load_and_authorize_namespace_action::<C>(
-                        event_ctx.request_metadata(),
-                        event_ctx.user_provided_entity().clone(),
-                        CatalogNamespaceAction::ReadGrants,
-                        CachePolicy::Use,
-                        catalog_state.clone(),
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3456,17 +3451,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .await?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .load_and_authorize_table_operation::<C>(
-                        event_ctx.request_metadata(),
-                        event_ctx.user_provided_entity(),
-                        TABULAR_FLAGS,
-                        CatalogTableAction::ReadGrants,
-                        catalog_state.clone(),
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3521,17 +3505,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .await?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .load_and_authorize_view_operation::<C>(
-                        event_ctx.request_metadata(),
-                        event_ctx.user_provided_entity(),
-                        TABULAR_FLAGS,
-                        CatalogViewAction::ReadGrants,
-                        catalog_state.clone(),
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3586,17 +3559,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .await?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .load_and_authorize_generic_table_operation::<C>(
-                        event_ctx.request_metadata(),
-                        event_ctx.user_provided_entity(),
-                        TABULAR_FLAGS,
-                        CatalogGenericTableAction::ReadGrants,
-                        catalog_state.clone(),
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -3642,16 +3604,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
             let definition = authorizer.require_tag_presence(tag_definition_id, definition)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-            if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
-                authorizer
-                    .require_tag_action(
-                        event_ctx.request_metadata(),
-                        tag_definition_id,
-                        Ok(Some(definition.clone())),
-                        CatalogTagAction::ReadGrants,
-                    )
-                    .await?;
-            }
             allowed_privileges(
                 &authorizer,
                 event_ctx.request_metadata(),
@@ -4000,6 +3952,31 @@ mod tests {
         );
     }
 
+    /// The project-wide listing reaches every kind a project holds, its own grants
+    /// included, for the one principal it names.
+    #[test]
+    fn the_project_listing_scope_covers_every_project_kind() {
+        let principal = UserOrRoleId::from(&alice());
+        assert_eq!(
+            project_listing_scope(&principal),
+            SubtreeGrantScope {
+                resource_types: kinds(&[
+                    ResourceType::Project,
+                    ResourceType::Warehouse,
+                    ResourceType::Namespace,
+                    ResourceType::Table,
+                    ResourceType::View,
+                    ResourceType::GenericTable,
+                    ResourceType::Tag,
+                ]),
+                root_level: RootLevelGrants::Included,
+                privileges: SubtreeGrantPrivileges::Every {},
+                principal: SubtreeGrantPrincipal::One(alice()),
+                dry_run: false,
+            }
+        );
+    }
+
     /// A filter naming a privilege no kind under the root publishes is a typo, and
     /// answering `200` with nothing would read as "that access is gone".
     #[test]
@@ -4023,6 +4000,29 @@ mod tests {
 
     fn alice() -> UserOrRole {
         UserOrRole::User(UserId::try_from("oidc~alice").expect("valid test user id"))
+    }
+
+    /// A role server grant is refused where grants are stored in the catalog, and left to
+    /// an authorizer that keeps its own grants. Removing one is never refused.
+    #[test]
+    fn a_server_grant_to_a_role_is_refused_only_where_the_catalog_stores_grants() {
+        let role = UserOrRole::Role(crate::service::RoleId::new_random().into_api_assignee());
+        let write = ApplyGrantsRequest {
+            writes: vec![entry("admin", role.clone())],
+            deletes: vec![],
+        };
+        let err = validate_server_write_principals(&HidingAuthorizer::new(), &write)
+            .expect_err("the catalog refuses a role server grant");
+        assert_eq!(err.error.r#type, "ServerGrantToRole");
+        validate_server_write_principals(&HidingAuthorizer::new().with_own_grant_store(), &write)
+            .expect("an authorizer that keeps its own grants decides for itself");
+
+        let delete = ApplyGrantsRequest {
+            writes: vec![],
+            deletes: vec![entry("admin", role)],
+        };
+        validate_server_write_principals(&HidingAuthorizer::new(), &delete)
+            .expect("removing a role server grant is allowed");
     }
 
     fn entry(privilege: &str, principal: UserOrRole) -> GrantEntry {

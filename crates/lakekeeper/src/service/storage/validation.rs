@@ -499,7 +499,7 @@ impl ProbeDeadlines {
 }
 
 /// An instant beyond any request, matching what `tokio::time::sleep` saturates to.
-fn far_future() -> tokio::time::Instant {
+pub(crate) fn far_future() -> tokio::time::Instant {
     tokio::time::Instant::now() + Duration::from_hours(24 * 365 * 30)
 }
 

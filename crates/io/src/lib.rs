@@ -171,6 +171,19 @@ pub enum OperationType {
     List,
 }
 
+/// Outcome of [`LakekeeperStorage::remove_empty_directory`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq, strum_macros::Display)]
+pub enum RemoveEmptyDirectoryOutcome {
+    /// The directory was empty and has been removed.
+    Removed,
+    /// The directory has entries and was left in place.
+    NotEmpty,
+    /// No directory exists at the path: it is absent, a file, or was replaced concurrently.
+    NotFound,
+    /// The backend does not implement directory removal.
+    Unsupported,
+}
+
 #[derive(Debug, Clone, derive_more::From)]
 pub enum StorageBackend {
     #[cfg(feature = "storage-s3")]
@@ -457,6 +470,18 @@ where
             ),
         })
     }
+
+    /// Remove the directory at the absolute `path` (trailing slash optional) if it is empty.
+    ///
+    /// The emptiness check and the removal are one atomic operation on the backend. The default
+    /// returns [`RemoveEmptyDirectoryOutcome::Unsupported`] without touching storage; backends
+    /// with native empty-directory deletion override it.
+    async fn remove_empty_directory(
+        &self,
+        _path: &str,
+    ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
+        Ok(RemoveEmptyDirectoryOutcome::Unsupported)
+    }
 }
 
 #[async_trait::async_trait]
@@ -604,6 +629,24 @@ impl LakekeeperStorage for StorageBackend {
             StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
         }
     }
+
+    async fn remove_empty_directory(
+        &self,
+        path: &str,
+    ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.remove_empty_directory(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.remove_empty_directory(path).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.remove_empty_directory(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_empty_directory(path).await,
+        }
+    }
 }
 
 // Delegating `LakekeeperStorage` impls for smart pointers.
@@ -692,6 +735,13 @@ macro_rules! impl_lakekeeper_storage_delegating {
 
                 async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
                     (**self).remove_all(path).await
+                }
+
+                async fn remove_empty_directory(
+                    &self,
+                    path: &str,
+                ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
+                    (**self).remove_empty_directory(path).await
                 }
             }
         )+

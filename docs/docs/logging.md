@@ -379,6 +379,8 @@ A *denied* `apply_grants` has the same detail as an allowed one: what was asked,
 
 Both are checked once, at the root of the subtree, for the whole batch, so one action describes it. The root is the record's `entities` entry.
 
+`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal` always names one user or role. About yourself it records `get_metadata`.
+
 Six fields describe the **scope**. It is the same scope the authorizer is asked about. The six fields appear together or not at all; a request without a scope carries none of them.
 
 | Context field    | Type   | Description                                                                 |

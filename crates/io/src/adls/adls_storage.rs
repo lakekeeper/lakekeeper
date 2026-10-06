@@ -6,10 +6,17 @@ use std::{
     time::Duration,
 };
 
+use azure_core::{
+    headers::{ETAG, HeaderName},
+    request_options::IfMatchCondition,
+};
 use azure_storage::CloudLocation;
-use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
-    HeadPathResponse, Path,
+use azure_storage_datalake::{
+    clients::PathClient as _,
+    prelude::{
+        DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
+        HeadPathResponse, Path,
+    },
 };
 use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
@@ -17,7 +24,8 @@ use futures::StreamExt as _;
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
+    RemoveEmptyDirectoryOutcome, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
@@ -519,6 +527,60 @@ impl LakekeeperStorage for AdlsStorage {
 
         Ok(())
     }
+
+    /// Native ADLS Gen2 non-recursive delete, which the service rejects with
+    /// `DirectoryNotEmpty` while the directory has entries.
+    ///
+    /// A non-recursive delete also removes files, so a `HEAD` first confirms the path is a
+    /// directory, and the delete is conditioned on its `ETag`.
+    async fn remove_empty_directory(
+        &self,
+        path: &str,
+    ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
+        let path = path.trim_end_matches('/');
+        // URL parsing strips a trailing space, so the request would address a sibling.
+        if path.ends_with(' ') {
+            return Err(InvalidLocationError::new(
+                path.to_string(),
+                "Directory path must not end with a space".to_string(),
+            )
+            .into());
+        }
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+        require_key(&adls_location)?;
+        let client = self.get_directory_client(&adls_location)?;
+
+        let Some(etag) = directory_etag(&client, path)
+            .await
+            .map_err(DeleteError::IOError)?
+        else {
+            return Ok(RemoveEmptyDirectoryOutcome::NotFound);
+        };
+
+        let mut delete_stream = client
+            .delete(false)
+            .if_match_condition(IfMatchCondition::Match(etag))
+            .into_stream();
+        while let Some(result) = delete_stream.next().await {
+            let Err(e) = result else { continue };
+            if let Some(http_err) = e.as_http_error() {
+                if http_err.error_code() == Some("DirectoryNotEmpty") {
+                    return Ok(RemoveEmptyDirectoryOutcome::NotEmpty);
+                }
+                // The directory was replaced after the `HEAD`, so it has a different `ETag`.
+                if http_err.status() == azure_core::StatusCode::PreconditionFailed {
+                    return Ok(RemoveEmptyDirectoryOutcome::NotFound);
+                }
+            }
+            let e = parse_error(e, path);
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(RemoveEmptyDirectoryOutcome::NotFound);
+            }
+            return Err(DeleteError::IOError(e));
+        }
+
+        Ok(RemoveEmptyDirectoryOutcome::Removed)
+    }
 }
 
 /// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
@@ -589,6 +651,37 @@ fn group_paths_by_container(
 
     Ok(grouped_paths)
 }
+
+/// `ETag` of the directory at the client's path, or `None` if the path is absent or a file.
+///
+/// Issued as a raw `HEAD` because the SDK's `HeadPathResponse` drops `x-ms-resource-type`.
+async fn directory_etag(client: &DirectoryClient, path: &str) -> Result<Option<String>, IOError> {
+    const RESOURCE_TYPE: HeaderName = HeaderName::from_static("x-ms-resource-type");
+
+    let url = client.url().map_err(|e| parse_error(e, path))?;
+    let mut request = azure_core::Request::new(url, azure_core::Method::Head);
+    let response = match client
+        .send(&mut azure_core::Context::new(), &mut request)
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            let e = parse_error(e, path);
+            return if e.kind() == ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(e)
+            };
+        }
+    };
+
+    let headers = response.headers();
+    if headers.get_optional_str(&RESOURCE_TYPE) != Some("directory") {
+        return Ok(None);
+    }
+    Ok(headers.get_optional_string(&ETAG))
+}
+
 async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathResponse, ReadError> {
     client.get_properties().await.map_err(|e| {
         ReadError::IOError(
