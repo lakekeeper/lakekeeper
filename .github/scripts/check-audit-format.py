@@ -23,8 +23,6 @@ Check a branch:  python3 .github/scripts/check-audit-format.py <base-ref> [--bas
 Write the version: python3 .github/scripts/check-audit-format.py --write-version
 Release notes:   python3 .github/scripts/check-audit-format.py --release-notes
 After a release: python3 .github/scripts/check-audit-format.py --release <version>
-Record shapes:   python3 .github/scripts/check-audit-format.py --summarise-records DIR OUT.json
-Compare schemas: python3 .github/scripts/check-audit-format.py --compare-schemas A.json B.json
 Self-test:       python3 .github/scripts/check-audit-format.py --self-test
 Read version:    python3 .github/scripts/check-audit-format.py --print-version <rev>
 """
@@ -524,12 +522,8 @@ def file_at(rev: str, path: str) -> str | None:
 
 
 def emitter_of(schema: dict) -> tuple[str | None, str | None]:
-    """The emitter a schema document names, as `(name, format)`.
-
-    `(None, None)` when the document carries no stamp, which is not an error: a record-shape
-    summary has none, because it describes what was observed rather than what one emitter
-    declares.
-    """
+    """The emitter a schema document names, as `(name, format)`; `(None, None)` when it
+    carries no stamp."""
     stamp = schema.get("x-audit-emitter")
     if not isinstance(stamp, dict):
         return (None, None)
@@ -540,7 +534,7 @@ def emitter_of(schema: dict) -> tuple[str | None, str | None]:
     )
 
 
-def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str | None, str, str]:
+def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str, str, str]:
     """Refuse to compare two schemas that describe different emitters.
 
     A verdict across emitters is meaningless: they carry different vocabularies, are governed
@@ -550,12 +544,17 @@ def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str | Non
     """
     base_name, base_format = emitter_of(base)
     head_name, head_format = emitter_of(head)
-    if base_name and head_name and base_name != head_name:
+    if base_name is None or head_name is None:
+        raise CheckFailed(
+            f"::error::{whence} was given a schema that names no emitter. Every generated schema "
+            f"carries `x-audit-emitter`; regenerate it with `just update-audit-schema`."
+        )
+    if base_name != head_name:
         raise CheckFailed(
             f"::error::{whence} was given schemas of two different emitters, `{base_name}` "
             f"and `{head_name}`. Compare a schema with its own predecessor."
         )
-    return (head_name or base_name, base_format or "?", head_format or "?")
+    return (head_name, base_format or "?", head_format or "?")
 
 
 # Keywords that carry prose, or say which document this is, and nothing about the shape of a
@@ -778,150 +777,6 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
         for lvl, where, why in found
     ]
     return kind, reasons
-
-
-# Which family a record belongs to. A record that carries `record_type` names its own; one
-# that does not is read off which fields are present, which is what lets this summarise a
-# revision from before the field existed.
-FAMILY_BY_RECORD_TYPE = {
-    "authorization": "AuthorizationRecord",
-    "replay": "ReplayRecord",
-    "operation": "OperationRecord",
-}
-
-
-def record_family(record: dict) -> str:
-    """Which record family `record` belongs to."""
-    declared = record.get("record_type")
-    if isinstance(declared, str):
-        return FAMILY_BY_RECORD_TYPE.get(declared, declared)
-    if "decision" in record:
-        return "AuthorizationRecord"
-    if any(key in record for key in ("action", "actions", "entity", "entities")):
-        return "ReplayRecord"
-    return "OperationRecord"
-
-
-def json_type(value: object) -> str:
-    """The JSON type name of `value`. `bool` is checked first: in Python it is an `int`."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "array"
-    return "object"
-
-
-def _property_spec(types: set[str], item_types: set[str]) -> dict:
-    """One property, as the comparison reads it: its type, and an array's item type."""
-    kinds = sorted(types)
-    spec: dict = {"type": kinds[0] if len(kinds) == 1 else kinds}
-    if "array" in types and item_types:
-        items = sorted(item_types)
-        spec["items"] = {"type": items[0] if len(items) == 1 else items}
-    return spec
-
-
-def summarise_records(records_dir: str, out_path: str) -> int:
-    """Describe the TOP-LEVEL shape of committed records, as a schema document.
-
-    The generated schema describes the objects a record is assembled from, not the record
-    itself, because the record shapes are not registered types. This reads emitted records
-    instead and states, per family, which top-level keys appear, with which JSON types, and
-    which appear in every sample. A key that is sometimes `null` is typed as such, so losing
-    the `null` reads as a retype rather than passing unnoticed.
-
-    Sampled, not exhaustive: a key no committed record carries is not here. The output is a
-    schema document, so `--compare-schemas` reads it like any other.
-    """
-    directory = Path(records_dir)
-    files = sorted(directory.glob("*.json"))
-    if not files:
-        print(f"::error::no records found in {records_dir}")
-        return 1
-
-    seen: dict[str, dict] = {}
-    for path in files:
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            print(f"::error::{path} is not readable JSON: {error}")
-            return 1
-        if not isinstance(record, dict):
-            print(f"::error::{path} is not a JSON object")
-            return 1
-        family = seen.setdefault(
-            record_family(record), {"types": {}, "items": {}, "count": 0, "always": None}
-        )
-        family["count"] += 1
-        for key, value in record.items():
-            family["types"].setdefault(key, set()).add(json_type(value))
-            if isinstance(value, list):
-                for item in value:
-                    family["items"].setdefault(key, set()).add(json_type(item))
-        keys = set(record)
-        family["always"] = keys if family["always"] is None else family["always"] & keys
-
-    defs = {}
-    for name in sorted(seen):
-        family = seen[name]
-        defs[name] = {
-            "type": "object",
-            "x-audit-kind": "shape",
-            "x-audit-samples": family["count"],
-            "properties": {
-                key: _property_spec(family["types"][key], family["items"].get(key, set()))
-                for key in sorted(family["types"])
-            },
-            "required": sorted(family["always"] or set()),
-        }
-
-    document = {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "Top-level shape of the audit records committed under " + records_dir,
-        "x-audit-source": records_dir,
-        "$defs": defs,
-    }
-    Path(out_path).write_text(json.dumps(document, indent=2) + "\n")
-    total = sum(family["count"] for family in seen.values())
-    print(f"{out_path}: {len(defs)} record families from {total} record(s) in {records_dir}")
-    return 0
-
-
-def compare_schemas(base_path: str, head_path: str) -> int:
-    """Classify the difference between two committed schema documents.
-
-    The same comparison the pull request check runs across the merge base, pointed at two
-    files instead. A change that spans many commits, or one whose "before" lives in a frozen
-    snapshot rather than in a parent revision, is read in one go — which is what the release
-    note is written from.
-    """
-    try:
-        base = json.loads(Path(base_path).read_text())
-        head = json.loads(Path(head_path).read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        print(f"::error::cannot read the schemas: {error}")
-        return 1
-    name, base_format, head_format = require_same_emitter(base, head, "--compare-schemas")
-    kind, reasons = classify_schema(base, head)
-    print(f"Comparing:  {base_path} -> {head_path}")
-    if name:
-        moved = "" if base_format == head_format else f" -> {head_format}"
-        print(f"Emitter:    `{name}`, format {base_format}{moved}")
-    for reason in reasons:
-        print(f"  {reason}")
-    if not reasons:
-        print("  no difference")
-    required = REQUIRED_LEVEL.get(kind, "none")
-    print(f"Verdict:    {kind}; a fragment must declare at least `{required}`")
-    return 0
 
 
 def classify_change(merge_base: str, head_ref: str) -> str:
@@ -2058,9 +1913,12 @@ def self_test() -> int:
           emitter_of({"x-audit-emitter": "lakekeeper"}), (None, None))
     check("stamp: the same emitter compares",
           require_same_emitter(stamped, stamped, "t"), ("lakekeeper", "1.0", "1.0"))
-    # An unstamped document is a record summary; it claims no emitter, so it blocks nothing.
-    check("stamp: one side unstamped still compares",
-          require_same_emitter(unstamped, stamped, "t"), ("lakekeeper", "?", "1.0"))
+    unstamped_refused = False
+    try:
+        require_same_emitter(unstamped, stamped, "t")
+    except CheckFailed:
+        unstamped_refused = True
+    check("stamp: an unstamped schema is refused", unstamped_refused, True)
     refused = False
     try:
         require_same_emitter(stamped, other, "t")
@@ -2085,33 +1943,6 @@ def self_test() -> int:
           emitter_of({"x-audit-emitter": {"name": "lakekeeper", "format": "2.0"}})[1] != show((1, 0)),
           True)
 
-    # ── record families and the shape summary ──
-    check("family: decision names an authorization record",
-          record_family({"decision": "allowed", "action": {}}), "AuthorizationRecord")
-    check("family: action without decision is a replay",
-          record_family({"action": {}, "operation": "idempotent_replay"}), "ReplayRecord")
-    check("family: neither is an operation record",
-          record_family({"operation": "grant_created", "outcome": "success"}), "OperationRecord")
-    check("family: record_type wins once the shapes carry one",
-          record_family({"record_type": "operation", "decision": "allowed"}), "OperationRecord")
-    check("family: an unknown record_type is kept verbatim",
-          record_family({"record_type": "something_new"}), "something_new")
-
-    # `bool` before `int`: in Python `True` is an `int`, and a boolean typed as an integer
-    # would make a real type change invisible.
-    check("json type: boolean is not integer", json_type(True), "boolean")
-    check("json type: null", json_type(None), "null")
-    check("json type: object", json_type({"a": 1}), "object")
-
-    check("property: one observed type", _property_spec({"string"}, set()), {"type": "string"})
-    check("property: a sometimes-null field keeps both",
-          _property_spec({"string", "null"}, set()), {"type": ["null", "string"]})
-    check("property: an array records its item type",
-          _property_spec({"array"}, {"object"}), {"type": "array", "items": {"type": "object"}})
-    # The whole point of typing a null: losing it must read as a change.
-    check("a field that stops being null is a retype",
-          fingerprint(_property_spec({"string", "null"}, set())) != fingerprint(_property_spec({"string"}, set())),
-          True)
     check(
         "schema: the owner that lost the value is named",
         any("CatalogTableAction" in reason and "get_metadata" in reason for reason in masking_reasons),
@@ -2163,18 +1994,6 @@ def main(argv: list[str]) -> int:
         "--base-branch",
         help="the branch the pull request targets. A `rel-*` branch freezes the format.",
     )
-    parser.add_argument(
-        "--summarise-records",
-        nargs=2,
-        metavar=("RECORDS_DIR", "OUT"),
-        help="write the top-level shape of the records in RECORDS_DIR as a schema document",
-    )
-    parser.add_argument(
-        "--compare-schemas",
-        nargs=2,
-        metavar=("BASE", "HEAD"),
-        help="classify the difference between two schema documents and list every change",
-    )
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
     parser.add_argument("--print-version", metavar="REV", help="print AUDIT_FORMAT at REV")
     parser.add_argument(
@@ -2195,10 +2014,6 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     load_config()
-    if args.summarise_records is not None:
-        return summarise_records(*args.summarise_records)
-    if args.compare_schemas is not None:
-        return compare_schemas(*args.compare_schemas)
     if args.self_test:
         return self_test()
     if args.print_version is not None:

@@ -125,16 +125,6 @@ update-audit-schema:
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema
     cargo test -p lakekeeper-integration-tests --test audit_schema
 
-# Both baselines are frozen snapshots of the audit format before the current shape change, and
-# both go when the fragments they cover ship.
-# List what the audit format change has done so far, for the release note
-audit-format-since-baseline:
-    @echo "=== declared types ==="
-    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/schema-baseline.json docs/docs/audit/schema.json
-    @echo "=== top-level record shapes ==="
-    @python3 .github/scripts/check-audit-format.py --summarise-records crates/lakekeeper/src/service/events/backends/audit/fixtures /tmp/lakekeeper-records-head.json
-    @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/records-baseline.json /tmp/lakekeeper-records-head.json
-
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
