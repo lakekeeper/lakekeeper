@@ -85,9 +85,9 @@ check-audit-format base="origin/main":
 audit-format-release-notes:
     @python3 .github/scripts/check-audit-format.py --release-notes
 
-# Refuses until every fragment's text is in this release's section of the release notes —
-# their prose exists nowhere else. Run `audit-format-release-notes` and paste it first.
-# Move the audit format baseline to the version this release ships and clear the fragments
+# After the release is tagged, clear the fragments it shipped. Refuses until every fragment's
+# text is in this release's section of the release notes — their prose exists nowhere else.
+# Run `audit-format-release-notes` and paste it first.
 audit-format-release version:
     python3 .github/scripts/check-audit-format.py --release {{version}}
 
@@ -99,11 +99,8 @@ audit-format-release version:
 test-audit-corpus:
     cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
 
-# AUDIT_FORMAT first, because everything after it depends on the value: the fixture
-# directory is named for the major, so a fragment that raises it also renames the directory,
-# and regenerating before that would write goldens into the outgoing one. The version is
-# computed from audit-format/released.json and audit-format/unreleased/ — write a fragment,
-# never a version number.
+# AUDIT_FORMAT first, because every record carries it. The version is computed from the last
+# release tag and audit-format/unreleased/ — write a fragment, never a version number.
 #
 # Then two passes over the fixtures: the first writes, the second verifies (the writing pass
 # returns before it compares). The first is filtered to the writers; the second runs the whole
@@ -135,7 +132,7 @@ audit-format-since-baseline:
     @echo "=== declared types ==="
     @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/schema-baseline.json docs/docs/audit/schema.json
     @echo "=== top-level record shapes ==="
-    @python3 .github/scripts/check-audit-format.py --summarise-records crates/lakekeeper/src/service/events/backends/audit/fixtures/v1 /tmp/lakekeeper-records-head.json
+    @python3 .github/scripts/check-audit-format.py --summarise-records crates/lakekeeper/src/service/events/backends/audit/fixtures /tmp/lakekeeper-records-head.json
     @python3 .github/scripts/check-audit-format.py --compare-schemas audit-format/records-baseline.json /tmp/lakekeeper-records-head.json
 
 update-management-openapi:

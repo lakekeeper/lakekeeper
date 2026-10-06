@@ -4,7 +4,8 @@
 derived:
 
 ```text
-AUDIT_FORMAT = the version in released.json, raised once by the highest level among unreleased/*.md
+AUDIT_FORMAT = the version the last release tag declares, raised once by the highest level
+               among the fragments in unreleased/ that tag does not carry
 ```
 
 So a release raises the audit format version at most once however many changes it
@@ -14,10 +15,8 @@ carries, and a major change absorbs every minor change in the same cycle.
 
 | Path | What |
 |------|------|
-| `released.json` | The audit format version the most recent release on this branch shipped, and which release that was. `null` until the first release carries one. Maintained by the release recipe. |
-| `unreleased/*.md` | One fragment per change: its level, and prose for the release notes. Written in the pull request that makes the change. |
+| `unreleased/*.md` | One fragment per change: its level, and prose for the release notes. Written in the pull request that makes the change. A fragment the last release tag carries shipped with it and is cleared by `just audit-format-release`. |
 | `TEMPLATE.md` | What a fragment looks like. Not a fragment — only `unreleased/*.md` is read. |
-| `schema.json` | The audit format itself: every record shape, nested object, field and closed set of names. Generated from the code by `just update-audit-schema`, and published to the documentation site as `docs/docs/audit/schema.json`. Never edited by hand. |
 | `schema-baseline.json` | The declared types as they stood before the current shape change, frozen. Working state for that change's release note; it goes when the fragments it covers ship. |
 | `records-baseline.json` | The top-level record shapes as they stood before the current shape change, summarised from the fixtures. Frozen and temporary, like the file above. |
 

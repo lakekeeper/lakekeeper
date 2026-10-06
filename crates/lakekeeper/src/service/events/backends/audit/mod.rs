@@ -34,9 +34,8 @@ use crate::service::events::{
 /// unconditionally as the `audit_format` field.
 ///
 /// **Not edited by hand.** The value is derived from committed state — the version the
-/// last release shipped (`audit-format/released.json`), raised once by the highest level
-/// among the changes recorded since (`audit-format/unreleased/*.md`) — and written by
-/// `just update-audit-fixtures`. A release therefore raises it at most once however many
+/// last release tag declares, raised once by the highest level among the changes recorded
+/// since (`audit-format/unreleased/*.md`) — and written by `just update-audit-fixtures`. A release therefore raises it at most once however many
 /// changes it carries, and a major change absorbs every minor change in the same cycle.
 ///
 /// **MAJOR** covers a `major` change: an existing field renamed, retyped, or structurally

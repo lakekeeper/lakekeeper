@@ -158,16 +158,10 @@ const FIXTURE_ROLE_ID: &str = "019684ff-0000-7000-8000-000000000007";
 const FIXTURE_IDEMPOTENCY_KEY: &str = "019684ff-0000-7000-8000-000000000004";
 const FIXTURE_CREATED_BEFORE: &str = "2026-01-01T00:00:00Z";
 
-/// The fixture directory for the format the code emits right now, `fixtures/v{MAJOR}`,
-/// derived from [`AUDIT_FORMAT`].
+/// The fixture directory: one, holding what the code emits now.
 fn fixture_dir() -> std::path::PathBuf {
-    let major = AUDIT_FORMAT
-        .split('.')
-        .next()
-        .expect("AUDIT_FORMAT is MAJOR.MINOR, asserted at compile time");
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "src/service/events/backends/audit/fixtures/v{major}"
-    ))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/service/events/backends/audit/fixtures")
 }
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
@@ -203,19 +197,11 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "cannot read the committed audit fixture {}: {e}\n\n\
-             If a `major` fragment just raised AUDIT_FORMAT to {AUDIT_FORMAT}, this is \
-             expected and the fix is one command: the fixture directory is named for \
-             the major version, and `just update-audit-fixtures` renames it to \
-             `fixtures/v{}` and regenerates the contents. It moves the directory rather \
-             than copying it — the old format is unreproducible once the code emits the \
-             new one, so a directory left behind can never be regenerated or kept \
-             passing, and `check-audit-format` rejects two directories anyway.\n\n\
-             Otherwise: if this fixture is new, generate it with \
-             `just update-audit-fixtures`. If it was moved or deleted, restore it — it \
-             is the record of what audit_format {AUDIT_FORMAT} puts on the wire, and \
-             without it nothing detects a change to the audit log format.",
+             If this fixture is new, generate it with `just update-audit-fixtures`. If it \
+             was moved or deleted, restore it — it is the record of what audit_format \
+             {AUDIT_FORMAT} puts on the wire, and without it nothing detects a change to \
+             the audit log format.",
             path.display(),
-            AUDIT_FORMAT.split('.').next().unwrap_or("?"),
         )
     });
     let committed: serde_json::Value = serde_json::from_str(&committed)
@@ -254,16 +240,9 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
              audit-format/unreleased/ and run `just update-audit-fixtures`, which \
              computes AUDIT_FORMAT (now {AUDIT_FORMAT}) from the fragments. A changed \
              test INPUT does not: regenerate and write no fragment.\n\n\
-             Decide which of the two this is. `just check-audit-format` cannot: it \
-             compares shapes, so it reports the changed value and defers, and it \
-             passes either way.\n\n\
-             You are not asked to pick a version number, and a `major` fragment also \
-             RENAMES the fixture directory, because it is named for the major version \
-             it describes. `just update-audit-fixtures` does both. Do not keep the old \
-             directory alongside the new one: a fixture is what the CURRENT code \
-             emits, so once the code emits the new format the old one can never be \
-             regenerated or kept passing. `check-audit-format` requires exactly one \
-             directory and compares across the rename.\n\n\
+             Decide which of the two this is. A renamed value of a registered set also \
+             shows in the schema diff, which `just check-audit-format` reads. You are \
+             not asked to pick a version number.\n\n\
              See the audit log section of docs/docs/developer-guide.md."
         );
     }
