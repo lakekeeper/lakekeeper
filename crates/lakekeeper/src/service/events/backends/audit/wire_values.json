@@ -55,6 +55,7 @@
       "list_warehouses",
       "modify_task_queue_config",
       "read_grants",
+      "read_subtree_grants",
       "rename",
       "search_roles"
     ],

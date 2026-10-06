@@ -36,6 +36,7 @@ use crate::{
         ApplyGrantsStoreError, CatalogStore, GenericTableId, GenericTabularInfo,
         NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId, TableInfo,
         TagDefinition, TagDefinitionId, Transaction, ViewId, ViewInfo, WarehouseId,
+        authn::Actor,
         events::{
             EventDispatcher, GrantsChangedEvent,
             types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource},
@@ -986,6 +987,10 @@ pub trait AuthZGrantOps: Authorizer {
     /// May the actor (or `for_user`, when given) administer each of `checks` on `target`?
     /// Returns exactly one decision per check, in order.
     ///
+    /// The authorizer gates `for_user`: [`Authorizer::are_allowed_grants_impl`] returns
+    /// `CannotInspectPermissions` when the actor may not inspect that principal's
+    /// permissions. Nothing here or in the callers checks it.
+    ///
     /// Grant *authority* is resolved here rather than modelled as a `Catalog*Action`
     /// because the privilege is a name from this authorizer's own vocabulary: it cannot
     /// be a variant of a catalog-wide action enum, and resolving it may fail (an unknown
@@ -1037,7 +1042,8 @@ impl<T> AuthZGrantOps for T where T: Authorizer {}
 /// default project that way when authentication is disabled.
 ///
 /// The owner is the acting identity, so a request narrowed to a role makes the role the
-/// owner rather than the user behind it.
+/// owner of what it creates. The server is the exception: server grants go to users, so
+/// the user behind an assumed role owns it.
 pub(crate) fn bootstrap_grant_specs<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
@@ -1053,7 +1059,12 @@ pub(crate) fn bootstrap_grant_specs<A: Authorizer>(
     let Some(owner) = metadata.actor().to_user_or_role() else {
         return Vec::new();
     };
-    let owner = UserOrRoleId::from(&owner);
+    let owner = match (resource, metadata.actor()) {
+        (GrantResource::Server, Actor::Role { principal, .. }) => {
+            UserOrRoleId::User(principal.clone())
+        }
+        _ => UserOrRoleId::from(&owner),
+    };
     privileges
         .iter()
         .map(|privilege| GrantSpec {
@@ -1300,7 +1311,7 @@ mod tests {
             request_metadata::RequestMetadataTestBuilder,
             service::{
                 Role, RoleId,
-                authn::{Actor, UserId},
+                authn::UserId,
                 authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
             },
         };
@@ -1420,6 +1431,30 @@ mod tests {
                     .map(|spec| spec.principal.clone())
                     .collect::<Vec<_>>(),
                 vec![UserOrRoleId::Role(role_id)]
+            );
+        }
+
+        #[test]
+        fn the_user_behind_an_assumed_role_owns_the_server() {
+            // Server grants go to users only, so bootstrapping under an assumed role
+            // names the user.
+            let authorizer = HidingAuthorizer::new()
+                .with_bootstrap_grants(&[(ResourceType::Server, &["ownership"])]);
+            let alice = UserId::new_unchecked("oidc", "alice");
+            let metadata = RequestMetadataTestBuilder::builder()
+                .actor(Actor::Role {
+                    principal: alice.clone(),
+                    assumed_role: Role::new_random_with_id(RoleId::new_random()).into(),
+                })
+                .build();
+
+            assert_eq!(
+                bootstrap_grant_specs(&authorizer, &metadata, &GrantResource::Server),
+                vec![GrantSpec {
+                    principal: UserOrRoleId::User(alice),
+                    resource: GrantResource::Server,
+                    privilege: "ownership".to_string(),
+                }]
             );
         }
 

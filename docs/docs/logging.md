@@ -291,6 +291,8 @@ Because the event records the attempt, a *denied* apply is logged with the same 
 
 Both are authorized once at the subtree root for the whole batch, so a single action describes it. The root is the event's `entity`, not part of the action.
 
+`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal` always names one user or role. About yourself it records `get_metadata`.
+
 Six fields are the **scope** — the same value the authorizer is asked with, so the record and the decision describe one request. They are emitted together or not at all: a request that names no scope, which is the base-capability form, carries none of them.
 
 | Context field    | Type   | Description                                                                 |

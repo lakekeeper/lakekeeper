@@ -516,7 +516,16 @@ async fn authorize_get_project_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogProjectAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-    let actions = CatalogProjectAction::variants();
+    // The project-wide listing answers 501 where the authorizer owns its grants, so
+    // reporting its action allowed there would promise an operation that refuses.
+    let subtree_answers = authorizer.grants().is_none();
+    let actions: Vec<CatalogProjectAction> = CatalogProjectAction::variants()
+        .iter()
+        .filter(|action| {
+            subtree_answers || !matches!(action, CatalogProjectAction::ReadSubtreeGrants { .. })
+        })
+        .cloned()
+        .collect();
     let can_see_permission = CatalogProjectAction::GetMetadata;
 
     let results = authorizer
@@ -534,7 +543,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
     let mut can_see = false;
     let allowed_actions = results
         .iter()
-        .zip(actions)
+        .zip(&actions)
         .filter_map(|(allowed, action)| {
             if *allowed {
                 if action == &can_see_permission {

@@ -160,7 +160,11 @@ async fn create_role_in_project(ctx: &Ctx, metadata: &RequestMetadata) -> RoleId
     created.id
 }
 
-async fn create_namespace_in(ctx: &Ctx, warehouse_id: lakekeeper::WarehouseId, name: &str) {
+async fn create_namespace_in<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    warehouse_id: lakekeeper::WarehouseId,
+    name: &str,
+) {
     let prefix: Prefix = warehouse_id.to_string().into();
     CatalogServer::create_namespace(
         Some(prefix),
@@ -175,8 +179,8 @@ async fn create_namespace_in(ctx: &Ctx, warehouse_id: lakekeeper::WarehouseId, n
     .unwrap();
 }
 
-async fn create_table_returning_id(
-    ctx: &Ctx,
+async fn create_table_returning_id<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
     warehouse_id: lakekeeper::WarehouseId,
     ns: &str,
     name: &str,
@@ -461,6 +465,43 @@ async fn apply_and_list_server_grants(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(all.grants, Vec::new());
+}
+
+/// A role belongs to a project, so a server grant to it would hand server-wide authority
+/// to whoever manages that project's role members. Removing one stays allowed.
+#[sqlx::test]
+async fn a_server_grant_to_a_role_is_refused(pool: PgPool) {
+    let f = setup(pool).await;
+    let role_id = create_role_in_project(&f.ctx, &f.metadata).await;
+    let to_role = GrantEntry {
+        privilege: "list_users".to_string(),
+        principal: UserOrRole::Role(role_id.into_api_assignee()),
+    };
+
+    let err = Server::apply_server_grants(
+        f.ctx.clone(),
+        f.metadata.clone(),
+        writes(vec![entry("list_users", &f.alice), to_role.clone()]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "ServerGrantToRole");
+
+    // Nothing was applied: the refusal covers the whole diff.
+    let page = Server::list_server_grants(
+        f.ctx.clone(),
+        f.metadata.clone(),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants, Vec::new());
+
+    Server::apply_server_grants(f.ctx.clone(), f.metadata.clone(), deletes(vec![to_role]))
+        .await
+        .unwrap();
 }
 
 /// The project level has its own resource listing, distinct from the project-wide
@@ -1470,8 +1511,38 @@ async fn an_invisible_warehouse_hides_its_grants(pool: PgPool) {
 /// is dead code, one that applies too broadly leaks another principal's access.
 #[sqlx::test]
 async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPool) {
+    use lakekeeper::service::authz::{
+        CatalogProjectAction, ResourceType, RootLevelGrants, SubtreeGrantPrincipal,
+        SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes,
+    };
+
     let f = setup_denying(pool).await;
-    f.authorizer.block_action("project:ReadGrants");
+    // Blocks exactly the scope the listing must ask with: a listing that asked with any
+    // other scope would get through, and the refusal below would fail.
+    let scope = SubtreeGrantScope {
+        resource_types: SubtreeResourceTypes::new(
+            [
+                ResourceType::Project,
+                ResourceType::Warehouse,
+                ResourceType::Namespace,
+                ResourceType::Table,
+                ResourceType::View,
+                ResourceType::GenericTable,
+                ResourceType::Tag,
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .unwrap(),
+        root_level: RootLevelGrants::Included,
+        privileges: SubtreeGrantPrivileges::Every {},
+        principal: SubtreeGrantPrincipal::One(UserOrRole::User(f.bob.clone())),
+        dry_run: false,
+    };
+    f.authorizer.block_action(&format!(
+        "project:{:?}",
+        CatalogProjectAction::ReadSubtreeGrants { scope: Some(scope) }
+    ));
 
     let page = DenyServer::list_grants(
         f.ctx.clone(),
@@ -1517,6 +1588,124 @@ async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPoo
     .unwrap_err();
     assert_eq!(err.error.code, 400);
     assert_eq!(err.error.r#type, "MissingGrantPrincipal");
+}
+
+/// `GET /management/v1/project/actions` lists `read_subtree_grants` where grants are
+/// stored in the catalog.
+#[sqlx::test]
+async fn project_actions_list_the_subtree_read_where_the_catalog_stores_grants(pool: PgPool) {
+    let actions = project_actions(pool, HidingAuthorizer::new()).await;
+    assert!(actions.contains(&"get_metadata".to_string()), "{actions:?}");
+    assert!(
+        actions.contains(&"read_subtree_grants".to_string()),
+        "{actions:?}"
+    );
+}
+
+/// Where the authorizer keeps its own grants, the project-wide listing answers 501, so
+/// project actions omit `read_subtree_grants`.
+#[sqlx::test]
+async fn project_actions_omit_the_subtree_read_where_the_authorizer_keeps_grants(pool: PgPool) {
+    let actions = project_actions(pool, HidingAuthorizer::new().with_own_grant_store()).await;
+    assert!(actions.contains(&"get_metadata".to_string()), "{actions:?}");
+    assert!(
+        !actions.contains(&"read_subtree_grants".to_string()),
+        "{actions:?}"
+    );
+}
+
+/// The action names `GET /management/v1/project/actions` reports under `authorizer`,
+/// through the built router.
+async fn project_actions(pool: PgPool, authorizer: HidingAuthorizer) -> Vec<String> {
+    use lakekeeper::axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt as _;
+
+    let (ctx, warehouse): (DenyCtx, _) = SetupTestCatalog::builder()
+        .pool(pool)
+        .storage_profile(memory_io_profile())
+        .authorizer(authorizer)
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id: ProjectId = (*warehouse.project_id).clone();
+
+    let router: Router = Router::new()
+        .nest(
+            "/management/v1",
+            DenyServer::new_v1_router(&ctx.v1_state.authz),
+        )
+        .with_state(ctx);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/management/v1/project/actions")
+                .extension(
+                    RequestMetadataTestBuilder::builder()
+                        .project_id(Some(project_id.into()))
+                        .build(),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = lakekeeper::axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    body["allowed-actions"]
+        .as_array()
+        .expect("allowed-actions is an array")
+        .iter()
+        .map(|action| {
+            action["action"]
+                .as_str()
+                .expect("each action carries its name")
+                .to_string()
+        })
+        .collect()
+}
+
+/// Where grants are stored in the catalog, listing what another principal holds across
+/// the project is its own permission, not the project's grant read: that one covers the
+/// project's own grants, and holding it must neither grant nor be needed for the
+/// project-wide listing.
+#[sqlx::test]
+async fn the_project_wide_listing_is_not_the_project_grant_read(pool: PgPool) {
+    let f = setup_denying(pool).await;
+    f.authorizer.block_action("project:ReadGrants");
+
+    let page = DenyServer::list_grants(
+        f.ctx.clone(),
+        as_principal(&f.alice, &f.project_id),
+        ListGrantsQuery {
+            principal_user: Some(f.bob.clone()),
+            principal_role: None,
+        },
+        no_pagination(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.grants.len(), 1);
+    assert_eq!(page.grants[0].privilege, "list_namespaces");
+    assert_eq!(page.grants[0].principal, UserOrRole::User(f.bob.clone()));
+
+    let err = DenyServer::list_project_grants(
+        f.ctx.clone(),
+        as_principal(&f.alice, &f.project_id),
+        ListGrantsQuery::default(),
+        no_pagination(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "ProjectActionForbidden");
 }
 
 /// The same self-read allowance on a per-resource listing: a user with no grant-read
@@ -2359,42 +2548,144 @@ async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
 }
 
 /// Asking which privileges *another* principal may grant discloses that principal's
-/// access, so it requires authority to read the resource's grants. This was documented as
-/// the requirement and enforced only by the OpenFGA implementation; the endpoint enforces
-/// it now, so the catalog arm honours it too.
+/// access. The authorizer decides that at every level, as it does on the action-check
+/// endpoints, and its refusal reaches the caller unchanged.
 #[sqlx::test]
-async fn grantable_privileges_for_another_principal_need_the_read_gate(pool: PgPool) {
+#[allow(clippy::too_many_lines)] // one call per level; splitting hides which level failed
+async fn grantable_privileges_for_another_principal_are_decided_by_the_authorizer(pool: PgPool) {
     let f = setup_denying(pool).await;
-    f.authorizer.block_action("warehouse:ReadGrants");
+    let as_alice = || as_principal(&f.alice, &f.project_id);
+    let about_bob = || GetGrantAccessQuery {
+        principal_user: Some(f.bob.clone()),
+        principal_role: None,
+    };
 
-    let err = DenyServer::get_warehouse_grantable_privileges(
+    let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "gate_ns", "t1").await;
+    let namespace_id = PostgresBackend::get_namespace(
         f.warehouse_id,
-        f.ctx.clone(),
-        as_principal(&f.alice, &f.project_id),
-        GetGrantAccessQuery {
-            principal_user: Some(f.bob.clone()),
-            principal_role: None,
-        },
+        NamespaceIdent::new("gate_ns".to_string()),
+        f.ctx.v1_state.catalog.clone(),
     )
     .await
-    .unwrap_err();
-    assert_eq!(err.error.code, 403);
-    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+    .unwrap()
+    .unwrap()
+    .namespace_id();
+    let view_id: lakekeeper::service::ViewId = create_view(
+        f.ctx.clone(),
+        &f.warehouse_id.to_string(),
+        "gate_ns",
+        "v1",
+        None,
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid()
+    .into();
+    create_generic_table(f.ctx.clone(), f.warehouse_id.to_string(), "gate_ns", "gt1")
+        .await
+        .unwrap();
+    let generic_table_id = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(f.warehouse_id.to_string().into()),
+            namespace: NamespaceIdent::new("gate_ns".to_string()),
+        },
+        ListGenericTablesQuery::default(),
+        f.ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap()
+    .identifiers
+    .iter()
+    .find(|i| i.name == "gt1")
+    .and_then(|i| i.id)
+    .unwrap();
+    let tag_definition_id = DenyServer::create_tag_definition(
+        CreateTagDefinitionRequest::builder()
+            .name("gate".to_string())
+            .scope(vec![TagScope::Table])
+            .value_kind(TagValueKind::Marker)
+            .allowed_values(None)
+            .build(),
+        f.ctx.clone(),
+        as_alice(),
+    )
+    .await
+    .unwrap()
+    .id;
 
-    // The server level takes a different arm of the gate, with no resolved entity.
-    f.authorizer.block_action("server:ReadGrants");
-    let err = DenyServer::get_server_grantable_privileges(
-        f.ctx.clone(),
-        as_principal(&f.alice, &f.project_id),
-        GetGrantAccessQuery {
-            principal_user: Some(f.bob.clone()),
-            principal_role: None,
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(err.error.code, 403);
-    assert_eq!(err.error.r#type, "ServerActionForbidden");
+    for level in [
+        "server",
+        "project",
+        "warehouse",
+        "namespace",
+        "table",
+        "view",
+        "generic_table",
+        "tag",
+    ] {
+        f.authorizer.block_action(&format!("{level}:ReadGrants"));
+    }
+
+    let refusals = [
+        DenyServer::get_server_grantable_privileges(f.ctx.clone(), as_alice(), about_bob()).await,
+        DenyServer::get_project_grantable_privileges(f.ctx.clone(), as_alice(), about_bob()).await,
+        DenyServer::get_warehouse_grantable_privileges(
+            f.warehouse_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+        DenyServer::get_namespace_grantable_privileges(
+            f.warehouse_id,
+            namespace_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+        DenyServer::get_table_grantable_privileges(
+            f.warehouse_id,
+            table_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+        DenyServer::get_view_grantable_privileges(
+            f.warehouse_id,
+            view_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+        DenyServer::get_generic_table_grantable_privileges(
+            f.warehouse_id,
+            generic_table_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+        DenyServer::get_tag_grantable_privileges(
+            tag_definition_id,
+            f.ctx.clone(),
+            as_alice(),
+            about_bob(),
+        )
+        .await,
+    ];
+    for (level, refusal) in refusals.into_iter().enumerate() {
+        let err = refusal.unwrap_err();
+        assert_eq!(
+            (err.error.code, err.error.r#type.as_str()),
+            (403, "CannotInspectPermissions"),
+            "level #{level}"
+        );
+    }
 }
 
 /// Asking about yourself discloses nothing you do not already have, so the gate must not

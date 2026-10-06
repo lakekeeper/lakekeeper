@@ -1,0 +1,50 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "action": {
+    "action_name": "read_subtree_grants",
+    "dry-run": "false",
+    "resource_types": [
+      "project",
+      "warehouse",
+      "namespace",
+      "table",
+      "view",
+      "generic-table",
+      "tag-definition"
+    ],
+    "root_level": "included",
+    "principal": "user:oidc~bob",
+    "privilege_scope": "every",
+    "narrowed_privileges": []
+  },
+  "entity": {
+    "entity_type": "project",
+    "project-id": "00000000-0000-0000-0000-000000000000"
+  },
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "context": {
+    "self-read": "false"
+  },
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "019684ff-0000-7000-8000-000000000001",
+        "table-id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true
+    }
+  ],
+  "idempotency_key": null,
+  "decision": "allowed"
+}

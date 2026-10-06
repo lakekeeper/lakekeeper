@@ -57,11 +57,15 @@ impl HealthExt for AllowAllAuthorizer {
 #[openapi()]
 pub(super) struct ApiDoc;
 
-/// Gate action for reading grants; not itself a grantable privilege.
-const READ_GRANTS_ACTION: &str = "read_grants";
+/// Grant-administration gates; not themselves grantable privileges.
+const GRANT_GATE_ACTIONS: [&str; 3] = [
+    "read_grants",
+    "read_subtree_grants",
+    "revoke_subtree_grants",
+];
 
 /// The grantable vocabulary of one resource level: every catalog action on it,
-/// except the grant-reading gate.
+/// except the grant-administration gates.
 fn privileges_from_actions<A: CatalogAction>(
     actions: &'static [A],
     resource_type: ResourceType,
@@ -70,7 +74,7 @@ fn privileges_from_actions<A: CatalogAction>(
         .iter()
         .filter_map(|action| {
             let name = action.action_descriptor().action_name;
-            (name != READ_GRANTS_ACTION).then(|| PrivilegeDescriptor {
+            (!GRANT_GATE_ACTIONS.contains(&name)).then(|| PrivilegeDescriptor {
                 name: name.to_string(),
                 display_name: name.replace('_', " "),
                 // Nothing to describe or group by: this vocabulary is the whole catalog
@@ -466,25 +470,50 @@ mod tests {
     }
 
     #[test]
-    fn read_grants_action_name_is_the_excluded_one() {
+    fn grant_gate_action_names_are_the_excluded_ones() {
         assert_eq!(
-            CatalogWarehouseAction::ReadGrants
-                .action_descriptor()
-                .action_name,
-            READ_GRANTS_ACTION
+            [
+                CatalogWarehouseAction::ReadGrants
+                    .action_descriptor()
+                    .action_name,
+                CatalogWarehouseAction::ReadSubtreeGrants { scope: None }
+                    .action_descriptor()
+                    .action_name,
+                CatalogWarehouseAction::RevokeSubtreeGrants { scope: None }
+                    .action_descriptor()
+                    .action_name,
+            ],
+            GRANT_GATE_ACTIONS
         );
     }
 
     #[test]
-    fn warehouse_vocabulary_has_actions_but_not_the_grant_gate() {
-        let names = privilege_names(ResourceType::Warehouse);
+    fn warehouse_and_namespace_vocabularies_have_actions_but_not_the_grant_gates() {
+        for resource_type in [ResourceType::Warehouse, ResourceType::Namespace] {
+            let names = privilege_names(resource_type);
+            assert!(
+                names.contains(&"get_metadata".to_string()),
+                "expected get_metadata in {names:?}"
+            );
+            for gate in GRANT_GATE_ACTIONS {
+                assert!(
+                    !names.contains(&gate.to_string()),
+                    "{gate} must not be grantable, got {names:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn project_vocabulary_has_no_subtree_grant_read() {
+        let names = privilege_names(ResourceType::Project);
         assert!(
             names.contains(&"get_metadata".to_string()),
             "expected get_metadata in {names:?}"
         );
         assert!(
-            !names.contains(&"read_grants".to_string()),
-            "read_grants must not be grantable, got {names:?}"
+            !names.contains(&"read_subtree_grants".to_string()),
+            "read_subtree_grants must not be grantable, got {names:?}"
         );
     }
 
@@ -513,7 +542,7 @@ mod tests {
             );
             for descriptor in descriptors {
                 assert_eq!(descriptor.resource_type, *resource_type);
-                assert_ne!(descriptor.name, READ_GRANTS_ACTION);
+                assert!(!GRANT_GATE_ACTIONS.contains(&descriptor.name.as_str()));
             }
         }
     }
