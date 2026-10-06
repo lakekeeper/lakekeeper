@@ -16,7 +16,7 @@ description: "Policy-as-code authorization for Lakekeeper Plus with Cedar: decla
 Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
 
 !!! note "Policies decide, and grants feed them"
-    Cedar decides from policies. Lakekeeper Plus also keeps [grants](./grants.md), handed out at runtime through the Grants API. Its predefined policies turn grants into access inside projects; server actions need the four server-grant `permit`s from the schema. Your own policies can read grants as `resource.principal_privileges`. Switch the predefined policies off with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false`. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md).
+    Cedar decides from policies. Lakekeeper Plus also keeps [grants](./grants.md), handed out at runtime through the Grants API. Its predefined policies turn grants into access inside projects; server actions need the five server-grant `permit`s from the schema. Your own policies can read grants as `resource.principal_privileges`. Switch the predefined policies off with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false`. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md).
 
 ## How it Works
 
@@ -77,7 +77,7 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 
 ### Roles managed in Lakekeeper
 
-Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`. Whoever joins a role holds its grants, so changing a role's members is granting: the predefined policies let `manage_grants` on the role's project add and remove members, rename and delete roles, while `describe` is enough to read them. With `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES=true` the API creates no roles and answers `400 CreateRolesNotSupported`: declare every role in your entities file instead — see [External Entity Management](#external-entity-management).
+Roles you create through the management API (`POST /management/v1/role`) belong to the `lakekeeper` provider. Their `source_id` is the `source-id` you give when creating the role, or the role's own id if you give none. Under Cedar the API creates and rebinds only `lakekeeper` roles, so a role the API creates can never pass for a directory group. Assign users to them, and nest roles inside other roles, with `POST /management/v1/role/{role_id}/members`. Whoever joins a role holds its grants, so changing a role's members is granting: the predefined policies let `manage_grants` on the role's project create roles, add and remove members, rename and delete roles, while `describe` is enough to read them. With `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES=true` the API creates no roles and answers `400 CreateRolesNotSupported`: declare every role in your entities file instead — see [External Entity Management](#external-entity-management).
 
 At actions inside a project, a user holds every role they are assigned to and every role those are nested in, at any depth, so both ways of naming a role match its indirect members too. At server actions neither matches a Lakekeeper role; see [Role scope at server actions](#role-scope-at-server-actions).
 
@@ -127,7 +127,7 @@ when { principal.project_roles.contains({provider_id: "ldap", source_id: "user-a
 
 #### Server grants
 
-Grant a user a privilege on the server ([`/management/v1/server/grants`](./grants.md#where-you-can-grant)), and load these four permits, one per privilege. No predefined policy decides server actions, so a server grant does nothing without them:
+Grant a user a privilege on the server ([`/management/v1/server/grants`](./grants.md#where-you-can-grant)), and load these five permits, one per privilege. No predefined policy decides server actions, so without them a server grant does nothing at the server itself. Inside projects the [predefined policies](#predefined-policies) already count it:
 
 ```cedar
 permit (principal, action in Lakekeeper::Action::"ServerDescribeActions", resource is Lakekeeper::Server)
@@ -141,6 +141,9 @@ when { resource.principal_privileges.direct.manage };
 
 permit (principal, action in Lakekeeper::Action::"ServerGrantActions", resource is Lakekeeper::Server)
 when { resource.principal_privileges.direct.manage_grants };
+
+permit (principal, action == Lakekeeper::Action::"ReadServerGrants", resource is Lakekeeper::Server)
+when { resource.principal_privileges.direct.read_grants };
 ```
 
 Server grants go to users only. A role belongs to a project, so a role holding a server grant would hand server-wide authority to whoever manages that project's role members. To give a team server access, name its group with the flat form above. If nobody can reach server administration yet, an identity from [`LAKEKEEPER__INSTANCE_ADMINS`](./instance-admins.md) can set the first grant.
@@ -250,6 +253,54 @@ when {
     resource.properties.getTag("access_read").global_role_ids.containsAny(principal.global_role_ids)
 };
 ```
+
+## Predefined policies
+
+The predefined policies turn [grants](./grants.md) into access inside projects. No predefined policy decides server actions: a server grant reaches the projects beneath it, and the server itself needs the [server grants](#server-grants) permits. The predefined policies are on by default. `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false` switches all of them off. A `forbid` of yours overrides them like any other `permit`.
+
+A project or a warehouse can switch single predefined policies on or off for itself (`ToggleProjectPredefinedPolicy` and `ToggleWarehousePredefinedPolicy` under [Cedar Policy Actions](#cedar-policy-actions)). A policy is in force for a warehouse only when it is on for both the warehouse and its project. Policies for projects, tags and roles are switched per project only. Once a project or warehouse has switched any policy, a policy added in a later release starts out off there.
+
+`GET /management/v1/permissions/cedar/project/predefined-policies` and `GET /management/v1/permissions/cedar/warehouse/{warehouse_id}/predefined-policies` list each policy's id, its description and whether it is on. Ids look like `predefined-grants-table-select`, and the description says in one sentence what the policy allows.
+
+### What each privilege allows
+
+A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags. Policies read this as `principal_privileges.inherited`. Grants reach downward only: a grant on a table does not make its namespace or warehouse visible. A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)).
+
+| Privilege | Granted on | Reaches children | What it allows |
+|---|---|---|---|
+| `describe` | Every level | Yes | `<Level>DescribeActions`: see the object and its metadata, and list what is in it. On a tag, `ReadTag`. |
+| `select` | Server down to table, view, generic table | Yes | `TableSelectActions`, `ViewSelectActions`, `GenericTableSelectActions`: read data and metadata. |
+| `write` | Server down to table, view, generic table | Yes | `TableWriteActions`, `ViewWriteActions`, `GenericTableWriteActions`: write and commit data, and read it. |
+| `create` | Server, project, warehouse, namespace | Yes | `<Level>CreateActions`: create warehouses, namespaces, tables, views and generic tables inside the object, and everything `describe` allows there. |
+| `manage` | Every level | Yes | `<Level>ModifyActions`: full control of the object, including deleting it, and everything the weaker privileges allow. This covers tagging the object, `CreateTag` on a project, and `TagModifyActions` on a tag. |
+| `manage_tags` | Server down to table, view, generic table | Yes | `Manage<Level>Tags` and `<Level>DescribeActions` on warehouses, namespaces, tables (column tags too), views and generic tables. No data access. |
+| `apply` | Tag | No | `TagApplyActions`: attach the tag, with any of its values, and remove it, and read the tag. |
+| `read_grants` | Every level | Yes | `Read<Level>Grants`: see who holds which privilege on the object. On a project, warehouse or namespace also the subtree listing. |
+| `pass_grants` | Every level | No | Grant others a privilege the holder holds on the object, and `Read<Level>Grants` on it. |
+| `manage_grants` | Every level | Yes | `<Level>GrantActions`: grant and revoke any privilege on the object without holding it, see who holds which privilege on it, and check what another user or role may do there. On a warehouse or namespace also the subtree listing and the subtree revoke. On a project also the subtree listing and the project's roles. |
+| `read_policies` | Project, warehouse | Project grant reaches its warehouses | List and read the scope's stored Cedar policies and which predefined policies are switched on there. |
+| `manage_policies` | Project, warehouse | Project grant reaches its warehouses | `ProjectCedarPolicyActions` or `WarehouseCedarPolicyActions`: read and write the scope's Cedar policies, and switch and reset its predefined policies. |
+
+Notes:
+
+- **`select` and `write` on a container** act on the tables, views and generic tables beneath it, not on the container. Grant `describe` on the container too, so the holder can reach and list what is in it.
+- **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
+- **`manage_tags`** tags objects without access to their data. On a server or project it acts only on what is beneath; grant `describe` there too to list warehouses and tags. Attaching or removing a tag also needs `apply` or `manage` on the tag. Policies may read tags to decide access, so treat tagging as a governance right.
+- **`apply`** counts only on the tag it is granted on. Attaching the tag also needs `manage_tags` or `manage` on the object.
+- **`read_grants`** reads grants and nothing else: no check of what another user or role may do, no grant, no revoke. On a project the subtree listing is everything one user or role holds in it; on a warehouse or namespace it is every grant at and under it.
+- **`pass_grants`** counts only on the object it is granted on, and works in the grant direction only: it never revokes. It passes on `describe`, `select`, `write` and `create` (project, warehouse, namespace), `describe`, `select` and `write` (table, view, generic table), or `describe` and `apply` (tag), each only when the holder holds that privilege on the object, directly or from above (`apply` directly). It never passes on `manage`, `manage_tags` or a grant or policy privilege, and gives no check of what others may do. On the server it does nothing without a policy of your own.
+- **`manage_grants`** is the only privilege that lets the holder check what another user or role may do (`Introspect<Level>Authorization`). That check runs every policy, including ones the holder cannot read.
+- **`read_policies` and `manage_policies`** on a project count for the project itself and reach its warehouses. On a warehouse both also allow `UseWarehouse`.
+- **Reading grants** shows that the object exists, even where a policy hides it otherwise. A subtree listing or revoke is decided once, on the project, warehouse or namespace it names, so a `forbid` on the grants of something inside does not shorten it. A subtree revoke removes the holder's own grants too; see [Clearing a subtree](./grants.md#clearing-a-subtree).
+
+### Roles and the project
+
+A privilege cannot be granted on a role. The role policies read the grants on the role's project, including those from the server above it.
+
+- `describe`, `create`, `manage` or `manage_grants` on the project lets the holder read every role in it, with its members, and see which roles a user holds there (`ReadUserRoleAssignments`).
+- `manage_grants` on the project also lets the holder create roles (`CreateRole`), list and search them, and check what another user or role may do on a role (`IntrospectRoleAuthorization`). On [roles managed in Lakekeeper](#roles-managed-in-lakekeeper) it adds and removes members, renames and deletes them. A role's members hold its grants, so these are grant administration.
+- `manage_grants` on the project also deletes roles from identity and role providers, for example one whose group is gone. If the provider still reports the group, the role is created again at a member's next request, without the deleted role's grants. This does not cover `system` roles.
+- No predefined policy allows `AssumeRole` or `UpdateRoleSourceSystem`.
 
 ## Property-Based Access Control
 
@@ -1271,11 +1322,11 @@ Every user can update and delete their own user record; that needs no policy. Se
 | `RenameProject` | `rename` | `ProjectModifyActions` | Change the project's name |
 | `ModifyProjectTaskQueueConfig` | `modify_task_queue_config` | `ProjectModifyActions` | Update task queue configuration |
 | `ControlProjectTasks` | `control_project_tasks` | `ProjectModifyActions` | Manage background tasks (cancel, retry, etc.) |
-| `CreateRole` | `create_role` | `ProjectModifyActions` | Create a role in the project |
+| `CreateRole` | `create_role` | `ProjectGrantActions` | Create a role in the project |
 | `CreateTag` | `create_tag` | `ProjectModifyActions` | Create a tag definition in the project |
 | `ReadUserRoleAssignments` | `read_role_assignments` | none | List the roles a user holds in the project (`GET /management/v1/user/{user_id}/roles` and `/roles/transitive`) |
 
-`ProjectCreateActions` covers places to put data. `CreateRole` and `CreateTag` shape how the project is governed, so they are in `ProjectModifyActions`; permit them by name to allow them alone.
+`ProjectCreateActions` covers places to put data. `CreateTag` shapes how the project is governed, so it is in `ProjectModifyActions`. `CreateRole` is in `ProjectGrantActions`, because a role exists to hold grants. Permit either by name to allow it alone.
 
 ### Role Actions
 
@@ -1427,10 +1478,11 @@ These actions decide who may read and hand out [grants](./grants.md). Name `Gran
 - `Read<Level>Grants` (audit `read_grants`, groups `<Level>GrantActions` and `GrantReadActions`): see who holds grants on the object. It also makes the object itself visible.
 - `Introspect<Level>Authorization` (groups `<Level>GrantActions` and `GrantReadActions`; `IntrospectRoleAuthorization` is in `GrantReadActions` only): ask what another principal may do on the object. `/management/v1/permissions/cedar/resolve-entities` records it as `introspect_authorization`, at the server, project, warehouse, namespace, table, view and generic-table levels.
 
-Whole-subtree grant administration has its own groups. `SubtreeGrantActions` holds all four actions, under `GrantActions`; `SubtreeGrantReadActions` is also in `GrantReadActions`. The call is decided once, on the warehouse or namespace it names; see [Clearing a subtree](./grants.md#clearing-a-subtree).
+Whole-subtree grant administration has its own groups. `SubtreeGrantActions` holds all five actions, under `GrantActions`; `SubtreeGrantReadActions` is also in `GrantReadActions`. The call is decided once, on the project, warehouse or namespace it names; see [Clearing a subtree](./grants.md#clearing-a-subtree).
 
 | Action | Audit log `action_name` | Group | Description |
 |---|---|---|---|
+| `ReadProjectSubtreeGrants` | `read_subtree_grants` | `SubtreeGrantReadActions` | List everything one user or role holds anywhere in the project |
 | `ReadWarehouseSubtreeGrants` | `read_subtree_grants` | `SubtreeGrantReadActions` | List every grant at and under the warehouse |
 | `RevokeWarehouseSubtreeGrants` | `revoke_subtree_grants` | `SubtreeGrantRevokeActions` | Revoke those grants in bulk. Permanent |
 | `ReadNamespaceSubtreeGrants` | `read_subtree_grants` | `SubtreeGrantReadActions` | List every grant at and under the namespace |
