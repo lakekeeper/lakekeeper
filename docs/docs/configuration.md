@@ -768,6 +768,15 @@ Stored token roles are a snapshot of the user's last token in a project, and the
 
 On each request, Lakekeeper compares the caller's token roles with the stored set and writes them when they differ. Each Lakekeeper instance writes an unchanged set again at most every 120 seconds. A token without roles clears the caller's stored roles in the request's project; most identity providers leave the roles claim out when a user has none. Entra ID also leaves out the `groups` claim for users in more than 200 groups, so those users have no token roles; resolve their groups with the Entra ID role provider.
 
+#### Caching for LDAP, Entra ID and Okta
+
+The LDAP, Entra ID and Okta providers share one two-layer cache, so a request rarely waits for the directory:
+
+1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
+2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against the provider's `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
+
+Groups do not depend on the project, so a fresh record in any project answers every project. If the request's project lacks one of the groups in that record, for example after the role was deleted there, Lakekeeper asks the directory and stores the answer in that project. When no project holds a record younger than `SYNC_INTERVAL_SECS`, Lakekeeper asks the directory and writes the answer to the request's project and the in-memory cache. Only a user's own requests store anything: when Lakekeeper looks up someone else's groups, such as a grantee in a grant check, the subject of a permission check or the owner of a DEFINER view, it uses a fresh stored record or asks the directory, keeps the answer in memory for `SYNC_INTERVAL_SECS`, and writes nothing. A server action, such as creating a project or listing users, uses a fresh record from any project or asks the directory, and stores nothing. If the directory is unreachable, Lakekeeper serves the newest stored record from any project and emits an audit warning. A user with no stored record for the provider in any project, such as a user the directory has not been asked about yet, gets errors until the directory is reachable again.
+
 #### LDAP role provider
 
 Each LDAP provider is configured under a unique `<ID>` of your choosing. All variables below use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
@@ -891,14 +900,7 @@ LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=member
 | `…__CONNECT_TIMEOUT_SECS` | `30`    | Seconds to wait when establishing the initial connection. |
 | `…__READ_TIMEOUT_SECS`    | `60`    | Seconds to wait for an LDAP response. |
 
-**Caching & performance:**
-
-Each LDAP provider uses a two-layer cache to avoid a network round-trip to the LDAP server on every request:
-
-1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
-2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
-
-LDAP groups do not depend on the project, so a fresh record in any project answers every project. If the request's project lacks one of the groups in that record, for example after the role was deleted there, Lakekeeper asks LDAP and stores the answer in that project. When no project holds a record younger than `SYNC_INTERVAL_SECS`, Lakekeeper asks LDAP and writes the answer to the request's project and the in-memory cache. A server action, such as creating a project or listing users, uses a fresh record from any project or asks LDAP, and stores nothing. If LDAP is unreachable, Lakekeeper serves the newest stored record from any project and emits an audit warning. A user with no stored record for the provider in any project, such as a user LDAP has not been asked about yet, gets errors until LDAP is reachable again.
+**Caching & performance:** see [Caching for LDAP, Entra ID and Okta](#caching-for-ldap-entra-id-and-okta).
 
 | Variable                             | Default | Description                 |
 |--------------------------------------|---------|-----------------------------|
@@ -982,7 +984,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Graph. Uses the same two-layer (in-memory + database) cache as the LDAP provider, including stale-fallback on a Graph outage. |
+| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Graph. Uses the shared cache, including stale-fallback on a Graph outage; see [Caching for LDAP, Entra ID and Okta](#caching-for-ldap-entra-id-and-okta). |
 
 **Startup:**
 
@@ -1054,7 +1056,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the same two-layer (in-memory + database) cache as the LDAP and Entra providers, including stale-fallback on an Okta outage. |
+| `…__SYNC_INTERVAL_SECS` | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the shared cache, including stale-fallback on an Okta outage; see [Caching for LDAP, Entra ID and Okta](#caching-for-ldap-entra-id-and-okta). |
 
 **Startup:**
 
