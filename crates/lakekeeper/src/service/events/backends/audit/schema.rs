@@ -184,9 +184,10 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     for reg in regs {
         match reg.kind {
             Kind::Part | Kind::Context | Kind::Shape { .. } => {
-                let (Some(schema), Some(name)) = (reg.schema, reg.schema_name) else {
+                let Some(schema) = reg.schema else {
                     continue;
                 };
+                let name = reg.def_name;
                 let mut schema = schema(&mut generator).to_value();
                 if let Some(object) = schema.as_object_mut() {
                     object.insert("x-audit-kind".into(), json!(reg.kind.as_str()));
@@ -233,29 +234,36 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 {
                     object.insert("x-audit-descriptions".into(), json!(descriptions));
                 }
-                let name = short_type_name((reg.type_name)());
+                let name = (reg.def_name)().to_string();
                 claim(&name, (reg.type_name)());
                 defs.insert(name, def);
             }
         }
     }
-    // Types the parts reference but that are not registered themselves, if any, and every
-    // registered type the generator chose to reference rather than inline. An unregistered
-    // one still reaches a consumer, so it is kinded here too: the kind is how a reader of the
-    // schema tells a value set from an object, and a definition without one says neither.
-    for (name, schema) in generator.take_definitions(true) {
-        let mut schema = schema;
+    // Every type the generator chose to reference: a registered one is already defined above,
+    // and an unregistered one is an object or a plain string a part holds, such as an id.
+    // An unregistered set of values would reach the schema without the openness, the
+    // descriptions and the field a value set declares, so it is refused: register it with
+    // `#[audit_part(field = "...")]`.
+    for (name, mut schema) in generator.take_definitions(true) {
+        if defs.contains_key(&name) {
+            continue;
+        }
         if let Some(object) = schema.as_object_mut() {
             let values = object.contains_key("enum")
                 || object
                     .get("oneOf")
                     .and_then(Value::as_array)
                     .is_some_and(|variants| variants.iter().all(|v| v.get("const").is_some()));
-            object
-                .entry("x-audit-kind")
-                .or_insert_with(|| json!(if values { "enum" } else { "part" }));
+            assert!(
+                !values,
+                "`{name}` is a set of values a part holds, and no `#[audit_part(field = \"...\")]` \
+                 registers it. Register it, so the schema says which field it fills and whether \
+                 it can grow."
+            );
+            object.insert("x-audit-kind".into(), json!("part"));
         }
-        defs.entry(name).or_insert(schema);
+        defs.insert(name, schema);
     }
     for schema in defs.values_mut() {
         drop_null_from_optionals(schema);
@@ -266,14 +274,9 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     defs
 }
 
-/// The objects whose keys sit beside the value that names them, rather than nested under it.
-///
-/// Each entry is the field carrying that value, the object it sits in, and the type its keys
-/// hold when they declare none: an entity field's value is a `String` in the type that
-/// carries it, while an action's is a three-way choice each key has to declare.
-/// The flattened pairs: the wire field naming the thing, the schema definition it sits in,
-/// the `keys_of` vocabulary holding that object's keys, and the type a key takes when it
-/// declares none.
+/// The objects whose keys sit beside the value that names them, not nested under it: the wire
+/// field naming the thing, the schema definition it sits in, the `keys_of` vocabulary holding
+/// that object's keys, and the type a key takes when it declares none.
 const FLATTENED: [(&str, &str, &str, Option<&str>); 2] = [
     ("action_name", "ActionRecord", "action", None),
     ("entity_type", "EntityRecord", "entity", Some("string")),
@@ -313,7 +316,7 @@ pub fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
         // crate declare keys for them, so a product's own action carries Lakekeeper's keys.
         // Resolving against this emitter alone would find none of them.
         let object_keys = keys_of_object(registrations(|_| true), vocabulary);
-        let owner = short_type_name((reg.type_name)());
+        let owner = (reg.def_name)().to_string();
         for name in names {
             for key in name.carries {
                 if !object_keys.contains(key) {
@@ -480,7 +483,7 @@ fn add_audit_record(defs: &mut BTreeMap<String, Value>, regs: &[&Registration]) 
     let shapes: Vec<(String, &str)> = regs
         .iter()
         .filter_map(|reg| match reg.kind {
-            Kind::Shape { record_type } => Some((reg.schema_name?().to_string(), record_type)),
+            Kind::Shape { record_type } => Some(((reg.def_name)().to_string(), record_type)),
             _ => None,
         })
         .collect();
@@ -560,13 +563,6 @@ fn pin_record_type(shape: &mut Map<String, Value>, record_type: &str) {
     if let Some(Value::Array(required)) = shape.get_mut("required") {
         required.insert(0, json!("record_type"));
     }
-}
-
-/// The type's name without module path or generics: the key it gets under `$defs`.
-#[must_use]
-pub fn short_type_name(full: &str) -> String {
-    let tail = full.rsplit("::").next().unwrap_or(full);
-    tail.split('<').next().unwrap_or(tail).to_string()
 }
 
 /// The schema of everything the emitter `emitter` can put on the wire, from the registrations
@@ -784,7 +780,7 @@ pub fn assert_no_object_declares_a_key_twice() {
         let Kind::Keys { object, .. } = reg.kind else {
             continue;
         };
-        let owner = short_type_name((reg.type_name)());
+        let owner = (reg.def_name)().to_string();
         for key in reg.kind.names().iter().map(|name| name.text) {
             owners.entry((object, key)).or_default().push(owner.clone());
         }
@@ -927,7 +923,7 @@ pub fn assert_every_context_key_is_pushed<E: super::AuditEmitter>(crates_dir: &s
             continue;
         }
         declared
-            .entry(short_type_name((reg.type_name)()))
+            .entry((reg.def_name)().to_string())
             .or_default()
             .extend(names.iter().map(|name| name.text));
     }

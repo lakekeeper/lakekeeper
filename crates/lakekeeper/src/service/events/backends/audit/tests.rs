@@ -1923,10 +1923,7 @@ fn every_declared_context_key_is_pushed() {
 /// type appears under `$defs`.
 #[test]
 fn the_generated_schema_is_self_contained_and_documented() {
-    use crate::audit::{
-        Kind, Registration,
-        schema::{audit_schema_for, short_type_name},
-    };
+    use crate::audit::{Kind, Registration, schema::audit_schema_for};
     fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::Object(m) => {
@@ -1964,8 +1961,7 @@ fn the_generated_schema_is_self_contained_and_documented() {
     {
         let name = match reg.kind {
             Kind::Keys { .. } => continue,
-            Kind::Values { .. } => short_type_name((reg.type_name)()),
-            _ => (reg.schema_name.expect("part schema name"))().to_string(),
+            _ => (reg.def_name)().to_string(),
         };
         assert!(
             defs.contains_key(&name),

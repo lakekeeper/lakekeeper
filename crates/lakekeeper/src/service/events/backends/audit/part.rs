@@ -176,15 +176,14 @@ pub struct Registration {
     pub type_name: fn() -> &'static str,
     /// The defining crate's emitter.
     pub emitter: EmitterStamp,
-    /// `core::any::type_name` of the defining crate's emitter type.
-    pub emitter_type: fn() -> &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
     /// Whether this vocabulary's values are spelled somewhere else. When they are, the case
     /// check leaves them alone; everything this log names itself is `lower_snake_case`.
     pub external_values: bool,
-    /// The type's schema name. `None` for a vocabulary, whose schema is its list of names.
-    pub schema_name: Option<fn() -> Cow<'static, str>>,
+    /// The type's name under `$defs`: its schemars name for a part, its identifier for a
+    /// vocabulary.
+    pub def_name: fn() -> Cow<'static, str>,
     /// The type's JSON Schema. `None` for a vocabulary.
     pub schema: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
 }
@@ -641,7 +640,6 @@ mod tests {
         assert!(outcome.schema.is_none());
         assert_eq!(outcome.emitter.name, "lakekeeper");
         assert_eq!(outcome.defining_crate, "lakekeeper");
-        assert!((outcome.emitter_type)().ends_with("Lakekeeper"));
 
         let key = by_name("ProbeKey");
         assert!(matches!(key.kind, Kind::Keys { .. }));
@@ -676,10 +674,7 @@ mod tests {
         let json = schema.to_value();
         assert_eq!(json["properties"]["name"]["description"], "The only field.");
         assert_eq!(json["required"], serde_json::json!(["name"]));
-        assert_eq!(
-            (reg.schema_name.expect("a part has a schema name"))(),
-            "ProbePart"
-        );
+        assert_eq!((reg.def_name)(), "ProbePart");
     }
 
     #[test]
@@ -694,7 +689,6 @@ mod tests {
                 (reg.type_name)(),
                 reg.defining_crate
             );
-            assert!((reg.emitter_type)().ends_with("::Lakekeeper"), "{reg:?}");
         }
     }
 

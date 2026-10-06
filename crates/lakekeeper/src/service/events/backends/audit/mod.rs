@@ -194,10 +194,9 @@ crate::__private::inventory::submit! {
         },
         type_name: || core::any::type_name::<iceberg_ext::catalog::TableUpdateKind>(),
         emitter: EmitterStamp::of::<crate::Lakekeeper>(),
-        emitter_type: || core::any::type_name::<crate::Lakekeeper>(),
         defining_crate: env!("CARGO_PKG_NAME"),
         external_values: true,
-        schema_name: None,
+        def_name: || std::borrow::Cow::Borrowed("TableUpdateKind"),
         schema: None,
     }
 }

@@ -295,10 +295,9 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
                 kind: #kind,
                 type_name: || ::core::any::type_name::<#static_ty>(),
                 emitter: ::lakekeeper::audit::EmitterStamp::of::<crate::audit_emitter::Emitter>(),
-                emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
                 defining_crate: env!("CARGO_PKG_NAME"),
                 external_values: false,
-                schema_name: ::core::option::Option::Some(|| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::schema_name()),
+                def_name: || <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::schema_name(),
                 schema: ::core::option::Option::Some(|generator| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::json_schema(generator)),
             }
         }
@@ -598,10 +597,9 @@ fn expand_vocabulary(
                 },
                 type_name: || ::core::any::type_name::<#static_ty>(),
                 emitter: ::lakekeeper::audit::EmitterStamp::of::<crate::audit_emitter::Emitter>(),
-                emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
                 defining_crate: env!("CARGO_PKG_NAME"),
                 external_values: #external_values,
-                schema_name: ::core::option::Option::None,
+                def_name: || ::std::borrow::Cow::Borrowed(#schema_name),
                 schema: ::core::option::Option::None,
             }
         }

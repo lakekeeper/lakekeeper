@@ -84,17 +84,10 @@ impl From<bool> for AuthorizationDecision {
 // Enum-tagged so new producers (restriction-profile matched rules, native OSS-authorizer
 // diagnostics) add a variant here without restructuring the type.
 //
-// The audit log is the rendering where the kind set is genuinely open: that log's
-// contract tells consumers to treat an unrecognised value as opaque, so a new variant
-// costs them nothing. The management API schema above is closed and makes no such
-// promise — do not restate the audit-log tolerance there.
-//
-// The two renderings differ, deliberately. The `serde` attributes below govern the
-// management API, which is `type`-tagged kebab-case and omits absent optionals. The audit
-// log renders this type through `valuable`, which ignores `serde` attributes: it emits the
-// Rust variant name as a single-key wrapper, and `name`, `source`, `reason` and `check`
-// unconditionally — `valuable-derive` has no conditional skip, so `None` becomes `null`,
-// never an absent field, unlike the hand-written `visit` impls elsewhere in the record.
+// The audit log writes this type through `serde`, with the attributes below, so a record
+// carries the same `type`-tagged kebab-case object the management API returns, absent
+// optionals left out. Both schemas publish the kinds as a closed `oneOf`, so a new variant is
+// a schema change in both.
 #[derive(
     Clone,
     Debug,
