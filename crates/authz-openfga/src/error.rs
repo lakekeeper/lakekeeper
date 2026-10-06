@@ -203,7 +203,7 @@ impl AuthorizationFailureSource for OpenFGAError {
                 ErrorModel::unauthorized(err_msg, "AuthenticationRequired", Some(Box::new(e)))
             }
             e @ OpenFGAError::Unauthorized { .. } => {
-                ErrorModel::unauthorized(err_msg, "Unauthorized", Some(Box::new(e)))
+                ErrorModel::forbidden(err_msg, "Unauthorized", Some(Box::new(e)))
             }
             e @ OpenFGAError::SelfAssignment { .. } => {
                 ErrorModel::bad_request(err_msg, "SelfAssignment", Some(Box::new(e)))
@@ -353,6 +353,22 @@ impl CannotDeleteTupleNotFound {
 
 #[cfg(test)]
 mod tests {
+    use http::StatusCode;
+
+    use super::*;
+
+    #[test]
+    fn test_denied_action_is_forbidden_and_missing_authentication_is_unauthorized() {
+        let denied = OpenFGAError::Unauthorized {
+            relation: "can_read_assignments".to_string(),
+            object: "role:00000000-0000-0000-0000-000000000001".to_string(),
+        }
+        .into_error_model();
+        assert_eq!(denied.code, StatusCode::FORBIDDEN.as_u16());
+
+        let anonymous = OpenFGAError::AuthenticationRequired.into_error_model();
+        assert_eq!(anonymous.code, StatusCode::UNAUTHORIZED.as_u16());
+    }
 
     // Name is important for test profile
     mod openfga_integration_tests {
