@@ -51,7 +51,7 @@ POST /management/v1/warehouse/{warehouse_id}/grants
 }
 ```
 
-Grant to a **role** rather than to individual users wherever you can — one grant plus role membership beats one grant per person. Server grants go to users where grants are stored in the catalog.
+Grant to a **role** rather than to individual users wherever you can — one grant plus role membership beats one grant per person.
 
 Granting requires the authority to hand that privilege on, on that resource. Your authorizer decides who has it; under OpenFGA see [Grants](./authorization-openfga.md#grants).
 

@@ -1388,8 +1388,9 @@ pub mod v1 {
     /// Idempotent. Success is `204` with no body: whether an entry was already in
     /// the requested state is not reported.
     ///
-    /// Server grants go to users only, unless the authorizer keeps its own grants
-    /// (OpenFGA): a write naming a role is refused with `400 ServerGrantToRole`.
+    /// Where grants are stored in the catalog, server grants go to users only and a
+    /// write naming a role is refused with `400 ServerGrantToRole`. An authorizer that
+    /// keeps its own grants (OpenFGA) accepts roles.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",

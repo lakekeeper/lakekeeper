@@ -2425,11 +2425,14 @@ mod tests {
     #[sqlx::test]
     async fn rejects_principal_type_mismatch(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
+        let project_id = seed_project(&pool).await;
         let err = sqlx::query(
-            "INSERT INTO grant_assignment (principal_type, user_id, resource_type, privilege) \
-             VALUES ('role', $1, 'server', 'admin')",
+            "INSERT INTO grant_assignment \
+             (principal_type, user_id, resource_type, privilege, project_id) \
+             VALUES ('role', $1, 'project', 'describe', $2)",
         )
         .bind(&user)
+        .bind(&project_id)
         .execute(&pool)
         .await
         .unwrap_err();
