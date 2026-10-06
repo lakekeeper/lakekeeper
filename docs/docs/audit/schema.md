@@ -35,17 +35,15 @@ Each shape pins its `record_type` with `const`. Point a code generator at the sh
 | `replay`        | `#/$defs/ReplayRecord`        |
 | `operation`     | `#/$defs/OperationRecord`     |
 
-## Values outside the list
+## Value sets
 
-A field whose values are a closed set points at the definition listing them, so a validator checks the value and a code generator emits an enum for it. That list is what the set held when the schema was generated, and the set is open: a later release may add a value without moving `audit_format`.
+Every value set has its own definition, and a field holding one of its values points at it. A set is open or closed, and the definition says which.
 
-**A value the list does not contain means the record is newer than this schema, not that it is invalid.** Route it to a default branch and carry on — the same rule that applies to every value set. What will not happen without a major version is a value being renamed or removed, so a consumer that matches what it knows keeps working.
+**An open set** lists its values under `x-audit-values`, next to `"type": "string"`. A later release may add a value without moving `audit_format`, so a validator checks only that the value is a string. A code generator can still read the list. A value the list does not contain means the record is newer than this schema, not that it is invalid: route it to a default branch and carry on. A value is renamed or removed only with a major version, so a consumer that matches what it knows keeps working.
 
-This has one consequence worth planning for: **a schema validates the value sets as of the version it was generated from.** Validate a record carrying a newer value against an older copy of this document and the validator rejects it — correctly, by its own rules, and wrongly about the record. So keep the schema in step with the server it reads from: download it from the version you run, and download it again when you upgrade. A consumer that routes on values rather than validating them needs none of this.
+**A closed set** lists its values as an `enum`, and a validator enforces it. Four sets are closed by what they mean: `decision`, `privilege_scope`, `root_level` and a policy's `effect`. A new value in one of them is a major change.
 
-The exposure is small by construction. Of the value sets this document defines, only a few are linked from a record field, and most of those cannot grow: `decision`, `privilege_scope` and `root_level` are closed by what they mean. The ones that do grow — `entity_type`, `resource_type`, `update_kinds` and `failure_reason` — grow on a release boundary, which is the moment to re-download. The field that gains values most often, `action_name`, is not linked at all.
-
-Three fields are not linked at all, and carry `x-audit-open` instead: `action_name`, `operation` and `outcome`. Their values come from whichever product contributed them — `emitters` names every product a record carries something of — so no single product's schema can list them.
+Three fields hold a value from more than one product: `action_name`, `operation` and `outcome`. They carry `x-audit-open`, and their values are listed by the definitions of the products that contribute them, which `emitters` on the record names.
 
 A shape describes the record, not the log line. Your log subscriber adds its own keys around it — `timestamp`, `level`, `message`, `target`, `span`, `spans`, `filename`, `line_number` — and no shape lists them, because Lakekeeper does not choose them. No shape forbids them either, so a captured line validates with them still attached. The two keys stamped on every record, `event_source` and `audit_format`, are in the root definition, since every record carries them whatever its shape.
 
@@ -53,21 +51,22 @@ For what the records *mean* — which family answers which question, when a fiel
 
 ## Reading the audit-specific annotations
 
-The schema carries seven extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
+The schema carries these extension keywords. A generic JSON Schema tool ignores them; they are there so you can navigate the document.
 
 | Keyword | On | Meaning |
 |---|---|---|
 | `x-audit-emitter` | the document | The product this schema describes, and the version of what it contributes |
-| `x-audit-kind` | each definition | `shape` for a whole record, `part` for a nested object, `context` for an operation's own detail, `enum` for a closed set of values, `keys` for a closed set of object keys |
+| `x-audit-kind` | each definition | `shape` for a whole record, `part` for a nested object, `context` for an operation's own detail, `enum` for a set of values, open or closed, `keys` for a closed set of object keys |
+| `x-audit-values` | an open `enum` | The values the set held when the schema was generated. A later release may add one |
 | `x-audit-field` | each `enum` | The field whose values these are. Several fields draw from more than one set, so the set alone does not tell you where it is used |
 | `x-audit-keys-of` | each `keys` | The object whose keys these are |
 | `x-audit-descriptions` | an `enum` or `keys` | What each name means, keyed by the name. Present for the names that carry a description; a name absent from the map has none |
 | `x-audit-key-shapes` | a `keys` set | What sits under a key whose value is an object, keyed by the key and pointing at the definition. Present only where at least one key declares a shape, so its absence means none does |
 | `x-audit-open` | a property | The value comes from whichever product wrote the record, so this schema cannot list what it may hold |
 
-`enum` and `keys` are both lists of strings, and they change in different ways.
+Value sets and `keys` sets are both lists of strings, and they change in different ways.
 
-An `enum` lists what one field can hold. That set is open, as above: a later release may add a value, and your consumer must treat an unrecognised one as data rather than as an error. Adding one is not a format change.
+A value set lists what one field can hold. An open set may gain a value in any release, and your consumer must treat an unrecognised one as data, not as an error. Adding one is not a format change. A closed set gains a value only in a major version.
 
 A `keys` set lists the keys of an object, so its members are field names. A later release may add one, and that *is* a format change — a minor one — because the object gains a field. Removing either is a major change.
 

@@ -9,7 +9,7 @@
   "$defs": {
     "AssignmentAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "update_generic_table_assignments",
         "update_namespace_assignments",
         "update_project_assignments",
@@ -25,7 +25,7 @@
     },
     "PermissionAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "can_get_metadata",
         "can_read_assignments",
         "can_set_managed_access"

@@ -774,7 +774,7 @@ impl EventAction for CatalogRoleAction {
     strum_macros::VariantNames,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[crate::audit::audit_part(field = "root_level")]
+#[crate::audit::audit_part(field = "root_level", closed)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum RootLevelGrants {
@@ -926,7 +926,7 @@ pub enum SubtreeGrantPrivileges {
     strum_macros::IntoStaticStr,
     strum_macros::VariantNames,
 )]
-#[crate::audit::audit_part(field = "privilege_scope")]
+#[crate::audit::audit_part(field = "privilege_scope", closed)]
 #[strum(serialize_all = "snake_case")]
 pub enum PrivilegeScope {
     Every,

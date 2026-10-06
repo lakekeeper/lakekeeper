@@ -78,9 +78,11 @@ Every `event_source: "audit"` record carries `audit_format`, a `MAJOR.MINOR` str
 
 **MAJOR** is bumped when an existing field is renamed, retyped, or structurally moved — including a scalar becoming an object, an object becoming an array, or a key changing case or separator. Every major bump is called out in the release notes.
 
-**Values are open:** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `decision`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, the `determined_by` factor kinds and their `effect`, and the kinds inside an action's `update_kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
+**Values are open, except four sets:** Several fields carry a value from a fixed vocabulary — `action_name`, `entity_type`, `actor_type`, `outcome`, `operation`, `privilege_source`, `resource_type`, `failure_reason`, and the kinds inside an action's `update_kinds` list. New values may appear in any of them at any version, including a patch release of the catalog, because a new action or a new entity kind is new capability rather than a changed format. **Treat a value you do not recognise as opaque: log it, route it to a default branch, and do not fail on it.** What will not happen without a MAJOR bump is an existing value being renamed or removed, so a consumer that matches on the values it knows and ignores the rest keeps working.
 
-In the [schema](audit/schema.md) a closed-value field points at the definition listing its values, so a validator can check it. Treat a value the list does not carry as a record newer than your copy of the schema, not as a failure.
+Four sets are closed by what they mean: `decision`, `root_level`, `privilege_scope`, and a policy's `effect` under `determined_by`. The kinds of `determined_by` entry, its `type`, are closed the same way. A new value in any of these is a MAJOR change.
+
+In the [schema](audit/schema.md) every value set has its own definition, and a field holding one of its values points at it. An open set lists its values under `x-audit-values`, so a validator accepts a value added after your copy of the schema was generated. A closed set lists them as an `enum`, which a validator enforces.
 
 A new *key* is a different matter: it is a new field, so it raises MINOR and appears in the release notes. Ignore keys you do not recognise, as the MINOR rule above already says, but you will not meet one without a version to explain it. The [schema](audit/schema.md) marks which sets are which — `x-audit-kind: "enum"` for a set of values, `x-audit-kind: "keys"` for a set of keys.
 
@@ -126,7 +128,7 @@ Most records name one product. A record names two when a component that plugs in
 !!! warning "The two numbers are not the same field written twice"
     For records Lakekeeper alone produces, `emitters.lakekeeper` happens to equal `audit_format`, because one project governs both. That equality is a property of that one key, not of the format. Any other product carries a different number, and a consumer that compares whichever it first encountered will route those records wrongly and silently. Compare the one whose scope you mean.
 
-Every object, field and closed set of values a record can carry is described in the [audit log schema](audit/schema.md), generated from the emitting code. The sections below describe what the records mean and show examples.
+Every object, field and set of values a record can carry is described in the [audit log schema](audit/schema.md), generated from the emitting code. The sections below describe what the records mean and show examples.
 
 Compare versions by splitting on `.` and comparing each half as an integer. Do not compare the string lexically: `"1.10"` sorts *before* `"1.9"`. In `jq`, that is `select((.audit_format | split(".") | map(tonumber)) >= [1, 9])`. Routing on the major alone — `.audit_format | split(".") | .[0]` — is the safe default.
 
@@ -377,9 +379,9 @@ Six fields are the **scope** — the same value the authorizer is asked with, so
 |------------------|--------|------------------------------------------------------------------------------|
 | `dry_run`        | Boolean | `true` when the call only reports what it would do. A dry run changes nothing, so a record carrying `true` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` carrying `true`; a `read_subtree_grants` record from a subtree listing reads `false` |
 | `resource_types` | Array  | The resource kinds the request reaches. Always at least one, and always a subset of the kinds the addressed resource covers |
-| `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are. Open, like the other value sets — see [Format version and stability](#audit-format) |
+| `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are. Closed — see [Format version and stability](#audit-format) |
 | `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
-| `privilege_scope` | String | `every` when the request reaches every privilege a matching grant can carry — including privileges this server no longer publishes — and `only` when it names a set. Open, like the other value sets — see [Format version and stability](#audit-format) |
+| `privilege_scope` | String | `every` when the request reaches every privilege a matching grant can carry — including privileges this server no longer publishes — and `only` when it names a set. Closed — see [Format version and stability](#audit-format) |
 | `narrowed_privileges` | Array | The privileges named when `privilege_scope` is `only`. Emitted as `[]` when it is `every`, because the widest case has no list to expand into: read `privilege_scope` first, and do not read this array alone as the whole answer |
 
 `revoke_subtree_grants` carries three more, describing the filter rather than the reach:

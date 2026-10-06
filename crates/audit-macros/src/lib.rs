@@ -21,7 +21,10 @@
 //!   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
 //!   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
 //!   field and every value with its doc comment. No derives are added and `AuditPart` is not
-//!   implemented: such an enum often already serializes differently for an API.
+//!   implemented: such an enum often already serializes differently for an API. The set is
+//!   open: the schema lists its values in `x-audit-values`, and a release may add one. Add
+//!   `closed` for a set that cannot grow without a major version, such as `decision`; the
+//!   schema then lists its values as an `enum`.
 //!   Outside Lakekeeper only `keys_of = "context"` is accepted: the other objects take their
 //!   keys from a Lakekeeper enum, so a vocabulary declared elsewhere could not be emitted.
 //! - **A key vocabulary** (`#[audit_part(keys_of = "entity")]`): its variant names are the
@@ -86,6 +89,9 @@ struct Args {
     /// `external_values`: these values are spelled somewhere else — another product
     /// publishes them, or they mirror a vocabulary that does — so the case check skips them.
     external_values: bool,
+    /// `closed`: this field's values can never grow without a major version, because the
+    /// set is closed by what it means. The schema lists them as an `enum`.
+    closed: bool,
 }
 
 impl Parse for Args {
@@ -96,6 +102,7 @@ impl Parse for Args {
             match &meta {
                 Meta::Path(p) if p.is_ident("context") => args.context = true,
                 Meta::Path(p) if p.is_ident("external_values") => args.external_values = true,
+                Meta::Path(p) if p.is_ident("closed") => args.closed = true,
                 Meta::NameValue(nv) if nv.path.is_ident("shape") => {
                     args.shape = Some(lit_str(&nv.value, "shape")?);
                 }
@@ -109,8 +116,8 @@ impl Parse for Args {
                     return Err(Error::new_spanned(
                         other,
                         "unknown argument: expected `field = \"<wire field>\"`, \
-                         `keys_of = \"<object>\"`, `context`, `shape = \"<record_type>\"` \
-                         or `external_values`",
+                         `keys_of = \"<object>\"`, `context`, `shape = \"<record_type>\"`, \
+                         `external_values` or `closed`",
                     ));
                 }
             }
@@ -136,6 +143,13 @@ impl Parse for Args {
                 "`external_values` says the values of a field are spelled elsewhere, so it \
                  belongs on `field = \"<wire field>\"`. Every key and every value this log \
                  names itself is `lower_snake_case`.",
+            ));
+        }
+        if args.closed && args.field.is_none() {
+            return Err(Error::new(
+                proc_macro2::Span::call_site(),
+                "`closed` says a field's values can never grow, so it belongs on \
+                 `field = \"<wire field>\"`",
             ));
         }
         if args.field.is_some() && args.keys_of.is_some() {
@@ -183,7 +197,11 @@ pub fn audit_part(args: TokenStream, item: TokenStream) -> TokenStream {
 enum Vocabulary<'a> {
     /// The values of the wire field of this name. `external` when they are spelled somewhere
     /// else, which exempts them from the case check.
-    Values { field: &'a str, external: bool },
+    Values {
+        field: &'a str,
+        external: bool,
+        closed: bool,
+    },
     /// The keys of the object of this name.
     Keys(&'a str),
 }
@@ -194,6 +212,7 @@ fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
         (Some(field), _) => Some(Vocabulary::Values {
             field,
             external: args.external_values,
+            closed: args.closed,
         }),
         (_, Some(object)) => Some(Vocabulary::Keys(object)),
         (None, None) => None,
@@ -321,9 +340,9 @@ fn expand_vocabulary(
     // no value type, so an enum declared as keys cannot be written where a field's value is
     // expected, and a value enum cannot become an object key.
     let (wire_ty, kind_of, conversions) = match vocabulary {
-        Vocabulary::Values { field, .. } => (
+        Vocabulary::Values { field, closed, .. } => (
             quote!(::lakekeeper::audit::Wire<#ident #ty_generics>),
-            quote!(::lakekeeper::audit::Kind::Values { field: #field, names: &WIRE }),
+            quote!(::lakekeeper::audit::Kind::Values { field: #field, names: &WIRE, closed: #closed }),
             quote! {
                 impl #impl_generics ::core::convert::From<#ident #ty_generics>
                     for ::lakekeeper::audit::Wire<#ident #ty_generics> #where_clause {
@@ -1196,6 +1215,13 @@ mod tests {
             rejection(r#"keys_of = "entity""#, "enum K { A }").contains("could never be emitted")
         );
         assert!(expand_str(r#"keys_of = "context""#, "enum K { A(bool) }").is_ok());
+        // `closed` describes the values of a field, so it needs one.
+        assert!(rejection(r#"keys_of = "context", closed"#, "enum K { A }").contains("closed"));
+        assert!(
+            expand_str(r#"field = "decision", closed"#, "enum E { A }")
+                .expect("expands")
+                .contains("closed : true")
+        );
         // Unknown arguments name the ones that exist.
         assert!(rejection("nonsense", "struct S;").contains("unknown argument"));
         // A union has no describable shape.

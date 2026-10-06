@@ -127,7 +127,7 @@ pub enum RecordType {
 }
 
 /// The `decision` value on an authorization record.
-#[audit_part(field = "decision")]
+#[audit_part(field = "decision", closed)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 pub enum Decision {
@@ -190,6 +190,7 @@ crate::__private::inventory::submit! {
         kind: Kind::Values {
             field: "update_kinds",
             names: &UPDATE_KIND_NAMES,
+            closed: false,
         },
         type_name: || core::any::type_name::<iceberg_ext::catalog::TableUpdateKind>(),
         emitter: EmitterStamp::of::<crate::Lakekeeper>(),

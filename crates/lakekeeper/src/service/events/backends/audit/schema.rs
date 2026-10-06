@@ -258,9 +258,16 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                     Kind::Keys { .. } => "x-audit-keys-of",
                     _ => "x-audit-field",
                 };
+                // An open value set lists its values beside `type`, not as an `enum`, so a
+                // validator accepts a value a later release adds. A closed set and a key set
+                // cannot grow without a format change, so `enum` states exactly what they are.
+                let listed = match reg.kind {
+                    Kind::Values { closed: false, .. } => "x-audit-values",
+                    _ => "enum",
+                };
                 let mut def = json!({
                     "type": "string",
-                    "enum": names,
+                    listed: names,
                     "x-audit-kind": reg.kind.as_str(),
                     place: reg.kind.wire_place(),
                 });
@@ -345,7 +352,7 @@ pub fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
     Registration::require_registry();
     let mut unknown = Vec::new();
     for reg in registrations(|reg| reg.emitter.name == E::NAME) {
-        let Kind::Values { field, names } = reg.kind else {
+        let Kind::Values { field, names, .. } = reg.kind else {
             continue;
         };
         let Some((_, _, vocabulary, _)) = FLATTENED.iter().find(|(f, _, _, _)| *f == field) else {
@@ -448,7 +455,10 @@ fn link_carried_keys(
     for (field, owner, vocabulary, default_type) in FLATTENED {
         let mut branches: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
         for reg in regs {
-            let Kind::Values { field: f, names } = reg.kind else {
+            let Kind::Values {
+                field: f, names, ..
+            } = reg.kind
+            else {
                 continue;
             };
             if f != field {

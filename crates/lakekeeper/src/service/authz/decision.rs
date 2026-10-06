@@ -163,6 +163,7 @@ pub enum DeterminingFactor {
 }
 
 /// Whether a determining policy permits or forbids.
+#[crate::audit::audit_part(field = "effect", closed)]
 #[derive(
     Clone,
     Copy,

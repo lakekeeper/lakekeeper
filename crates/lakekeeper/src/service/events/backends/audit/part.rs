@@ -107,6 +107,10 @@ pub enum Kind {
         field: &'static str,
         /// Every value the enum can put on that field.
         names: &'static [WireName],
+        /// Whether the set can never grow without a major version. An open set lists its
+        /// values in `x-audit-values`, so a validator accepts a value a later release adds; a
+        /// closed one lists them as an `enum`.
+        closed: bool,
     },
     /// A key vocabulary: these names are the keys of one object.
     ///

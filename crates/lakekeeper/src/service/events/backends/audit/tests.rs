@@ -2353,6 +2353,7 @@ fn no_fixture_action_carries_an_undeclared_key() {
         if let Kind::Values {
             field: "action_name",
             names,
+            ..
         } = reg.kind
         {
             for name in names {
@@ -2523,8 +2524,10 @@ fn the_generated_schema_is_self_contained_and_documented() {
         let Some(descriptions) = def["x-audit-descriptions"].as_object() else {
             continue;
         };
-        let names: Vec<&str> = def["enum"]
-            .as_array()
+        let names: Vec<&str> = def
+            .get("enum")
+            .or_else(|| def.get("x-audit-values"))
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(serde_json::Value::as_str)

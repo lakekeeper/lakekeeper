@@ -596,7 +596,7 @@
     },
     "ActorType": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "anonymous",
         "assumed_role",
         "lakekeeper_internal",
@@ -672,7 +672,7 @@
     },
     "AuditOperation": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "admission_decided",
         "grant_created",
         "grant_revoked"
@@ -682,7 +682,7 @@
     },
     "AuditOutcome": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "forbidden",
         "success",
         "unavailable"
@@ -769,7 +769,7 @@
     },
     "AuthnAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "assume_role"
       ],
       "x-audit-kind": "enum",
@@ -777,7 +777,7 @@
     },
     "AuthorizationFailureReason": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "action_forbidden",
         "cannot_see_resource",
         "internal_authorization_error",
@@ -899,7 +899,7 @@
     },
     "CatalogGenericTableAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "control_tasks",
         "drop",
         "get_metadata",
@@ -922,7 +922,7 @@
     },
     "CatalogNamespaceAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "accept_moved_namespace",
         "create_generic_table",
         "create_namespace",
@@ -957,7 +957,7 @@
     },
     "CatalogProjectAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "control_project_tasks",
         "create_role",
         "create_tag",
@@ -986,7 +986,7 @@
     },
     "CatalogRoleAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "delete",
         "manage_role_assignments",
         "read",
@@ -1005,7 +1005,7 @@
     },
     "CatalogServerAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "create_project",
         "delete_users",
         "list_users",
@@ -1026,7 +1026,7 @@
     },
     "CatalogTableAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "commit",
         "control_tasks",
         "drop",
@@ -1050,7 +1050,7 @@
     },
     "CatalogTagAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "apply",
         "delete",
         "read",
@@ -1073,7 +1073,7 @@
     },
     "CatalogUserAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "delete",
         "read",
         "read_role_assignments",
@@ -1090,7 +1090,7 @@
     },
     "CatalogViewAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "commit",
         "control_tasks",
         "drop",
@@ -1113,7 +1113,7 @@
     },
     "CatalogWarehouseAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "accept_moved_namespace",
         "activate",
         "control_all_tasks",
@@ -1323,7 +1323,7 @@
     },
     "EntityType": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "generic-table",
         "namespace",
         "project",
@@ -1460,7 +1460,7 @@
     },
     "InstanceAdminAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "set_warehouse_managed_by"
       ],
       "x-audit-kind": "enum",
@@ -1471,7 +1471,7 @@
     },
     "ManagementAction": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "apply_grants",
         "control_tasks",
         "get_task_details",
@@ -1548,20 +1548,17 @@
       "x-audit-kind": "shape"
     },
     "PolicyEffect": {
-      "oneOf": [
-        {
-          "type": "string",
-          "const": "permit",
-          "description": "The policy grants the action."
-        },
-        {
-          "type": "string",
-          "const": "forbid",
-          "description": "The policy denies the action."
-        }
+      "type": "string",
+      "enum": [
+        "forbid",
+        "permit"
       ],
-      "description": "Whether a determining policy permits or forbids.",
-      "x-audit-kind": "enum"
+      "x-audit-kind": "enum",
+      "x-audit-field": "effect",
+      "x-audit-descriptions": {
+        "forbid": "The policy denies the action.",
+        "permit": "The policy grants the action."
+      }
     },
     "PrivilegeScope": {
       "type": "string",
@@ -1574,7 +1571,7 @@
     },
     "PrivilegeSource": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "authorizer",
         "instance_admin",
         "internal"
@@ -1589,7 +1586,7 @@
     },
     "RecordType": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "authorization",
         "operation",
         "replay"
@@ -1682,7 +1679,7 @@
     },
     "ResourceType": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "generic-table",
         "namespace",
         "project",
@@ -1741,7 +1738,7 @@
     },
     "TableUpdateKind": {
       "type": "string",
-      "enum": [
+      "x-audit-values": [
         "add-encryption-key",
         "add-schema",
         "add-snapshot",

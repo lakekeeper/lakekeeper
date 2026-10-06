@@ -34,9 +34,8 @@ product's actions and `context` keys in *its* schema, under definitions of the s
 `emitters` on the record says whose schemas apply. The two compose: `allOf` branches and
 object properties merge without either schema knowing about the other.
 
-Everything stays open: an action no branch names still validates, `context` still accepts keys
-from any product, and those value sets stay open the way every vocabulary in this log is open —
-a new name may appear at any version, so treat one you do not recognise as opaque.
+Everything stays open: an action no branch names still validates, and `context` still accepts keys
+from any product.
 
 **What to do:** nothing, unless you want it. Validating against the schema behaves as before
 for anything you already send. If you generate parsers, the branches tell you which keys to
