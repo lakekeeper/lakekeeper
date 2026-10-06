@@ -7,8 +7,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogServerAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogServerAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
@@ -18,7 +18,15 @@ use crate::{
 };
 pub trait ServerAction
 where
-    Self: CatalogAction + Clone + From<CatalogServerAction> + Eq + PartialEq,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + From<CatalogServerAction>
+        + Eq
+        + PartialEq,
 {
 }
 
@@ -36,7 +44,7 @@ impl AuthZServerActionForbidden {
     pub fn new(server_id: ServerId, action: &impl ServerAction) -> Self {
         Self {
             server_id,
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

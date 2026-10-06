@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -57,41 +57,6 @@ pub struct AuthorizationError {
     pub error_id: String,
 }
 
-impl valuable::Valuable for AuthorizationError {
-    fn as_value(&self) -> valuable::Value<'_> {
-        valuable::Value::Mappable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn valuable::Visit) {
-        visit.visit_entry(
-            valuable::Value::String("type"),
-            valuable::Value::String(&self.r#type),
-        );
-        visit.visit_entry(
-            valuable::Value::String("code"),
-            valuable::Value::U16(self.code),
-        );
-        visit.visit_entry(
-            valuable::Value::String("message"),
-            valuable::Value::String(&self.message),
-        );
-        if !self.stack.is_empty() {
-            visit.visit_entry(valuable::Value::String("stack"), self.stack.as_value());
-        }
-        visit.visit_entry(
-            valuable::Value::String("error_id"),
-            valuable::Value::String(&self.error_id),
-        );
-    }
-}
-
-impl valuable::Mappable for AuthorizationError {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = if self.stack.is_empty() { 4 } else { 5 };
-        (len, Some(len))
-    }
-}
-
 impl AuthorizationError {
     #[must_use]
     pub fn clone_from_error_model(error_model: &ErrorModel) -> Self {
@@ -115,11 +80,13 @@ impl AuthorizationError {
 pub struct AuthorizationFailedEvent {
     /// Request metadata including the actor who attempted the action
     pub request_metadata: Arc<RequestMetadata>,
+    /// When the event happened: when it was built, not when a listener got to it.
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,
 
-    /// The action that was attempted, serialized from `CatalogAction`
+    /// The action that was attempted, serialized from `EventAction`
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Why the authorization failed
@@ -129,11 +96,14 @@ pub struct AuthorizationFailedEvent {
     pub error: Arc<AuthorizationError>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, String>>,
+    pub extra_context: Arc<
+        std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>,
+    >,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
-    /// Always non-empty: single-check events carry one synthesised entry,
-    /// batch-style events carry one entry per inner check.
+    /// One synthesised entry per (entity, action) pair, or one entry per inner
+    /// check for batch-style events. Empty for a request that named nothing to
+    /// check, such as an empty batch.
     pub authorizations: Arc<Vec<Authorization>>,
 }
 
@@ -145,19 +115,24 @@ pub struct AuthorizationFailedEvent {
 pub struct AuthorizationSucceededEvent {
     /// Request metadata including the actor who attempted the action
     pub request_metadata: Arc<RequestMetadata>,
+    /// When the event happened: when it was built, not when a listener got to it.
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 
     /// The user-provided entities that were being accessed
     pub entities: Arc<EventEntities>,
 
-    /// The action that was attempted, serialized from `CatalogAction`
+    /// The action that was attempted, serialized from `EventAction`
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, String>>,
+    pub extra_context: Arc<
+        std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>,
+    >,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
-    /// Always non-empty: single-check events carry one synthesised entry,
-    /// batch-style events carry one entry per inner check.
+    /// One synthesised entry per (entity, action) pair, or one entry per inner
+    /// check for batch-style events. Empty for a request that named nothing to
+    /// check, such as an empty batch.
     pub authorizations: Arc<Vec<Authorization>>,
 }
 
@@ -167,15 +142,8 @@ pub struct AuthorizationSucceededEvent {
 ///
 /// Note: HTTP responses may be deliberately ambiguous (e.g., 404 for both `ResourceNotFound`
 /// and `CannotSeeResource`), but audit logs are concrete for debugging and compliance.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    valuable::Valuable,
-    strum_macros::VariantArray,
-    strum_macros::VariantNames,
-)]
+#[crate::audit::audit_part(field = "failure_reason")]
+#[derive(Clone, Debug, PartialEq, Eq, strum_macros::VariantArray, strum_macros::VariantNames)]
 pub enum AuthorizationFailureReason {
     /// Action is not allowed for the user
     ActionForbidden,
@@ -194,6 +162,20 @@ pub enum AuthorizationFailureReason {
 
     /// Invalid data provided by the client that caused authorization to fail (e.g. malformed resource identifier)
     InvalidRequestData,
+}
+
+impl AuthorizationFailureReason {
+    /// Whether the request was evaluated and refused, as opposed to never reaching a verdict:
+    /// a backend failure or bad input is not a refusal.
+    #[must_use]
+    pub const fn is_definitive(&self) -> bool {
+        match self {
+            Self::ActionForbidden | Self::ResourceNotFound | Self::CannotSeeResource => true,
+            Self::InternalAuthorizationError
+            | Self::InternalCatalogError
+            | Self::InvalidRequestData => false,
+        }
+    }
 }
 
 /// Delegates `AuthorizationFailureSource` to inner types of an enum.

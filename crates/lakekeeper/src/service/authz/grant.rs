@@ -47,14 +47,19 @@ use crate::{
 /// The kinds of resource a grant can be held on.
 ///
 /// Every value is also the URL segment that addresses that kind of resource, so a
-/// client can build request paths straight from a vocabulary response. Kept link-free:
-/// this doc comment is published verbatim in the `OpenAPI` description, where an
-/// intra-doc link would render as a raw Rust module path.
-///
-/// This is the vocabulary the API speaks. A store is free to persist a coarser one —
-/// tables, views and generic tables are one kind to a catalog that already records
-/// which of the three an id refers to — so this deliberately carries no storage
-/// mapping.
+/// client can build request paths straight from a vocabulary response. The audit log
+/// spells these kinds the same way.
+// Kept link-free: this doc comment is published verbatim in the `OpenAPI` description,
+// where an intra-doc link would render as a raw Rust module path.
+//
+// A store may persist a coarser vocabulary (tables, views and generic tables are one kind to
+// a catalog that records which of the three an id refers to), so this carries no storage
+// mapping.
+//
+// `external_values` because these names are this API's: the audit log's `lower_snake_case`
+// rule is not applied to them.
+#[crate::audit::audit_part(field = "resource_type", external_values)]
+#[audit(rename_all = "kebab-case")]
 #[derive(
     Debug,
     Clone,
@@ -68,7 +73,6 @@ use crate::{
     Deserialize,
     strum::VariantArray,
     strum::EnumString,
-    strum::IntoStaticStr,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -81,24 +85,16 @@ pub enum ResourceType {
     Table,
     View,
     GenericTable,
-    /// Spelled `tag-definition` on the wire, matching the path segment tag definitions
-    /// are addressed by, so every key of the vocabulary map names its own URL segment.
-    /// The only spelling `kebab-case` does not already produce.
+    /// A tag definition, spelled as the path segment tag definitions are addressed by.
+    // Spelled so every key of the vocabulary map names its own URL segment: the only
+    // spelling `kebab-case` does not already produce.
     #[serde(rename = "tag-definition")]
     #[strum(serialize = "tag-definition")]
+    #[audit(rename = "tag-definition")]
     Tag,
 }
 
 impl ResourceType {
-    /// The label used on the wire.
-    ///
-    /// Derived from the variant names, so this spelling and `serde`'s cannot drift apart
-    /// silently — the round-trip test below pins that they agree.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
-    }
-
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         <Self as std::str::FromStr>::from_str(s).ok()
@@ -1123,6 +1119,20 @@ pub(crate) fn emit_bootstrap_grants_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The audit log and the management API declare their spellings separately; this test
+    /// keeps them equal.
+    #[test]
+    fn resource_types_are_spelled_alike_in_the_audit_log_and_the_api() {
+        use strum::VariantArray as _;
+        for (resource_type, wire) in ResourceType::VARIANTS.iter().zip(ResourceType::WIRE_NAMES) {
+            assert_eq!(
+                serde_json::to_value(resource_type).expect("serializes"),
+                serde_json::json!(wire)
+            );
+        }
+        assert_eq!(ResourceType::VARIANTS.len(), ResourceType::WIRE_NAMES.len());
+    }
 
     #[test]
     fn resource_type_round_trips_through_its_stored_spelling() {

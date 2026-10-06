@@ -1,0 +1,43 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "read_data"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
+      "table": "sales.orders"
+    }
+  ],
+  "actor": {
+    "actor_type": "anonymous"
+  },
+  "privilege_source": "authorizer",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true,
+      "determined_by": []
+    }
+  ],
+  "decision": "allowed"
+}

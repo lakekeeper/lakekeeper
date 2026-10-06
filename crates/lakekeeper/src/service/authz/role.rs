@@ -10,8 +10,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogRoleAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -22,7 +22,14 @@ use crate::{
 
 pub trait RoleAction
 where
-    Self: CatalogAction + Send + Sync + Clone + From<CatalogRoleAction> + PartialEq,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + From<CatalogRoleAction>
+        + PartialEq,
 {
 }
 
@@ -102,7 +109,7 @@ impl AuthZRoleActionForbidden {
     pub fn new(role_id: RoleId, action: &impl RoleAction) -> Self {
         Self {
             role_id,
-            action: action.action_descriptor().log_string(),
+            action: action.to_string(),
         }
     }
 }

@@ -101,33 +101,60 @@ impl UserAgent {
 
 /// Source of an authorization decision, surfaced in audit events as
 /// `privilege_source`.
+#[crate::audit::audit_part(field = "privilege_source")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::VariantArray)]
 pub enum PrivilegeSource {
-    /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
-    /// Full bypass including data-plane actions.
+    /// A call the catalog made to itself, with no client request behind it. Full bypass,
+    /// including data-plane actions.
     Internal,
     /// Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass
     /// only; data-plane actions still route through the configured authorizer.
     InstanceAdmin,
-    /// Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).
+    /// Decision came from the configured authorizer (OpenFGA, Cedar, allow-all, ...).
     Authorizer,
 }
 
-impl PrivilegeSource {
+/// The id of one request, as everything that names the request carries it: the response's
+/// `x-request-id`, the log lines written while serving it, its audit records and its events.
+///
+/// The client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7
+/// generated for the request.
+// Set once by the router's `SetRequestId` layer and read from there, so every layer names
+// the request the same way.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct RequestId(Arc<str>);
+
+impl RequestId {
+    /// A fresh id, for a request no client named.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Internal => "internal",
-            Self::InstanceAdmin => "instance_admin",
-            Self::Authorizer => "authorizer",
-        }
+    pub fn generate() -> Self {
+        Uuid::now_v7().into()
+    }
+
+    /// The id as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Uuid> for RequestId {
+    fn from(id: Uuid) -> Self {
+        Self(id.to_string().into())
+    }
+}
+
+impl std::fmt::Display for RequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
-    request_id: Uuid,
+    request_id: RequestId,
     /// When the request reached Lakekeeper's middleware.
     received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
@@ -318,7 +345,7 @@ impl RequestMetadata {
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
             received_at: tokio::time::Instant::now(),
-            request_id,
+            request_id: request_id.into(),
             project_id: None,
             authentication: None,
             base_url: "http://localhost:8181".to_string(),
@@ -385,7 +412,7 @@ impl RequestMetadata {
     pub fn new_unauthenticated() -> Self {
         Self {
             received_at: tokio::time::Instant::now(),
-            request_id: Uuid::now_v7(),
+            request_id: RequestId::generate(),
             project_id: None,
             authentication: None,
             base_url: "http://localhost:8181".to_string(),
@@ -423,6 +450,14 @@ impl RequestMetadata {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn with_break_glass(&mut self, reason: Option<String>) -> &mut Self {
         self.break_glass = reason;
+        self
+    }
+
+    /// Set the request id, as if the request had arrived carrying it. Lets a test pin the id
+    /// a record names.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_request_id(&mut self, request_id: impl Into<RequestId>) -> &mut Self {
+        self.request_id = request_id.into();
         self
     }
 
@@ -533,23 +568,14 @@ impl RequestMetadata {
         &self.actor
     }
 
-    /// The request's actor, rendered for an audit event.
-    ///
-    /// The one way to put this request's actor on a record, so every record
-    /// raised while serving it agrees on who the caller is.
-    #[must_use]
-    pub fn audit_actor(&self) -> crate::service::events::backends::audit::AuditActor<'_> {
-        crate::service::events::backends::audit::AuditActor(&self.actor)
-    }
-
     #[must_use]
     pub fn authentication(&self) -> Option<&Authentication> {
         self.authentication.as_ref()
     }
 
     #[must_use]
-    pub fn request_id(&self) -> Uuid {
-        self.request_id
+    pub fn request_id(&self) -> &RequestId {
+        &self.request_id
     }
 
     #[must_use]
@@ -684,8 +710,8 @@ pub struct RequestMetadataTestBuilder {
     /// Fixed request id. Random by default, as in production; set it where a
     /// test compares a whole emitted record against a committed one, which a
     /// fresh uuid per run would make impossible.
-    #[builder(default = Uuid::now_v7())]
-    pub request_id: Uuid,
+    #[builder(default = RequestId::generate(), setter(into))]
+    pub request_id: RequestId,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -739,16 +765,15 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let request_id: Uuid = headers
-        .get(X_REQUEST_ID_HEADER)
-        .and_then(|hv| hv.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(Uuid::from_str)
-        .transpose()
-        .ok()
-        .flatten()
-        .unwrap_or(Uuid::now_v7());
+    // The router's `SetRequestId` layer has already chosen the id (the client's, or a
+    // generated one). Reading it from there keeps one id for the span, the response header
+    // and every record of this request.
+    let request_id = request
+        .extensions()
+        .get::<tower_http::request_id::RequestId>()
+        .and_then(|id| id.header_value().to_str().ok())
+        .filter(|id| !id.is_empty())
+        .map_or_else(RequestId::generate, |id| RequestId(id.into()));
 
     let Some(base_uri) = determine_base_uri(&headers) else {
         return iceberg_ext::catalog::rest::IcebergErrorResponse::from(ErrorModel::bad_request(

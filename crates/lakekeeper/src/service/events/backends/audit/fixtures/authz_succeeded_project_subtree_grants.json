@@ -1,0 +1,72 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "read_subtree_grants",
+      "dry_run": false,
+      "resource_types": [
+        "project",
+        "warehouse",
+        "namespace",
+        "table",
+        "view",
+        "generic-table",
+        "tag-definition"
+      ],
+      "root_level": "included",
+      "principal": "user:oidc~bob",
+      "privilege_scope": "every",
+      "narrowed_privileges": []
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "project",
+      "project_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "context": {
+    "self_read": false
+  },
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "read_subtree_grants",
+        "dry_run": false,
+        "resource_types": [
+          "project",
+          "warehouse",
+          "namespace",
+          "table",
+          "view",
+          "generic-table",
+          "tag-definition"
+        ],
+        "root_level": "included",
+        "principal": "user:oidc~bob",
+        "privilege_scope": "every",
+        "narrowed_privileges": []
+      },
+      "entity": {
+        "entity_type": "project",
+        "project_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "allowed": true,
+      "determined_by": []
+    }
+  ],
+  "decision": "allowed"
+}

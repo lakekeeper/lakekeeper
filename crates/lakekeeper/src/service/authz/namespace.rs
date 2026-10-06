@@ -15,8 +15,8 @@ use crate::{
             AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
             AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
             AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogNamespaceAction, IsAllowedActionError, MustUse,
-            RequireWarehouseActionError, UserOrRole,
+            CatalogNamespaceAction, IsAllowedActionError, MustUse, RequireWarehouseActionError,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedNamespace,
@@ -29,7 +29,15 @@ const CAN_SEE_PERMISSION: CatalogNamespaceAction = CatalogNamespaceAction::GetMe
 
 pub trait NamespaceAction
 where
-    Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogNamespaceAction>,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + PartialEq
+        + Eq
+        + From<CatalogNamespaceAction>,
 {
     /// Whether this is one of the grant-read actions; see the warehouse twin.
     fn is_grant_read(&self) -> bool;
@@ -190,7 +198,7 @@ impl AuthZNamespaceActionForbidden {
         Self {
             warehouse_id,
             namespace: namespace.into(),
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }

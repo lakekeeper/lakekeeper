@@ -21,7 +21,7 @@ all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower", "dep:hyper-util", "dep:socket2"]
 default = ["s3-signer", "router"]
-test-utils = ["lakekeeper-io/storage-in-memory"]
+test-utils = ["lakekeeper-io/storage-in-memory", "dep:jsonschema"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 # Enable `derive(sqlx::Type)` on lakekeeper's domain enums/newtypes so that
 # storage backends (e.g. `lakekeeper-storage-postgres`) can `bind()` and
@@ -61,11 +61,14 @@ http-body-util = { version = "~0.1" }
 hyper-util = { workspace = true, optional = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+inventory = { workspace = true }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
+jsonschema = { workspace = true, optional = true }
 # Selects the Kubernetes API version for the k8s-openapi that `limes` pulls in
 # transitively (limes leaves the choice to the consumer). Not used directly.
 k8s-openapi = { workspace = true, features = ["v1_32"] }
+lakekeeper-audit-macros = { path = "../audit-macros" }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",
@@ -78,6 +81,7 @@ pastey = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
 reqwest = { workspace = true }
+schemars = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -102,6 +106,7 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+tracing-subscriber = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
 url = { workspace = true }
@@ -132,7 +137,6 @@ similar = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
-tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints.rust]

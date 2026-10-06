@@ -39,7 +39,24 @@ use super::{
         ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
     },
 };
-use crate::entities::OpenFgaEntity;
+use crate::{api::PermissionAction, entities::OpenFgaEntity};
+
+/// What `/check` asks of an object, and the action its audit record names.
+///
+/// Checking the caller's own access needs `can_get_metadata`; checking another principal's
+/// needs `can_read_assignments`. Both come from one branch, so the record always names the
+/// relation that was checked.
+fn check_relation<R>(
+    for_other_principal: bool,
+    get_metadata: R,
+    read_assignments: R,
+) -> (PermissionAction, R) {
+    if for_other_principal {
+        (PermissionAction::CanReadAssignments, read_assignments)
+    } else {
+        (PermissionAction::CanGetMetadata, get_metadata)
+    }
+}
 
 /// Check if a specific action is allowed on the given object
 #[cfg_attr(feature = "open-api", utoipa::path(
@@ -179,18 +196,18 @@ async fn check_warehouse(
     warehouse_id: WarehouseId,
     event_dispatcher: EventDispatcher,
 ) -> Result<(String, String)> {
-    let required_action = for_principal
-        .as_ref()
-        .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
-            AllWarehouseRelation::CanReadAssignments
-        });
+    let (recorded, required_action) = check_relation(
+        for_principal.is_some(),
+        AllWarehouseRelation::CanGetMetadata,
+        AllWarehouseRelation::CanReadAssignments,
+    );
     let event_ctx =
-        APIEventContext::for_warehouse(metadata, event_dispatcher, warehouse_id, required_action);
+        APIEventContext::for_warehouse(metadata, event_dispatcher, warehouse_id, recorded);
 
     let authz_result = authorizer
         .require_action(
             event_ctx.request_metadata(),
-            *event_ctx.action(),
+            required_action,
             &warehouse_id.to_openfga(),
         )
         .await;
@@ -217,18 +234,14 @@ async fn check_project(
         .map_err(authz_to_error_no_audit)?;
     let project_id_openfga = project_id.to_openfga();
 
-    let action_to_check = for_principal
-        .as_ref()
-        .map_or(AllProjectRelations::CanGetMetadata, |_| {
-            AllProjectRelations::CanReadAssignments
-        });
-
-    let event_ctx = APIEventContext::for_project(
-        metadata,
-        event_dispatcher,
-        project_id.clone(),
-        action_to_check,
+    let (recorded, action_to_check) = check_relation(
+        for_principal.is_some(),
+        AllProjectRelations::CanGetMetadata,
+        AllProjectRelations::CanReadAssignments,
     );
+
+    let event_ctx =
+        APIEventContext::for_project(metadata, event_dispatcher, project_id.clone(), recorded);
 
     let authz_result = authorizer
         .require_action(
@@ -253,7 +266,7 @@ async fn check_server(
     let event_ctx = APIEventContext::for_server(
         metadata,
         event_dispatcher,
-        AllServerAction::CanReadAssignments,
+        PermissionAction::CanReadAssignments,
         lakekeeper::service::authz::Authorizer::server_id(authorizer),
     );
 
@@ -261,7 +274,7 @@ async fn check_server(
         let authz_result = authorizer
             .require_action(
                 event_ctx.request_metadata(),
-                *event_ctx.action(),
+                AllServerAction::CanReadAssignments,
                 &openfga_server,
             )
             .await;
@@ -277,9 +290,11 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
     namespace: &NamespaceIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let action = for_principal.map_or(AllNamespaceRelations::CanGetMetadata, |_| {
-        AllNamespaceRelations::CanReadAssignments
-    });
+    let (recorded, action) = check_relation(
+        for_principal.is_some(),
+        AllNamespaceRelations::CanGetMetadata,
+        AllNamespaceRelations::CanReadAssignments,
+    );
 
     let (warehouse_id, user_provided_ns) = match namespace {
         NamespaceIdentOrUuid::Id {
@@ -297,7 +312,7 @@ async fn check_namespace<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events.clone(),
         warehouse_id,
         user_provided_ns.clone(),
-        action,
+        recorded,
     );
 
     let authz_result = authorize_check_namespace::<C, S>(
@@ -343,9 +358,11 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
     table: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let action = for_principal.map_or(AllTableRelations::CanGetMetadata, |_| {
-        AllTableRelations::CanReadAssignments
-    });
+    let (recorded, action) = check_relation(
+        for_principal.is_some(),
+        AllTableRelations::CanGetMetadata,
+        AllTableRelations::CanReadAssignments,
+    );
 
     let (warehouse_id, table) = match table {
         TabularIdentOrUuid::IdInWarehouse {
@@ -370,7 +387,7 @@ async fn check_table<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events.clone(),
         warehouse_id,
         table.clone(),
-        action,
+        recorded,
     );
 
     let authz_result = authorize_check_table::<C, S>(
@@ -439,9 +456,11 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
     view: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let action = for_principal.map_or(AllViewRelations::CanGetMetadata, |_| {
-        AllViewRelations::CanReadAssignments
-    });
+    let (recorded, action) = check_relation(
+        for_principal.is_some(),
+        AllViewRelations::CanGetMetadata,
+        AllViewRelations::CanReadAssignments,
+    );
 
     let (warehouse_id, view) = match view {
         TabularIdentOrUuid::IdInWarehouse {
@@ -466,7 +485,7 @@ async fn check_view<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events.clone(),
         warehouse_id,
         view.clone(),
-        action,
+        recorded,
     );
 
     let authz_result = authorize_check_view::<C, S>(
@@ -533,9 +552,11 @@ async fn check_generic_table<C: CatalogStore, S: SecretStore>(
     generic_table: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
-    let action = for_principal.map_or(AllGenericTableRelations::CanGetMetadata, |_| {
-        AllGenericTableRelations::CanReadAssignments
-    });
+    let (recorded, action) = check_relation(
+        for_principal.is_some(),
+        AllGenericTableRelations::CanGetMetadata,
+        AllGenericTableRelations::CanReadAssignments,
+    );
 
     let (warehouse_id, generic_table) = match generic_table {
         TabularIdentOrUuid::IdInWarehouse {
@@ -563,7 +584,7 @@ async fn check_generic_table<C: CatalogStore, S: SecretStore>(
         api_context.v1_state.events.clone(),
         warehouse_id,
         generic_table.clone(),
-        action,
+        recorded,
     );
 
     let authz_result = authorize_check_generic_table::<C, S>(

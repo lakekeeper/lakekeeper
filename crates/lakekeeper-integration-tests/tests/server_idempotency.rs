@@ -408,7 +408,7 @@ fn describe(event: &IdempotentReplayEvent) -> String {
     let mut flags = descriptor
         .context
         .iter()
-        .map(|(key, value)| format!("{key}={value}"))
+        .map(|key| format!("{}={}", key.as_str(), key.value()))
         .collect::<Vec<_>>();
     flags.sort();
     let action = if flags.is_empty() {
@@ -652,7 +652,7 @@ async fn test_every_replayed_204_is_audited(pool: PgPool) {
     assert_eq!(
         seen,
         vec![
-            "generic-table:drop:dropped_gt",
+            "generic-table:drop[force=false,purge=false]:dropped_gt",
             "generic-table:rename:gtren_src",
             "namespace:delete[force=true,purge=true,recursive=true]:doomed_ns",
             "table:drop[force=true,purge=true]:dropped",

@@ -672,11 +672,69 @@ mod test {
     use http::{HeaderMap, HeaderValue, StatusCode, header};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
+    use tower_http::ServiceBuilderExt as _;
 
     use crate::{
         config::MaintenanceMode,
         service::health::{Health, HealthState, HealthStatus, ServiceHealthProvider},
     };
+
+    /// The request-id layers in the order `new_full_router` stacks them, around a handler that
+    /// answers with the id its `RequestMetadata` carries.
+    fn app_echoing_the_request_id() -> Router {
+        Router::new()
+            .route(
+                "/t",
+                get(
+                    |axum::Extension(metadata): axum::Extension<
+                        crate::request_metadata::RequestMetadata,
+                    >| async move { metadata.request_id().to_string() },
+                ),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::request_metadata::create_request_metadata_with_trace_and_project_fn,
+            ))
+            .layer(
+                tower::ServiceBuilder::new()
+                    .set_x_request_id(crate::request_tracing::MakeRequestUuid7)
+                    .propagate_x_request_id(),
+            )
+    }
+
+    async fn request_id_seen(sent: Option<&str>) -> (String, String) {
+        let mut request = Request::builder()
+            .uri("/t")
+            .header(header::HOST, "localhost");
+        if let Some(sent) = sent {
+            request = request.header("x-request-id", sent);
+        }
+        let response = app_echoing_the_request_id()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let header = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (header, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// One id names the request in the response header, the span, and `RequestMetadata`, the
+    /// source for audit records and events. A client id is kept whatever its form.
+    #[tokio::test]
+    async fn the_request_id_is_one_value_everywhere() {
+        let (header, recorded) = request_id_seen(Some("abc")).await;
+        assert_eq!((header.as_str(), recorded.as_str()), ("abc", "abc"));
+
+        let (header, recorded) = request_id_seen(None).await;
+        assert_eq!(
+            header, recorded,
+            "a generated id is the same one everywhere"
+        );
+        assert!(uuid::Uuid::parse_str(&header).is_ok(), "{header}");
+    }
 
     fn test_health_state(health: HealthStatus) -> HealthState {
         HealthState {

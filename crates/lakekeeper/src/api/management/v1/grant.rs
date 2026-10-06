@@ -85,7 +85,10 @@ use crate::{
         },
         events::{
             APIEventContext, GrantsChangedEvent,
-            context::{APIEventActions, ActionContextKey, IntrospectPermissions, ManagementAction},
+            context::{
+                APIEventActions, ActionContextKey, HandlerContextKey, IntrospectPermissions,
+                ManagementAction,
+            },
         },
     },
 };
@@ -1549,7 +1552,10 @@ pub struct ApplyGrants {
 }
 
 impl ApplyGrants {
-    fn of(request: &ApplyGrantsRequest) -> Self {
+    /// The event action for an apply, from the request body.
+    ///
+    /// Crate-visible so the audit fixture is built by the same code the handler runs.
+    pub(crate) fn of(request: &ApplyGrantsRequest) -> Self {
         let mut privileges: Vec<String> = request
             .entries()
             .map(|entry| entry.privilege.clone())
@@ -1580,11 +1586,15 @@ impl APIEventActions for ApplyGrants {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ApplyGrants.into())
-                .context_list(ActionContextKey::Principals, self.principals.clone())
-                .context_list(ActionContextKey::Privileges, self.privileges.clone())
-                .context_string(ActionContextKey::Writes, self.writes.to_string())
-                .context_string(ActionContextKey::Deletes, self.deletes.to_string())
+                .action_name(ManagementAction::ApplyGrants.as_wire())
+                .context(ActionContextKey::Principals(self.principals.clone()))
+                .context(ActionContextKey::Privileges(self.privileges.clone()))
+                .context(ActionContextKey::Writes(
+                    i64::try_from(self.writes).unwrap_or(i64::MAX),
+                ))
+                .context(ActionContextKey::Deletes(
+                    i64::try_from(self.deletes).unwrap_or(i64::MAX),
+                ))
                 .build(),
         ]
     }
@@ -1700,7 +1710,7 @@ fn validate_filter_resource_types(
     let outside: Vec<&str> = requested
         .iter()
         .filter(|kind| !kinds.contains(kind))
-        .map(|kind| kind.as_str())
+        .map(ResourceType::as_str)
         .collect();
     if outside.is_empty() {
         return Ok(());
@@ -1825,7 +1835,10 @@ pub struct RevokeSubtreeGrants {
 }
 
 impl RevokeSubtreeGrants {
-    fn of(request: &RevokeSubtreeGrantsRequest, scope: &SubtreeGrantScope) -> Self {
+    /// The event action for a revoke, from the request and the scope its gate is asked with.
+    ///
+    /// Crate-visible so the audit fixture is built by the same code the handler runs.
+    pub(crate) fn of(request: &RevokeSubtreeGrantsRequest, scope: &SubtreeGrantScope) -> Self {
         let mut privileges = request.privilege.clone();
         privileges.sort_unstable();
         privileges.dedup();
@@ -1841,16 +1854,13 @@ impl RevokeSubtreeGrants {
 impl APIEventActions for RevokeSubtreeGrants {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         let mut descriptor = ActionDescriptor::builder()
-            .action_name(ManagementAction::RevokeSubtreeGrants.into())
-            .context_pairs(self.scope.context())
-            .context_string(
-                ActionContextKey::AllowPartial,
-                self.allow_partial.to_string(),
-            )
-            .context_list(ActionContextKey::Privileges, self.privileges.clone());
+            .action_name(ManagementAction::RevokeSubtreeGrants.as_wire())
+            .contexts(self.scope.context())
+            .context(ActionContextKey::AllowPartial(self.allow_partial))
+            .context(ActionContextKey::Privileges(self.privileges.clone()));
         if let Some(created_before) = &self.created_before {
             descriptor =
-                descriptor.context_string(ActionContextKey::CreatedBefore, created_before.clone());
+                descriptor.context(ActionContextKey::CreatedBefore(created_before.clone()));
         }
         vec![descriptor.build()]
     }
@@ -1907,7 +1917,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             warehouse_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let warehouse = C::get_warehouse_by_id_cache_aware(
             warehouse_id,
@@ -2279,7 +2289,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         // Record which path was taken. Without this an auditor cannot tell which action
         // the check actually required.
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = authorizer
             .require_project_action(event_ctx.request_metadata(), &project_id, required)
@@ -2324,7 +2334,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             CatalogServerAction::ReadGrants,
             authorizer.server_id(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             // The server has no can-see action — every caller reaches it — so a
@@ -2423,7 +2433,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             (*project_id).clone(),
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = authorizer
             .require_project_action(event_ctx.request_metadata(), &project_id, required)
@@ -2517,7 +2527,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             namespace_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _) = authorizer
@@ -2650,7 +2660,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             tag_definition_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             // Fetched within the request's project, so a definition in another
@@ -2787,7 +2797,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             table_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer
@@ -2921,7 +2931,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             view_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer
@@ -3053,7 +3063,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             generic_table_id,
             required.clone(),
         );
-        event_ctx.push_extra_context("self-read", if is_self { "true" } else { "false" });
+        event_ctx.push_extra_context(HandlerContextKey::SelfRead(is_self));
         let event_ctx = event_ctx;
         let authz_result = async {
             let (warehouse, _, _) = authorizer
@@ -3819,7 +3829,12 @@ mod tests {
             descriptor
                 .context
                 .iter()
-                .map(|(key, value)| ((*key).to_string(), value.to_string()))
+                .map(|key| {
+                    (
+                        key.as_str().to_string(),
+                        crate::service::authz::format_value(&key.value()),
+                    )
+                })
                 .collect()
         }
 
@@ -3894,10 +3909,15 @@ mod tests {
         let context: Vec<(String, String)> = rehearsal
             .context()
             .into_iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .map(|key| {
+                (
+                    key.as_str().to_string(),
+                    crate::service::authz::format_value(&key.value()),
+                )
+            })
             .collect();
         assert!(
-            context.contains(&("dry-run".to_string(), "true".to_string())),
+            context.contains(&("dry_run".to_string(), "true".to_string())),
             "the flag reaches the authorizer and the audit record: {context:?}"
         );
     }
@@ -4050,7 +4070,12 @@ mod tests {
         let context: std::collections::HashMap<&str, String> = action
             .context
             .iter()
-            .map(|(key, value)| (key.as_str(), value.to_string()))
+            .map(|key| {
+                (
+                    key.as_str(),
+                    crate::service::authz::format_value(&key.value()),
+                )
+            })
             .collect();
         assert_eq!(
             context["principals"],

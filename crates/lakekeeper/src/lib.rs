@@ -21,6 +21,10 @@ compile_error!(
      .cargo/config.toml). Structured log values are emitted via \
      tracing::field::valuable, which is gated behind that cfg."
 );
+// `#[audit_part]` expands to `::lakekeeper::...` paths so that it works the same in this crate
+// and in crates built on it.
+extern crate self as lakekeeper;
+
 mod config;
 pub mod server;
 pub mod service;
@@ -90,3 +94,37 @@ pub mod request_tracing;
 pub use tracing;
 
 pub type XXHashSet<T> = std::collections::HashSet<T, xxhash_rust::xxh3::Xxh3Builder>;
+
+/// The audit log's surface for crates that define audit types: the attribute, the emitter
+/// trait, the registry, and the shared value types.
+pub mod audit {
+    pub use lakekeeper_audit_macros::audit_part;
+
+    // Only what an emitting crate needs. Lakekeeper's own record parts (`EntityRecord`,
+    // `DecisionRecord`, the subject records) stay at `service::events::backends::audit`:
+    // another emitter supplies its own actor, vocabulary and context, and the shape assembles
+    // the rest.
+    pub use crate::service::events::backends::audit::{
+        AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, EmitterStamp,
+        Kind, OperationRecord, OperationValues, OutcomeValues, RecordContextKey, RecordOrigin,
+        Registration, Vocabulary, Wire, WireKey, WireName, enabled, is_emitter_name,
+        is_major_minor, log_format, warn_on_retired_audit_filter,
+    };
+    #[cfg(any(test, feature = "test-utils"))]
+    pub use crate::service::events::backends::audit::{schema, validate};
+}
+
+/// Re-exports the `#[audit_part]` expansion relies on. Not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use inventory;
+    pub use schemars;
+    pub use serde;
+    pub use serde_json;
+}
+
+crate::declare_audit_emitter!(
+    Lakekeeper,
+    name = "lakekeeper",
+    format = crate::service::events::backends::audit::AUDIT_FORMAT
+);

@@ -29,7 +29,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         UserId,
-        authz::{ActionDescriptor, CatalogAction},
+        authz::{ActionDescriptor, EventAction},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
@@ -39,6 +39,7 @@ use crate::{
 /// authorizer, and never represented in OpenFGA, `/actions`, or batch-check.
 ///
 /// Add a variant here for each new instance-admin-only operation.
+#[crate::audit::audit_part(field = "action_name")]
 #[derive(
     Debug,
     Clone,
@@ -46,7 +47,6 @@ use crate::{
     PartialEq,
     Eq,
     strum_macros::Display,
-    strum_macros::IntoStaticStr,
     strum_macros::EnumCount,
     strum_macros::VariantNames,
 )]
@@ -56,9 +56,11 @@ pub enum InstanceAdminAction {
     SetWarehouseManagedBy,
 }
 
-impl CatalogAction for InstanceAdminAction {
+impl EventAction for InstanceAdminAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        ActionDescriptor::builder()
+            .action_name(self.as_wire())
+            .build()
     }
 }
 

@@ -1,0 +1,73 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "get_metadata"
+    },
+    {
+      "action_name": "update_properties",
+      "updated_properties": {
+        "owner": "analytics"
+      },
+      "removed_properties": [
+        "stale.key"
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "namespace",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace_id": "019684ff-0000-7000-8000-000000000003",
+      "namespace": "sales"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "get_metadata"
+      },
+      "entity": {
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
+      },
+      "allowed": true,
+      "determined_by": []
+    },
+    {
+      "action": {
+        "action_name": "update_properties",
+        "updated_properties": {
+          "owner": "analytics"
+        },
+        "removed_properties": [
+          "stale.key"
+        ]
+      },
+      "entity": {
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace_id": "019684ff-0000-7000-8000-000000000003",
+        "namespace": "sales"
+      },
+      "allowed": true,
+      "determined_by": []
+    }
+  ],
+  "decision": "allowed"
+}

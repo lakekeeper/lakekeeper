@@ -1960,8 +1960,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -7381,8 +7380,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -7442,8 +7440,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -9054,8 +9051,8 @@ components:
         policy-id:
           type: string
           description: |-
-            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
-            `PolicyId`). Always present.
+            Stable, authorizer-assigned identifier of the policy, such as a Cedar policy
+            id. Always present.
         source:
           type:
             - string
@@ -10396,6 +10393,15 @@ components:
           type: string
           enum:
             - drop
+        force:
+          type: boolean
+          description: |-
+            Whether the warehouse-configured soft-deletion is bypassed: the generic table is
+            hard-deleted at once, not kept for the configured grace period. Extra destructive —
+            irreversible right away.
+        purge:
+          type: boolean
+          description: Whether the underlying data files are physically purged from storage.
     LakekeeperGenericTableActionGetMetadata:
       type: object
       required:
@@ -10425,6 +10431,7 @@ components:
             - include_in_list
     LakekeeperGenericTableActionManageTags:
       type: object
+      description: Attach/detach governance tags on this generic table.
       required:
         - action
       properties:
@@ -10443,6 +10450,7 @@ components:
             - read_data
     LakekeeperGenericTableActionReadGrants:
       type: object
+      description: Can list the grants held on this generic table.
       required:
         - action
       properties:
@@ -10536,7 +10544,7 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
         and their direct grants, which is why this is gated on grant authority in addition to
         `create` — without it, a namespace could be populated and granted somewhere
@@ -10672,9 +10680,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e.
-            contained tabulars are hard-deleted immediately instead of being
-            recoverable for the configured grace period.
+            Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
+            hard-deleted at once, not kept for the configured grace period.
         purge:
           type: boolean
           description: Whether the underlying data/metadata files are physically purged.
@@ -11026,7 +11033,7 @@ components:
       description: |-
         Can list and read every grant in the subtree rooted here: the namespace's own and
         those on every descendant namespace and tabular. Strictly stronger than
-        `ReadGrants`, which covers this one resource; granted separately because it
+        `read_grants`, which covers this one resource; granted separately because it
         enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -11056,7 +11063,7 @@ components:
         the whole batch. An authorizer must answer it as authority over everything
         beneath — or refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:
@@ -11506,12 +11513,12 @@ components:
       description: |-
         Can list every grant one principal holds anywhere in this project: on the project,
         its warehouses, namespaces, tables, views, generic tables and tag definitions.
-        Covers more than `ReadGrants`, which covers the project's own grants.
-        Not listed in project actions where the authorizer keeps its own grants (OpenFGA),
-        because the listing is not available there.
+        Covers more than `read_grants`, which covers the project's own grants. Not listed in
+        project actions where the authorizer keeps its own grants (OpenFGA), because the
+        listing is not available there.
 
         `scope` states what the listing covers, on the same terms as the warehouse's
-        `ReadSubtreeGrants`. Every enforced check carries it; an absent scope is the
+        `read_subtree_grants`. Every enforced check carries it; an absent scope is the
         base-capability question permission introspection asks.
       required:
         - action
@@ -11867,9 +11874,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            table is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -12313,9 +12320,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            view is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying metadata files are physically purged from storage.
@@ -12601,7 +12608,7 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
         and their direct grants, which is why this is gated on grant authority in addition to
         `create` — without it, a namespace could be populated and granted somewhere
@@ -12675,6 +12682,11 @@ components:
           type: string
           enum:
             - delete
+        force:
+          type: boolean
+          description: |-
+            Whether protection is bypassed, so a warehouse marked protected is deleted with
+            everything in it.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -13089,7 +13101,7 @@ components:
       type: object
       description: |-
         Can list and read every grant in the warehouse: the warehouse's own and those on
-        every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+        every namespace and tabular inside it. Strictly stronger than `read_grants`, which
         covers this one resource; granted separately because it enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -13128,7 +13140,7 @@ components:
         batch. An authorizer must answer it as authority over everything beneath — or
         refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:
@@ -14263,14 +14275,8 @@ components:
         The kinds of resource a grant can be held on.
 
         Every value is also the URL segment that addresses that kind of resource, so a
-        client can build request paths straight from a vocabulary response. Kept link-free:
-        this doc comment is published verbatim in the `OpenAPI` description, where an
-        intra-doc link would render as a raw Rust module path.
-
-        This is the vocabulary the API speaks. A store is free to persist a coarser one —
-        tables, views and generic tables are one kind to a catalog that already records
-        which of the three an id refers to — so this deliberately carries no storage
-        mapping.
+        client can build request paths straight from a vocabulary response. The audit log
+        spells these kinds the same way.
       enum:
         - server
         - project

@@ -214,9 +214,11 @@ impl From<RoleIdentifierError> for ErrorModel {
 /// Must be non-empty and contain only lowercase ASCII letters (a-z), digits (0-9),
 /// and hyphens (-). Must not contain the `~` separator or any other special characters.
 /// Well-known values: `"lakekeeper"` (server-managed), `"oidc"`, `"ldap"`, etc.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord, valuable::Valuable)]
+// `JsonSchema` because this id reaches the audit log inside an emitter's context, whose
+// schema is built from its field types. Transparent, like its serde form: a plain string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(transparent)]
-#[valuable(transparent)]
+#[schemars(transparent)]
 pub struct RoleProviderId(String);
 
 impl std::borrow::Borrow<str> for RoleProviderId {

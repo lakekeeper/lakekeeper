@@ -1,13 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::{TableUpdateKind, rest::ErrorModel};
 use lakekeeper_io::s3::S3Location;
 use strum::VariantArray;
 use tracing::Instrument;
 
 use crate::{
-    CONFIG, ProjectId, WarehouseId,
+    ProjectId, WarehouseId,
     api::{
         RequestMetadata,
         management::v1::{
@@ -19,14 +19,15 @@ use crate::{
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
+    audit::{Wire, audit_part},
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
         TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
-            CatalogViewAction, UserOrRoleId,
+            ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            EventAction, PrivilegeScope, ResourceType, RootLevelGrants, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -41,65 +42,50 @@ use crate::{
 
 /// A field that can appear on an `entity` object in an audit record.
 ///
-/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// A closed set: `#[audit_part]` derives every wire name from the variant, and `VARIANTS`
+/// drives the tests that require every field to be documented.
+#[audit_part(keys_of = "entity")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
+    /// The server.
     ServerId,
+    /// The containing project.
     ProjectId,
+    /// The containing warehouse.
     WarehouseId,
+    /// The namespace's name, its levels joined by `.`.
     Namespace,
+    /// The namespace's id.
     NamespaceId,
+    /// The table's name, qualified by its namespace.
     Table,
+    /// The table's id.
     TableId,
+    /// The table's storage location.
     TableLocation,
+    /// The view's name, qualified by its namespace.
     View,
+    /// The view's id.
     ViewId,
+    /// The task's id.
     TaskId,
+    /// The role's id in this catalog.
     RoleId,
+    /// The role's id in the source it came from.
     RoleSourceId,
+    /// The provider the role was resolved from.
     RoleProviderId,
+    /// The user's id.
     UserId,
+    /// The generic table's name, qualified by its namespace.
     GenericTable,
+    /// The generic table's id.
     GenericTableId,
+    /// The tag definition's id.
     TagDefinitionId,
 }
 
-impl EntityField {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ServerId => "server-id",
-            Self::ProjectId => "project-id",
-            Self::WarehouseId => "warehouse-id",
-            Self::Namespace => "namespace",
-            Self::NamespaceId => "namespace-id",
-            Self::Table => "table",
-            Self::TableId => "table-id",
-            Self::TableLocation => "table-location",
-            Self::View => "view",
-            Self::ViewId => "view-id",
-            Self::TaskId => "task-id",
-            Self::RoleId => "role-id",
-            Self::RoleSourceId => "role-source-id",
-            Self::RoleProviderId => "role-provider-id",
-            Self::UserId => "user-id",
-            Self::GenericTable => "generic-table",
-            Self::GenericTableId => "generic-table-id",
-            Self::TagDefinitionId => "tag-definition-id",
-        }
-    }
-}
-
-// The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed field set.
+// Constant aliases of the variants, used by call sites throughout the crate.
 pub const FIELD_NAME_SERVER_ID: EntityField = EntityField::ServerId;
 pub const FIELD_NAME_PROJECT_ID: EntityField = EntityField::ProjectId;
 pub const FIELD_NAME_WAREHOUSE_ID: EntityField = EntityField::WarehouseId;
@@ -119,42 +105,63 @@ pub const FIELD_NAME_GENERIC_TABLE: EntityField = EntityField::GenericTable;
 pub const FIELD_NAME_GENERIC_TABLE_ID: EntityField = EntityField::GenericTableId;
 pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinitionId;
 
-/// The `action_name` of the defensive row emitted when an event reaches the audit log
-/// with no action at all.
+/// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
+/// key vocabulary the key came from.
 ///
-/// A one-variant enum rather than a string literal so the value reaches the wire-value
-/// manifest: `action_name` is the field carrying most of the format's vocabulary, and a
-/// literal there is invisible to the rename check. Mirrors [`EntityType::Unknown`], which
-/// names the same condition on the entity side of the same row.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
-)]
-#[strum(serialize_all = "snake_case")]
-pub enum FallbackAction {
-    Unknown,
+/// The emitter is kept so the record can name every product that contributed to it. Built
+/// only by `push_extra_context`, which knows the emitter from the key's type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextEntry {
+    /// What the handler recorded.
+    pub value: serde_json::Value,
+    /// The emitter that declared the key.
+    pub emitter: crate::audit::EmitterStamp,
 }
 
-impl FallbackAction {
-    /// The value as it reaches the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
+impl ContextEntry {
+    /// The entry a key holding its value makes, attributed to the key's emitter.
+    pub(crate) fn of<K: crate::audit::RecordContextKey>(key: &K) -> Self {
+        Self {
+            value: key.value(),
+            emitter: crate::audit::EmitterStamp::of::<K::Emitter>(),
+        }
     }
+}
+
+/// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
+///
+/// A value is a string unless the key declares a shape. Another emitter declares its own enum
+/// with `#[audit_part(keys_of = "context")]`; a test rejects two vocabularies declaring the
+/// same key.
+#[audit_part(keys_of = "context")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandlerContextKey {
+    /// Whether the user creation was the caller provisioning itself.
+    SelfProvisioning(bool),
+    /// Which operation invoked this one, when a handler acts on behalf of another.
+    InvokedBy(Wire<InvokingOperation>),
+    /// The task queue an operation addressed.
+    QueueName(String),
+    /// The id of the entity a task operation addressed.
+    EntityId(String),
+    /// Whether a grant read asked about the caller's own grants.
+    SelfRead(bool),
+}
+
+/// An operation that performs an authorized action on behalf of itself.
+#[audit_part(field = "invoked_by")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvokingOperation {
+    /// Registering a table with `overwrite`, which drops the table it replaces.
+    RegisterTableOverwrite,
 }
 
 /// The `entity_type` of an audit record's `entity` object.
 ///
-/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and the
-/// wildcard-free match in `as_str` means a new variant cannot be added without choosing
-/// its wire name in the one place that decides wire names.
+/// The values follow the management API's `ResourceType` spelling, hyphens included, so they
+/// are marked `external_values`.
+#[audit_part(field = "entity_type", external_values)]
+#[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityType {
     Server,
@@ -168,36 +175,9 @@ pub enum EntityType {
     User,
     GenericTable,
     Tag,
-    Unknown,
 }
 
-impl EntityType {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Server => "server",
-            Self::Project => "project",
-            Self::Warehouse => "warehouse",
-            Self::Namespace => "namespace",
-            Self::Table => "table",
-            Self::View => "view",
-            Self::Task => "task",
-            Self::Role => "role",
-            Self::User => "user",
-            Self::GenericTable => "generic-table",
-            Self::Tag => "tag",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-// The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed field set.
+// Constant aliases of the variants, used by call sites throughout the crate.
 pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
 pub const ENTITY_TYPE_PROJECT: EntityType = EntityType::Project;
 pub const ENTITY_TYPE_WAREHOUSE: EntityType = EntityType::Warehouse;
@@ -212,91 +192,71 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 
 /// A field that can appear in an `action` object's context in an audit record.
 ///
-/// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
-/// space enumerable, so the tests can require every field to be documented and covered,
-/// and the wildcard-free match below makes a new field a build failure rather than an
-/// undocumented field in the log.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+/// A closed set: `#[audit_part]` names every variant on the wire, and the tests require every
+/// field to be documented and covered.
+#[audit_part(keys_of = "action")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionContextKey {
-    AllowPartial,
-    BaseLocation,
-    CreatedBefore,
-    Deletes,
-    Destination,
-    DryRun,
-    Force,
-    Format,
-    GenericTableId,
-    Name,
-    NarrowedPrivileges,
-    Principal,
-    Principals,
-    PrivilegeScope,
-    Privileges,
-    ProjectId,
-    Properties,
-    Purge,
-    Recursive,
-    RemovedProperties,
-    RequestedProviderId,
-    RequestedSourceId,
-    ResourceTypes,
-    RootLevel,
-    Source,
-    TableId,
-    TargetRefs,
-    UpdateKinds,
-    UpdatedProperties,
-    Writes,
-}
-
-impl ActionContextKey {
-    /// The wire name. `const fn` so it is usable in const context.
-    ///
-    /// A wildcard arm would defeat the purpose of the closed set: a new variant would
-    /// silently take some other variant's wire name instead of failing the build.
-    #[must_use]
-    #[deny(clippy::wildcard_enum_match_arm)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AllowPartial => "allow-partial",
-            Self::BaseLocation => "base_location",
-            Self::CreatedBefore => "created-before",
-            Self::Deletes => "deletes",
-            Self::Destination => "destination",
-            Self::DryRun => "dry-run",
-            Self::Force => "force",
-            Self::Format => "format",
-            Self::GenericTableId => "generic_table_id",
-            Self::Name => "name",
-            Self::NarrowedPrivileges => "narrowed_privileges",
-            Self::Principal => "principal",
-            Self::Principals => "principals",
-            Self::PrivilegeScope => "privilege_scope",
-            Self::Privileges => "privileges",
-            Self::ProjectId => "project_id",
-            Self::Properties => "properties",
-            Self::Purge => "purge",
-            Self::Recursive => "recursive",
-            Self::RemovedProperties => "removed-properties",
-            Self::RequestedProviderId => "requested_provider_id",
-            Self::RequestedSourceId => "requested_source_id",
-            Self::ResourceTypes => "resource_types",
-            Self::RootLevel => "root_level",
-            Self::Source => "source",
-            Self::TableId => "table_id",
-            Self::TargetRefs => "target-refs",
-            Self::UpdateKinds => "update-kinds",
-            Self::UpdatedProperties => "updated-properties",
-            Self::Writes => "writes",
-        }
-    }
-}
-
-impl std::fmt::Display for ActionContextKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+    /// `true` when the client asked a revocation to proceed despite grants it could not revoke.
+    AllowPartial(bool),
+    /// The storage location the client requested.
+    BaseLocation(String),
+    /// RFC 3339 time: only grants created before it are in range. Absent when the request does not narrow on it.
+    CreatedBefore(String),
+    /// The number of entries the request asked to revoke, before deduplication.
+    Deletes(i64),
+    /// The namespace path the entity is being moved to.
+    Destination(Vec<String>),
+    /// `true` when the call only reports what it would do and changes nothing.
+    DryRun(bool),
+    /// `true` when the client asked to force the operation.
+    Force(bool),
+    /// The table format the client requested.
+    Format(String),
+    /// The generic-table id the client requested.
+    GenericTableId(String),
+    /// The name the client asked to create.
+    Name(String),
+    /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
+    NarrowedPrivileges(Vec<String>),
+    /// Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
+    Principal(String),
+    /// The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
+    Principals(Vec<String>),
+    /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
+    PrivilegeScope(Wire<PrivilegeScope>),
+    /// The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege.
+    Privileges(Vec<String>),
+    /// The project id the client requested.
+    ProjectId(String),
+    /// The properties the client supplied, verbatim. The keys are the client's data.
+    Properties(BTreeMap<String, String>),
+    /// `true` when the client asked to purge the data.
+    Purge(bool),
+    /// `true` when the client asked for a recursive delete.
+    Recursive(bool),
+    /// The property keys being removed.
+    RemovedProperties(Vec<String>),
+    /// The role provider the client named.
+    RequestedProviderId(String),
+    /// The source id the client named.
+    RequestedSourceId(String),
+    /// The resource kinds the request reaches.
+    ResourceTypes(Vec<Wire<ResourceType>>),
+    /// `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are.
+    RootLevel(Wire<RootLevelGrants>),
+    /// The namespace path the entity is being moved from.
+    Source(Vec<String>),
+    /// The table id the client requested.
+    TableId(String),
+    /// The branch or tag references the commit targets.
+    TargetRefs(Vec<String>),
+    /// The kinds of update the commit contains.
+    UpdateKinds(Vec<Wire<TableUpdateKind>>),
+    /// The properties being set, verbatim. The keys are the client's data.
+    UpdatedProperties(BTreeMap<String, String>),
+    /// The number of entries the request asked to grant, before deduplication.
+    Writes(i64),
 }
 
 // ── Traits ──────────────────────────────────────────────────────────────────
@@ -304,7 +264,7 @@ impl std::fmt::Display for ActionContextKey {
 // Marker trait to indicate resolution state
 pub trait ResolutionState: Clone + Send + Sync {}
 
-/// A single key-value descriptor for an entity (e.g. "warehouse-id" = "abc-123")
+/// A single key-value descriptor for an entity: `warehouse_id` = `abc-123`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptorField {
     pub key: EntityField,
@@ -320,7 +280,8 @@ impl EntityDescriptorField {
     }
 }
 
-/// All fields describing one logical entity (e.g. one table: warehouse-id + namespace + name)
+/// All fields describing one logical entity — for a table, `warehouse_id`, `namespace`
+/// and `name`.
 #[derive(Clone, Debug)]
 pub struct EntityDescriptor {
     pub fields: Vec<EntityDescriptorField>,
@@ -344,8 +305,7 @@ impl EntityDescriptor {
 }
 
 /// The full set of entities involved in an event
-#[derive(Clone, Debug, valuable::Valuable)]
-#[valuable(transparent)]
+#[derive(Clone, Debug)]
 pub struct EventEntities {
     pub entities: Vec<EntityDescriptor>,
 }
@@ -750,18 +710,12 @@ impl_user_provided_entity!(
 
 // ── Action types ────────────────────────────────────────────────────────────
 
-/// Actions named per endpoint rather than per resource permission, for the handlers that
-/// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
+/// Actions named per endpoint, not per resource permission, for the handlers that build an
+/// [`ActionDescriptor`] directly, without a `Catalog*Action`.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum ManagementAction {
     SearchUsers,
@@ -772,22 +726,28 @@ pub enum ManagementAction {
     ListTasks,
     ControlTasks,
     ScheduleTask,
+    /// Apply a set of grants and revocations to one resource.
+    // The handler assembles the context from the request body: see `ApplyGrants` in
+    // `api::management::v1::grant`, whose fields these keys are.
+    #[audit(carries = "deletes, principals, privileges, writes")]
     ApplyGrants,
+    /// Revoke the grants in a range beneath one resource.
+    // The handler assembles the context from the request body and the scope its gate is asked
+    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`. The six scope keys are
+    // the ones `SubtreeGrantScope::context` writes. Also declared on the `Catalog*Action`
+    // variants sharing this wire name; declaring them here keeps this variant self-contained.
+    #[audit(
+        carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
+                   privilege_scope, privileges, resource_types, root_level"
+    )]
     RevokeSubtreeGrants,
 }
 
-/// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
-/// enum rather than a literal.
+/// The actions the authentication layer checks.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    strum_macros::EnumCount,
-    strum_macros::IntoStaticStr,
-    strum_macros::VariantNames,
+    Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
+#[audit_part(field = "action_name")]
 #[strum(serialize_all = "snake_case")]
 pub enum AuthnAction {
     AssumeRole,
@@ -798,7 +758,7 @@ impl APIEventActions for ServerActionSearchUsers {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchUsers.into())
+                .action_name(ManagementAction::SearchUsers.as_wire())
                 .build(),
         ]
     }
@@ -810,7 +770,7 @@ impl APIEventActions for ServerActionListProjects {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListProjects.into())
+                .action_name(ManagementAction::ListProjects.as_wire())
                 .build(),
         ]
     }
@@ -822,7 +782,7 @@ impl APIEventActions for WarehouseActionSearchTabulars {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::SearchTabulars.into())
+                .action_name(ManagementAction::SearchTabulars.as_wire())
                 .build(),
         ]
     }
@@ -834,7 +794,7 @@ impl APIEventActions for IntrospectPermissions {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::IntrospectPermissions.into())
+                .action_name(ManagementAction::IntrospectPermissions.as_wire())
                 .build(),
         ]
     }
@@ -846,7 +806,7 @@ impl APIEventActions for GetTaskDetailsAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::GetTaskDetails.into())
+                .action_name(ManagementAction::GetTaskDetails.as_wire())
                 .build(),
         ]
     }
@@ -856,7 +816,7 @@ impl APIEventActions for ListTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ListTasks.into())
+                .action_name(ManagementAction::ListTasks.as_wire())
                 .build(),
         ]
     }
@@ -866,7 +826,7 @@ impl APIEventActions for ControlTasksRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ControlTasks.into())
+                .action_name(ManagementAction::ControlTasks.as_wire())
                 .build(),
         ]
     }
@@ -876,7 +836,7 @@ impl APIEventActions for ScheduleTaskRequest {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![
             ActionDescriptor::builder()
-                .action_name(ManagementAction::ScheduleTask.into())
+                .action_name(ManagementAction::ScheduleTask.as_wire())
                 .build(),
         ]
     }
@@ -929,7 +889,7 @@ impl APIEventActions for Vec<CatalogTableAction> {
     }
 }
 
-impl<T: CatalogAction> APIEventActions for T {
+impl<T: EventAction> APIEventActions for T {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         vec![self.action_descriptor()]
     }
@@ -951,7 +911,7 @@ where
     pub(super) action: Arc<A>,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
-    pub(super) extra_context: HashMap<String, String>,
+    pub(super) extra_context: BTreeMap<&'static str, ContextEntry>,
     /// When `Some`, replaces the per-(entity, action) default that
     /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
     /// Used by batch-style call sites (e.g. `introspect_permissions`) to
@@ -983,7 +943,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             resolved_entity: Unresolved,
             action: Arc::new(action),
             _authz: std::marker::PhantomData,
-            extra_context: HashMap::new(),
+            extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
         }
@@ -1003,7 +963,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             resolved_entity: Unresolved,
             action,
             _authz: std::marker::PhantomData,
-            extra_context: HashMap::new(),
+            extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
         }
@@ -1351,27 +1311,28 @@ where
         &self.dispatcher
     }
 
-    pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.extra_context.insert(key.into(), value.into());
+    /// Record a key on this event's `context` object, with the value it holds.
+    ///
+    /// The key comes from a key enum declared with `#[audit_part(keys_of = "context")]`,
+    /// which is the only kind this accepts: Lakekeeper's own are [`HandlerContextKey`], and a
+    /// crate outside this one declares its own. Each key holds its value in the type its
+    /// declaration names, so a flag is a `bool` and a shaped key holds its part.
+    // Taken by value: a caller builds the key on the spot and hands it over.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn push_extra_context(&mut self, entry: impl crate::audit::RecordContextKey) {
+        self.extra_context
+            .insert(entry.wire().text(), ContextEntry::of(&entry));
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to
     /// the emitted event.
     ///
     /// Call this from batch-style endpoints (e.g. `introspect_permissions`)
-    /// where the audit-relevant unit of work is each inner check rather than
-    /// the wrapping API call. When unset, the emit path synthesises one entry
+    /// where the audit-relevant unit of work is each inner check, not the
+    /// wrapping API call. When unset, the emit path synthesises one entry
     /// per (entity, action) pair from the context's existing fields.
     pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
-        // Treat an empty Vec as "unset" so the emit-path's synthesised
-        // fallback still produces a non-empty `authorizations[]` array.
-        // Storing `Some(vec![])` here would clobber the fallback and break
-        // the always-non-empty invariant audit consumers rely on.
-        self.authorizations_override = if authorizations.is_empty() {
-            None
-        } else {
-            Some(authorizations)
-        };
+        self.authorizations_override = Some(authorizations);
     }
 
     /// Record that this event's authorisation check is being made on behalf
@@ -1388,7 +1349,7 @@ where
     }
 
     #[must_use]
-    pub fn extra_context(&self) -> &HashMap<String, String> {
+    pub fn extra_context(&self) -> &BTreeMap<&'static str, ContextEntry> {
         &self.extra_context
     }
 }
@@ -1446,6 +1407,7 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
                     }));
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
+                    occurred_at: chrono::Utc::now(),
                     entities,
                     actions,
                     extra_context: Arc::new(self.extra_context.clone()),
@@ -1476,6 +1438,7 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     pub fn emit_idempotent_replay(self, idempotency_key: IdempotencyKey) {
         let event = IdempotentReplayEvent {
             request_metadata: self.request_metadata,
+            occurred_at: chrono::Utc::now(),
             entities: Arc::new(self.user_provided_entity.event_entities()),
             actions: Arc::new(self.action.event_actions()),
             idempotency_key,
@@ -1527,8 +1490,10 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         let failure_reason = error.to_failure_reason();
         let mut error = error.into_error_model();
 
-        if CONFIG.audit.tracing.enabled {
-            error.skip_log = true; // Already emitted in more detail by audit logger
+        // The audit record carries the same denial in more detail. Suppress the plain error
+        // line only when that record reaches the log; otherwise it is the only trace.
+        if crate::audit::enabled() {
+            error.skip_log = true;
         }
 
         let entities = Arc::new(self.user_provided_entity.event_entities());
@@ -1544,6 +1509,7 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         }));
         let event = AuthorizationFailedEvent {
             request_metadata: self.request_metadata.clone(),
+            occurred_at: chrono::Utc::now(),
             entities,
             actions,
             failure_reason,
@@ -1602,18 +1568,18 @@ where
 }
 
 /// Synthesise a default `authorizations` list for an event whose call site
-/// did not explicitly populate one. Produces one entry per (entity, action)
-/// pair so the array is never empty for a well-formed event; if either input
-/// is empty (shouldn't happen for real events) we still emit a single entry
-/// describing whatever is available, since downstream consumers expect at
-/// least one row.
-fn synthesise_authorizations(
+/// did not explicitly populate one: one entry per (entity, action) pair. An
+/// event with no entity or no action, such as an empty batch, gets none.
+///
+/// Crate-visible so the audit fixtures pair entries the same way, and cannot name an action
+/// or entity the record's own lists lack.
+pub(crate) fn synthesise_authorizations(
     entities: &EventEntities,
     actions: &[ActionDescriptor],
     for_principal: Option<&UserOrRoleId>,
     allowed: Option<bool>,
 ) -> Vec<Authorization> {
-    let mut out = Vec::with_capacity(entities.entities.len().max(1) * actions.len().max(1));
+    let mut out = Vec::with_capacity(entities.entities.len() * actions.len());
     for entity in &entities.entities {
         for action in actions {
             out.push(Authorization {
@@ -1626,49 +1592,12 @@ fn synthesise_authorizations(
             });
         }
     }
-    if out.is_empty() {
-        // Defensive: never emit a zero-length array. Real events always have
-        // at least one entity and one action, but if a degenerate event slips
-        // through we still want a row consumers can rely on.
-        out.push(Authorization {
-            id: None,
-            for_principal: for_principal.cloned(),
-            action: actions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| ActionDescriptor {
-                    action_name: FallbackAction::Unknown.as_str(),
-                    context: Vec::new(),
-                }),
-            entity: entities
-                .entities
-                .first()
-                .cloned()
-                .unwrap_or_else(|| EntityDescriptor::new(EntityType::Unknown)),
-            allowed,
-            determined_by: Vec::new(),
-        });
-    }
     out
 }
 
-/// Map a top-level [`AuthorizationFailureReason`] to the per-entry `allowed`
-/// value used when synthesising a default `authorizations[]` list for a
-/// failed event.
-///
-/// Definitive denials (`ActionForbidden`, `ResourceNotFound`,
-/// `CannotSeeResource`) become `Some(false)`. Outcomes where the system
-/// could not actually decide (`InternalAuthorizationError`,
-/// `InternalCatalogError`, `InvalidRequestData`) become `None`, so the audit
-/// log records "we never reached a verdict" instead of misrepresenting a
-/// backend failure as an explicit deny.
+/// The per-entry `allowed` value when synthesising a default `authorizations[]` list for a
+/// failed event: `false` for a definitive denial, and `None` where the system never reached a
+/// verdict, so a backend failure is not recorded as an explicit deny.
 fn synthesised_allowed_for_failure(reason: &AuthorizationFailureReason) -> Option<bool> {
-    match reason {
-        AuthorizationFailureReason::ActionForbidden
-        | AuthorizationFailureReason::ResourceNotFound
-        | AuthorizationFailureReason::CannotSeeResource => Some(false),
-        AuthorizationFailureReason::InternalAuthorizationError
-        | AuthorizationFailureReason::InternalCatalogError
-        | AuthorizationFailureReason::InvalidRequestData => None,
-    }
+    reason.is_definitive().then_some(false)
 }

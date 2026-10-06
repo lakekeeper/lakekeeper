@@ -20,7 +20,7 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
 //! the plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for-principal`/`determined_by`, which need a batch-style check;
+//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! the operational family, which grant changes emit; and a real authorizer with an
 //! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
 //! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
@@ -65,11 +65,8 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        UserId,
-        authn::Actor,
-        authz::AllowAllAuthorizer,
-        events::backends::audit::{AuditEventListener, contract},
-        idempotency::IdempotencyKey,
+        UserId, authn::Actor, authz::AllowAllAuthorizer,
+        events::backends::audit::AuditEventListener, idempotency::IdempotencyKey,
     },
 };
 use lakekeeper_integration_tests::{
@@ -85,7 +82,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 13;
+const EXPECTED_RECORDS: usize = 14;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -132,7 +129,7 @@ fn audit_records(logs: &CapturedLogs) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|record| record.get("event_source").and_then(|v| v.as_str()) == Some("audit"))
-        .map(contract::contract_fields)
+        .map(lakekeeper::audit::validate::contract_fields)
         .collect()
 }
 
@@ -142,13 +139,9 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     // Thread-local, not global: `sqlx::test` runs on a current-thread runtime, so the
     // detached `tokio::spawn` that dispatches audit events is polled on this same thread
     // and sees this subscriber. A global subscriber would race with other test binaries.
-    // Mirrors the binary's formatter so the captured records are shaped like production's.
+    // The binary's log format, so the captured records are shaped like production's.
     let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(false)
-            .with_span_list(true)
+        lakekeeper::audit::log_format(false)
             .with_writer(logs.clone())
             .finish(),
     );
@@ -202,11 +195,10 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // A table created, then dropped twice under one Idempotency-Key. Three things this
-    // reaches that nothing else here does: an authorization record with a POPULATED
-    // `idempotency_key` (every other record in this corpus, and every committed fixture, has
-    // it null), and the `idempotent_replay` family, which carries `action` and `entity` but
-    // no `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
+    // A table created, then dropped twice under one Idempotency-Key. Covers an authorization
+    // record with a populated `idempotency_key` (every other record here leaves it out), and
+    // the `idempotent_replay` record, which carries `actions` and `entities` but no
+    // `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
     // call emits the replay record alone.
     // A key is globally unique, not per endpoint: reusing one across two operations is
     // rejected with `IdempotencyKeyReused`, so the create and the drop get their own.
@@ -285,8 +277,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // Property updates carry `updated-properties` and `removed-properties`, the two
-    // hyphenated action context fields.
+    // Property updates carry `updated_properties` and `removed_properties`.
     let _ = CatalogServer::update_namespace_properties(
         namespace_params.clone(),
         iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest {
@@ -344,8 +335,20 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
+    // A transaction commit with no table changes names nothing to check: its record
+    // carries empty `actions`, `entities` and `authorizations` lists.
+    let _ = CatalogServer::commit_transaction(
+        Some(warehouse.clone().into()),
+        iceberg_ext::catalog::rest::CommitTransactionRequest {
+            table_changes: Vec::new(),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+
     // The project-wide grant listing about another principal: `read_subtree_grants` on the
-    // project entity, with the subtree scope fields and `self-read` context.
+    // project entity, with the subtree scope fields and `self_read` context.
     let _ = lakekeeper::api::management::v1::ApiServer::list_grants(
         ctx.clone(),
         RequestMetadataTestBuilder::builder()
@@ -417,9 +420,33 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     }
     let records = settled;
 
+    let committed_schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/docs/audit/schema.json"),
+        )
+        .expect("the committed audit schema; generate it with `just update-audit-schema`"),
+    )
+    .expect("the committed schema is JSON");
     for (index, record) in records.iter().enumerate() {
-        contract::assert_satisfies(record, &format!("record {index}"));
+        lakekeeper::audit::validate::assert_valid_record(
+            &committed_schema,
+            record,
+            &format!("record {index}"),
+        );
     }
+
+    let empty_commit = records
+        .iter()
+        .find(|record| record["actions"] == serde_json::json!([]))
+        .unwrap_or_else(|| {
+            panic!(
+                "no record from the empty transaction commit:\n{}",
+                describe(&records)
+            )
+        });
+    assert_eq!(empty_commit["entities"], serde_json::json!([]));
+    assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
 
     eprintln!("audit corpus: {} record(s) checked", records.len());
 }
@@ -438,8 +465,11 @@ fn describe(records: &[serde_json::Value]) -> String {
                     .unwrap_or("-")
                     .to_string()
             };
+            // The first action is enough to recognise the call.
             let action = record
-                .get("action")
+                .get("actions")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|actions| actions.first())
                 .and_then(|action| action.get("action_name"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("-");

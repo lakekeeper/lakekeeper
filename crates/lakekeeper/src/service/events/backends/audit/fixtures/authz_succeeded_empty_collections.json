@@ -1,0 +1,73 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "commit",
+      "updated_properties": {},
+      "removed_properties": [],
+      "target_refs": [],
+      "update_kinds": []
+    },
+    {
+      "action_name": "drop",
+      "force": false,
+      "purge": false
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "table_id": "019684ff-0000-7000-8000-000000000002",
+      "table": "sales.orders"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "commit",
+        "updated_properties": {},
+        "removed_properties": [],
+        "target_refs": [],
+        "update_kinds": []
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true,
+      "determined_by": []
+    },
+    {
+      "action": {
+        "action_name": "drop",
+        "force": false,
+        "purge": false
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "table": "sales.orders"
+      },
+      "allowed": true,
+      "determined_by": []
+    }
+  ],
+  "decision": "allowed"
+}

@@ -30,6 +30,8 @@ pub(crate) use error::{OpenFGAError, OpenFGAResult, ParseOpenFgaEntityError};
 use openfga_client::migration::AuthorizationModelVersion;
 
 mod api;
+// The audit emitter every audit type in this crate belongs to: Lakekeeper's own.
+use lakekeeper::audit_emitter;
 mod authorizer;
 mod check;
 mod client;

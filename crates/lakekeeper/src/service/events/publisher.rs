@@ -153,7 +153,7 @@ impl EventListener for CloudEventsPublisher {
                     prefix: String::new(),
                     num_events: number_of_events,
                     sequence_number: event_sequence_number,
-                    trace_id: request_metadata.request_id(),
+                    trace_id: request_metadata.request_id().clone(),
                     actor: serialize_actor(&request_metadata)?,
                 },
             ));
@@ -182,7 +182,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: table.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -212,7 +212,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: namespace.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -243,7 +243,7 @@ impl EventListener for CloudEventsPublisher {
                 namespace: namespace.namespace.namespace_ident().to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -271,7 +271,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: String::new(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -301,7 +301,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: namespace.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -331,7 +331,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -358,7 +358,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: view.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -386,7 +386,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: String::new(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -417,7 +417,7 @@ impl EventListener for CloudEventsPublisher {
                 namespace: namespace.namespace.namespace_ident().to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -447,7 +447,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: generic_table.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -483,7 +483,7 @@ impl EventListener for CloudEventsPublisher {
                 prefix: source_generic_table.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+                trace_id: request_metadata.request_id().clone(),
                 actor: serialize_actor(&request_metadata)?,
             },
         )
@@ -514,7 +514,7 @@ impl EventListener for CloudEventsPublisher {
                     prefix: String::new(),
                     num_events: num_tabulars,
                     sequence_number: idx,
-                    trace_id: request_metadata.request_id(),
+                    trace_id: request_metadata.request_id().clone(),
                     actor: serialize_actor(&request_metadata)?,
                 },
             ));
@@ -594,7 +594,7 @@ pub struct EventMetadata {
     pub prefix: String,
     pub num_events: usize,
     pub sequence_number: usize,
-    pub trace_id: Uuid,
+    pub trace_id: crate::request_metadata::RequestId,
     pub actor: String,
 }
 

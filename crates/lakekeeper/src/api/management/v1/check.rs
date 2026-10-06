@@ -25,10 +25,10 @@ use crate::{
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            AuthzWarehouseOps, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, DeterminingFactor, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError,
+            CatalogWarehouseAction, DeterminingFactor, EventAction, MustUse,
+            RequireNamespaceActionError, RequireTableActionError, RequireWarehouseActionError,
             RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
@@ -1884,11 +1884,8 @@ pub async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
             check_to_authorization(c, i, ambient_project_id_ref, allowed, determined_by)
         })
         .collect();
-    // For an empty batch (`POST {"checks": []}`) `set_authorizations`
-    // intentionally treats this as "unset" so the emit-path's synthesised
-    // default fires instead, recording a single
-    // "server / introspect_permissions / allowed" row — meaningful as
-    // "the call succeeded but checked nothing".
+    // An empty batch (`POST {"checks": []}`) records an empty list: the call
+    // succeeded and checked nothing.
     event_ctx.set_authorizations(authorizations);
 
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;

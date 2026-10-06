@@ -18,10 +18,10 @@ use crate::{
         authn::UserId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
-            AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-            CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
+            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            EventAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
@@ -66,14 +66,14 @@ const GRANT_GATE_ACTIONS: [&str; 3] = [
 
 /// The grantable vocabulary of one resource level: every catalog action on it,
 /// except the grant-administration gates.
-fn privileges_from_actions<A: CatalogAction>(
+fn privileges_from_actions<A: EventAction>(
     actions: &'static [A],
     resource_type: ResourceType,
 ) -> Vec<PrivilegeDescriptor> {
     actions
         .iter()
         .filter_map(|action| {
-            let name = action.action_descriptor().action_name;
+            let name = action.action_descriptor().action_name.text();
             (!GRANT_GATE_ACTIONS.contains(&name)).then(|| PrivilegeDescriptor {
                 name: name.to_string(),
                 display_name: name.replace('_', " "),

@@ -10,8 +10,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogProjectAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -21,7 +21,15 @@ use crate::{
 };
 pub trait ProjectAction
 where
-    Self: CatalogAction + Clone + From<CatalogProjectAction> + Eq + PartialEq,
+    Self: std::fmt::Display
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static
+        + Clone
+        + From<CatalogProjectAction>
+        + Eq
+        + PartialEq,
 {
 }
 
@@ -48,7 +56,7 @@ impl AuthZProjectActionForbidden {
     pub fn new(project_id: ArcProjectId, action: &impl ProjectAction) -> Self {
         Self {
             project_id,
-            action: action.as_log_str(),
+            action: action.to_string(),
         }
     }
 }
