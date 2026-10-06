@@ -148,10 +148,6 @@ pub enum HandlerContextKey {
     SelfRead(bool),
 }
 
-/// The `entity_type` of an audit record's `entity` object.
-///
-/// The values follow the management API's `ResourceType` spelling, hyphens included, so they
-/// are marked `external_values`.
 /// An operation that performs an authorized action on behalf of itself.
 #[audit_part(field = "invoked_by")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +156,10 @@ pub enum InvokingOperation {
     RegisterTableOverwrite,
 }
 
+/// The `entity_type` of an audit record's `entity` object.
+///
+/// The values follow the management API's `ResourceType` spelling, hyphens included, so they
+/// are marked `external_values`.
 #[audit_part(field = "entity_type", external_values)]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
