@@ -139,7 +139,7 @@ pub enum HandlerContextKey {
     /// Whether the user creation was the caller provisioning itself.
     SelfProvisioning(bool),
     /// Which operation invoked this one, when a handler acts on behalf of another.
-    InvokedBy(String),
+    InvokedBy(Wire<InvokingOperation>),
     /// The task queue an operation addressed.
     QueueName(String),
     /// The id of the entity a task operation addressed.
@@ -152,6 +152,14 @@ pub enum HandlerContextKey {
 ///
 /// The values follow the management API's `ResourceType` spelling, hyphens included, so they
 /// are marked `external_values`.
+/// An operation that performs an authorized action on behalf of itself.
+#[audit_part(field = "invoked_by")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvokingOperation {
+    /// Registering a table with `overwrite`, which drops the table it replaces.
+    RegisterTableOverwrite,
+}
+
 #[audit_part(field = "entity_type", external_values)]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]

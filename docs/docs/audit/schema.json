@@ -1521,7 +1521,7 @@
           "description": "Whether the user creation was the caller provisioning itself."
         },
         "invoked_by": {
-          "type": "string",
+          "$ref": "#/$defs/InvokingOperation",
           "description": "Which operation invoked this one, when a handler acts on behalf of another."
         },
         "queue_name": {
@@ -1548,6 +1548,18 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "set_warehouse_managed_by": "Set or clear a warehouse's managed-by marker."
+      }
+    },
+    "InvokingOperation": {
+      "type": "string",
+      "description": "Values of `invoked_by`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "register_table_overwrite"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "invoked_by",
+      "x-audit-descriptions": {
+        "register_table_overwrite": "Registering a table with `overwrite`, which drops the table it replaces."
       }
     },
     "ManagementAction": {

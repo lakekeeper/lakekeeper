@@ -25,7 +25,7 @@ use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::service::events::context::HandlerContextKey;
+use crate::service::events::context::{HandlerContextKey, InvokingOperation};
 pub mod authorize_load;
 pub mod create_table;
 pub(crate) mod etag;
@@ -453,7 +453,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     },
                 );
                 drop_tbl_event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
-                    "register_table_overwrite".to_string(),
+                    InvokingOperation::RegisterTableOverwrite.as_wire(),
                 ));
 
                 let authz_result = authorizer

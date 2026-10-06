@@ -794,7 +794,8 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
             ])),
             actions: Arc::new(vec![fixture_read_action(), fixture_action_with_context()]),
             extra_context: fixture_context(&[HandlerContextKey::InvokedBy(
-                "maintenance-task".to_string(),
+                crate::service::events::context::InvokingOperation::RegisterTableOverwrite
+                    .as_wire(),
             )]),
             authorizations: Arc::new(vec![
                 fixture_decision(fixture_read_action(), fixture_table_entity(), true),

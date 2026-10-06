@@ -42,7 +42,7 @@
   "privilege_source": "authorizer",
   "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
   "context": {
-    "invoked_by": "maintenance-task"
+    "invoked_by": "register_table_overwrite"
   },
   "authorizations": [
     {
