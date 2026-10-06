@@ -1,8 +1,7 @@
 //! The nested objects of an audit record.
 //!
-//! Each is an audit type: `#[audit_part]` gives it serde, a schema and a registry entry. A
-//! part is built by assembly from the event payload and, where the design provides for it,
-//! from enrichment; it is the only place a wire field gets its value.
+//! Each is an audit type: `#[audit_part]` gives it serde, a schema and a registry entry.
+//! Assembly builds them from the event payload and its enrichment.
 
 use std::collections::BTreeMap;
 
@@ -246,8 +245,7 @@ pub struct DecisionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) allowed: Option<bool>,
     /// The policies or rules that determined the decision. Empty when the authorizer
-    /// reports none, which is itself the answer to "what decided this".
-    /// The same shape the management API returns for a check, so one parser reads both.
+    /// reports none. The same shape the management API returns for a check.
     pub(crate) determined_by: Vec<crate::service::authz::DeterminingFactor>,
 }
 
@@ -258,8 +256,7 @@ pub struct ActionRecord {
     /// What was attempted. One of the action names this schema lists; a product that plugs
     /// into Lakekeeper may contribute its own.
     pub(crate) action_name: AnyWireStr,
-    /// The action's context, keyed by `ActionContextKey` wire names, in the order the action
-    /// recorded them.
+    /// The action's context fields, in the order the action recorded them.
     #[serde(flatten)]
     pub(crate) context: OrderedFields<serde_json::Value>,
 }
@@ -270,8 +267,7 @@ pub struct ActionRecord {
 pub struct EntityRecord {
     /// The kind of resource: `table`, `namespace`, `warehouse`, …
     pub(crate) entity_type: Wire<EntityType>,
-    /// The entity's identifying fields, keyed by `EntityField` wire names, in the order the
-    /// entity recorded them.
+    /// The entity's identifying fields, in the order the entity recorded them.
     #[serde(flatten)]
     pub(crate) fields: OrderedFields<String>,
 }
@@ -306,8 +302,7 @@ impl From<&AuthorizationError> for ErrorRecord {
 }
 
 /// The `context` of a grant record: the full `(principal, privilege, resource)` triple. Grants
-/// are hard-deleted and keep no history, so a revocation's triple exists nowhere else once the
-/// row is gone.
+/// are hard-deleted, so after a revocation this record is the only trace of the triple.
 #[audit_part(context)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct GrantContextRecord {
@@ -356,8 +351,8 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
 /// The `context` object of an authorization record: what the handler recorded about the
 /// request beyond its action and its entity.
 ///
-/// Only the keys relevant to that request appear. What a given key carries is stated for that
-/// key, not here, because a product that plugs into Lakekeeper contributes keys of its own.
+/// Only the keys relevant to that request appear, each described on its own. A product that
+/// plugs into Lakekeeper may contribute keys of its own.
 // Typed as a free map: the keys come from every emitter's own vocabulary, so this type cannot
 // name them. The schema publishes each emitter's keys as properties of its own definition of
 // this object.
@@ -367,7 +362,7 @@ pub struct HandlerContext(pub(crate) BTreeMap<&'static str, serde_json::Value>);
 
 /// Closed-key fields in the order they were recorded: what a flattened action or entity object
 /// carries. A map by contract (every key is unique and comes from a closed enum), a `Vec` in
-/// memory so the wire keeps the order the emitter chose, which a sorted map would not.
+/// memory so the wire keeps the order the emitter chose.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderedFields<V>(pub(crate) Vec<(&'static str, V)>);
 

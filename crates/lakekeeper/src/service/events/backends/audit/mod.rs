@@ -33,8 +33,8 @@ use crate::service::events::{
 /// The `MAJOR.MINOR` version of the audit record's shape, carried on every
 /// `event_source = "audit"` record as `audit_format`.
 ///
-/// Derived from `audit-format/` by the format checker. Never edited by hand: write a fragment
-/// instead. See the audit log section of `docs/docs/developer-guide.md`.
+/// Derived from `audit-format/` by the format checker; never edit it, write a fragment. See
+/// the audit log section of `docs/docs/developer-guide.md`.
 pub const AUDIT_FORMAT: &str = "1.0";
 
 /// The `event_source` every audit record carries: what marks a log line as one.
@@ -85,10 +85,7 @@ pub enum ActorType {
     LakekeeperInternal,
 }
 
-/// The `record_type` value: which shape a record has.
-///
-/// A consumer routes on this field alone. Nothing has to be inferred from which fields are
-/// absent, and a shape can be added without changing how the existing ones are recognised.
+/// The `record_type` value: which shape a record has. Consumers route on this field alone.
 #[audit_part(field = "record_type")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
@@ -112,11 +109,10 @@ pub enum Decision {
 
 /// The `operation` value on the operational records this crate emits.
 ///
-/// This does not close the `operation` space. [`OperationRecord`] takes a value of any
-/// operation vocabulary of its emitter, so a crate outside this repository names its own
-/// operations and is responsible for its own vocabulary — see the audit log section of `docs/docs/developer-guide.md`. What
-/// the enum does is bring Lakekeeper's own operations under the same rename check as
-/// everything else it emits.
+/// Not the whole `operation` space: [`OperationRecord`] takes a value from any operation
+/// vocabulary of its emitter, so another crate declares its own operations (see the audit log
+/// section of `docs/docs/developer-guide.md`). This enum puts Lakekeeper's own operations
+/// under the rename check.
 #[audit_part(field = "operation")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
@@ -136,20 +132,18 @@ pub enum AuditOutcome {
     Success,
     /// An admission gate denied the caller authoritatively.
     Forbidden,
-    /// An admission gate could not reach an upstream it needs and failed closed.
-    /// Separate from `forbidden` so an outage of that upstream reads as an outage
-    /// rather than as a wave of denials.
+    /// An admission gate could not reach an upstream it needs and failed closed: an outage,
+    /// not a denial.
     Unavailable,
 }
 
 // `TableUpdateKind` reaches the wire as the `update_kinds` field of a commit action's
-// context, but it lives in `iceberg-ext`, which cannot carry the attribute: the expansion
-// names `::lakekeeper`, and this crate already depends on that one. Registered here instead,
-// from the same `VariantNames` the attribute would have read, so a renamed variant still
-// fails the format check rather than reaching consumers unannounced.
+// context. It lives in `iceberg-ext`, which cannot carry the attribute: the expansion names
+// `::lakekeeper`, which depends on `iceberg-ext`. Registered here by hand from its
+// `VariantNames`, so a renamed variant still fails the format check.
 //
-// The values are the Iceberg REST specification's own table-update action names, so they are
-// external: they keep that spelling rather than this log's.
+// The values are the Iceberg REST specification's table-update action names, so they are
+// external and keep that spelling.
 #[cfg(debug_assertions)]
 const UPDATE_KIND_TEXTS: &[&str] =
     <iceberg_ext::catalog::TableUpdateKind as strum::VariantNames>::VARIANTS;
@@ -176,9 +170,8 @@ crate::__private::inventory::submit! {
     }
 }
 
-// `TableUpdateKind` is a vocabulary by hand for the same reason it is registered by hand: its
-// crate cannot carry the attribute. Its names are `VariantNames`' list, in declaration order,
-// which is also the order of its discriminants.
+// A vocabulary by hand, since its crate cannot carry the attribute. `VariantNames` lists the
+// names in declaration order, which is also the order of the discriminants.
 impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
     type Emitter = crate::Lakekeeper;
     const SCHEMA_NAME: &'static str = "TableUpdateKind";
@@ -194,9 +187,8 @@ impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
 /// shape's `emit()`; nothing else in this crate writes an audit record.
 ///
 /// The gate is asked here as well as inside `emit()` because assembly is the expensive half:
-/// it enriches the event and serializes every nested object. Asking first means a catalog
-/// with the audit trail switched off pays nothing per request, rather than building records
-/// that are dropped on the way out.
+/// it enriches the event and serializes every nested object. With the audit trail switched
+/// off, a request pays nothing.
 #[derive(Debug)]
 pub struct AuditEventListener;
 
@@ -218,11 +210,10 @@ impl EventListener for AuditEventListener {
 
     /// The grants that actually landed.
     ///
-    /// The authorization event records the *attempt*, and deduplicates principals and
-    /// privileges into separate lists — so it cannot say which principal received which
-    /// privilege. This records the confirmed triples, which is what attribution and
-    /// reconstruction of current access need. A revoked grant is hard-deleted, so its
-    /// record here is the only remaining evidence the access ever existed.
+    /// The authorization event records the *attempt*, with principals and privileges in
+    /// separate deduplicated lists, so it cannot say which principal received which
+    /// privilege. This records the confirmed triples. A revoked grant is hard-deleted, so its
+    /// record here is the only remaining evidence the access existed.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
         if !enabled() {
             return Ok(());
@@ -273,11 +264,9 @@ impl EventListener for AuditEventListener {
 
     /// A retry answered from an idempotency record.
     ///
-    /// Carries `actions` and `entities` in the same shape as the two authorization records
-    /// above, so one query over the audit stream sees the original request and every replay
-    /// of it. It carries no `decision`, because no authorization ran: the mutation had
-    /// already happened and there was nothing left to permit. `record_type` is `replay`,
-    /// which is what a consumer routes on.
+    /// Carries `actions` and `entities` in the same shape as an authorization record, so one
+    /// query finds the original request and every replay of it. No `decision`: no
+    /// authorization ran, the mutation had already happened.
     async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
         if !enabled() {
             return Ok(());

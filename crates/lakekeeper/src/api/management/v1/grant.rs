@@ -1520,8 +1520,7 @@ pub struct ApplyGrants {
 impl ApplyGrants {
     /// The event action for an apply, from the request body.
     ///
-    /// Crate-visible so the audit fixture for this action is produced by the same code the
-    /// handler runs, rather than by a second assembly that can drift from it.
+    /// Crate-visible so the audit fixture is built by the same code the handler runs.
     pub(crate) fn of(request: &ApplyGrantsRequest) -> Self {
         let mut privileges: Vec<String> = request
             .entries()
@@ -1804,8 +1803,7 @@ pub struct RevokeSubtreeGrants {
 impl RevokeSubtreeGrants {
     /// The event action for a revoke, from the request and the scope its gate is asked with.
     ///
-    /// Crate-visible so the audit fixture for this action is produced by the same code the
-    /// handler runs, rather than by a second assembly that can drift from it.
+    /// Crate-visible so the audit fixture is built by the same code the handler runs.
     pub(crate) fn of(request: &RevokeSubtreeGrantsRequest, scope: &SubtreeGrantScope) -> Self {
         let mut privileges = request.privilege.clone();
         privileges.sort_unstable();

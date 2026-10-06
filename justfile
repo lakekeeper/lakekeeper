@@ -76,38 +76,34 @@ check-opa:
     cd authz/opa-bridge && opa test policies/ tests/ -v
     cd authz/opa-bridge && regal lint policies/
 
-# Compares the committed fixtures either side of the merge base, so it needs a base.
-# Check that an audit log format change is recorded and that AUDIT_FORMAT is the version it implies
+# Reads HEAD, not the working tree: commit first. `base` sets the merge base for changes
+# this branch makes.
+# Check that audit log format changes have fragments and that AUDIT_FORMAT is what they imply
 check-audit-format base="origin/main":
     python3 .github/scripts/check-audit-format.py {{base}}
 
-# Print the audit log block for the release notes. Mutates nothing — see .github/RELEASING.md.
+# Changes nothing. See .github/RELEASING.md.
+# Print the audit log block for the release notes of the last release tag
 audit-format-release-notes:
     @python3 .github/scripts/check-audit-format.py --release-notes
 
-# After the release is tagged, clear the fragments it shipped. Refuses until every fragment's
-# text is in this release's section of the release notes — their prose exists nowhere else.
-# Run `audit-format-release-notes` and paste it first.
+# Refuses, and changes nothing, until the first line of every fragment is in this release's
+# section of the release notes. Paste the output of `audit-format-release-notes` first.
+# After the release is tagged, clear the audit format fragments it shipped
 audit-format-release version:
     python3 .github/scripts/check-audit-format.py --release {{version}}
 
-# Drives real requests through the service layer and checks every audit record against the
-# format contract. Needs the local Postgres from the initial setup (see the developer guide).
-# Run it after adding a call: EXPECTED_RECORDS in that file is maintained by hand, and this is
-# where a stale count shows up — in seconds, rather than from CI.
+# Drives real requests through the service layer and validates every audit record against
+# the schema. Needs the local Postgres from the initial setup in the developer guide. Run it
+# after adding a call: EXPECTED_RECORDS in that file is kept by hand.
 # Run the audit log corpus test on its own
 test-audit-corpus:
     cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
 
-# AUDIT_FORMAT first, because every record carries it. The version is computed from the last
-# release tag and audit-format/unreleased/ — write a fragment, never a version number.
-#
-# Then two passes over the fixtures: the first writes, the second verifies (the writing pass
-# returns before it compares). The first is filtered to the writers; the second runs the whole
-# module, so it also reports the work a regeneration creates — a new field
-# `docs/docs/logging.md` does not document, an orphan fixture, a contract rule the new records
-# break.
-# Review the diff — it is exactly what consumers will see.
+# AUDIT_FORMAT is computed from the last release tag and audit-format/unreleased/. Then the
+# fixture writers run, then the whole audit test module verifies them; it also reports a new
+# field `docs/docs/logging.md` does not document and a fixture missing from FIXTURE_NAMES.
+# Review the diff: it is what consumers will see.
 # Recompute AUDIT_FORMAT, then regenerate the committed audit log fixtures
 update-audit-fixtures:
     python3 .github/scripts/check-audit-format.py --write-version
@@ -115,11 +111,9 @@ update-audit-fixtures:
       service::events::backends::audit::tests::fixture_
     cargo test -p lakekeeper --lib service::events::backends::audit::tests
 
-# Generated from the registry of every in-repo crate that declares audit types. That registry
-# exists in debug builds only, which is why these run in the dev profile. Review the diff — it
-# is what consumers will see.
-# Recompute AUDIT_FORMAT, then regenerate the published schema, docs/docs/audit/schema.json,
-# from the registry of a test binary that links every crate declaring audit types
+# The audit type registry exists in debug builds only, so this runs in the dev profile.
+# Review the diff: it is what consumers will see.
+# Recompute AUDIT_FORMAT, then regenerate docs/docs/audit/schema.json from the audit type registry
 update-audit-schema:
     python3 .github/scripts/check-audit-format.py --write-version
     LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema

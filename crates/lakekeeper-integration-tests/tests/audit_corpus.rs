@@ -195,10 +195,10 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // A table created, then dropped twice under one Idempotency-Key. Three things this
-    // reaches that nothing else here does: an authorization record with a POPULATED
-    // `idempotency_key` (every other record in this corpus leaves it out), and the
-    // `idempotent_replay` family, which carries `actions` and `entities` but no `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
+    // A table created, then dropped twice under one Idempotency-Key. Covers an authorization
+    // record with a populated `idempotency_key` (every other record here leaves it out), and
+    // the `idempotent_replay` record, which carries `actions` and `entities` but no
+    // `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
     // call emits the replay record alone.
     // A key is globally unique, not per endpoint: reusing one across two operations is
     // rejected with `IdempotencyKeyReused`, so the create and the drop get their own.
@@ -446,8 +446,7 @@ fn describe(records: &[serde_json::Value]) -> String {
                     .unwrap_or("-")
                     .to_string()
             };
-            // The first of the `actions` list: every record carries the list, and one name is
-            // enough to recognise which call the record came from.
+            // The first action is enough to recognise the call.
             let action = record
                 .get("actions")
                 .and_then(serde_json::Value::as_array)

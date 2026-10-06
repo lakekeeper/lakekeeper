@@ -46,14 +46,15 @@ use crate::{
 /// The kinds of resource a grant can be held on.
 ///
 /// Every value is also the URL segment that addresses that kind of resource, so a
-/// client can build request paths straight from a vocabulary response. Kept link-free:
-/// this doc comment is published verbatim in the `OpenAPI` description, where an
-/// intra-doc link would render as a raw Rust module path.
-///
-/// This is the vocabulary the API speaks, and the audit log spells these kinds the same way.
-/// A store is free to persist a coarser one — tables, views and generic tables are one kind
-/// to a catalog that already records which of the three an id refers to — so this
-/// deliberately carries no storage mapping.
+/// client can build request paths straight from a vocabulary response. The audit log
+/// spells these kinds the same way.
+// Kept link-free: this doc comment is published verbatim in the `OpenAPI` description,
+// where an intra-doc link would render as a raw Rust module path.
+//
+// A store may persist a coarser vocabulary (tables, views and generic tables are one kind to
+// a catalog that records which of the three an id refers to), so this carries no storage
+// mapping.
+//
 // `external_values` because these names are this API's: the audit log's `lower_snake_case`
 // rule is not applied to them.
 #[crate::audit::audit_part(field = "resource_type", external_values)]
@@ -1108,8 +1109,8 @@ pub(crate) fn emit_bootstrap_grants_async(
 mod tests {
     use super::*;
 
-    /// The audit log and the management API spell resource types alike: each declares its
-    /// spelling, so a test is what keeps the two together.
+    /// The audit log and the management API declare their spellings separately; this test
+    /// keeps them equal.
     #[test]
     fn resource_types_are_spelled_alike_in_the_audit_log_and_the_api() {
         use strum::VariantArray as _;

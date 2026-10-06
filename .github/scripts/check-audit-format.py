@@ -40,18 +40,15 @@ from pathlib import Path
 
 AUDIT_DIR = "crates/lakekeeper/src/service/events/backends/audit"
 
-# The published schema of the emitter this repository owns: what the registry generates,
-# written by `just update-audit-schema` to the file customers download. Diffed across the merge
-# base like the fixtures.
+# The published schema of this repository's emitter, written by `just update-audit-schema`.
+# Diffed across the merge base like the fixtures.
 SCHEMA_PATH = "docs/docs/audit/schema.json"
 
-# Optional per-repository overrides of the paths above, so a crate outside this repository
-# runs the same checker against its own schema and declaration. Read once, from the working
-# tree, before anything else.
+# Optional per-repository overrides of the paths above, so another repository can run this
+# checker on its own schema and declaration. Read once from the working tree, first.
 CONFIG_PATH = "audit-format/config.json"
 
-# The Rust constant every record's version is read from, and the tree searched for its
-# declaration. Both are configurable because another repository names and places its own.
+# The Rust constant holding the version, and the tree searched for its declaration.
 VERSION_CONST = "AUDIT_FORMAT"
 VERSION_SEARCH_PATH = "crates/"
 
@@ -59,10 +56,10 @@ VERSION_SEARCH_PATH = "crates/"
 def load_config() -> None:
     """Override the path constants from `CONFIG_PATH`, if the file exists.
 
-    Everything this checker needs to find is named here, so the script runs unchanged in a
-    repository laid out differently: the declaration it reads the version from, the tree it
-    searches for that declaration, the schema, the fragments, the pattern a release tag
-    matches and the release notes file. The defaults are Lakekeeper's, so this repository needs no config file.
+    Covers every path and pattern the checker uses: the version constant and the tree
+    searched for it, the schema, the fragments, the release tag pattern, the release notes
+    and the release table. The defaults are Lakekeeper's, so this repository needs no config
+    file.
     """
     global AUDIT_DIR, SCHEMA_PATH, FRAGMENT_DIR, RELEASE_TAG_PATTERN, RELEASE_NOTES_PATH
     global RELEASE_TABLE_PATH
@@ -95,8 +92,7 @@ def load_config() -> None:
 def version_patterns(const: str) -> tuple[str, re.Pattern[str], re.Pattern[str]]:
     """The three patterns that find, read and rewrite the version declaration of `const`.
 
-    Built from the constant's name rather than written out, so naming it in the config file
-    changes all three together and they cannot disagree.
+    Built from the constant's name, so the config file changes all three together.
     """
     name = re.escape(const)
     return (
@@ -189,11 +185,11 @@ def declared_version(rev: str) -> tuple[int, int] | None:
 
 FRAGMENT_DIR = "audit-format/unreleased/"
 
-# A release tag: the baseline is the version the last one reachable from a revision declares.
-# A prerelease such as `v1.2.0-rc.1` does not match, so it never becomes the baseline.
+# A release tag. The baseline is the version declared by the last one reachable from a
+# revision. A prerelease such as `v1.2.0-rc.1` does not match, so it is never the baseline.
 RELEASE_TAG_PATTERN = r"v(\d+)\.(\d+)\.(\d+)"
 
-# Where the release notes live, for the check that a fragment reached them before it goes.
+# The release notes, which a fragment must reach before it is cleared.
 RELEASE_NOTES_PATH = "site/docs/about/release-notes.md"
 
 # The page whose table says which format each release emits, or `None` for a repository
@@ -206,9 +202,8 @@ RELEASE_TABLE_PATH: str | None = "docs/docs/logging.md"
 LEVELS = ("none", "minor", "major")
 LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 
-# What a fixture or schema verdict says a fragment must AT LEAST declare. `unknown` is
-# deliberately absent: it hands the question to a human (see `DEFERRALS`), so it cannot
-# demand a fragment without taxing every change that merely renames a fixture.
+# The minimum fragment level a fixture or schema verdict demands. `unknown` is absent: it is
+# left to a human (see `DEFERRALS`), since renaming a fixture alone triggers it.
 REQUIRED_LEVEL = {"breaking": "major", "additive": "minor"}
 
 FRAGMENT_LEVEL_RE = re.compile(r"^level:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
@@ -320,7 +315,7 @@ def split_fragments(
     A fragment absent at the last release tag is unreleased: it raises the version. One that
     the tag already carries, unchanged, shipped with that release and only waits to be
     cleared. One the tag carries with different text describes a release that already
-    happened, so editing it is an error: write a new fragment instead.
+    happened, so editing it is an error: write a new fragment.
     """
     edited = sorted(path for path in levels if path in at_tag and at_tag[path] != digests[path])
     if edited:
@@ -338,16 +333,11 @@ def split_fragments(
 def fragment_paths(paths, where: str) -> list[str]:
     """The fragment paths among `paths`, rejecting any Markdown file below the top level.
 
-    Shared by both readers — the committed tree at a revision and the working tree — because
-    they have to agree and did not: `git ls-tree -r` descends into subdirectories and
-    `Path.glob("*.md")` does not. A fragment one level down therefore raised the version CI
-    demanded while the recipe that writes the version could not see it, and no rerun of that
-    recipe could clear the failure.
+    Shared by the reader of a revision and the reader of the working tree so both see the same
+    set: `git ls-tree -r` descends into subdirectories, `Path.glob("*.md")` does not.
 
-    Nesting is an error rather than a quiet skip, which is the same choice `single_version`
-    makes. A skipped fragment reads as "no fragment recorded" while its
-    author is looking at the file they just wrote, its prose never reaches the release notes,
-    and `do_release` leaves it behind to raise some later release's version instead.
+    Nesting is an error, as in `single_version`. A skipped fragment would never reach the
+    release notes, and `do_release` would leave it behind to raise a later release's version.
     """
     markdown = [path for path in paths if path.endswith(".md")]
     nested = sorted(path for path in markdown if "/" in path[len(FRAGMENT_DIR) :])
@@ -378,10 +368,8 @@ def fragments_at(rev: str) -> dict[str, str]:
 def fragment_bodies_at(rev: str) -> dict[str, str]:
     """The fragments at `rev`, as path -> a digest of the file.
 
-    Separate from the levels because a branch contributes by REWORDING a fragment as often as
-    by adding one: folding a second change into the fragment that already covers the field is
-    the documented way to keep the release note describing the final state, and it usually
-    leaves the level alone. Comparing only levels would read that as no contribution.
+    A branch may contribute by rewording a fragment, usually without changing its level, so
+    contributions are judged on text as well as level.
     """
     listing = _git("ls-tree", "-r", "--name-only", rev, "--", FRAGMENT_DIR)
     return {
@@ -396,13 +384,12 @@ def fragment_demand(
     base_bodies: dict[str, str],
     head_bodies: dict[str, str],
 ) -> dict[str, str]:
-    """What this branch contributes to the release notes.
+    """What this branch contributes to the release notes: fragments added, re-levelled or
+    reworded.
 
-    A contribution is a fragment added, one whose level moved, or one whose text changed.
-    Adequacy is judged against these rather than against every unreleased fragment, because a
-    `major` left by an earlier pull request in the same cycle would otherwise excuse this one
-    declaring `minor` — the version would still come out right and the release notes would
-    describe this change wrongly.
+    Coverage is judged on these alone, so a `major` from an earlier pull request in the same
+    cycle cannot excuse this one declaring `minor`: the version would be right, but the release
+    notes would describe this change wrongly.
     """
     contributed = {
         path: level
@@ -494,8 +481,7 @@ class CheckFailed(Exception):
     """A checked condition failed. The message is already GitHub-annotated."""
 
 
-# The verdict that hands the question to a human rather than asserting either way. It
-# demands no fragment and is reported as a warning.
+# The verdict left to a human. It demands no fragment and is reported as a warning.
 DEFERRALS = {
     "unknown": (
         "Could not verify the change level: fixtures present before have no counterpart now "
@@ -543,10 +529,9 @@ def emitter_of(schema: dict) -> tuple[str | None, str | None]:
 def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str, str, str]:
     """Refuse to compare two schemas that describe different emitters.
 
-    A verdict across emitters is meaningless: they carry different vocabularies, are governed
-    by whoever ships them, and move on their own release cycles. Every definition of the one
-    would read as removed and every definition of the other as added. Returns the emitter's
-    name and the two formats, for printing.
+    Emitters have their own vocabularies and release cycles; across two, every definition
+    would read as removed or added. Returns the emitter's name and the two formats, for
+    printing.
     """
     base_name, base_format = emitter_of(base)
     head_name, head_format = emitter_of(head)
@@ -563,8 +548,8 @@ def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str, str,
     return (head_name, base_format or "?", head_format or "?")
 
 
-# Keywords that carry prose, or say which document this is, and nothing about the shape of a
-# record. Stripped before two schemas are compared.
+# Keywords that carry prose or identify the document, not the record's shape. Stripped before
+# two schemas are compared.
 PROSE_KEYWORDS = frozenset(
     {
         "description",
@@ -708,8 +693,8 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
         b_branches, h_branches = base.get(key), head.get(key)
         if b_branches is None and h_branches is None:
             continue
-        # An object with no conditionals is one with an empty list of them: the first one is
-        # a branch added like any other.
+        # A missing `allOf` is an empty one, so the first conditional is a branch added like
+        # any other.
         if key == "allOf":
             b_branches = [] if b_branches is None else b_branches
             h_branches = [] if h_branches is None else h_branches
@@ -797,8 +782,7 @@ def classify_change(merge_base: str, head_ref: str) -> str:
     if not head_records:
         raise CheckFailed(
             f"::error::no audit fixtures under {AUDIT_DIR}/fixtures/ at {head_ref}. This "
-            f"checker cannot compare anything without them, so fix the layout rather than "
-            f"trusting a pass here."
+            f"checker cannot compare anything without them; fix the layout."
         )
     base_shapes = {n: shape(r) for n, r in base_records.items()}
     head_shapes = {n: shape(r) for n, r in head_records.items()}
@@ -809,9 +793,8 @@ def classify_change(merge_base: str, head_ref: str) -> str:
         f"{len(head_shapes)} after), shapes say {shape_kind}"
     )
 
-    # The fixture shapes above see the record's KEYS. Its VALUES are strings, so renaming one
-    # leaves every shape identical. The schema is what makes those visible: it lists every
-    # value of every vocabulary.
+    # Fixture shapes see keys, not values, so a renamed value leaves every shape identical. The
+    # schema lists every value of every vocabulary.
     return merge_schema_verdict(shape_kind, merge_base, head_ref)
 
 
@@ -967,10 +950,9 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 
     print(f"Merge base: {merge_base}")
 
-    # Everything below is read from the commit, not from the working tree, so a developer who
-    # has edited but not committed is told about the previous commit. Saying so is cheaper
-    # than reading the tree: the fixtures and the schema are generated, and comparing a
-    # half-regenerated tree against a commit reports differences that are nobody's change.
+    # Everything below reads the commit, not the working tree: fixtures and schema are
+    # generated, and a half-regenerated tree would report differences nobody made. Uncommitted
+    # changes are listed so the developer knows they were not checked.
     watched = [f"{AUDIT_DIR}/fixtures", SCHEMA_PATH, FRAGMENT_DIR, VERSION_SEARCH_PATH]
     dirty = _git("status", "--porcelain", "--", *watched).strip()
     if dirty:
@@ -1044,11 +1026,10 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             )
 
     if baseline is None:
-        # The bootstrap. No release has carried an audit format version, so nothing released
-        # can differ and the version derives to the first one. The comparison with the merge
-        # base is printed for the reviewer; it demands nothing. Fragments are still wanted:
-        # released builds emitted audit records before the version field existed, so a
-        # consumer may already parse them.
+        # The bootstrap: no release has carried an audit format version, so the version
+        # derives to the first one. The merge-base comparison is printed for the reviewer and
+        # demands nothing. Fragments are still wanted: released builds emitted audit records
+        # without the version field, and consumers may already parse them.
         shape_kind = classify_change(merge_base, "HEAD")
         print(f"Verdict:    format {shape_kind} — no release has carried an audit format yet")
         if shape_kind in DEFERRALS:
@@ -1077,8 +1058,8 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
                 print(f"::error::{error[0].upper()}{error[1:]}.")
             print(
                 f"::notice::Copy audit-format/TEMPLATE.md to {FRAGMENT_DIR}<descriptive-name>.md, "
-                f"set its `level`, and describe the change in the terms an operator parsing the "
-                f"log thinks in. Then run `just update-audit-fixtures`, which computes "
+                f"set its `level`, and describe the change for an operator parsing the log. "
+                f"Then run `just update-audit-fixtures`, which computes "
                 f"AUDIT_FORMAT from the fragments. See the audit log section of "
                 f"docs/docs/developer-guide.md."
             )
@@ -1197,8 +1178,8 @@ def release_notes() -> int:
     """Print the audit log block for the release notes of the last release. Mutates nothing.
 
     Every fragment that release shipped appears, grouped by level, however few version
-    numbers the cycle consumed. That is the point of the split: the version says how badly a
-    consumer is affected, and this list says what actually happened.
+    numbers the cycle consumed: the version says how badly a consumer is affected, this list
+    says what happened.
     """
     tag, version, _, fragments = worktree_split()
     if not fragments:
@@ -1395,8 +1376,7 @@ def self_test() -> int:
 
     # ── what a verdict demands ──────────────────────────────────────────────────
     #
-    # `unknown` must never become a requirement: it fires whenever a fixture is renamed, so
-    # demanding a fragment for it taxes changes that did nothing to the format.
+    # `unknown` fires whenever a fixture is renamed, so it must not demand a fragment.
     check("unknown demands no fragment", REQUIRED_LEVEL.get("unknown"), None)
     check("unknown still says something", bool(DEFERRALS.get("unknown")), True)
     check("breaking demands a major fragment", REQUIRED_LEVEL["breaking"], "major")
@@ -1851,8 +1831,8 @@ def self_test() -> int:
     check("schema: a renamed tag is breaking", verdict({"F": factor}, {"F": retagged}), "breaking")
     check("schema: a tagged branch added is breaking", verdict({"F": factor}, {"F": two_kinds}), "breaking")
 
-    # What a branch owes the release notes. Pure in its four maps, so every arrangement the
-    # gate acts on is checkable here rather than only on a real pull request.
+    # What a branch owes the release notes. Pure in its four maps, so every case is testable
+    # here.
     none_: dict[str, str] = {}
     one = {"a.md": "minor"}
     one_body = {"a.md": "h1"}
@@ -1860,8 +1840,7 @@ def self_test() -> int:
     check("demand: a fragment removed is not contributed", fragment_demand(one, none_, one_body, none_), {})
     check("demand: an untouched fragment is not contributed", fragment_demand(one, one, one_body, one_body), {})
     check("demand: a raised level is contributed", fragment_demand(one, {"a.md": "major"}, one_body, one_body), {"a.md": "major"})
-    # Folding a second change into an existing fragment is the documented way to keep the
-    # note describing the final state. It usually leaves the level alone.
+    # A second change folded into an existing fragment usually leaves the level alone.
     check("demand: a reworded fragment is contributed", fragment_demand(one, one, one_body, {"a.md": "h2"}), one)
     check("demand: a renamed fragment is contributed", fragment_demand(one, {"b.md": "minor"}, one_body, {"b.md": "h1"}), {"b.md": "minor"})
 
@@ -1892,12 +1871,9 @@ def self_test() -> int:
     )
     check("schema: description change is none", classify_schema(schema({"A": actor}), schema({"A": {**actor, "description": "x"}}))[0], "none")
 
-    # THE regression. `get_metadata` is emitted by six action enums, so renaming ONE of them is
-    # invisible to any comparison over the flattened union of every name: the union still holds
-    # `get_metadata` from the other five. This is the real case that got through —
-    # `CatalogTableAction::GetMetadata` renamed to `FetchMetadata`, the wire value for every
-    # table event changed, CI green. Definitions are keyed by the type that owns the values,
-    # which is what makes it visible. A comparison that flattens them cannot see it.
+    # `get_metadata` is emitted by six action enums, so renaming it in one is invisible to a
+    # comparison over the flattened union of names: the other five still hold it. Definitions
+    # are keyed by the type that owns the values, which makes the rename visible.
     masking_base = schema({
         "CatalogTableAction": {"type": "string", "enum": ["get_metadata", "drop"]},
         "CatalogViewAction": {"type": "string", "enum": ["get_metadata"]},
@@ -1931,9 +1907,7 @@ def self_test() -> int:
     except CheckFailed:
         refused = True
     check("stamp: two emitters are refused", refused, True)
-    # The check that the committed schema agrees with the constant it was generated from.
-    # The three version patterns are built from one name, so a repository that names its
-    # constant differently changes all three at once and they cannot disagree.
+    # The three version patterns are built from one constant name, so they cannot disagree.
     git_pattern, read_re, write_re = version_patterns("PLUS_AUDIT_FORMAT")
     line = '    pub const PLUS_AUDIT_FORMAT: &str = "2.1";'
     check("const: the reader finds a renamed constant",
@@ -1945,6 +1919,7 @@ def self_test() -> int:
     check("const: the reader ignores another constant",
           version_patterns("AUDIT_FORMAT")[1].search(line), None)
 
+    # The committed schema's stamp must agree with the constant it was generated from.
     check("stamp: a format the constant does not declare is caught",
           emitter_of({"x-audit-emitter": {"name": "lakekeeper", "format": "2.0"}})[1] != show((1, 0)),
           True)
@@ -1954,8 +1929,8 @@ def self_test() -> int:
         any("CatalogTableAction" in reason and "get_metadata" in reason for reason in masking_reasons),
         True,
     )
-    # The same masking applies across fields, which is why the owning type is the key: `read`
-    # can be an action name and another field's value at once.
+    # The same masking applies across fields, so the owning type is the key: `read` can be an
+    # action name and another field's value at once.
     check(
         "schema: a rename is breaking while another field carries that value",
         classify_schema(

@@ -44,7 +44,7 @@ use crate::{api::PermissionAction, entities::OpenFgaEntity};
 /// What `/check` asks of an object, and the action its audit record names.
 ///
 /// Checking the caller's own access needs `can_get_metadata`; checking another principal's
-/// needs `can_read_assignments`. Both halves come from the one choice, so the record names the
+/// needs `can_read_assignments`. Both come from one branch, so the record always names the
 /// relation that was checked.
 fn check_relation<R>(
     for_other_principal: bool,

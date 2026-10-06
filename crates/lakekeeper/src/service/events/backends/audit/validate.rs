@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-/// Keys the log subscriber adds, which `AUDIT_FORMAT` deliberately does not cover.
+/// Keys the log subscriber adds, which `AUDIT_FORMAT` does not cover.
 pub const ENVELOPE_KEYS: &[&str] = &[
     "timestamp",
     "level",
@@ -21,9 +21,7 @@ pub const ENVELOPE_KEYS: &[&str] = &[
 /// about, in the order they were emitted.
 ///
 /// `retain` keeps the order: with `serde_json`'s `preserve_order` feature (which this
-/// workspace enables) a `Map` is index-backed and `remove` is a *swap*-remove, which would
-/// shuffle the surviving fields. A fixture that reads in wire order is a fixture a reviewer can
-/// check against a real log line.
+/// workspace enables) `remove` is a *swap*-remove and would shuffle the surviving fields.
 #[must_use]
 pub fn contract_fields(mut record: Value) -> Value {
     if let Some(object) = record.as_object_mut() {
@@ -36,8 +34,7 @@ pub fn contract_fields(mut record: Value) -> Value {
 ///
 /// # Panics
 ///
-/// If the definition does not exist, or the value violates it. That is the point: this is for
-/// use in tests.
+/// If the definition does not exist, or the value violates it.
 pub fn assert_valid_part(schema: &Value, def: &str, value: &Value, whence: &str) {
     assert!(
         schema["$defs"].get(def).is_some(),
@@ -124,16 +121,9 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
 ///
 /// If the record names this emitter and its `context` matches none of the declared contexts.
 pub fn assert_context_valid(schema: &Value, record: &Value, whence: &str) {
-    // An operation record's `context` is declared by the emitter that produced the record,
-    // not by whoever owns the shape. A record from another emitter carries a context this
-    // schema cannot know, and checking it here would demand that every product's contexts be
-    // declared in Lakekeeper's schema — the opposite of what the emitter field is for.
-    //
-    // So `emitters` must positively name this schema's emitter. A record naming only others,
-    // or naming none at all, is not checked: an unknown emitter is not this one, and
-    // guessing otherwise would report a violation of a contract the record never claimed.
-    // Nothing is lost by skipping, because `emitters` is required on every shape, so
-    // `assert_valid_record` has already refused a record that carries none.
+    // Checked only when `emitters` names this schema's emitter: another emitter's context is
+    // unknown to this schema. A record with no `emitters` is already refused by
+    // `assert_valid_record`, where the field is required.
     let ours = schema["x-audit-emitter"]["name"].as_str();
     let contributed = ours.is_some_and(|ours| record["emitters"].get(ours).is_some());
     if contributed

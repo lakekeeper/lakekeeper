@@ -10391,9 +10391,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the generic
-            table is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the generic table is
+            hard-deleted at once, not kept for the configured grace period. Extra destructive —
+            irreversible right away.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -10675,9 +10675,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e.
-            contained tabulars are hard-deleted immediately instead of being
-            recoverable for the configured grace period.
+            Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
+            hard-deleted at once, not kept for the configured grace period.
         purge:
           type: boolean
           description: Whether the underlying data/metadata files are physically purged.
@@ -11834,9 +11833,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            table is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -12280,9 +12279,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            view is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying metadata files are physically purged from storage.
@@ -12645,8 +12644,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether protection is bypassed, i.e. a warehouse marked protected is deleted
-            with everything in it rather than the request being refused.
+            Whether protection is bypassed, so a warehouse marked protected is deleted with
+            everything in it.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -14235,14 +14234,8 @@ components:
         The kinds of resource a grant can be held on.
 
         Every value is also the URL segment that addresses that kind of resource, so a
-        client can build request paths straight from a vocabulary response. Kept link-free:
-        this doc comment is published verbatim in the `OpenAPI` description, where an
-        intra-doc link would render as a raw Rust module path.
-
-        This is the vocabulary the API speaks, and the audit log spells these kinds the same way.
-        A store is free to persist a coarser one — tables, views and generic tables are one kind
-        to a catalog that already records which of the three an id refers to — so this
-        deliberately carries no storage mapping.
+        client can build request paths straight from a vocabulary response. The audit log
+        spells these kinds the same way.
       enum:
         - server
         - project

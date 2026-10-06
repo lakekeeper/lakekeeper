@@ -14,9 +14,8 @@ pub trait AuditEmitter: 'static {
     const FORMAT: &'static str;
 }
 
-/// An emitter's name and the version of what it contributes, as a value: what a registration,
-/// an action name and a `context` entry carry, so a record can name every product it carries
-/// something of.
+/// An emitter's name and format version, as a value. Registrations, action names and
+/// `context` entries carry one, so a record can name every product that contributed to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EmitterStamp {
     /// `AuditEmitter::NAME`.

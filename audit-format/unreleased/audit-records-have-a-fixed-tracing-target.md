@@ -2,14 +2,8 @@
 level: none
 ---
 
-**Audit records are emitted on the fixed `tracing` target `lakekeeper::audit`.** A log
-filter that names a Rust module path matches none of them.
+**Audit records are emitted on the fixed `tracing` target `lakekeeper::audit`.**
 
-Retired: `lakekeeper::service::events::backends::audit`,
-`lakekeeper::service::admission`, and any prefix of either below `lakekeeper`. A filter
-naming `lakekeeper` itself still works.
+A log filter naming `lakekeeper::service::events::backends::audit`, `lakekeeper::service::admission` or a prefix of either below `lakekeeper` matches no audit record. The server warns at start-up when it finds such a filter.
 
-**What to do:** select audit records with `RUST_LOG=warn,lakekeeper::audit=info`, or
-suppress them with `RUST_LOG=info,lakekeeper::audit=warn`. The server warns on standard
-error at start-up if it finds a retired filter. Routing records after they are emitted is
-unaffected — match on `event_source`.
+**What to do:** select audit records with `RUST_LOG=warn,lakekeeper::audit=info`, or suppress them with `RUST_LOG=info,lakekeeper::audit=warn`.

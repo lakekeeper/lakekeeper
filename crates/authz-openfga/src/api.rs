@@ -330,8 +330,7 @@ pub(crate) enum AssignmentAction {
     Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
 #[strum(serialize_all = "snake_case")]
-// The shared `Can` prefix is the relation's own name: each wire value is the relation a
-// consumer matches on, so trimming it would rename three audit log values.
+// The `Can` prefix is part of the relation name, which consumers match on.
 #[lakekeeper::audit::audit_part(field = "action_name")]
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum PermissionAction {

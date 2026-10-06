@@ -234,16 +234,12 @@ impl AdmissionRejection {
     /// Render the response body for this rejection.
     ///
     /// `skip_log` suppresses the generic error-response line, which repeats the rejection
-    /// without the principal. Whether that is safe depends on the kind, because the two have
-    /// different fallbacks:
+    /// without the principal. When that is safe depends on the kind:
     ///
-    /// A fail-closed rejection is logged at WARN by [`AdmissionGates::admit`] whatever the
-    /// audit configuration, so it is never the audit record alone. Letting the response line
-    /// through as well would add a `5xx` at ERROR that this server did not have.
-    ///
-    /// A forbidden rejection has no such fallback: the audit record is the only place it
-    /// appears. Suppressing the response line is a saving only while that record reaches the
-    /// log, so with the audit trail switched off or filtered out this line is kept.
+    /// - Fail-closed: [`AdmissionGates::admit`] always logs it at WARN, so the line is always
+    ///   suppressed. Letting it through would add an ERROR-level `5xx` the server did not have.
+    /// - Forbidden: the audit record is its only other trace, so the line is suppressed only
+    ///   while audit records reach the log.
     #[cfg(feature = "router")]
     pub(crate) fn into_error(self) -> ErrorModel {
         let recorded_elsewhere = match self.kind {
@@ -509,17 +505,14 @@ impl AdmissionGates {
                 }
                 Ok(GateDecision::NotApplicable) => {}
                 Err(rejection) => {
-                    // The record of the rejection that names the principal, so
-                    // it belongs in the audit stream: a denial nothing can
-                    // attribute answers "someone was refused" and never "who".
-                    // Rendering the response suppresses the generic
-                    // error-response line, which repeats this without the actor;
-                    // `Rejection::into_error` decides when that is safe, and the
-                    // answer differs by kind.
+                    // Audited, because this record names the principal: an
+                    // unattributed denial says "someone was refused", never "who".
+                    // `AdmissionRejection::into_error` decides, per kind, whether
+                    // the generic error-response line is suppressed.
                     //
-                    // Gated here as well as inside `emit()`, because the context
-                    // is serialized as it is attached: asking first is what makes
-                    // a rejection cost nothing when the audit trail is off.
+                    // Gated here as well as inside `emit()`: the context is
+                    // serialized when attached, so asking first makes a rejection
+                    // free when the audit trail is off.
                     if crate::audit::enabled() {
                         crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
@@ -537,17 +530,14 @@ impl AdmissionGates {
                         .message("Request rejected by admission gate")
                         .emit();
                     }
-                    // A gate failing closed is an outage of something this
-                    // server depends on, not a decision about the caller, and
-                    // it needs a level that survives `RUST_LOG=warn` — which
-                    // the audit record above does not have. Carries no
-                    // principal, so it stays on the general stream: the same
-                    // pairing the role providers use, warning here and
-                    // auditing there. It is also unconditional, which is what
-                    // lets `Rejection::into_error` suppress the response line
-                    // for this kind whatever the audit configuration. `cause`
-                    // is the only place the gate's `source` is rendered; it
-                    // never reaches the caller.
+                    // A gate failing closed is an outage of a dependency, not a
+                    // decision about the caller, so it needs a level that
+                    // survives `RUST_LOG=warn`, which the audit record lacks. It
+                    // carries no principal, so it stays on the general stream,
+                    // as the role providers do. Unconditional, so
+                    // `AdmissionRejection::into_error` can always suppress the
+                    // response line for this kind. `cause` is the only place the
+                    // gate's `source` is rendered; it never reaches the caller.
                     if matches!(rejection.kind, RejectionKind::Unavailable { .. }) {
                         let cause = rejection.source.as_deref().map(|e| cause_chain(e));
                         tracing::warn!(
@@ -1042,14 +1032,11 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || rejection.into_error().skip_log)
     }
 
-    /// The rejection is logged once, and never nowhere.
+    /// A rejection always reaches the log, and the error-response line never duplicates the
+    /// audit record.
     ///
-    /// Rendering the response suppresses the generic error-response line because the audit
-    /// record says the same thing and names the principal as well. What happens when the
-    /// audit record is filtered out depends on the kind, because only one of them has a
-    /// second trace: a fail-closed rejection is warned about unconditionally, a forbidden one
-    /// is not. So dropping the audit target must bring the response line back for a denial
-    /// and must not bring back the ERROR-level `5xx` for an outage.
+    /// With the audit target filtered out, a denial has no other trace, so the line comes
+    /// back. A fail-closed rejection still has its WARN, so the ERROR-level `5xx` stays off.
     #[cfg(feature = "router")]
     #[tokio::test]
     async fn a_rejection_is_suppressed_only_where_something_else_records_it() {

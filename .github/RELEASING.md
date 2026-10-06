@@ -52,8 +52,8 @@ NOTES=site/docs/about/release-notes.md
    Highlights / Features / Bug Fixes / Breaking Changes / Upgrade Notes; one line per
    item; link the PRs as `[#NNNN](https://github.com/lakekeeper/lakekeeper/pull/NNNN)`.
 4. **Fold in the audit log format changes.** `AUDIT_FORMAT` is derived, so nothing needs
-   bumping here. The release tag is the new baseline: the fragments it carries shipped with
-   it, and they have to reach the notes before they are cleared. In this order:
+   bumping. The new tag is the new baseline. The fragments it carries shipped with it; copy
+   them into the notes, then clear them. In this order:
 
    ```bash
    just audit-format-release-notes          # prints the block for the fragments the tag carries
@@ -61,16 +61,14 @@ NOTES=site/docs/about/release-notes.md
    just audit-format-release "$VERSION"     # deletes those fragments
    ```
 
-   The paste is not optional and the order is not a convention: the second command refuses
-   to run until every fragment's text appears in the `## v$VERSION` section of `$NOTES`,
-   and changes nothing when it refuses. A fragment's prose exists nowhere else.
+   The second command refuses, and changes nothing, until the first line of every fragment
+   appears in the `## v$VERSION` section of `$NOTES`. A fragment's text exists nowhere else.
 
-   The second command also prints a row for the release table in `docs/docs/logging.md`
-   when the format moved. Add it.
+   When the format moved, the second command also prints a row for the release table in
+   `docs/docs/logging.md`. Add it.
 
-   Until the fragments are cleared, `check-audit-format` warns on every pull request that
-   they shipped with the tag. They raise nothing in the meantime, so forgetting the step
-   costs only the warning.
+   Until the fragments are cleared, `check-audit-format` warns on every pull request. They
+   raise nothing in the meantime.
 
 5. **Commit `$NOTES` to `main` together with everything step 4 changed** — the deleted
    `audit-format/unreleased/*.md` fragments and the release-table row in
@@ -96,8 +94,8 @@ Sections, in order: **Highlights · Features · Bug Fixes · Breaking Changes ·
 Notes**. The assembled audit log block goes under **Upgrade Notes**, or under **Breaking
 Changes** when it carries a major change.
 
-Patch releases cut from `rel-*` never change the audit log format — CI rejects a change to
-it on those branches — so a patch's notes never carry an audit log block.
+Patch releases cut from `rel-*` never change the audit log format (CI rejects a change to
+it on those branches), so a patch's notes never carry an audit log block.
 
 ## What to leave out / collapse
 

@@ -101,9 +101,8 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
 
 /// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.
 ///
-/// An action name comes from a vocabulary any authorizer crate may declare, and a `context`
-/// key from a crate this one does not know. Both carry the emitter that declared them, so the
-/// record can name its contributors without Lakekeeper knowing who they are.
+/// Action names and `context` keys may come from crates Lakekeeper does not know; each carries
+/// the emitter that declared it.
 fn contributors<'a>(
     actions: &'a [ActionDescriptor],
     authorizations: &'a [Authorization],
@@ -181,7 +180,7 @@ fn decisions(authorizations: &[Authorization]) -> Vec<DecisionRecord> {
 }
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is
-/// absent rather than an empty object.
+/// omitted, not written as an empty object.
 fn handler_context(extra_context: &BTreeMap<&'static str, ContextEntry>) -> Option<HandlerContext> {
     if extra_context.is_empty() {
         None

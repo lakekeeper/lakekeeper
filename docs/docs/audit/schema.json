@@ -612,6 +612,7 @@
     },
     "ActorType": {
       "type": "string",
+      "description": "Values of `actor_type`. A later release may add a value without a format change.",
       "x-audit-values": [
         "anonymous",
         "assumed_role",
@@ -664,6 +665,7 @@
     },
     "AssignmentAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "update_generic_table_assignments",
         "update_namespace_assignments",
@@ -704,6 +706,7 @@
     },
     "AuditOperation": {
       "type": "string",
+      "description": "Values of `operation`. A later release may add a value without a format change.",
       "x-audit-values": [
         "admission_decided",
         "grant_created",
@@ -714,6 +717,7 @@
     },
     "AuditOutcome": {
       "type": "string",
+      "description": "Values of `outcome`. A later release may add a value without a format change.",
       "x-audit-values": [
         "forbidden",
         "success",
@@ -724,7 +728,7 @@
       "x-audit-descriptions": {
         "forbidden": "An admission gate denied the caller authoritatively.",
         "success": "The operation completed.",
-        "unavailable": "An admission gate could not reach an upstream it needs and failed closed.\nSeparate from `forbidden` so an outage of that upstream reads as an outage\nrather than as a wave of denials."
+        "unavailable": "An admission gate could not reach an upstream it needs and failed closed: an outage,\nnot a denial."
       }
     },
     "AuditRecord": {
@@ -801,6 +805,7 @@
     },
     "AuthnAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "assume_role"
       ],
@@ -809,6 +814,7 @@
     },
     "AuthorizationFailureReason": {
       "type": "string",
+      "description": "Values of `failure_reason`. A later release may add a value without a format change.",
       "x-audit-values": [
         "action_forbidden",
         "cannot_see_resource",
@@ -931,6 +937,7 @@
     },
     "CatalogGenericTableAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "control_tasks",
         "drop",
@@ -954,6 +961,7 @@
     },
     "CatalogNamespaceAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "accept_moved_namespace",
         "create_generic_table",
@@ -989,6 +997,7 @@
     },
     "CatalogProjectAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "control_project_tasks",
         "create_role",
@@ -1018,6 +1027,7 @@
     },
     "CatalogRoleAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "delete",
         "manage_role_assignments",
@@ -1032,11 +1042,12 @@
       "x-audit-descriptions": {
         "manage_role_assignments": "Can add/remove members (user or role) of this role.",
         "read_role_assignments": "Can list members / parents / assignments of this role.",
-        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The built-in authorizer treats this the same as\n`manage_role_assignments`.\n\nThe destination is explicit. A real rebind names the target provider and source id;\nthe permission enumeration behind `GET /role/{id}/actions`, and any \"may this\nprincipal rebind at all?\" query, name `any` instead. `any` is a base-capability\nmarker, not a permissive default: a policy written against a concrete destination\ngates that destination and never matches `any`, and a `/check` caller picks between\nthe two deliberately."
+        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The built-in authorizer treats this the same as\n`manage_role_assignments`.\n\nA real rebind names the target provider and source id. Permission introspection\n(`GET /role/{id}/actions`) and any \"may this principal rebind at all?\" query name\n`any`. `any` is a base-capability marker, not a permissive default: a policy written\nagainst a concrete destination never matches `any`, and a `/check` caller chooses\nbetween the two."
       }
     },
     "CatalogServerAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "create_project",
         "delete_users",
@@ -1058,6 +1069,7 @@
     },
     "CatalogTableAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "commit",
         "control_tasks",
@@ -1082,6 +1094,7 @@
     },
     "CatalogTagAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "apply",
         "delete",
@@ -1105,6 +1118,7 @@
     },
     "CatalogUserAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "delete",
         "read",
@@ -1122,6 +1136,7 @@
     },
     "CatalogViewAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "commit",
         "control_tasks",
@@ -1145,6 +1160,7 @@
     },
     "CatalogWarehouseAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "accept_moved_namespace",
         "activate",
@@ -1185,6 +1201,7 @@
     },
     "Decision": {
       "type": "string",
+      "description": "Values of `decision`. A new value is a major format change.",
       "enum": [
         "allowed",
         "denied"
@@ -1220,7 +1237,7 @@
           "items": {
             "$ref": "#/$defs/DeterminingFactor"
           },
-          "description": "The policies or rules that determined the decision. Empty when the authorizer\nreports none, which is itself the answer to \"what decided this\".\nThe same shape the management API returns for a check, so one parser reads both."
+          "description": "The policies or rules that determined the decision. Empty when the authorizer\nreports none. The same shape the management API returns for a check."
         }
       },
       "required": [
@@ -1402,6 +1419,7 @@
     },
     "EntityType": {
       "type": "string",
+      "description": "Values of `entity_type`. A later release may add a value without a format change.",
       "x-audit-values": [
         "generic-table",
         "namespace",
@@ -1487,13 +1505,13 @@
         "privilege",
         "resource_type"
       ],
-      "description": "The `context` of a grant record: the full `(principal, privilege, resource)` triple. Grants\nare hard-deleted and keep no history, so a revocation's triple exists nowhere else once the\nrow is gone.",
+      "description": "The `context` of a grant record: the full `(principal, privilege, resource)` triple. Grants\nare hard-deleted, so after a revocation this record is the only trace of the triple.",
       "x-audit-kind": "context"
     },
     "HandlerContext": {
       "type": "object",
       "additionalProperties": true,
-      "description": "The `context` object of an authorization record: what the handler recorded about the\nrequest beyond its action and its entity.\n\nOnly the keys relevant to that request appear. What a given key carries is stated for that\nkey, not here, because a product that plugs into Lakekeeper contributes keys of its own.",
+      "description": "The `context` object of an authorization record: what the handler recorded about the\nrequest beyond its action and its entity.\n\nOnly the keys relevant to that request appear, each described on its own. A product that\nplugs into Lakekeeper may contribute keys of its own.",
       "x-audit-kind": "part",
       "properties": {
         "self_provisioning": {
@@ -1520,6 +1538,7 @@
     },
     "InstanceAdminAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "set_warehouse_managed_by"
       ],
@@ -1531,6 +1550,7 @@
     },
     "ManagementAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "apply_grants",
         "control_tasks",
@@ -1609,6 +1629,7 @@
     },
     "PermissionAction": {
       "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "can_get_metadata",
         "can_read_assignments",
@@ -1624,6 +1645,7 @@
     },
     "PolicyEffect": {
       "type": "string",
+      "description": "Values of `effect`. A new value is a major format change.",
       "enum": [
         "forbid",
         "permit"
@@ -1637,6 +1659,7 @@
     },
     "PrivilegeScope": {
       "type": "string",
+      "description": "Values of `privilege_scope`. A new value is a major format change.",
       "enum": [
         "every",
         "only"
@@ -1646,6 +1669,7 @@
     },
     "PrivilegeSource": {
       "type": "string",
+      "description": "Values of `privilege_source`. A later release may add a value without a format change.",
       "x-audit-values": [
         "authorizer",
         "instance_admin",
@@ -1661,6 +1685,7 @@
     },
     "RecordType": {
       "type": "string",
+      "description": "Values of `record_type`. A later release may add a value without a format change.",
       "x-audit-values": [
         "authorization",
         "operation",
@@ -1754,6 +1779,7 @@
     },
     "ResourceType": {
       "type": "string",
+      "description": "Values of `resource_type`. A later release may add a value without a format change.",
       "x-audit-values": [
         "generic-table",
         "namespace",
@@ -1786,6 +1812,7 @@
     },
     "RootLevelGrants": {
       "type": "string",
+      "description": "Values of `root_level`. A new value is a major format change.",
       "enum": [
         "excluded",
         "included"
@@ -1813,6 +1840,7 @@
     },
     "TableUpdateKind": {
       "type": "string",
+      "description": "Values of `update_kinds`. A later release may add a value without a format change.",
       "x-audit-values": [
         "add-encryption-key",
         "add-schema",

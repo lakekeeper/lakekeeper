@@ -6,7 +6,7 @@
 //!
 //! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
-//! value for rather than writing `null`.
+//! value for; nothing writes `null`.
 
 use super::{
     Decision,
@@ -152,10 +152,10 @@ pub struct OperationRecord<E: AuditEmitter> {
 
 impl<E: AuditEmitter> OperationRecord<E> {
     /// A record without context. Add one with [`OperationRecord::context`].
-    #[must_use]
     ///
     /// `operation` and `outcome` come from the emitter's own vocabularies for those two
     /// fields, and each is accepted only in its own place.
+    #[must_use]
     pub fn new<O, C>(operation: Wire<O>, origin: impl Into<RecordOrigin>, outcome: Wire<C>) -> Self
     where
         O: OperationValues + Vocabulary<Emitter = E>,
@@ -174,10 +174,9 @@ impl<E: AuditEmitter> OperationRecord<E> {
 
     /// Attach the operation's `context` object, an audit type of the same emitter.
     ///
-    /// Taken by value like every other part of the record, so a caller can hand over one it
-    /// built on the spot; it is serialized here and the record carries the tree, not the type.
-    /// Serialized here, which keeps this type free of a second parameter, and only when the
-    /// audit trail is on, so a switched-off trail costs nothing here either.
+    /// Taken by value like every other part of the record. Serialized here, so the record
+    /// carries the tree and needs no second type parameter, and only when the audit trail is
+    /// on.
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn context<C: AuditPart<Emitter = E>>(mut self, context: C) -> Self {
@@ -211,8 +210,8 @@ impl<E: AuditEmitter> OperationRecord<E> {
 
 /// An operation record: something the system did that touches identity or access, with no
 /// permission decision of its own. Any emitter can produce one.
-// Not generic, while the builder is: the schema is derived from this struct, so a type
-// parameter here would leave the schema describing a description of the record.
+// Not generic, unlike the builder: the schema is derived from this struct and must not
+// depend on an emitter type.
 #[audit_part(shape = "operation")]
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]

@@ -70,13 +70,14 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 ## Audit Log
 
 - Before changing any record carrying `"event_source": "audit"`, read `docs/docs/developer-guide.md` → "I need to change the audit log format".
-- `AUDIT_FORMAT` is derived. Write a fragment under `audit-format/unreleased/`; never edit a version number.
+- `AUDIT_FORMAT` is derived from the last release tag and the fragments. Write a fragment under `audit-format/unreleased/`.
 - A `context` value drawn from a fixed set is a vocabulary: put `#[audit_part(field = "<key>")]` on its enum and let the key hold `Wire<ThatEnum>`. A value derived from the request is data.
+- Never build a wire value from a bare string: emit `Variant::as_wire()` of a vocabulary enum. Never hand-write an `as_str` on one.
 - Everything this log names is `lower_snake_case`. The attribute checks values and keys; record and part field names are checked in review.
-- Never add a `_ =>` arm to an `action_descriptor` match.
+- Never add a `_ =>` arm to an `action_descriptor` match: a new action would emit no context.
 - A fixture must describe a record the server can produce: build it from `action_descriptor()` or the handler's `event_actions()`. Add one for every new emission path, and extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record shape.
 - Never suppress a log line because "the audit record covers it" without asking `crate::audit::enabled()` first.
-- After a change: `just update-audit-fixtures` and `just update-audit-schema`, review both diffs, commit, then `just check-audit-format`, which reads HEAD. Never edit `docs/docs/audit/schema.json` by hand.
+- After a change: `just update-audit-fixtures` and `just update-audit-schema`, review both diffs, commit, then run `just check-audit-format` (it reads `HEAD`). Never edit `AUDIT_FORMAT`, the fixtures or `docs/docs/audit/schema.json` by hand.
 
 ## Rules
 

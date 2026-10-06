@@ -452,9 +452,8 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           persist-credentials: false
-          # The base commit has to be present to diff against it, and the last release
-          # tag is the baseline the version is computed from. The default shallow fetch
-          # includes neither.
+          # Needs the base commit to diff against and the last release tag as the version
+          # baseline; a shallow fetch has neither.
           fetch-depth: 0
           fetch-tags: true
       - name: Check the change is recorded and AUDIT_FORMAT is the version it implies

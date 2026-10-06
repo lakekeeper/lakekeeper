@@ -10,8 +10,7 @@ use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 /// A rendered record part: a JSON tree carried as one `tracing` field.
 ///
-/// `Serialize` writes the tree itself, so a part holding one nests it rather than wrapping it
-/// in a field of its own.
+/// `Serialize` writes the tree itself, so a part holding one nests it directly.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct AuditJson(serde_json::Value);

@@ -119,8 +119,8 @@ pub enum PrivilegeSource {
 ///
 /// The client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7
 /// generated for the request.
-// Decided once, by the router's `SetRequestId` layer, and read from there, so no layer can
-// name the request differently.
+// Set once by the router's `SetRequestId` layer and read from there, so every layer names
+// the request the same way.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct RequestId(Arc<str>);
@@ -765,9 +765,9 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    // The router's `SetRequestId` layer has already decided the id: the client's, or one it
-    // generated. Reading its decision rather than the header again is what keeps one id for
-    // the span, the response header and everything this request records.
+    // The router's `SetRequestId` layer has already chosen the id (the client's, or a
+    // generated one). Reading it from there keeps one id for the span, the response header
+    // and every record of this request.
     let request_id = request
         .extensions()
         .get::<tower_http::request_id::RequestId>()

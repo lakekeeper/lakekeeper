@@ -15,24 +15,19 @@ pub trait AuditPart: Serialize + schemars::JsonSchema {
 
 /// One name a type puts on the wire, with the doc comment that explains it.
 ///
-/// A pair rather than two slices: the name and its description cannot fall out of step, and
-/// nothing has to check that two lists are the same length.
+/// One struct per name, so a name and its description cannot fall out of step.
 #[derive(Clone, Copy, Debug)]
 pub struct WireName {
     /// The name as it reaches the wire.
     pub text: &'static str,
     /// The doc comment on the variant, or empty when it has none.
     pub doc: &'static str,
-    /// The `context` keys a variant of this vocabulary can put beside itself.
+    /// The `context` keys a variant of this vocabulary can put beside itself in the same flat
+    /// object. Read from the variant's named fields: `drop` carries `force` and `purge`.
     ///
-    /// An action is one flat object: its wire name under `action_name`, and its context keys
-    /// alongside. Which keys an action can carry is a property of the variant — its named
-    /// fields — so the attribute reads them where it already reads the variant's name, and a
-    /// consumer is told `drop` carries `force` and `purge` and nothing else.
-    ///
-    /// A field whose own type chooses the keys, rather than lending its name to one, says so
-    /// with `#[audit(expands_to = "a, b")]`: the names cannot be read off the field, and a
-    /// test holds that declaration against what the emitting code actually writes.
+    /// A field whose own type picks the keys declares them with
+    /// `#[audit(expands_to = "a, b")]`; a test checks that against what the emitting code
+    /// writes.
     pub carries: &'static [&'static str],
     /// The schema of what a key holds, from the type it holds. `None` for a name that is a
     /// value, or a key whose value is always a string, as an entity's are.
@@ -54,14 +49,12 @@ impl WireName {
     /// Names with no descriptions, from a plain list of strings.
     ///
     /// For a vocabulary registered by hand because its enum lives in a crate that cannot
-    /// carry the attribute. The list is still derived — from `strum`'s `VariantNames` — so a
-    /// renamed variant still moves the registry; only the doc comments are out of reach,
-    /// because they stay in that crate.
+    /// carry the attribute. The list comes from `strum`'s `VariantNames`, so a renamed variant
+    /// still moves the registry; the doc comments stay in that crate.
     ///
     /// # Panics
     ///
-    /// If `texts` is not exactly `N` long. `N` comes from `texts.len()` at the call site, so
-    /// this fires only if the two are written apart.
+    /// If `texts` is not exactly `N` long.
     #[must_use]
     pub const fn from_texts<const N: usize>(texts: &'static [&'static str]) -> [Self; N] {
         assert!(
@@ -114,9 +107,8 @@ pub enum Kind {
     },
     /// A key vocabulary: these names are the keys of one object.
     ///
-    /// Apart from a value vocabulary because the two differ in what a new name means. A new
-    /// value on a field changes no format — consumers match values they know and ignore the
-    /// rest. A new key is a new field, which is a minor version.
+    /// Separate from a value vocabulary because a new name means something else: a new value
+    /// changes no format, a new key is a new field and a minor version.
     Keys {
         /// The object the names are keys of.
         object: &'static str,
@@ -164,11 +156,9 @@ impl Kind {
 /// registry tests. Every field is a constant or a function pointer so the entry can live in a
 /// `static`.
 ///
-/// **Present in debug builds only.** `#[audit_part]` emits the entry behind
-/// `#[cfg(debug_assertions)]`, so a release binary carries no registry and none of the
-/// schema-generation code the entries keep alive. Every reader of the registry runs in the
-/// dev profile: the unit tests, `just update-audit-schema`, and any tooling built on
-/// [`Registration::all`], which in a `--release` build panics and names the cause.
+/// **Debug builds only.** `#[audit_part]` emits the entry behind `#[cfg(debug_assertions)]`,
+/// so a release binary carries no registry and no schema-generation code. Every reader runs in
+/// the dev profile; [`Registration::all`] panics in a `--release` build.
 pub struct Registration {
     /// The type's role, and whatever that role carries.
     pub kind: Kind,
@@ -202,9 +192,8 @@ impl Registration {
     ///
     /// # Panics
     ///
-    /// In a build without `debug_assertions`, always: `#[audit_part]` registers types behind
-    /// that flag, so a release build has no registry, and a reader would otherwise fail on
-    /// "type X is not registered" and look for a bug that is not there.
+    /// In a build without `debug_assertions`, always: such a build has no registry, and an
+    /// empty one would read as "type X is not registered".
     pub fn all() -> impl Iterator<Item = &'static Registration> {
         assert!(
             Self::available(),
@@ -324,10 +313,8 @@ impl<T: Vocabulary> schemars::JsonSchema for Wire<T> {
 /// belongs to. Obtainable only from a key enum's generated `as_wire()`.
 ///
 /// Convertible into neither [`Wire`] nor [`AnyWireStr`], and not serializable, so a key
-/// cannot be passed where a record expects a value. That stops the mix-up, not every route to
-/// the string: [`Self::text`] yields one, as does the `as_str` every key enum carries, and
-/// either can be written wherever a `&'static str` is accepted. What the type buys is that the
-/// wrong one cannot be handed over by accident.
+/// cannot be passed by accident where a record expects a value. [`Self::text`] and the
+/// generated `as_str` still yield the plain string.
 pub struct WireKey<E: AuditEmitter> {
     text: &'static str,
     _emitter: PhantomData<E>,
@@ -387,9 +374,9 @@ wire_name_impls!(WireKey);
 /// from several emitters holds, such as `action_name`. Obtainable only from a [`Wire`], so it
 /// still cannot be a literal.
 ///
-/// The erased half of [`Wire`], whose emitter is in its type. It exists because two places cannot
-/// name their emitter in a type: an action's name, which any authorizer crate supplies, and a
-/// context key pushed by a crate this one does not know.
+/// The type-erased form of [`Wire`], for the two places that cannot name their emitter in a
+/// type: an action's name, which any authorizer crate supplies, and a context key pushed by a
+/// crate this one does not know.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AnyWireStr {
     text: &'static str,
@@ -403,9 +390,9 @@ impl AnyWireStr {
         self.text
     }
 
-    /// The emitter whose vocabulary the value belongs to, with the version of what it
-    /// contributes. Carried with the value because a record names every product it carries
-    /// something of; the registry could answer it from the name, but only in a debug build.
+    /// The emitter whose vocabulary the value belongs to, with its format version. Carried
+    /// with the value because the registry, which could also answer this, exists in debug
+    /// builds only.
     #[must_use]
     pub const fn emitter(self) -> EmitterStamp {
         self.emitter
@@ -452,10 +439,9 @@ impl schemars::JsonSchema for AnyWireStr {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("AnyWireStr")
     }
-    /// Marked open, which is the schema's record of what this type means: the value comes
-    /// from whichever emitter produced the record, so no one emitter's schema can list the
-    /// values a consumer may meet. The schema builder leaves such a field a plain string
-    /// instead of pointing it at a value set.
+    /// Marked open: the value comes from whichever emitter produced the record, so no one
+    /// emitter's schema can list every value. The schema builder leaves such a field a plain
+    /// string with no value set.
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({ "type": "string", "x-audit-open": true })
     }
@@ -469,13 +455,12 @@ pub const AUDIT_TARGET: &str = "lakekeeper::audit";
 
 /// Module paths that an operator filter may name expecting to select audit records.
 ///
-/// Records are written to [`AUDIT_TARGET`] and to nothing else, so a filter naming one of
-/// these matches none of them. The list exists so [`warn_on_retired_audit_filter`] can say
-/// so; more than one entry, because the paths differ by where the record was raised.
+/// Records are written to [`AUDIT_TARGET`] only, so a filter naming one of these matches
+/// none of them. Read by [`warn_on_retired_audit_filter`].
 const RETIRED_TARGETS: &[&str] = &[
     // Authorization, replay and grant records, emitted from the audit module itself.
     "lakekeeper::service::events::backends::audit",
-    // Admission rejections, emitted from the gate rather than from the audit module.
+    // Admission rejections, emitted from the gate.
     "lakekeeper::service::admission",
 ];
 
@@ -502,10 +487,8 @@ pub(super) fn retired_audit_directives(filter: &str) -> Vec<&str> {
 /// Called once at start-up. Such a filter fails silently: it matches nothing, so the operator
 /// sees an empty audit stream and no reason for it.
 ///
-/// Written to standard error, not through `tracing`, because the filter this warns about is
-/// the one that decides whether the warning is printed. A directive naming only a retired
-/// path suppresses everything else, the warning included, and a diagnostic about the logging
-/// configuration cannot depend on the logging configuration.
+/// Written to standard error, not through `tracing`: the filter this warns about could
+/// suppress the warning itself.
 pub fn warn_on_retired_audit_filter() {
     let Ok(filter) = std::env::var("RUST_LOG") else {
         return;
@@ -527,10 +510,10 @@ pub fn warn_on_retired_audit_filter() {
 /// whether the catalog keeps an audit trail at all, and the `tracing` filter on
 /// [`AUDIT_TARGET`], which decides whether the subscriber records what is written there.
 ///
-/// Every record passes this on its way out, so the configuration switch covers records
-/// emitted outside the event listener too. Code that suppresses an ordinary log line because
-/// the audit record carries the same event in more detail must ask this first: with either
-/// switch closed the event would otherwise be absent from both logs.
+/// Every record passes this on its way out, so the configuration switch also covers records
+/// emitted outside the event listener. Code that suppresses an ordinary log line because the
+/// audit record covers it must ask this first: with either switch closed the event would be
+/// in neither log.
 ///
 /// `tracing` caches its half per call site when the filter is static.
 #[must_use]
@@ -616,9 +599,8 @@ mod tests {
         assert_eq!(ProbeKey::FirstKey(true).as_str(), "first_key");
         assert_eq!(ProbeKey::WIRE_NAMES, ["first_key"]);
         assert_eq!(key.to_string(), "first_key");
-        // The guarantee is in what is missing: `WireKey` implements neither `Serialize` nor
-        // `Into<AnyWireStr>`, so a key cannot be written into a field that holds a value.
-        // That is enforced by the compiler; nothing here can assert it at run time.
+        // `WireKey` implements neither `Serialize` nor `Into<AnyWireStr>`, so a key cannot be
+        // written into a field that holds a value. The compiler enforces that, not this test.
     }
 
     #[test]

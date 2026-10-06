@@ -721,9 +721,8 @@ mod test {
         (header, String::from_utf8(body.to_vec()).unwrap())
     }
 
-    /// One id names the request everywhere: the response header the client gets back, the
-    /// span, and `RequestMetadata`, which every audit record and event takes it from. A client
-    /// id is kept whatever its form.
+    /// One id names the request in the response header, the span, and `RequestMetadata`, the
+    /// source for audit records and events. A client id is kept whatever its form.
     #[tokio::test]
     async fn the_request_id_is_one_value_everywhere() {
         let (header, recorded) = request_id_seen(Some("abc")).await;

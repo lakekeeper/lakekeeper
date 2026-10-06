@@ -214,9 +214,8 @@ impl From<RoleIdentifierError> for ErrorModel {
 /// Must be non-empty and contain only lowercase ASCII letters (a-z), digits (0-9),
 /// and hyphens (-). Must not contain the `~` separator or any other special characters.
 /// Well-known values: `"lakekeeper"` (server-managed), `"oidc"`, `"ldap"`, etc.
-// `JsonSchema` because this id reaches the audit log inside an emitter's context, and a
-// context is described as JSON Schema from its field types. Transparent for the same reason
-// serde is: on the wire it is the string, not an object wrapping one.
+// `JsonSchema` because this id reaches the audit log inside an emitter's context, whose
+// schema is built from its field types. Transparent, like its serde form: a plain string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(transparent)]
 #[schemars(transparent)]

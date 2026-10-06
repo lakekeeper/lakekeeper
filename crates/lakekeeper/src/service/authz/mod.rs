@@ -255,13 +255,12 @@ pub trait ManagesRoleAssignments: Send + Sync {
     ) -> std::result::Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError>;
 }
 
-/// An action that an event can name: one a handler asks for, carried by the events every
+/// An action an event can name: one a handler asks for, carried by the events every
 /// [`EventListener`](crate::service::events::EventListener) receives.
 ///
-/// Its descriptor is a declared wire name plus typed context keys, so only an enum carrying
+/// Its descriptor is a declared wire name plus typed context keys, so only an enum with
 /// `#[audit_part(field = "action_name")]` can implement it. An authorizer's own action types
-/// do not: they name what that authorizer checks, which they say through `Display` for error
-/// text.
+/// do not; they implement `Display` for error text.
 pub trait EventAction
 where
     Self: std::fmt::Debug + Send + Sync + 'static,
@@ -275,8 +274,8 @@ pub fn log_string(action: &impl EventAction) -> String {
     action.action_descriptor().log_string()
 }
 
-/// `Display` for a Lakekeeper action enum: its [`log_string`], which is what an error names
-/// when one of these is the authorizer's own action type, as it is for allow-all.
+/// `Display` for a Lakekeeper action enum: its [`log_string`]. Errors use it when the enum is
+/// the authorizer's own action type, as with allow-all.
 macro_rules! display_as_log_string {
     ($($ty:ty),* $(,)?) => {$(
         impl std::fmt::Display for $ty {
@@ -691,8 +690,7 @@ pub enum CatalogRoleAction {
     ReadMetadata,
     Delete {
         /// Whether the refusal that protects a role still holding catalog-stored grants
-        /// is bypassed. Those grants go with the role, so forcing the delete revokes
-        /// them.
+        /// is bypassed. Forcing the delete revokes those grants.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
@@ -708,12 +706,11 @@ pub enum CatalogRoleAction {
     /// provider). The built-in authorizer treats this the same as
     /// `manage_role_assignments`.
     ///
-    /// The destination is explicit. A real rebind names the target provider and source id;
-    /// the permission enumeration behind `GET /role/{id}/actions`, and any "may this
-    /// principal rebind at all?" query, name `any` instead. `any` is a base-capability
-    /// marker, not a permissive default: a policy written against a concrete destination
-    /// gates that destination and never matches `any`, and a `/check` caller picks between
-    /// the two deliberately.
+    /// A real rebind names the target provider and source id. Permission introspection
+    /// (`GET /role/{id}/actions`) and any "may this principal rebind at all?" query name
+    /// `any`. `any` is a base-capability marker, not a permissive default: a policy written
+    /// against a concrete destination never matches `any`, and a `/check` caller chooses
+    /// between the two.
     UpdateSourceSystem {
         #[audit(expands_to = "requested_provider_id, requested_source_id")]
         target: SourceSystemTarget,
@@ -912,10 +909,8 @@ pub enum SubtreeGrantPrivileges {
 
 /// The `privilege_scope` label: whether a subtree request reaches every privilege or only
 /// the ones it narrows to.
-///
-/// Its own enum rather than a literal at the emission site so the two values reach the audit
-/// schema and a rename fails `check-audit-format`, as `RootLevelGrants` does for
-/// `root_level`.
+// An enum, so both values reach the audit schema and a rename fails `check-audit-format`,
+// as with `RootLevelGrants` for `root_level`.
 #[derive(
     Debug,
     Clone,
@@ -1055,8 +1050,8 @@ pub enum CatalogWarehouseAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether protection is bypassed, i.e. a warehouse marked protected is deleted
-        /// with everything in it rather than the request being refused.
+        /// Whether protection is bypassed, so a warehouse marked protected is deleted with
+        /// everything in it.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
@@ -1244,7 +1239,7 @@ impl EventAction for CatalogWarehouseAction {
             Self::Delete { force } => {
                 b = b.context(ActionContextKey::Force(*force));
             }
-            // Contribute no audit context. Listed, not `_` — see above.
+            // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::UpdateStorage { .. }
             | Self::GetMetadata { .. }
             | Self::GetConfig { .. }
@@ -1317,9 +1312,8 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether the warehouse-configured soft-deletion is bypassed, i.e.
-        /// contained tabulars are hard-deleted immediately instead of being
-        /// recoverable for the configured grace period.
+        /// Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
+        /// hard-deleted at once, not kept for the configured grace period.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data/metadata files are physically purged.
@@ -1584,7 +1578,7 @@ impl EventAction for CatalogNamespaceAction {
                         .unwrap_or_default(),
                 );
             }
-            // Contribute no audit context. Listed, not `_` — see above.
+            // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::GetMetadata { .. }
             | Self::ListTables { .. }
             | Self::ListViews { .. }
@@ -1618,9 +1612,9 @@ impl EventAction for CatalogNamespaceAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-        /// table is hard-deleted immediately instead of being recoverable for the
-        /// configured grace period. Extra destructive — irreversible right away.
+        /// Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
+        /// once, not kept for the configured grace period. Extra destructive — irreversible right
+        /// away.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -1724,7 +1718,7 @@ impl EventAction for CatalogTableAction {
                 b = b.context(ActionContextKey::Force(*force));
                 b = b.context(ActionContextKey::Purge(*purge));
             }
-            // Contribute no audit context. Listed, not `_` — see above.
+            // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::WriteData { .. }
             | Self::ReadData { .. }
             | Self::GetMetadata { .. }
@@ -1759,9 +1753,9 @@ impl EventAction for CatalogTableAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-        /// view is hard-deleted immediately instead of being recoverable for the
-        /// configured grace period. Extra destructive — irreversible right away.
+        /// Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
+        /// once, not kept for the configured grace period. Extra destructive — irreversible right
+        /// away.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying metadata files are physically purged from storage.
@@ -1837,7 +1831,7 @@ impl EventAction for CatalogViewAction {
                 b = b.context(ActionContextKey::Force(*force));
                 b = b.context(ActionContextKey::Purge(*purge));
             }
-            // Contribute no audit context. Listed, not `_` — see above.
+            // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::GetMetadata { .. }
             | Self::Select { .. }
             | Self::IncludeInList { .. }
@@ -1871,9 +1865,9 @@ impl EventAction for CatalogViewAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogGenericTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the generic
-        /// table is hard-deleted immediately instead of being recoverable for the
-        /// configured grace period. Extra destructive — irreversible right away.
+        /// Whether the warehouse-configured soft-deletion is bypassed: the generic table is
+        /// hard-deleted at once, not kept for the configured grace period. Extra destructive —
+        /// irreversible right away.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -1929,7 +1923,7 @@ impl EventAction for CatalogGenericTableAction {
                 b = b.context(ActionContextKey::Force(*force));
                 b = b.context(ActionContextKey::Purge(*purge));
             }
-            // Contribute no audit context. Listed, not `_` — see above.
+            // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::ReadData { .. }
             | Self::WriteData { .. }
             | Self::GetMetadata { .. }
@@ -3408,10 +3402,8 @@ pub mod tests {
 
     /// A collection the request left empty reaches the record as an empty one.
     ///
-    /// "The caller removed no properties" and "this record does not carry that key" are
-    /// different answers. Only the second is worth omitting, and it is not what an empty
-    /// list means — so every collection field of an action is emitted whether or not it
-    /// holds anything.
+    /// "The caller removed no properties" differs from "this record does not carry that key",
+    /// so every collection field of an action is emitted, empty or not.
     #[test]
     fn empty_collections_are_emitted_rather_than_omitted() {
         let keys = |d: ActionDescriptor| -> Vec<String> {
@@ -3448,8 +3440,7 @@ pub mod tests {
         };
         assert_eq!(keys(moved.action_descriptor()), vec!["source"]);
 
-        // A value that is genuinely absent still says nothing: `name` is an `Option`, and
-        // `null` is not information.
+        // An absent `Option` is still omitted.
         let create = CatalogNamespaceAction::CreateNamespace {
             name: None,
             properties: Arc::new(BTreeMap::new()),
@@ -3459,9 +3450,8 @@ pub mod tests {
 
     /// Every operation whose API takes a destructive override records it.
     ///
-    /// Each of these bypasses a refusal — a protected warehouse, a role still holding
-    /// grants, a table's soft-deletion window — so a record that does not name the
-    /// override describes the operation as the ordinary one it is not.
+    /// Each bypasses a refusal (a protected warehouse, a role still holding grants, a table's
+    /// soft-deletion window), so a record without it would misdescribe the operation.
     #[test]
     fn test_destructive_overrides_reach_the_action_context() {
         let forced: Vec<(&str, ActionDescriptor)> = vec![
@@ -3512,9 +3502,8 @@ pub mod tests {
             assert!(log.contains("force=true"), "{what} lost `force`: {log}");
         }
 
-        // And the unforced form carries the flag too, set to `false`. The two are told
-        // apart by the value, not by whether the key is there: an absent `force` means the
-        // operation has no such override, which is a different statement.
+        // The unforced form carries `force=false`. An absent `force` means the operation has
+        // no such override.
         let plain = CatalogRoleAction::Delete { force: false }.action_descriptor();
         let log = plain.log_string();
         assert!(log.contains("force=false"), "{log}");

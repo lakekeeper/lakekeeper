@@ -42,9 +42,8 @@ use crate::{
 
 /// A field that can appear on an `entity` object in an audit record.
 ///
-/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and `#[audit_part]` derives every wire name
-/// from the variant, so a new variant cannot reach the wire unnamed.
+/// A closed set: `#[audit_part]` derives every wire name from the variant, and `VARIANTS`
+/// drives the tests that require every field to be documented.
 #[audit_part(keys_of = "entity")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
@@ -86,8 +85,7 @@ pub enum EntityField {
     TagDefinitionId,
 }
 
-// The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed field set.
+// Constant aliases of the variants, used by call sites throughout the crate.
 pub const FIELD_NAME_SERVER_ID: EntityField = EntityField::ServerId;
 pub const FIELD_NAME_PROJECT_ID: EntityField = EntityField::ProjectId;
 pub const FIELD_NAME_WAREHOUSE_ID: EntityField = EntityField::WarehouseId;
@@ -110,9 +108,8 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 /// One handler-supplied `context` entry: what the handler recorded, and the emitter whose
 /// key vocabulary the key came from.
 ///
-/// The emitter is kept because a record names every product that contributed to it, and a key
-/// pushed by a crate outside this one is such a contribution. `push_extra_context` is the only
-/// way an entry is made, and it knows the emitter from its type parameter.
+/// The emitter is kept so the record can name every product that contributed to it. Built
+/// only by `push_extra_context`, which knows the emitter from the key's type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextEntry {
     /// What the handler recorded.
@@ -133,11 +130,9 @@ impl ContextEntry {
 
 /// The keys Lakekeeper's own handlers put into an authorization record's `context` object.
 ///
-/// A value is a string the handler chooses, unless the key declares a shape. A key declared
-/// here is declared in Lakekeeper's audit schema; another emitter declares its own enum with
-/// `#[audit_part(keys_of = "context")]`. One key of the map means one thing: a second
-/// vocabulary declaring the same key would put two meanings at one path, and a test rejects
-/// that.
+/// A value is a string unless the key declares a shape. Another emitter declares its own enum
+/// with `#[audit_part(keys_of = "context")]`; a test rejects two vocabularies declaring the
+/// same key.
 #[audit_part(keys_of = "context")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HandlerContextKey {
@@ -155,12 +150,8 @@ pub enum HandlerContextKey {
 
 /// The `entity_type` of an audit record's `entity` object.
 ///
-/// A closed set, so the audit log's field space is enumerable: `VARIANTS` drives the tests
-/// that require every field to be documented, and `#[audit_part]` derives every wire name
-/// from the variant, so a new variant cannot reach the wire unnamed.
-///
-/// The values are the management API's: it spells the same resource kinds in its own
-/// `ResourceType`, hyphens and all, so they are marked `external_values`.
+/// The values follow the management API's `ResourceType` spelling, hyphens included, so they
+/// are marked `external_values`.
 #[audit_part(field = "entity_type", external_values)]
 #[audit(rename_all = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
@@ -178,8 +169,7 @@ pub enum EntityType {
     Tag,
 }
 
-// The former `&'static str` constants, retyped. Call sites spell these by name, so they
-// keep compiling unchanged while the type system gains a closed field set.
+// Constant aliases of the variants, used by call sites throughout the crate.
 pub const ENTITY_TYPE_SERVER: EntityType = EntityType::Server;
 pub const ENTITY_TYPE_PROJECT: EntityType = EntityType::Project;
 pub const ENTITY_TYPE_WAREHOUSE: EntityType = EntityType::Warehouse;
@@ -194,10 +184,8 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 
 /// A field that can appear in an `action` object's context in an audit record.
 ///
-/// A closed set, for the same reason as [`EntityField`]: it makes the audit log's field
-/// space enumerable, so the tests can require every field to be documented and covered,
-/// and `#[audit_part]` names every variant on the wire, so a new field cannot reach the log
-/// unnamed.
+/// A closed set: `#[audit_part]` names every variant on the wire, and the tests require every
+/// field to be documented and covered.
 #[audit_part(keys_of = "action")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionContextKey {
@@ -714,8 +702,8 @@ impl_user_provided_entity!(
 
 // ── Action types ────────────────────────────────────────────────────────────
 
-/// Actions named per endpoint rather than per resource permission, for the handlers that
-/// build an [`ActionDescriptor`] directly instead of going through a `Catalog*Action`.
+/// Actions named per endpoint, not per resource permission, for the handlers that build an
+/// [`ActionDescriptor`] directly, without a `Catalog*Action`.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
@@ -737,10 +725,9 @@ pub enum ManagementAction {
     ApplyGrants,
     /// Revoke the grants in a range beneath one resource.
     // The handler assembles the context from the request body and the scope its gate is asked
-    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`, whose fields these keys
-    // are. The six scope keys are the ones `SubtreeGrantScope::context` writes. They are
-    // declared on this variant as well as on the `Catalog*Action` variants that share this wire
-    // name, so what this action carries does not depend on another vocabulary keeping its own.
+    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`. The six scope keys are
+    // the ones `SubtreeGrantScope::context` writes. Also declared on the `Catalog*Action`
+    // variants sharing this wire name; declaring them here keeps this variant self-contained.
     #[audit(
         carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
                    privilege_scope, privileges, resource_types, root_level"
@@ -748,8 +735,7 @@ pub enum ManagementAction {
     RevokeSubtreeGrants,
 }
 
-/// The actions the authentication layer checks. See [`ManagementAction`] for why this is an
-/// enum rather than a literal.
+/// The actions the authentication layer checks.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, strum_macros::EnumCount, strum_macros::VariantNames,
 )]
@@ -1334,8 +1320,8 @@ where
     /// the emitted event.
     ///
     /// Call this from batch-style endpoints (e.g. `introspect_permissions`)
-    /// where the audit-relevant unit of work is each inner check rather than
-    /// the wrapping API call. When unset, the emit path synthesises one entry
+    /// where the audit-relevant unit of work is each inner check, not the
+    /// wrapping API call. When unset, the emit path synthesises one entry
     /// per (entity, action) pair from the context's existing fields.
     pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
         self.authorizations_override = Some(authorizations);
@@ -1496,10 +1482,8 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
         let failure_reason = error.to_failure_reason();
         let mut error = error.into_error_model();
 
-        // The audit record below carries the same denial with the actor and the entities,
-        // so the plain error line would only repeat it with less. Suppressed only when that
-        // record reaches the log: with the audit trail switched off or filtered out, this
-        // line is the one place the denial appears.
+        // The audit record carries the same denial in more detail. Suppress the plain error
+        // line only when that record reaches the log; otherwise it is the only trace.
         if crate::audit::enabled() {
             error.skip_log = true;
         }
@@ -1579,9 +1563,8 @@ where
 /// did not explicitly populate one: one entry per (entity, action) pair. An
 /// event with no entity or no action, such as an empty batch, gets none.
 ///
-/// Crate-visible so the audit fixtures pair their entries the way this does, and a fixture
-/// cannot describe a record whose per-decision entries name an action or an entity its own
-/// lists do not carry.
+/// Crate-visible so the audit fixtures pair entries the same way, and cannot name an action
+/// or entity the record's own lists lack.
 pub(crate) fn synthesise_authorizations(
     entities: &EventEntities,
     actions: &[ActionDescriptor],

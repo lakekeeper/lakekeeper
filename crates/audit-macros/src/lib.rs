@@ -1,6 +1,5 @@
-//! `#[audit_part]`: the one attribute every type that reaches the Lakekeeper audit log
-//! carries. The reference — its placements and the `#[audit(...)]` keys each takes — is on
-//! [`macro@audit_part`].
+//! `#[audit_part]`: the attribute every type that reaches the Lakekeeper audit log carries.
+//! See [`macro@audit_part`] for its placements and the `#[audit(...)]` keys each takes.
 
 use std::collections::BTreeMap;
 
@@ -26,14 +25,14 @@ struct Args {
     keys_of: Option<String>,
     /// `context`: this struct is the `context` object of an operation record.
     context: bool,
-    /// `shape = "authorization"`: this struct is a whole record, and that is the
-    /// `record_type` value naming it.
+    /// `shape = "authorization"`: this struct is a whole record; the value is its
+    /// `record_type`.
     shape: Option<String>,
-    /// `external_values`: these values are spelled somewhere else — another product
-    /// publishes them, or they mirror a vocabulary that does — so the case check skips them.
+    /// `external_values`: the values are spelled by another product, or mirror a vocabulary
+    /// that is, so the case check skips them.
     external_values: bool,
-    /// `closed`: this field's values can never grow without a major version, because the
-    /// set is closed by what it means. The schema lists them as an `enum`.
+    /// `closed`: the set of values cannot grow without a major version. The schema lists
+    /// them as an `enum`.
     closed: bool,
 }
 
@@ -129,60 +128,57 @@ fn lit_str(expr: &Expr, what: &str) -> Result<String> {
 /// Five placements:
 ///
 /// - **A part** (`#[audit_part]` on a struct or a data enum): a nested object of a record.
-///   Expands to `#[derive(Serialize, JsonSchema)]` through `lakekeeper`'s re-exports, so the
-///   defining crate needs no direct dependency on either; to
+///   Expands to `#[derive(Serialize, JsonSchema)]` through `lakekeeper`'s re-exports (the
+///   defining crate needs neither as a direct dependency), to
 ///   `impl lakekeeper::audit::AuditPart for T { type Emitter = crate::audit_emitter::Emitter; }`,
-///   binding the type to the emitter of the crate that defines it; and to a registry entry.
-///   Every named field needs a doc comment: it is the field's description in the schema.
+///   which binds the type to its crate's emitter, and to a registry entry. Every named field
+///   needs a doc comment: it is the field's description in the schema.
 /// - **A context** (`#[audit_part(context)]` on a struct): the `context` object of an operation
 ///   record. Same as a part, registered as a context.
 /// - **A shape** (`#[audit_part(shape = "authorization")]` on a struct, in `lakekeeper` only): a
-///   whole record. Expands to its schema, its registry entry, and its `emit(self, message)`:
-///   the audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
-///   `record_type`, with every field under its own name and a field that serializes to `null`
-///   left off. The field list is the struct's, so the record and its schema cannot differ.
+///   whole record. Expands to its schema, its registry entry, and `emit(self, message)`: the
+///   audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
+///   `record_type`, with each field under its own name and fields that serialize to `null`
+///   left off. Record and schema share the struct's field list, so they cannot differ.
 /// - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
 ///   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
-///   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
-///   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
-///   field and every value with its doc comment. No derives are added and `AuditPart` is not
-///   implemented: such an enum often already serializes differently for an API. The set is
-///   open: the schema lists its values in `x-audit-values`, and a release may add one. Add
-///   `closed` for a set that cannot grow without a major version, such as `decision`; the
-///   schema then lists its values as an `enum`.
-///   Outside Lakekeeper only `keys_of = "context"` is accepted: the other objects take their
-///   keys from a Lakekeeper enum, so a vocabulary declared elsewhere could not be emitted.
+///   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`,
+///   `WIRE_VARIANTS` / `WIRE_NAMES`, and a registry entry whose `Kind::Values` carries the
+///   field and each value with its doc comment. Adds no derives and no `AuditPart`: such an
+///   enum often serializes differently for an API. The set is open: the schema lists its
+///   values in `x-audit-values`, and a release may add one. Add `closed` for a set that cannot
+///   grow without a major version, such as `decision`; the schema then lists its values as an
+///   `enum`.
 /// - **A key vocabulary** (`#[audit_part(keys_of = "entity")]`): its variant names are the
 ///   *keys* of one object, here an `entity`. Same expansion, except that `as_wire` yields a
-///   `WireKey<Emitter>`, which converts into no value type — so a key cannot be passed where a
-///   value is expected, or the other way round — and the registry entry is a `Kind::Keys`.
-///   The distinction is not cosmetic: a new value on
-///   a field changes no format, while a new key is a new field, which is a minor version.
+///   `WireKey<Emitter>`, which converts into no value type, so keys and values cannot be passed
+///   in each other's place; and the registry entry is a `Kind::Keys`. A new value on a field
+///   changes no format; a new key is a new field, a minor version. Outside Lakekeeper only
+///   `keys_of = "context"` is accepted: the other objects take their keys from a Lakekeeper
+///   enum, so a vocabulary declared elsewhere could not be emitted.
 ///
-/// Every name a vocabulary puts on the wire is its variant name in `snake_case`, or the name
-/// `#[audit(rename = "...")]` gives that variant. `strum` and `serde` attributes are not read:
-/// an enum that is also an API type keeps its API spelling to itself. The macro rejects any
-/// name that is not `lower_snake_case`, unless the vocabulary is spelled somewhere else —
-/// another product publishes the values, or they mirror a vocabulary that does — in which case
-/// it adds `external_values` and says how with `#[audit(rename_all = "...")]`. Name that
-/// vocabulary in the enum's doc comment.
+/// Each wire name of a vocabulary is its variant name in `snake_case`, or the name
+/// `#[audit(rename = "...")]` gives that variant. `strum` and `serde` attributes are not read,
+/// so an API type keeps its API spelling to itself. A name that is not `lower_snake_case` is
+/// rejected unless the vocabulary is spelled elsewhere (another product publishes the values,
+/// or they mirror a vocabulary that does): then it adds `external_values`, says how with
+/// `#[audit(rename_all = "...")]`, and names that vocabulary in its doc comment.
 ///
-/// Each placement takes a closed set of `#[audit(...)]` keys, each `key = "string"`: a
-/// vocabulary enum takes `rename_all` (with `external_values` only); a variant of a value
-/// vocabulary takes `rename` and `carries`; a field of such a variant takes `expands_to`, which
-/// every unnamed field of an action needs; a variant of a key vocabulary takes `rename`; a
-/// part takes none. An unknown key, a key given twice and a value that is not a string are
-/// rejected. The attributes are consumed here and never reach the compiler.
+/// `#[audit(...)]` keys, each `key = "string"`, by placement: a vocabulary enum takes
+/// `rename_all` (with `external_values` only); a variant of a value vocabulary takes `rename`
+/// and `carries`; a field of such a variant takes `expands_to`, required on every unnamed
+/// field of an action; a variant of a key vocabulary takes `rename`; a part takes none.
+/// Unknown keys, duplicate keys and non-string values are rejected. The macro consumes these
+/// attributes; they never reach the compiler.
 ///
-/// Registry entries exist in **debug builds only**: the entry is behind
-/// `#[cfg(debug_assertions)]`, so release binaries carry neither the registry nor the
-/// schema-generation code it keeps alive. Tests that read the registry run in the dev profile;
-/// in a `--release` build `lakekeeper::audit::Registration::all()` panics and says so instead of
-/// failing obscurely.
+/// Registry entries exist in **debug builds only** (behind `#[cfg(debug_assertions)]`), so
+/// release binaries carry neither the registry nor the schema code it keeps alive. Tests that
+/// read the registry run in the dev profile; in a `--release` build
+/// `lakekeeper::audit::Registration::all()` panics with a message saying so.
 ///
-/// Rules enforced at expansion: no type or const generic parameters (lifetimes are fine and
-/// become `'static` in the registry); every named field of a part or context, and every key
-/// of a key vocabulary, has a doc comment.
+/// Also rejected at expansion: type or const generic parameters (lifetimes are fine and become
+/// `'static` in the registry), and a missing doc comment on a named field of a part or context
+/// or on a key of a key vocabulary.
 #[proc_macro_attribute]
 pub fn audit_part(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as Args);
@@ -234,10 +230,9 @@ fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
 
 /// A part, a context or a shape: derives, `AuditPart`, registration with the schema.
 ///
-/// A shape is a whole record. It is described but not serialised: a record reaches the wire as
-/// the log event's own fields, written one by one by its `emit()`, so nothing ever serialises
-/// the struct. Deriving `Serialize` for it would produce a nested object no consumer ever
-/// sees, and would demand `Serialize` of every vocabulary enum it holds.
+/// A shape derives no `Serialize`: its `emit()` writes each field to the log event directly.
+/// A serialized struct would be a nested object no consumer sees, and would require
+/// `Serialize` on every vocabulary enum it holds.
 fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
     let (context, shape) = (args.context, args.shape.as_deref());
     let is_shape = shape.is_some();
@@ -316,8 +311,8 @@ fn expand_vocabulary(
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let static_ty = static_type(input);
     let external_values = matches!(vocabulary, Vocabulary::Values { external: true, .. });
-    // Every name this log owns is `snake_case`, so that is the rule unless the vocabulary is
-    // spelled somewhere else and says how.
+    // Every name this log owns is `snake_case`, unless the vocabulary is spelled elsewhere and
+    // says how.
     let enum_attrs = audit_attrs(&input.attrs, &["rename_all"], "on a vocabulary enum")?;
     let rule = match enum_attrs.get("rename_all") {
         Some(_) if !external_values => {
@@ -336,9 +331,8 @@ fn expand_vocabulary(
         Vocabulary::Keys(_) => &["rename"],
     };
 
-    // Keys and values reach the wire as different types on purpose. A `WireKey` converts into
-    // no value type, so an enum declared as keys cannot be written where a field's value is
-    // expected, and a value enum cannot become an object key.
+    // Keys and values are different types: a `WireKey` converts into no value type, so a key
+    // enum cannot be written as a field's value, nor a value enum as an object key.
     let (wire_ty, kind_of, conversions) = match vocabulary {
         Vocabulary::Values { field, closed, .. } => (
             quote!(::lakekeeper::audit::Wire<#ident #ty_generics>),
@@ -393,9 +387,8 @@ fn expand_vocabulary(
     let mut docs = Vec::new();
     let mut carries = Vec::new();
     let mut values = Vec::new();
-    // An `entity` key's value is always a string, so its keys hold nothing. Every other
-    // object's keys hold their value, and the type they hold is the declaration of what the
-    // key carries: the compiler checks every write against it.
+    // An `entity` key's value is always a string, so its keys hold nothing. Other keys hold
+    // their typed value, so the compiler checks every write.
     let keys_hold_values = matches!(vocabulary, Vocabulary::Keys(object) if object != "entity");
     for v in &data.variants {
         let variant_attrs = audit_attrs(&v.attrs, variant_keys, "on a variant")?;
@@ -413,8 +406,7 @@ fn expand_vocabulary(
                 ),
             ));
         }
-        // A key is a property of the object it belongs to, and every property the schema
-        // publishes carries a description.
+        // Every property the schema publishes has a description.
         if matches!(vocabulary, Vocabulary::Keys(_)) && !has_doc(&v.attrs) {
             return Err(Error::new_spanned(
                 v,
@@ -515,9 +507,8 @@ fn expand_vocabulary(
         },
         _ => quote!(),
     };
-    // A value vocabulary is a type the rest of the code can name: a field holding one of its
-    // values is a `Wire<Self>`, which points at this definition. An operation's and an
-    // outcome's sets are marked, so the two cannot be passed in each other's place.
+    // A field holding a value of this vocabulary is typed `Wire<Self>`. Operation and outcome
+    // sets get marker traits, so neither can be passed as the other.
     let vocabulary_impls = match vocabulary {
         Vocabulary::Values { field, .. } => {
             let marker = match field {
@@ -556,10 +547,8 @@ fn expand_vocabulary(
 
             #[doc = #as_str_doc]
             ///
-            /// Generated, so it cannot answer differently from `as_wire` and therefore
-            /// cannot differ from the name the schema declares. A `strum`, `serde` or
-            /// hand-written derivation would be a second source of truth, and the two agree
-            /// only until someone renames a variant.
+            /// Derived from `as_wire`, so it always equals the name the schema declares. A
+            /// `strum`, `serde` or hand-written version would drift on a variant rename.
             #[must_use]
             pub const fn as_str(&self) -> &'static str {
                 self.as_wire().text()
@@ -584,8 +573,8 @@ fn expand_vocabulary(
         ::lakekeeper::__private::inventory::submit! {
             ::lakekeeper::audit::Registration {
                 kind: {
-                    // The names and their descriptions in one list, built once here, so the
-                    // registry cannot hold a description against the wrong name.
+                    // Names and descriptions in one list, so no description pairs with the
+                    // wrong name.
                     const WIRE: [::lakekeeper::audit::WireName; #count] = [
                         #(::lakekeeper::audit::WireName {
                             text: #names,
@@ -636,10 +625,9 @@ fn strip_our_attrs(input: &DeriveInput) -> DeriveInput {
 
 /// The `emit` of a shape: the one way its record reaches the log.
 ///
-/// Every field goes on the line under its own name, in struct order, so the record and the
-/// schema derived from the same struct cannot list different fields. A field whose value
-/// serializes to `null` is left off the line. `record_type` is stamped from the attribute, so
-/// the struct holds no such field.
+/// Each field goes on the line under its own name, in struct order, so record and schema list
+/// the same fields. Fields that serialize to `null` are left off. `record_type` comes from the
+/// attribute; the struct has no such field.
 fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() != Ok("lakekeeper") {
         return Err(Error::new_spanned(
@@ -696,9 +684,8 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
         impl #impl_generics #ident #ty_generics #where_clause {
             /// Write this record as one log line, or nothing when the audit trail is off.
             ///
-            /// Asked before anything is serialized, so a switched-off audit trail costs nothing,
-            /// and every record passes here, so the configuration switch covers every record
-            /// whatever built it.
+            /// The switch is checked before serializing, so a disabled trail costs nothing,
+            /// and it applies to every record whatever built it.
             pub(crate) fn emit(self, message: &'static str) {
                 if !crate::audit::enabled() {
                     return;
@@ -777,8 +764,8 @@ fn has_doc(attrs: &[Attribute]) -> bool {
 
 /// The doc comment on an item, its lines trimmed and joined, or `None` when it has none.
 ///
-/// A variant's doc comment is the only description its wire name can have: a name is a
-/// string in a list, not a schema of its own, so nothing else carries it to a consumer.
+/// A variant's doc comment is the only description its wire name gets: a name is a string in
+/// a list, not a schema of its own.
 fn doc_text(attrs: &[Attribute]) -> Option<String> {
     let mut lines = Vec::new();
     for attr in attrs.iter().filter(|a| a.path().is_ident("doc")) {
@@ -829,8 +816,7 @@ fn require_field_docs(input: &DeriveInput) -> Result<()> {
 /// The `#[audit(...)]` keys on one item, checked against the keys its placement takes.
 ///
 /// Every key is `key = "string"`. A key the placement does not take, a key given twice, and a
-/// value that is not a string literal are all rejected, so a misspelt key cannot compile and
-/// leave the declaration it meant to make unsaid.
+/// value that is not a string literal are rejected, so a misspelt key fails to compile.
 fn audit_attrs(
     attrs: &[Attribute],
     allowed: &[&str],
@@ -890,22 +876,16 @@ fn split_keys(declared: &str) -> Vec<String> {
 
 /// The `context` keys a variant can put beside itself.
 ///
-/// A variant's named fields are its context keys: `Drop { force, purge }` carries `force` and
-/// `purge`, under the enum's own rename rule so the names match the wire.
-///
-/// A field whose own type decides the keys lends its name to none of them, so it lists them
-/// literally: `#[audit(expands_to = "a, b")]` carries `a` and `b` in place of the field. An
-/// unnamed field of an action has no name to lend, so it always lists them, `""` for none.
-///
-/// A variant with no fields at all can still reach a record with context beside it, when the
-/// handler that names the action assembles the context itself. It lists those keys with
-/// `#[audit(carries = "a, b")]` on the variant.
+/// Named fields are the context keys: `Drop { force, purge }` carries `force` and `purge`,
+/// spelled by the enum's rename rule. A field whose type decides the keys lists them with
+/// `#[audit(expands_to = "a, b")]`; an unnamed field of an action must list them, `""` for
+/// none. A unit variant whose handler assembles the context lists the keys with
+/// `#[audit(carries = "a, b")]`.
 ///
 /// # Errors
 ///
-/// If a variant both has fields and declares `carries`, which would say the same thing twice;
-/// if a field of a key vocabulary carries `#[audit]`; or if an unnamed field of an action
-/// declares no `expands_to`.
+/// If a variant has fields and declares `carries`; if a field of a key vocabulary carries
+/// `#[audit]`; or if an unnamed field of an action declares no `expands_to`.
 fn variant_context(
     variant: &syn::Variant,
     rule: &str,
@@ -997,8 +977,7 @@ mod tests {
             .map_err(|e| e.to_string())
     }
 
-    /// The text between the first `open` and the next `close`, for reading one field out of
-    /// an expansion without depending on how the rest of it is spaced.
+    /// The text between the first `open` and the next `close`.
     #[track_caller]
     fn between<'a>(text: &'a str, open: &str, close: &str) -> &'a str {
         let start = text
@@ -1011,8 +990,8 @@ mod tests {
         text[start..start + len].trim()
     }
 
-    /// One space between tokens, so an assertion reads as Rust rather than as whatever
-    /// spacing `proc-macro2` happened to print.
+    /// Collapses whitespace runs to one space, so assertions do not depend on how
+    /// `proc-macro2` spaces tokens.
     fn squash(text: &str) -> String {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
@@ -1031,8 +1010,7 @@ mod tests {
         assert_eq!(rule("camelCase"), "grantCreated");
         assert_eq!(rule("PascalCase"), "GrantCreated");
         assert_eq!(rule("SCREAMING_SNAKE_CASE"), "GRANT_CREATED");
-        // Kebab, not snake: the two rules differ only in the separator, and answering with an
-        // underscore would rename every value of an enum that asked for this rule.
+        // Kebab, not snake: the two rules differ only in the separator.
         assert_eq!(rule("SCREAMING-KEBAB-CASE"), "GRANT-CREATED");
         assert_eq!(rule("lowercase"), "grantcreated");
         assert_eq!(rule("UPPERCASE"), "GRANTCREATED");
@@ -1042,8 +1020,8 @@ mod tests {
     #[test]
     fn a_wire_name_is_snake_case_unless_the_audit_attribute_says_otherwise() {
         let wire = |args: &str, item: &str| expand_str(args, item).expect("expands");
-        // `snake_case` is the default, and strum and serde are not read: an enum's API
-        // spelling cannot change what it puts on the wire.
+        // `snake_case` is the default; `strum` and `serde` attributes do not change the wire
+        // name.
         let expansion = wire(
             r#"field = "outcome""#,
             r#"
@@ -1077,8 +1055,7 @@ mod tests {
 
     #[test]
     fn an_audit_key_is_checked_against_its_placement() {
-        // Unknown, duplicated, non-string and misplaced keys are all rejected, so a typo
-        // cannot compile and leave its declaration unsaid.
+        // Unknown, duplicated, non-string and misplaced keys are all rejected.
         assert!(
             rejection(
                 r#"field = "outcome""#,
@@ -1152,10 +1129,8 @@ mod tests {
             }"#,
         )
         .expect("expands");
-        // Each name carries its own description, so a variant with no doc comment cannot
-        // shift a later variant's description onto the wrong name. Asserting on the whole
-        // list is what shows the pairing; asserting that the text appears somewhere would
-        // not.
+        // An undocumented variant must not shift a later description onto the wrong name.
+        // Assert on the whole list to check the pairing.
         let wire = between(&expansion, "WireName ; 2usize] = [", "] ;")
             .replace(":: lakekeeper :: audit :: ", "");
         assert_eq!(
@@ -1174,8 +1149,8 @@ mod tests {
         assert!(values.contains("Kind :: Values"), "{values}");
         assert!(values.contains(":: Wire <"), "{values}");
 
-        // `as_str` comes from the same expansion for both, so no vocabulary can spell a
-        // name one way for the registry and another for the code that emits it.
+        // `as_str` is generated for both kinds, so registry and emitting code spell a name
+        // the same way.
         assert!(values.contains("fn as_str"), "{values}");
 
         assert!(values.contains(r#"field : "outcome""#), "{values}");
@@ -1194,8 +1169,7 @@ mod tests {
         assert!(keys.contains("Kind :: Keys"), "{keys}");
         assert!(keys.contains(r#"object : "context""#), "{keys}");
         assert!(keys.contains("WireKey"), "{keys}");
-        // No conversion into a value type: that is what stops a key reaching a field that
-        // holds a value.
+        // No conversion into a value type, so a key cannot fill a value field.
         assert!(!keys.contains("AnyWireStr"), "{keys}");
         assert!(keys.contains("fn as_str"), "{keys}");
         // A key of the record's own `context` is what an event accepts as pushed context.
@@ -1221,10 +1195,9 @@ mod tests {
         assert!(rejection(r#"shape = "operation""#, "enum E { A }").contains("for structs"));
         // `shape` stands alone.
         assert!(rejection(r#"shape = "operation", context"#, "struct S;").contains("stands alone"));
-        // `keys_of` for an object whose keys come from a Lakekeeper enum: allowed here,
-        // because these tests run as the `lakekeeper-audit-macros` crate and the rule only
-        // fires elsewhere. What it must not do is reject Lakekeeper's own declarations, and
-        // the audit tests in `lakekeeper` cover that by compiling them.
+        // `keys_of` an object whose keys come from a Lakekeeper enum is rejected outside
+        // `lakekeeper`; these tests run as `lakekeeper-audit-macros`. Lakekeeper's own
+        // declarations are covered by compiling `lakekeeper`.
         assert!(rejection(r#"keys_of = "action""#, "enum K { A }").contains("Lakekeeper's own"));
         assert!(
             rejection(r#"keys_of = "entity""#, "enum K { A }").contains("could never be emitted")
@@ -1256,8 +1229,7 @@ mod tests {
         assert!(
             rejection("", "struct S<const N: usize> { a: [u8; N] }").contains("const generics")
         );
-        // Every field of a part is a field of the schema, and a field with no description is
-        // a field a consumer cannot act on.
+        // Every field of a part is a schema field and needs a description.
         assert!(rejection("", "struct S { undocumented: u8 }").contains("needs a doc comment"));
         // A variant's fields are already its context keys, so `carries` beside them would say
         // it twice.
@@ -1346,9 +1318,8 @@ mod tests {
 
     #[test]
     fn a_shape_is_lakekeepers_own() {
-        // These tests run as the macro crate, so a shape is refused here as it is in any crate
-        // but Lakekeeper's. Lakekeeper's own shapes are exercised by its fixture tests, which
-        // run the generated `emit()`.
+        // These tests run as the macro crate, so a shape is refused here as in any crate but
+        // Lakekeeper's. Lakekeeper's fixture tests run the generated `emit()`.
         assert!(
             rejection(
                 r#"shape = "operation""#,
