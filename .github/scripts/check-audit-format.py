@@ -2212,7 +2212,7 @@ def self_test() -> int:
 
     # ── the emitter stamp ──
     stamped = {"x-audit-emitter": {"name": "lakekeeper", "format": "1.0"}, "$defs": {}}
-    other = {"x-audit-emitter": {"name": "lakekeeper-plus", "format": "1.0"}, "$defs": {}}
+    other = {"x-audit-emitter": {"name": "lakekeeper_plus", "format": "1.0"}, "$defs": {}}
     unstamped = {"$defs": {}}
     check("stamp: read", emitter_of(stamped), ("lakekeeper", "1.0"))
     check("stamp: absent is not an error", emitter_of(unstamped), (None, None))

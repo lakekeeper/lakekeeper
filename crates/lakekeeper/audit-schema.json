@@ -804,11 +804,16 @@
           "const": "authorization"
         },
         "emitters": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EmitterRecord"
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
           },
-          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+$"
+          },
+          "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
         "request_id": {
           "$ref": "#/$defs/RequestId",
@@ -1274,25 +1279,6 @@
       "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched,\n`system-authority` records that a built-in authority tier decided the request, and\n`admission-gate` records that an admission gate would refuse the user. The schema is\na closed `oneOf` over those three, so a further kind is a schema change that generated\nclients have to be rebuilt for.",
       "x-audit-kind": "part"
     },
-    "EmitterRecord": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "The emitter's name, unique across the products that write to this log."
-        },
-        "format": {
-          "type": "string",
-          "description": "The `MAJOR.MINOR` version of what this emitter contributes."
-        }
-      },
-      "required": [
-        "name",
-        "format"
-      ],
-      "description": "One entry of `emitters`: a product that contributed to this record, and the version of the\nvocabulary and context shapes it governs.\n\nA consumer routes the core shape on `audit_format` and everything an emitter owns — its\n`context` keys, its vocabulary, any shape it defines — on the entry naming it.",
-      "x-audit-kind": "part"
-    },
     "EntityField": {
       "type": "string",
       "enum": [
@@ -1512,11 +1498,16 @@
           "const": "operation"
         },
         "emitters": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EmitterRecord"
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
           },
-          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+$"
+          },
+          "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
         "request_id": {
           "description": "The request this record belongs to. Absent for an operation no request triggered.",
@@ -1619,11 +1610,16 @@
           "const": "replay"
         },
         "emitters": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EmitterRecord"
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
           },
-          "description": "Every product that contributed to this record, with the version of what each\ngoverns: the one that assembled it and any whose vocabulary it carries. Sorted by\nname, always a list however many there are."
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+$"
+          },
+          "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
         "request_id": {
           "$ref": "#/$defs/RequestId",

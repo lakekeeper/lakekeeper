@@ -87,48 +87,50 @@ impl ActorRecord {
     }
 }
 
-/// One entry of `emitters`: a product that contributed to this record, and the version of the
-/// vocabulary and context shapes it governs.
+/// The `emitters` object: every product that contributed to a record, keyed by its name, with
+/// the version of what it contributes as the value.
 ///
-/// A consumer routes the core shape on `audit_format` and everything an emitter owns — its
+/// A consumer routes the core shape on `audit_format`, and everything an emitter owns — its
 /// `context` keys, its vocabulary, any shape it defines — on the entry naming it.
-#[audit_part]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmitterRecord {
-    /// The emitter's name, unique across the products that write to this log.
-    pub(crate) name: &'static str,
-    /// The `MAJOR.MINOR` version of what this emitter contributes.
-    pub(crate) format: &'static str,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emitters(BTreeMap<&'static str, &'static str>);
+
+impl Emitters {
+    /// The emitter that assembled a record, and each one whose vocabulary supplied a name in
+    /// it.
+    pub(crate) fn of(
+        assembler: crate::audit::EmitterStamp,
+        contributed: impl IntoIterator<Item = crate::audit::EmitterStamp>,
+    ) -> Self {
+        Self(
+            std::iter::once(assembler)
+                .chain(contributed)
+                .map(|stamp| (stamp.name, stamp.format))
+                .collect(),
+        )
+    }
 }
 
-impl EmitterRecord {
-    /// The stamp for emitter `E`.
-    pub(crate) fn of<E: crate::audit::AuditEmitter>() -> Self {
-        Self {
-            name: E::NAME,
-            format: E::FORMAT,
-        }
+impl serde::Serialize for Emitters {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
+}
 
-    /// Every emitter a record carries something of: the one that assembled it, and each one
-    /// whose vocabulary supplied a name in it. Deduplicated, sorted by name.
-    ///
-    /// Sorted rather than assembler-first. A parser reaches a value by path and a reader
-    /// scans the line for a pattern, so neither needs a positional rule, and finding an entry
-    /// by name is easy enough. What governs the record's own shape is `audit_format` and
-    /// `record_type`, not any entry here.
-    pub(crate) fn list(
-        assembler: Self,
-        contributed: impl IntoIterator<Item = (&'static str, &'static str)>,
-    ) -> Vec<Self> {
-        let mut by_name = BTreeMap::from([(assembler.name, assembler.format)]);
-        for (name, format) in contributed {
-            by_name.insert(name, format);
-        }
-        by_name
-            .into_iter()
-            .map(|(name, format)| Self { name, format })
-            .collect()
+impl schemars::JsonSchema for Emitters {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Emitters")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "minProperties": 1,
+            "propertyNames": { "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$" },
+            "additionalProperties": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" }
+        })
     }
 }
 

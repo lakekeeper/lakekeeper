@@ -5,12 +5,13 @@ use std::collections::{BTreeMap, HashMap};
 use super::{
     Decision,
     parts::{
-        ActionRecord, ActorRecord, DecisionRecord, EmitterRecord, EntityRecord, ErrorRecord,
+        ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord,
         HandlerContext, SubjectRecord,
     },
     shapes::{AuthorizationRecord, ReplayRecord},
 };
 use crate::{
+    audit::EmitterStamp,
     request_metadata::{RequestMetadata, UserAgent},
     service::{
         authz::ActionDescriptor,
@@ -60,8 +61,8 @@ fn authorization(
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
-        emitters: EmitterRecord::list(
-            EmitterRecord::of::<crate::Lakekeeper>(),
+        emitters: Emitters::of(
+            EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(actions, authorizations, extra_context),
         ),
         actions: self::actions(actions),
@@ -83,8 +84,8 @@ fn authorization(
 
 pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     ReplayRecord {
-        emitters: EmitterRecord::list(
-            EmitterRecord::of::<crate::Lakekeeper>(),
+        emitters: Emitters::of(
+            EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(&event.actions, &[], &HashMap::new()),
         ),
         actions: actions(&event.actions),
@@ -107,19 +108,12 @@ fn contributors<'a>(
     actions: &'a [ActionDescriptor],
     authorizations: &'a [Authorization],
     extra_context: &'a HashMap<String, ContextEntry>,
-) -> impl Iterator<Item = (&'static str, &'static str)> + 'a {
+) -> impl Iterator<Item = EmitterStamp> + 'a {
     let from_actions = actions
         .iter()
         .chain(authorizations.iter().map(|a| &a.action))
-        .map(|descriptor| {
-            (
-                descriptor.action_name.emitter(),
-                descriptor.action_name.emitter_format(),
-            )
-        });
-    let from_context = extra_context
-        .values()
-        .map(|entry| (entry.emitter, entry.emitter_format));
+        .map(|descriptor| descriptor.action_name.emitter());
+    let from_context = extra_context.values().map(|entry| entry.emitter);
     from_actions.chain(from_context)
 }
 

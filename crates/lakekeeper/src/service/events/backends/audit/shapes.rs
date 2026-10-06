@@ -11,7 +11,7 @@
 use super::{
     Decision,
     parts::{
-        ActionRecord, ActorRecord, DecisionRecord, EmitterRecord, EntityRecord, ErrorRecord,
+        ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord,
         HandlerContext, RecordTime,
     },
     render::AuditJson,
@@ -29,10 +29,9 @@ use crate::{
 #[audit_part(shape = "authorization")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
-    /// Every product that contributed to this record, with the version of what each
-    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
-    /// name, always a list however many there are.
-    pub(crate) emitters: Vec<EmitterRecord>,
+    /// Every product that contributed to this record, keyed by its name, with the version of
+    /// what it contributes: the one that assembled it and any whose vocabulary it carries.
+    pub(crate) emitters: Emitters,
     /// The request this record belongs to: the `x-request-id` the caller sent, or the one
     /// Lakekeeper generated and returned in that header.
     pub(crate) request_id: RequestId,
@@ -69,10 +68,9 @@ pub struct AuthorizationRecord {
 #[audit_part(shape = "replay")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplayRecord {
-    /// Every product that contributed to this record, with the version of what each
-    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
-    /// name, always a list however many there are.
-    pub(crate) emitters: Vec<EmitterRecord>,
+    /// Every product that contributed to this record, keyed by its name, with the version of
+    /// what it contributes: the one that assembled it and any whose vocabulary it carries.
+    pub(crate) emitters: Emitters,
     /// The request this record belongs to: the `x-request-id` the caller sent, or the one
     /// Lakekeeper generated and returned in that header.
     pub(crate) request_id: RequestId,
@@ -199,7 +197,7 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Write the record.
     pub fn emit(self) {
         OperationWire {
-            emitters: vec![EmitterRecord::of::<E>()],
+            emitters: Emitters::of(crate::audit::EmitterStamp::of::<E>(), []),
             request_id: self.origin.request_id,
             time: self.time,
             operation: self.operation,
@@ -219,10 +217,9 @@ impl<E: AuditEmitter> OperationRecord<E> {
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]
 struct OperationWire {
-    /// Every product that contributed to this record, with the version of what each
-    /// governs: the one that assembled it and any whose vocabulary it carries. Sorted by
-    /// name, always a list however many there are.
-    emitters: Vec<EmitterRecord>,
+    /// Every product that contributed to this record, keyed by its name, with the version of
+    /// what it contributes: the one that assembled it and any whose vocabulary it carries.
+    emitters: Emitters,
     /// The request this record belongs to. Absent for an operation no request triggered.
     request_id: Option<RequestId>,
     /// When the operation happened, in UTC.

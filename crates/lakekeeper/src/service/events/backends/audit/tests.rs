@@ -761,7 +761,10 @@ fn every_emitted_audit_field_is_documented() {
          it at the new location and update the `#audit-logs` links in the other docs."
     );
 
-    let opaque = client_supplied_map_keys();
+    // `emitters` is keyed by product name: its keys are the products that contributed, which
+    // the docs list by name in their own table.
+    let mut opaque = client_supplied_map_keys();
+    opaque.insert("emitters");
     let mut keys = Vec::new();
     for name in FIXTURE_NAMES {
         collect_keys(&read_fixture(name), &opaque, &mut keys);
@@ -2725,7 +2728,7 @@ fn an_operation_record_from_another_emitter_satisfies_the_shape() {
         "lakekeeper's own operation record must satisfy the shape: {body}"
     );
 
-    body["emitters"] = serde_json::json!([{ "name": "lakekeeper-plus", "format": "1.0" }]);
+    body["emitters"] = serde_json::json!({ "lakekeeper_plus": "1.0" });
     body["operation"] = "license_checked".into();
     body["outcome"] = "expired".into();
     assert!(
@@ -2899,10 +2902,10 @@ fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
     use crate::audit::validate::assert_record_parts_valid;
 
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
-    let foreign = |name: serde_json::Value| {
+    let foreign = |name: &str| {
         serde_json::json!({
             "record_type": "operation",
-            "emitters": [{ "name": name, "format": "1.0" }],
+            "emitters": { name: "1.0" },
             "operation": "ldap_resolve_roles",
             "actor": { "actor_type": "principal", "principal": "oidc~alice" },
             "outcome": "success",
@@ -2911,14 +2914,10 @@ fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
     };
 
     // Another emitter's context: not ours to judge.
-    assert_record_parts_valid(
-        &schema,
-        &foreign("lakekeeper-plus".into()),
-        "another emitter",
-    );
+    assert_record_parts_valid(&schema, &foreign("lakekeeper_plus"), "another emitter");
 
     // Ours, and the context matches none we declare: caught.
-    let ours = foreign("lakekeeper".into());
+    let ours = foreign("lakekeeper");
     let checked = std::panic::catch_unwind(|| {
         assert_record_parts_valid(&schema, &ours, "this emitter");
     });

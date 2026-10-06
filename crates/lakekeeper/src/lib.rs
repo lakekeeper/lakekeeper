@@ -106,8 +106,8 @@ pub mod audit {
     // builds one. It supplies an actor, a vocabulary and a context of its own, and the shape
     // assembles the rest.
     pub use crate::service::events::backends::audit::{
-        AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, Kind,
-        OperationRecord, OperationValues, OutcomeValues, RecordContextKey, RecordOrigin,
+        AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, EmitterStamp,
+        Kind, OperationRecord, OperationValues, OutcomeValues, RecordContextKey, RecordOrigin,
         Registration, Vocabulary, Wire, WireKey, WireName, enabled, is_emitter_name,
         is_major_minor, warn_on_retired_audit_filter,
     };

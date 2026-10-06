@@ -344,7 +344,7 @@ fn keys_of_object(regs: Vec<&'static Registration>, object: &str) -> BTreeSet<&'
 pub fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
     Registration::require_registry();
     let mut unknown = Vec::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+    for reg in registrations(|reg| reg.emitter.name == E::NAME) {
         let Kind::Values { field, names } = reg.kind else {
             continue;
         };
@@ -619,10 +619,10 @@ pub fn crate_schema(defining_crate: &str) -> Value {
     let first = regs
         .first()
         .unwrap_or_else(|| panic!("crate `{defining_crate}` registered no audit types"));
-    let emitter = first.emitter_name;
-    let format = first.emitter_format;
+    let emitter = first.emitter.name;
+    let format = first.emitter.format;
     assert!(
-        regs.iter().all(|r| r.emitter_name == emitter),
+        regs.iter().all(|r| r.emitter.name == emitter),
         "crate `{defining_crate}` registers types for more than one emitter"
     );
     let defs = definitions(&regs);
@@ -689,11 +689,11 @@ pub fn short_type_name(full: &str) -> String {
 #[must_use]
 pub fn audit_schema_for(emitter: &str) -> Value {
     Registration::require_registry();
-    let regs = registrations(|r| r.emitter_name == emitter);
+    let regs = registrations(|r| r.emitter.name == emitter);
     let first = regs
         .first()
         .unwrap_or_else(|| panic!("no audit types registered for emitter `{emitter}`"));
-    let format = first.emitter_format;
+    let format = first.emitter.format;
     let defs = definitions(&regs);
     document(
         &format!("Audit records emitted by {emitter}"),
@@ -917,7 +917,7 @@ pub fn assert_every_context_key_is_pushed<E: super::AuditEmitter>(crates_dir: &s
     Registration::require_registry();
 
     let mut declared: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
-    for reg in registrations(|reg| reg.emitter_name == E::NAME) {
+    for reg in registrations(|reg| reg.emitter.name == E::NAME) {
         let Kind::Keys { object, names } = reg.kind else {
             continue;
         };

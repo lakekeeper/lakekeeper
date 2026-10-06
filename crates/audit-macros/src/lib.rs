@@ -275,9 +275,8 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
             ::lakekeeper::audit::Registration {
                 kind: #kind,
                 type_name: || ::core::any::type_name::<#static_ty>(),
-                emitter_name: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::NAME,
+                emitter: ::lakekeeper::audit::EmitterStamp::of::<crate::audit_emitter::Emitter>(),
                 emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
-                emitter_format: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::FORMAT,
                 defining_crate: env!("CARGO_PKG_NAME"),
                 external_values: false,
                 schema_name: ::core::option::Option::Some(|| <#static_ty as ::lakekeeper::__private::schemars::JsonSchema>::schema_name()),
@@ -567,9 +566,8 @@ fn expand_vocabulary(
                     #kind_of
                 },
                 type_name: || ::core::any::type_name::<#static_ty>(),
-                emitter_name: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::NAME,
+                emitter: ::lakekeeper::audit::EmitterStamp::of::<crate::audit_emitter::Emitter>(),
                 emitter_type: || ::core::any::type_name::<crate::audit_emitter::Emitter>(),
-                emitter_format: <crate::audit_emitter::Emitter as ::lakekeeper::audit::AuditEmitter>::FORMAT,
                 defining_crate: env!("CARGO_PKG_NAME"),
                 external_values: #external_values,
                 schema_name: ::core::option::Option::None,

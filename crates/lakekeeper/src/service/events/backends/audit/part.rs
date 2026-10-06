@@ -4,7 +4,7 @@ use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use serde::Serialize;
 
-use super::emitter::AuditEmitter;
+use super::emitter::{AuditEmitter, EmitterStamp};
 
 /// A type that reaches the audit log. Implemented only through `#[audit_part]`, which binds
 /// the type to the emitter of the crate that defines it and registers it.
@@ -171,12 +171,10 @@ pub struct Registration {
     pub kind: Kind,
     /// `core::any::type_name` of the type, lifetimes made `'static`.
     pub type_name: fn() -> &'static str,
-    /// `AuditEmitter::NAME` of the defining crate's emitter.
-    pub emitter_name: &'static str,
+    /// The defining crate's emitter.
+    pub emitter: EmitterStamp,
     /// `core::any::type_name` of the defining crate's emitter type.
     pub emitter_type: fn() -> &'static str,
-    /// `AuditEmitter::FORMAT` of the defining crate's emitter.
-    pub emitter_format: &'static str,
     /// `CARGO_PKG_NAME` of the defining crate.
     pub defining_crate: &'static str,
     /// Whether this vocabulary's values are spelled somewhere else. When they are, the case
@@ -222,7 +220,7 @@ impl Registration {
 
     /// The registrations of one emitter.
     pub fn for_emitter<E: AuditEmitter>() -> impl Iterator<Item = &'static Registration> {
-        Self::all().filter(|r| r.emitter_name == E::NAME)
+        Self::all().filter(|r| r.emitter.name == E::NAME)
     }
 }
 
@@ -231,7 +229,7 @@ impl fmt::Debug for Registration {
         f.debug_struct("Registration")
             .field("kind", &self.kind)
             .field("type_name", &(self.type_name)())
-            .field("emitter_name", &self.emitter_name)
+            .field("emitter", &self.emitter.name)
             .field("defining_crate", &self.defining_crate)
             .finish_non_exhaustive()
     }
@@ -398,8 +396,7 @@ wire_name_impls!(WireKey);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AnyWireStr {
     text: &'static str,
-    emitter: &'static str,
-    emitter_format: &'static str,
+    emitter: EmitterStamp,
 }
 
 impl AnyWireStr {
@@ -409,20 +406,12 @@ impl AnyWireStr {
         self.text
     }
 
-    /// `AuditEmitter::NAME` of the emitter whose vocabulary the value belongs to.
+    /// The emitter whose vocabulary the value belongs to, with the version of what it
+    /// contributes. Carried with the value because a record names every product it carries
+    /// something of; the registry could answer it from the name, but only in a debug build.
     #[must_use]
-    pub const fn emitter(self) -> &'static str {
+    pub const fn emitter(self) -> EmitterStamp {
         self.emitter
-    }
-
-    /// `AuditEmitter::FORMAT` of that emitter: the version of what it contributes.
-    ///
-    /// Carried beside the name so a record can say which version each of its contributors
-    /// spoke. The registry could answer it from the name alone, but only in a debug build,
-    /// and every record needs the answer.
-    #[must_use]
-    pub const fn emitter_format(self) -> &'static str {
-        self.emitter_format
     }
 
     /// A value from nowhere, for tests that build descriptors by hand. Attributed to
@@ -432,8 +421,7 @@ impl AnyWireStr {
     pub const fn literal_for_tests(text: &'static str) -> Self {
         Self {
             text,
-            emitter: "lakekeeper",
-            emitter_format: super::AUDIT_FORMAT,
+            emitter: EmitterStamp::of::<crate::Lakekeeper>(),
         }
     }
 }
@@ -442,8 +430,7 @@ impl<T: Vocabulary> From<Wire<T>> for AnyWireStr {
     fn from(value: Wire<T>) -> Self {
         Self {
             text: value.text,
-            emitter: <T::Emitter as AuditEmitter>::NAME,
-            emitter_format: <T::Emitter as AuditEmitter>::FORMAT,
+            emitter: EmitterStamp::of::<T::Emitter>(),
         }
     }
 }
@@ -459,7 +446,7 @@ impl PartialEq<&str> for AnyWireStr {
 }
 impl fmt::Debug for AnyWireStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "AnyWireStr<{}>({:?})", self.emitter, self.text)
+        write!(f, "AnyWireStr<{}>({:?})", self.emitter.name, self.text)
     }
 }
 impl fmt::Display for AnyWireStr {
@@ -633,7 +620,7 @@ mod tests {
         assert_eq!(good.to_string(), "all_good");
         let any: AnyWireStr = good.into();
         assert_eq!(any, "all_good");
-        assert_eq!(any.emitter(), "lakekeeper");
+        assert_eq!(any.emitter().name, "lakekeeper");
     }
 
     #[test]
@@ -666,7 +653,7 @@ mod tests {
         assert_eq!(texts(outcome), ["all_good", "renamed_value", "with_data"]);
         assert!(matches!(outcome.kind, Kind::Values { .. }));
         assert!(outcome.schema.is_none());
-        assert_eq!(outcome.emitter_name, "lakekeeper");
+        assert_eq!(outcome.emitter.name, "lakekeeper");
         assert_eq!(outcome.defining_crate, "lakekeeper");
         assert!((outcome.emitter_type)().ends_with("Lakekeeper"));
 
@@ -746,11 +733,14 @@ mod tests {
     #[test]
     fn emitter_name_and_format_rules() {
         assert!(is_emitter_name("lakekeeper"));
-        assert!(is_emitter_name("lakekeeper-plus"));
+        assert!(is_emitter_name("lakekeeper_plus"));
+        assert!(is_emitter_name("lakekeeper2"));
         assert!(!is_emitter_name(""));
         assert!(!is_emitter_name("Lakekeeper"));
         assert!(!is_emitter_name("1st"));
-        assert!(!is_emitter_name("lake_keeper"));
+        assert!(!is_emitter_name("lakekeeper-plus"));
+        assert!(!is_emitter_name("lakekeeper__plus"));
+        assert!(!is_emitter_name("lakekeeper_"));
         assert!(super::super::is_major_minor("1.0"));
         assert!(!super::super::is_major_minor("1.0.0"));
     }

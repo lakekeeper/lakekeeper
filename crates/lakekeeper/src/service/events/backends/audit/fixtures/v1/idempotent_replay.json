@@ -2,12 +2,9 @@
   "event_source": "audit",
   "audit_format": "1.0",
   "record_type": "replay",
-  "emitters": [
-    {
-      "name": "lakekeeper",
-      "format": "1.0"
-    }
-  ],
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-01-01T00:00:00.000000Z",
   "actions": [

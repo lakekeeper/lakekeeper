@@ -102,10 +102,8 @@ pub const FIELD_NAME_TAG_DEFINITION_ID: EntityField = EntityField::TagDefinition
 pub struct ContextEntry {
     /// What the handler recorded.
     pub value: serde_json::Value,
-    /// `AuditEmitter::NAME` of the emitter that declared the key.
-    pub emitter: &'static str,
-    /// `AuditEmitter::FORMAT` of that emitter.
-    pub emitter_format: &'static str,
+    /// The emitter that declared the key.
+    pub emitter: crate::audit::EmitterStamp,
 }
 
 impl ContextEntry {
@@ -113,8 +111,7 @@ impl ContextEntry {
     pub(crate) fn of<K: crate::audit::RecordContextKey>(key: &K) -> Self {
         Self {
             value: key.value(),
-            emitter: <K::Emitter as crate::audit::AuditEmitter>::NAME,
-            emitter_format: <K::Emitter as crate::audit::AuditEmitter>::FORMAT,
+            emitter: crate::audit::EmitterStamp::of::<K::Emitter>(),
         }
     }
 }

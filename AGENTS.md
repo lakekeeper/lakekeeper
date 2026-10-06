@@ -86,7 +86,7 @@ Before changing any record carrying `"event_source": "audit"`, read `docs/docs/d
 - Run `just update-audit-fixtures`, then `just check-audit-format`, after any change. Review the fixture diff — it is what consumers will see. Run the corpus test with `just test-audit-corpus` (needs the local Postgres).
 - The audit type registry (`#[audit_part]`) exists in debug builds only. Registry and schema tests, and `just update-audit-schema`, run in the dev profile; with `--release` the registry is empty and `Registration::require_registry()` fails with that message.
 - Every crate that declares audit types commits `audit-schema.json` at its root; `audit-format/schema.json` is their merge, and `docs/docs/audit/schema.json` is its published copy. Run `just update-audit-schema` after touching any audit type or its doc comments. Never edit those three files by hand. Every field of an audit type needs a doc comment.
-- The schema is published to `docs/docs/audit/schema.json` for customers; it is what they validate against. `audit_format` governs the whole record's shape; an entry's `format` in `emitters` governs what that emitter contributes. They are equal only for a record Lakekeeper alone produced.
+- The schema is published to `docs/docs/audit/schema.json` for customers; it is what they validate against. `audit_format` governs the whole record's shape; an emitter's value in `emitters` governs what that emitter contributes. They are equal only for a record Lakekeeper alone produced.
 - The two `audit-format/*-baseline.json` files are frozen snapshots taken before the audit format's current shape change, and they go when the fragments they cover ship. Never edit or regenerate them. `just audit-format-since-baseline` lists what has changed since.
 
 ## Rules

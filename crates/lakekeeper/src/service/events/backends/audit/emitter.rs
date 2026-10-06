@@ -7,23 +7,50 @@
 /// One product that emits audit records, at one version of its own vocabulary and context
 /// shapes.
 pub trait AuditEmitter: 'static {
-    /// Lowercase letters, digits and `-`, starting with a letter. `lakekeeper`, `lakekeeper-plus`.
+    /// Lowercase letters, digits and `_`, starting with a letter: a key of a record's
+    /// `emitters` object. `lakekeeper`, `lakekeeper_plus`.
     const NAME: &'static str;
     /// `MAJOR.MINOR`. Derived from the emitter's fragments by the checker, never edited by hand.
     const FORMAT: &'static str;
 }
 
-/// Whether `s` is a valid emitter name: non-empty, lowercase ASCII letters, digits and `-`,
-/// starting with a letter.
+/// An emitter's name and the version of what it contributes, as a value: what a registration,
+/// an action name and a `context` entry carry, so a record can name every product it carries
+/// something of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EmitterStamp {
+    /// `AuditEmitter::NAME`.
+    pub name: &'static str,
+    /// `AuditEmitter::FORMAT`.
+    pub format: &'static str,
+}
+
+impl EmitterStamp {
+    /// The stamp of emitter `E`.
+    #[must_use]
+    pub const fn of<E: AuditEmitter>() -> Self {
+        Self {
+            name: E::NAME,
+            format: E::FORMAT,
+        }
+    }
+}
+
+/// Whether `s` is a valid emitter name: non-empty `lower_snake_case`, lowercase ASCII letters,
+/// digits and single `_` between them, starting with a letter.
 #[must_use]
 pub const fn is_emitter_name(s: &str) -> bool {
     let b = s.as_bytes();
-    if b.is_empty() || !b[0].is_ascii_lowercase() {
+    if b.is_empty() || !b[0].is_ascii_lowercase() || b[b.len() - 1] == b'_' {
         return false;
     }
     let mut i = 0;
     while i < b.len() {
-        if !(b[i].is_ascii_lowercase() || b[i].is_ascii_digit() || b[i] == b'-') {
+        let c = b[i];
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') {
+            return false;
+        }
+        if c == b'_' && b[i - 1] == b'_' {
             return false;
         }
         i += 1;
@@ -53,7 +80,7 @@ macro_rules! declare_audit_emitter {
         const _: () = {
             assert!(
                 $crate::audit::is_emitter_name(<$ty as $crate::audit::AuditEmitter>::NAME),
-                "emitter name: lowercase letters, digits and '-', starting with a letter"
+                "emitter name: lower_snake_case, starting with a letter"
             );
             assert!(
                 $crate::audit::is_major_minor(<$ty as $crate::audit::AuditEmitter>::FORMAT),

@@ -13,7 +13,7 @@ pub mod shapes;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod validate;
 
-pub use emitter::{AuditEmitter, is_emitter_name};
+pub use emitter::{AuditEmitter, EmitterStamp, is_emitter_name};
 pub use part::{
     AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
     Registration, Vocabulary, Wire, WireKey, WireName, enabled, warn_on_retired_audit_filter,
@@ -192,9 +192,8 @@ crate::__private::inventory::submit! {
             names: &UPDATE_KIND_NAMES,
         },
         type_name: || core::any::type_name::<iceberg_ext::catalog::TableUpdateKind>(),
-        emitter_name: <crate::Lakekeeper as AuditEmitter>::NAME,
+        emitter: EmitterStamp::of::<crate::Lakekeeper>(),
         emitter_type: || core::any::type_name::<crate::Lakekeeper>(),
-        emitter_format: <crate::Lakekeeper as AuditEmitter>::FORMAT,
         defining_crate: env!("CARGO_PKG_NAME"),
         external_values: true,
         schema_name: None,
