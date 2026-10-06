@@ -7,8 +7,7 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 ## Unreleased
 
 ### Features
-
-- **Cedar: grants decide access.** Privileges granted through the catalog are now visible to your Cedar policies. Each resource carries its own grants as `direct_privileges` and everything granted above it as `inherited_privileges`, so a policy can simply check `resource.direct_privileges.select`. Grant-administration actions carry the privilege in question as the typed `context.privilege`, so a policy can condition on exactly which privilege is being handed out.
+- **Cedar: grants decide access.** Privileges granted through the catalog are now visible to your Cedar policies. Each resource carries what the principal being authorized holds on it as `principal_privileges` — `direct` for what is granted on the resource itself, `inherited` for everything granted above it — so a policy can simply check `resource.principal_privileges.direct.select`. Grant-administration actions carry the privilege in question as the typed `context.privilege`, so a policy can condition on exactly which privilege is being handed out.
 - **Cedar: predefined policies turn grants into access.** Lakekeeper Plus now ships ready-made policies that turn recorded grants into access, so permissions can be handed out at runtime without redeploying a policy file. Every project and warehouse chooses which of these policies apply to it, through the new `predefined-policies` endpoints. The feature is on by default and can be switched off for the whole deployment with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false`. Policies added by a future release start out disabled for scopes you have already curated, so an upgrade never widens access on its own.
 - **Cedar: manage a project's or warehouse's own policies through the API.** Each project and warehouse can now store its own Cedar policies, managed through the new `…/policies` endpoints. Changes are applied as a single transaction that is validated up front and reports back what actually changed. You can preview a change with `dry-run`, protect against concurrent edits with `if-scope-version`, and send your complete desired state with `replace: true`, which removes every policy you did not include. A scope holds up to 1000 policies by default (`LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE`).
 - **Cedar: break-glass.** A policy written too broadly can lock out the very people who could fix it. An operator who sends the header `x-break-glass: <reason>` is judged by the server's own policies alone and can then repair a project's or warehouse's policies. This path opens policy administration only, never any data, and every use is recorded as its own audit event together with the given reason. The new `break-glass-status` endpoint tells you in advance whether this path is open to you.
@@ -25,7 +24,6 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Cedar: two endpoints have new names.** `policy-sources` and `policy-list` are now called `server-policy-sources` and `server-policy-list`, which tells these server-level listings apart from the new per-scope policy endpoints. The old paths still work but are marked deprecated.
 
 ### Bug Fixes
-
 - **Okta role provider: people who sign in with an email address now resolve to their groups.** The user identifier was escaped for a query string rather than for a URL path, so the `@` in a login like `alice@example.com` reached Okta as `%40` and every such lookup came back as a bare `400`. Deployments whose OIDC subject is a raw Okta user id were unaffected, which is why service principals kept working while people did not.
 - **Okta role provider: a retried token request no longer replays its client assertion.** Okta accepts each assertion once, so a DPoP nonce challenge or a throttled token request could fail with `invalid_client`. Every attempt is now signed afresh.
 - **Role providers: stored roles stand in only when every unreachable provider has synced the user.** With several role providers down at once, a user that one of them had never synced used to be served the other providers' stored roles alone, so a policy that forbids on a group from the missing provider did not apply. Such a request now fails until the providers answer again.
@@ -40,7 +38,8 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Cedar: a request the authorizer cannot build answers `500`, not `503`.** This is a server-side fault, so retrying does not help and the response does not point at an outage. The details are in the server log.
 
 ### Breaking Changes
-
+- **Cedar: a replaced schema must declare `manage_tags`, `read_grants` and `read_policies`.** If you set `LAKEKEEPER__CEDAR__SCHEMA_FILE`, add them to the `<Level>Privileges` records and to the `<Level>Privilege` and `SubtreeGrantPrivilege` enums where the shipped schema has them (`manage_tags` everywhere but `Tag`, `read_grants` everywhere, `read_policies` on `Project` and `Warehouse`). The server refuses to start and names what is missing until you do. External entity files that declare resource entities need the same fields in `principal_privileges`.
+- **Persisted token roles: a token without roles clears the user's stored roles in that project.** Most identity providers leave out the roles claim when a user has none. Entra ID also leaves out `groups` for users in more than 200 groups; serve those users through the Entra Graph role provider before upgrading.
 - **Cedar: reading the server's policy sources now counts as policy administration.** The actions for listing and evaluating server policy sources moved out of `ServerActions` into the new `ServerCedarPolicyActions` and `CedarPolicyReadActions` groups. A policy that permits `ServerActions` no longer covers them, so name the new groups where you want these reads allowed.
 - **Cedar: `global_role_ids` holds only groups.** Groups are roles from directories, tokens and admission gates. Lakekeeper roles (`lakekeeper` and `system`) are left out, because their names are chosen inside Lakekeeper and could match a group. Match them with `principal.project_roles` at actions inside a project. At server actions, name a group or grant the user.
 - **Cedar: at server actions a user carries their groups.** At every server action, user management included, `principal.project_roles` and `principal.global_role_ids` hold the user's groups from directories, tokens and admission gates, whatever `x-project-id` says. Name a group as `principal.project_roles.contains({provider_id: "ldap", source_id: "<group>"})`; this works at every action. A `Lakekeeper::Role::"…"` id matches no user at server actions, unless users and roles are externally managed.
@@ -65,7 +64,6 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Role providers: `sync_interval_secs` above 31536000000 (1000 years) is refused at startup.** The error names the setting.
 
 ### Upgrade Notes
-
 - **Run `lakekeeper-plus migrate` to completion before rolling any new pod.** This release adds database tables for Cedar policy management, and a new replica refuses to serve while they are missing. Note that `wait-for-db -m` does not check for these tables. Rolling back is safe.
 - **Grants that already exist begin granting access.** The predefined policies are on by default, so every grant recorded in your deployment starts deciding requests after the upgrade. Review your grants beforehand, or start with `LAKEKEEPER__CEDAR__PREDEFINED_POLICIES_ENABLED=false` and curate each scope before switching it on.
 - **Whole-subtree grant administration is on by default.** A scope that has not curated its predefined policies runs the shipped set, so from the moment you upgrade everyone holding `manage_grants` or `read_grants` can list every grant under a warehouse or namespace and everything one user or role holds in a project, and everyone holding `manage_grants` can revoke grants under a warehouse or namespace in bulk. A bulk revoke is permanent and removes the caller's own grants along with the rest. Revoking your own `manage_grants` ends your grant administration, and break-glass will not restore it: that path opens policy administration only. If you want bulk revoke unavailable, switch its two predefined policies off for the project or warehouse.
@@ -78,22 +76,20 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 - **Server-only callers need their directory to answer.** A caller that has never made a request in a project, such as a provisioning bot, has no stored groups. Its server requests fail while LDAP, Entra ID or Okta is down. One request in any project stores its groups.
 - **DEFINER views during a directory outage.** A DEFINER view's owner is decided with the groups from their last own request. A service account that owns such views should make a request now and then.
 
+
 ## v0.13.6 (2026-09-18)
 
 _Based on Lakekeeper OSS v0.13.5._
 
 ### Bug Fixes
-
 - **Okta role provider: people who sign in with an email address now resolve to their groups.** The user identifier was escaped for a query string rather than for a URL path, so the `@` in a login like `alice@example.com` reached Okta as `%40` and every such lookup came back as a bare `400`. Deployments whose OIDC subject is a raw Okta user id were unaffected, which is why service principals kept working while people did not.
 - **Okta role provider: a retried token request no longer replays its client assertion.** Okta accepts each assertion once, so a DPoP nonce challenge or a throttled token request could fail with `invalid_client`. Every attempt is now signed afresh.
 - **Security: TLS handshake handling (RUSTSEC-2026-0285).** `rustls` is updated to 0.23.45, which rejects handshake messages spanning a key change instead of accepting them. The handshake transcript stayed authenticated, so this could not be used to alter or complete a handshake.
 
 ### Upgrade Notes
-
 - **OpenFGA deployments that have renamed a table, view or generic table across namespaces should run `lakekeeper openfga reconcile --mode add-and-delete-drift` once after upgrading.** The upstream fix below stops the leak but cannot remove a permission edge already recorded, and the default `add-missing` mode does not repair it.
 
 ### Upstream Lakekeeper changes (bump to v0.13.5)
-
 - **GovCloud, China and ISO region support.** Vended-credential policies now carry the correct ARN partition, derived automatically from the region, endpoint or role ARN, so `AssumeRole` succeeds for buckets outside the commercial partition ([lakekeeper#1928](https://github.com/lakekeeper/lakekeeper/pull/1928)).
 - **S3 request signing for generic tables** ([lakekeeper#1910](https://github.com/lakekeeper/lakekeeper/pull/1910)).
 - Fixed a permissions leak: a table, view or generic table renamed into another namespace kept inheriting grants from the namespace it left ([lakekeeper#2013](https://github.com/lakekeeper/lakekeeper/pull/2013)).
@@ -104,23 +100,19 @@ _Based on Lakekeeper OSS v0.13.5._
 _Based on Lakekeeper OSS v0.13.3._
 
 ### Highlights
-
 - **Improved memory behaviour on long-running instances.** Conditions that could, under some circumstances, prevent freed memory from being returned to the OS are addressed.
 
 ### Features
-
 - **New memory metrics.** `lakekeeper_jemalloc_*` separates live heap from memory the allocator is holding back; `lakekeeper_http_connections` reports open connections.
 - **The table maintenance cache reports what it holds:** `lakekeeper_cache_weighted_bytes{cache_type="table_metadata"}` and `lakekeeper_cache_instances`, with hits and misses in the shared `lakekeeper_cache_*` series.
 
 ### Bug Fixes
-
 - **Transparent huge pages could prevent freed memory from being returned to the OS.** On nodes with `THP=always`, the default on common EKS AMIs, resident memory could grow for the life of the process.
 - **The manifest cache under-counted its entries**, so under some circumstances its 128 MiB budget did not bind during table maintenance.
 - **The UI asset cache keyed on an unvalidated header**, so variants of `x-forwarded-prefix` could each add an entry to a cache with no expiry.
 - **Allocator metrics now report on every serving path**, including `LAKEKEEPER__DEBUG__AUTO_SERVE`. Memory behaviour itself was unaffected.
 
 ### Upgrade Notes
-
 - **Idle HTTP connections now close after 75 seconds** and carry TCP keepalive probes. Standard Iceberg and S3 clients retry; previously a connection whose peer had vanished could be held for the life of the process.
 - **Request headers above 64 KiB are rejected with 431.** Request bodies are unaffected.
 - **Shutdown drains for at most 10 seconds** before abandoning connections still open.
