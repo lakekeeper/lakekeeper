@@ -968,9 +968,9 @@ pub mod v1 {
     /// ancestor is listed under the ancestor. Server grants belong to no project and are
     /// not included.
     ///
-    /// Listing your own grants needs no extra permission. Any other principal requires
-    /// the project's `read_subtree_grants` action, because the answer spans every
-    /// resource in the project.
+    /// Listing your own grants needs the project's `get_metadata` action. Listing any
+    /// other principal's grants needs the project's `read_subtree_grants` action,
+    /// because the answer spans every resource in the project.
     ///
     /// **Availability depends on the configured authorizer.** This listing crosses every
     /// resource in the project, which an authorizer that stores permissions per resource
