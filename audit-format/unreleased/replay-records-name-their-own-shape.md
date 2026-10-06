@@ -9,7 +9,7 @@ A repeated request that the server answers from its idempotency record left no a
 before. It now leaves one, naming the actions and entities the original request named, with
 the `idempotency_key` that matched.
 
-```
+```text
 "record_type": "replay",
 "idempotency_key": "4f1c…",
 "actions": [{"action_name": "create_table"}]

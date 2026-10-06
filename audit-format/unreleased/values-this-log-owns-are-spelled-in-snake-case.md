@@ -2,24 +2,16 @@
 level: major
 ---
 
-**A value this log owns is spelled `snake_case`, like the names around it.** Two fields
-carry values that changed.
+**A value this log owns is spelled `snake_case`, like the names around it.**
 
 `actor_type`:
 
-```
+```text
 before  assumed-role     lakekeeper-internal
 after   assumed_role     lakekeeper_internal
 ```
 
-`failure_reason`, on a denied authorization record:
-
-```
-before  ActionForbidden             ResourceNotFound      CannotSeeResource
-        InternalAuthorizationError  InternalCatalogError  InvalidRequestData
-after   action_forbidden              resource_not_found      cannot_see_resource
-        internal_authorization_error  internal_catalog_error  invalid_request_data
-```
+`failure_reason` changes spelling the same way; its own fragment shows the before and after.
 
 The sets are otherwise unchanged: the same reasons, the same actor kinds, in the same
 places.

@@ -705,8 +705,8 @@ pub enum CatalogRoleAction {
     /// different source system. `target` is the rebind destination, surfaced as
     /// action context (`requested_provider_id` / `requested_source_id`) so policy-based
     /// authorizers can gate it (e.g. forbid moving a role onto a particular
-    /// provider). The catalog backend treats this the same as
-    /// `ManageRoleAssignments`.
+    /// provider). The built-in authorizer treats this the same as
+    /// `manage_role_assignments`.
     ///
     /// The destination is explicit. A real rebind names the target provider and source id;
     /// the permission enumeration behind `GET /role/{id}/actions`, and any "may this
@@ -1083,7 +1083,7 @@ pub enum CatalogWarehouseAction {
     ManageTags,
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
     ///
-    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
     /// and their direct grants, which is why this is gated on grant authority in addition to
     /// `create` — without it, a namespace could be populated and granted somewhere
@@ -1097,7 +1097,7 @@ pub enum CatalogWarehouseAction {
     /// Can list the grants held on this warehouse.
     ReadGrants,
     /// Can list and read every grant in the warehouse: the warehouse's own and those on
-    /// every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+    /// every namespace and tabular inside it. Strictly stronger than `read_grants`, which
     /// covers this one resource; granted separately because it enumerates the subtree.
     ///
     /// `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -1119,7 +1119,7 @@ pub enum CatalogWarehouseAction {
     /// batch. An authorizer must answer it as authority over everything beneath — or
     /// refuse the subtree routes.
     ///
-    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    /// `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
     RevokeSubtreeGrants {
         #[audit(
             expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
@@ -1387,7 +1387,7 @@ pub enum CatalogNamespaceAction {
     },
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
     ///
-    /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+    /// Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
     /// and their direct grants, which is why this is gated on grant authority in addition to
     /// `create` — without it, a namespace could be populated and granted somewhere
@@ -1402,7 +1402,7 @@ pub enum CatalogNamespaceAction {
     ReadGrants,
     /// Can list and read every grant in the subtree rooted here: the namespace's own and
     /// those on every descendant namespace and tabular. Strictly stronger than
-    /// `ReadGrants`, which covers this one resource; granted separately because it
+    /// `read_grants`, which covers this one resource; granted separately because it
     /// enumerates the subtree.
     ///
     /// `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -1424,7 +1424,7 @@ pub enum CatalogNamespaceAction {
     /// the whole batch. An authorizer must answer it as authority over everything
     /// beneath — or refuse the subtree routes.
     ///
-    /// `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+    /// `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
     RevokeSubtreeGrants {
         #[audit(
             expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
@@ -1972,7 +1972,7 @@ pub enum CatalogTagAction {
     /// Detach this tag from a target. Also requires `manage_tags` on the target.
     Remove,
     /// List the targets this tag is attached to (reverse lookup). Broader disclosure
-    /// than `Read`, so restricted to tag owners / project security admins. Distinct
+    /// than `read`, so restricted to tag owners / project security admins. Distinct
     /// from `can_read_assignments`, which reads who holds apply/ownership (grants).
     ReadAttachments,
     /// Can list the grants held on this tag definition.

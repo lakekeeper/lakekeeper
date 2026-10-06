@@ -2160,6 +2160,16 @@ fn every_audit_record_example_in_the_docs_validates() {
             record["audit_format"], AUDIT_FORMAT,
             "an audit record example in docs/docs/logging.md declares another format:\n\n{block}"
         );
+        // An example that shows the log line's envelope shows the target a `RUST_LOG` filter
+        // selects audit records by.
+        if record.get("message").is_some() {
+            assert_eq!(
+                record["target"],
+                crate::audit::AUDIT_TARGET,
+                "an audit record example in docs/docs/logging.md does not show the audit \
+                 target:\n\n{block}"
+            );
+        }
         crate::audit::validate::assert_valid_record(
             &schema,
             &record,

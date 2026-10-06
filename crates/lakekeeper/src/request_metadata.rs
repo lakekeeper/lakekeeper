@@ -110,7 +110,7 @@ pub enum PrivilegeSource {
     /// Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass
     /// only; data-plane actions still route through the configured authorizer.
     InstanceAdmin,
-    /// Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).
+    /// Decision came from the configured authorizer (OpenFGA, Cedar, allow-all, ...).
     Authorizer,
 }
 
@@ -118,8 +118,9 @@ pub enum PrivilegeSource {
 /// `x-request-id`, the log lines written while serving it, its audit records and its events.
 ///
 /// The client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7
-/// generated for the request. Decided once, by the router's `SetRequestId` layer, and read
-/// from there, so no layer can name the request differently.
+/// generated for the request.
+// Decided once, by the router's `SetRequestId` layer, and read from there, so no layer can
+// name the request differently.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct RequestId(Arc<str>);

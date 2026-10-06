@@ -5,7 +5,7 @@ level: major
 **The entries of `determined_by`, inside each `authorizations[]` entry, are written the way
 the management API writes them when it answers a permission check.**
 
-```
+```text
 before  {"Policy": {"policy_id": "p-42", "effect": {"Permit": []}, "source": "cedar"}}
 after   {"type": "policy", "policy-id": "p-42", "effect": "permit", "source": "cedar"}
 ```

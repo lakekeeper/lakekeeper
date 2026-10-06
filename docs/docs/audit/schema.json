@@ -979,12 +979,12 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
-        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
         "manage_tags": "Attach/detach governance tags on this namespace.",
         "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
         "read_grants": "Can list the grants held on this namespace.",
-        "read_subtree_grants": "Can list and read every grant in the subtree rooted here: the namespace's own and\nthose on every descendant namespace and tabular. Strictly stronger than\n`ReadGrants`, which covers this one resource; granted separately because it\nenumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
-        "revoke_subtree_grants": "Can revoke any grant in the subtree rooted here, asked once at this namespace for\nthe whole batch. An authorizer must answer it as authority over everything\nbeneath — or refuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+        "read_subtree_grants": "Can list and read every grant in the subtree rooted here: the namespace's own and\nthose on every descendant namespace and tabular. Strictly stronger than\n`read_grants`, which covers this one resource; granted separately because it\nenumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the subtree rooted here, asked once at this namespace for\nthe whole batch. An authorizer must answer it as authority over everything\nbeneath — or refuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`."
       }
     },
     "CatalogProjectAction": {
@@ -1032,7 +1032,7 @@
       "x-audit-descriptions": {
         "manage_role_assignments": "Can add/remove members (user or role) of this role.",
         "read_role_assignments": "Can list members / parents / assignments of this role.",
-        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The catalog backend treats this the same as\n`ManageRoleAssignments`.\n\nThe destination is explicit. A real rebind names the target provider and source id;\nthe permission enumeration behind `GET /role/{id}/actions`, and any \"may this\nprincipal rebind at all?\" query, name `any` instead. `any` is a base-capability\nmarker, not a permissive default: a policy written against a concrete destination\ngates that destination and never matches `any`, and a `/check` caller picks between\nthe two deliberately."
+        "update_source_system": "Can rebind this role's external identity (provider + source id) to a\ndifferent source system. `target` is the rebind destination, surfaced as\naction context (`requested_provider_id` / `requested_source_id`) so policy-based\nauthorizers can gate it (e.g. forbid moving a role onto a particular\nprovider). The built-in authorizer treats this the same as\n`manage_role_assignments`.\n\nThe destination is explicit. A real rebind names the target provider and source id;\nthe permission enumeration behind `GET /role/{id}/actions`, and any \"may this\nprincipal rebind at all?\" query, name `any` instead. `any` is a base-capability\nmarker, not a permissive default: a policy written against a concrete destination\ngates that destination and never matches `any`, and a `/check` caller picks between\nthe two deliberately."
       }
     },
     "CatalogServerAction": {
@@ -1097,7 +1097,7 @@
         "apply": "Attach this tag to a target. Also requires `manage_tags` on the target.",
         "delete": "Delete the tag definition.",
         "read": "Read the tag definition (name, description, value kind, allowed values).",
-        "read_attachments": "List the targets this tag is attached to (reverse lookup). Broader disclosure\nthan `Read`, so restricted to tag owners / project security admins. Distinct\nfrom `can_read_assignments`, which reads who holds apply/ownership (grants).",
+        "read_attachments": "List the targets this tag is attached to (reverse lookup). Broader disclosure\nthan `read`, so restricted to tag owners / project security admins. Distinct\nfrom `can_read_assignments`, which reads who holds apply/ownership (grants).",
         "read_grants": "Can list the grants held on this tag definition.",
         "remove": "Detach this tag from a target. Also requires `manage_tags` on the target.",
         "update": "Update the tag definition (name/description, widen scope, add allowed values)."
@@ -1176,11 +1176,11 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
-        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
         "manage_tags": "Attach/detach governance tags on this warehouse.",
         "read_grants": "Can list the grants held on this warehouse.",
-        "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `ReadGrants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
-        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`."
+        "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `read_grants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
+        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`."
       }
     },
     "Decision": {
@@ -1238,7 +1238,7 @@
           "properties": {
             "policy-id": {
               "type": "string",
-              "description": "Stable, authorizer-assigned identifier of the policy (e.g. the Cedar\n`PolicyId`). Always present."
+              "description": "Stable, authorizer-assigned identifier of the policy, such as a Cedar policy\nid. Always present."
             },
             "name": {
               "type": "string",
@@ -1654,7 +1654,7 @@
       "x-audit-kind": "enum",
       "x-audit-field": "privilege_source",
       "x-audit-descriptions": {
-        "authorizer": "Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).",
+        "authorizer": "Decision came from the configured authorizer (OpenFGA, Cedar, allow-all, ...).",
         "instance_admin": "Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass\nonly; data-plane actions still route through the configured authorizer.",
         "internal": "A call the catalog made to itself, with no client request behind it. Full bypass,\nincluding data-plane actions."
       }
@@ -1749,7 +1749,7 @@
     },
     "RequestId": {
       "type": "string",
-      "description": "The id of one request, as everything that names the request carries it: the response's\n`x-request-id`, the log lines written while serving it, its audit records and its events.\n\nThe client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7\ngenerated for the request. Decided once, by the router's `SetRequestId` layer, and read\nfrom there, so no layer can name the request differently.",
+      "description": "The id of one request, as everything that names the request carries it: the response's\n`x-request-id`, the log lines written while serving it, its audit records and its events.\n\nThe client's `x-request-id` when it sent one, whatever its form; otherwise a UUIDv7\ngenerated for the request.",
       "x-audit-kind": "part"
     },
     "ResourceType": {
@@ -1767,7 +1767,7 @@
       "x-audit-kind": "enum",
       "x-audit-field": "resource_type",
       "x-audit-descriptions": {
-        "tag-definition": "Spelled `tag-definition` on the wire, matching the path segment tag definitions\nare addressed by, so every key of the vocabulary map names its own URL segment.\nThe only spelling `kebab-case` does not already produce."
+        "tag-definition": "A tag definition, spelled as the path segment tag definitions are addressed by."
       }
     },
     "RoleSubjectRecord": {

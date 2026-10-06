@@ -3,7 +3,7 @@ level: minor
 ---
 
 What changed, in one sentence. Then the fields or values affected, as a list or a
-`before` / `after` block, whichever is shorter. Then:
+`before` / `after` block, whichever is shorter. Label every code block `text`. Then:
 
 **What to do:** the action the reader takes, addressed to them. "Nothing." is a
 complete answer.

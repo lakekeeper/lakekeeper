@@ -6,7 +6,7 @@ level: minor
 
 Each of these bypasses a refusal, and the record said nothing about it:
 
-```
+```text
 role delete          + force   bypasses the refusal that protects a role still holding grants,
                                which the delete then revokes
 warehouse delete     + force   deletes a protected warehouse, and everything in it

@@ -6,14 +6,14 @@ level: major
 
 Nothing in an audit record is `null`. A field the request did not supply is left out:
 
-```
-before  {"Policy": {"policy_id": "p-42", "name": null, "effect": {"Permit": []}, "source": null}}
-after   {"type": "policy", "policy-id": "p-42", "effect": "permit"}
+```text
+before  {"decision": "allowed", "user_agent": null, "break_glass": null, "idempotency_key": null}
+after   {"decision": "allowed"}
 ```
 
 An empty list or map is **not** such a field — it is a value, and it is written:
 
-```
+```text
 before  {"action_name": "commit"}
 after   {"action_name": "commit", "updated_properties": {}, "removed_properties": [],
          "target_refs": [], "update_kinds": []}

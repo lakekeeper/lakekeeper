@@ -6,7 +6,7 @@ level: major
 
 Each key carries the JSON type that suits it, and the schema states which for every key:
 
-```
+```text
 before  "force": "true"   "dry_run": "true"   "writes": "2"   "applied": "{\"created\":1}"
 after   "force": true     "dry_run": false    "writes": 2     "applied": {"created": 1}
 ```

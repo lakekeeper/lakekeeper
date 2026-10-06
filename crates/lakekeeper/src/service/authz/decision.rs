@@ -106,8 +106,8 @@ pub enum DeterminingFactor {
     #[cfg_attr(feature = "open-api", schema(title = "DeterminingFactorPolicy"))]
     #[serde(rename_all = "kebab-case")]
     Policy {
-        /// Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
-        /// `PolicyId`). Always present.
+        /// Stable, authorizer-assigned identifier of the policy, such as a Cedar policy
+        /// id. Always present.
         policy_id: String,
         /// Human-facing name the author gave the policy (e.g. a `@name` or
         /// `@id` annotation). Neither required nor guaranteed unique; absent

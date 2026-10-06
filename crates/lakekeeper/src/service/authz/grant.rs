@@ -83,9 +83,9 @@ pub enum ResourceType {
     Table,
     View,
     GenericTable,
-    /// Spelled `tag-definition` on the wire, matching the path segment tag definitions
-    /// are addressed by, so every key of the vocabulary map names its own URL segment.
-    /// The only spelling `kebab-case` does not already produce.
+    /// A tag definition, spelled as the path segment tag definitions are addressed by.
+    // Spelled so every key of the vocabulary map names its own URL segment: the only
+    // spelling `kebab-case` does not already produce.
     #[serde(rename = "tag-definition")]
     #[strum(serialize = "tag-definition")]
     #[audit(rename = "tag-definition")]

@@ -6,7 +6,7 @@ level: major
 `actions` and `entities` replace them, always arrays and always present, whatever the
 element count.
 
-```
+```text
 before  "action": {…}         or  "actions": [{…}, {…}]
 after   "actions": [{…}]
 

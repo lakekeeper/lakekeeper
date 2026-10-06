@@ -9046,8 +9046,8 @@ components:
         policy-id:
           type: string
           description: |-
-            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
-            `PolicyId`). Always present.
+            Stable, authorizer-assigned identifier of the policy, such as a Cedar policy
+            id. Always present.
         source:
           type:
             - string
@@ -10539,7 +10539,7 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
         and their direct grants, which is why this is gated on grant authority in addition to
         `create` — without it, a namespace could be populated and granted somewhere
@@ -11029,7 +11029,7 @@ components:
       description: |-
         Can list and read every grant in the subtree rooted here: the namespace's own and
         those on every descendant namespace and tabular. Strictly stronger than
-        `ReadGrants`, which covers this one resource; granted separately because it
+        `read_grants`, which covers this one resource; granted separately because it
         enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -11059,7 +11059,7 @@ components:
         the whole batch. An authorizer must answer it as authority over everything
         beneath — or refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:
@@ -12568,7 +12568,7 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
         and their direct grants, which is why this is gated on grant authority in addition to
         `create` — without it, a namespace could be populated and granted somewhere
@@ -13061,7 +13061,7 @@ components:
       type: object
       description: |-
         Can list and read every grant in the warehouse: the warehouse's own and those on
-        every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+        every namespace and tabular inside it. Strictly stronger than `read_grants`, which
         covers this one resource; granted separately because it enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -13100,7 +13100,7 @@ components:
         batch. An authorizer must answer it as authority over everything beneath — or
         refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:

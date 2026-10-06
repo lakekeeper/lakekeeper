@@ -4,7 +4,7 @@ level: major
 
 **`failure_reason` on a denied authorization record is the reason itself, a plain string.**
 
-```
+```text
 before  "failure_reason": {"ActionForbidden": []}
 after   "failure_reason": "action_forbidden"
 ```
