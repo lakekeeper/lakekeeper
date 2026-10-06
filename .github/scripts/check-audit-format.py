@@ -391,8 +391,8 @@ def fragment_demand(
     head: dict[str, str],
     base_bodies: dict[str, str],
     head_bodies: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str]]:
-    """What this branch contributes to the release notes, and what it withdraws.
+) -> dict[str, str]:
+    """What this branch contributes to the release notes.
 
     A contribution is a fragment added, one whose level moved, or one whose text changed.
     Adequacy is judged against these rather than against every unreleased fragment, because a
@@ -405,8 +405,7 @@ def fragment_demand(
         for path, level in head.items()
         if base.get(path) != level or base_bodies.get(path) != head_bodies.get(path)
     }
-    withdrawn = {path: level for path, level in base.items() if path not in head}
-    return contributed, withdrawn
+    return contributed
 
 
 def fixtures_at(rev: str) -> dict[str, object]:
@@ -747,11 +746,11 @@ def diff_schemas(base: object, head: object, path: str, out: list) -> None:
             out.append(("major", path, f"`{key}` went from {json.dumps(base.get(key))} to {json.dumps(head.get(key))}"))
 
 
-def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
-    """`none`, `additive` or `breaking` for the change from `base` to `head`, with the reasons.
+def schema_findings(base: dict, head: dict) -> list[tuple[str, str, str]]:
+    """Every difference from `base` to `head` as `(level, path, reason)`.
 
     Definitions are compared by name: one removed is `major`, one added `minor`, and a pair
-    is compared by [`diff_schemas`]. Reasons name the path, so a reader finds the change.
+    is compared by [`diff_schemas`].
     """
     found: list[tuple[str, str, str]] = []
     base, head = canonical(base), canonical(head)
@@ -765,6 +764,13 @@ def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
     rest_base = {k: v for k, v in base.items() if k != "$defs"}
     rest_head = {k: v for k, v in head.items() if k != "$defs"}
     diff_schemas(rest_base, rest_head, "(root)", found)
+    return found
+
+
+def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
+    """`none`, `additive` or `breaking` for the change from `base` to `head`, with the reasons.
+    Reasons name the path, so a reader finds the change."""
+    found = schema_findings(base, head)
     level = highest(level for level, _, _ in found) or "none"
     kind = {"major": "breaking", "minor": "additive"}.get(level, "none")
     reasons = [
@@ -980,6 +986,65 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
     return shape_kind
 
 
+# ── what changed since the release ──────────────────────────────────────────────
+
+
+def change_reasons(old: str, new: str) -> set[tuple[str, str]]:
+    """Every format change from `old` to `new`, as `(level, reason)`: fixture shapes compared
+    by name, and the schema. A `none` finding changes no format and is left out."""
+    found: set[tuple[str, str]] = set()
+    before, after = fixtures_at(old), fixtures_at(new)
+    for name in sorted(set(before) & set(after)):
+        was, now = shape(before[name]), shape(after[name])
+        for entry in sorted(was - now):
+            found.add(("major", f"fixture `{name}`: {entry.replace(chr(9), ' ')} is gone"))
+        for entry in sorted(now - was):
+            found.add(("minor", f"fixture `{name}`: {entry.replace(chr(9), ' ')} is new"))
+    old_schema, new_schema = schema_at(old), schema_at(new)
+    if old_schema is not None and new_schema is not None:
+        for level, where, why in schema_findings(old_schema, new_schema):
+            if level != "none":
+                found.add((level, f"schema `{where}` {why}"))
+    return found
+
+
+def decide(
+    released: set[tuple[str, str]],
+    new: set[tuple[str, str]],
+    unreleased: dict[str, str],
+    contributed: dict[str, str],
+) -> list[str]:
+    """What is wrong with a branch, measured against the last release. Empty when nothing is.
+
+    Two checks. Everything that changed since the release must be covered by the unreleased
+    fragments together: a branch cannot delete an old fragment and so make a released change
+    undescribed. And what this branch changed must be covered by a fragment this branch adds,
+    raises or rewords: an earlier pull request's `major` does not describe this one's `minor`.
+    A revert of unreleased work changes nothing since the release, so it owes nothing.
+    """
+    rank = lambda level: LEVEL_RANK.get(level, -1)
+    errors = []
+    needed = highest(level for level, _ in released)
+    covered = highest(unreleased.values())
+    if needed and rank(covered) < rank(needed):
+        errors.append(
+            f"the format changed at `{needed}` level since the last release, but the highest "
+            f"unreleased fragment is `{covered or 'none'}`"
+        )
+    needed_here = highest(level for level, _ in new)
+    contributed_level = highest(contributed.values())
+    if needed_here and rank(contributed_level) < rank(needed_here):
+        errors.append(
+            f"this pull request makes a `{needed_here}` change, but "
+            + (
+                "adds, raises or rewords no fragment"
+                if contributed_level is None
+                else f"the fragments it adds, raises or rewords declare at most `{contributed_level}`"
+            )
+        )
+    return errors
+
+
 # ── entry points ────────────────────────────────────────────────────────────────
 
 
@@ -990,7 +1055,7 @@ def show(version: tuple[int, int] | None) -> str:
 
 def check_release_branch(
     base_branch: str,
-    shape_kind: str,
+    released: set[tuple[str, str]],
     fragments: dict[str, str],
     head_version: tuple[int, int] | None,
     baseline: tuple[int, int] | None,
@@ -1004,8 +1069,10 @@ def check_release_branch(
     alone.
     """
     problems = []
-    if shape_kind in REQUIRED_LEVEL:
-        problems.append(f"the emitted records changed ({shape_kind})")
+    if released:
+        problems.append(
+            f"the emitted records changed since the release ({len(released)} change(s))"
+        )
     if fragments:
         problems.append(
             f"it carries {len(fragments)} audit format fragment(s): "
@@ -1084,12 +1151,7 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             "which checks that their text reached the release notes first."
         )
 
-    # What THIS branch contributes: a fragment it adds, or one whose level it raises. Adequacy
-    # is judged against these rather than against every unreleased fragment, because a `major`
-    # left by an earlier pull request in the same cycle would otherwise excuse this one
-    # declaring `minor` — the version would still come out right, and the release notes would
-    # describe this change wrongly.
-    contributed, withdrawn = fragment_demand(
+    contributed = fragment_demand(
         base_fragments,
         head_fragments,
         fragment_bodies_at(merge_base),
@@ -1104,7 +1166,7 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
     )
     print(
         f"Fragments:  {len(head_fragments)} unreleased, highest {declared_level or '-'}; "
-        f"this branch adds {len(contributed)}, withdraws {len(withdrawn)}"
+        f"this branch adds, raises or rewords {len(contributed)}"
     )
     print(f"Version:    {show(head_version)} declared, {show(required)} required")
 
@@ -1112,7 +1174,7 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
     # hand-edited or never regenerated. Either way a consumer would read a format the records
     # do not carry.
     committed_schema = schema_at("HEAD")
-    if committed_schema is not None and head_version is not None:
+    if committed_schema is not None:
         _, stamped = emitter_of(committed_schema)
         if stamped is not None and stamped != show(head_version):
             raise CheckFailed(
@@ -1120,80 +1182,44 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
                 f"{show(head_version)}. Run `just update-audit-schema`."
             )
 
-    shape_kind = classify_change(merge_base, "HEAD")
-    detected_level = REQUIRED_LEVEL.get(shape_kind)
-    # With no baseline there is no released format, so a shape verdict describes the
-    # difference between two unreleased states. Demanding a fragment for it while the
-    # bootstrap guard below rejects the tree for carrying one would leave no state of the
-    # tree that passes, so the demand is suppressed until the first release sets a baseline.
-    bootstrap = baseline is None
-    if bootstrap:
-        detected_level = None
-    print(
-        f"Verdict:    format {shape_kind}"
-        + (f", needs a fragment of at least `{detected_level}`" if detected_level else "")
-        + (
-            " — no baseline yet, so nothing has been released for it to differ from and no "
-            "fragment is required"
-            if bootstrap and shape_kind in REQUIRED_LEVEL
-            else ""
-        )
-    )
-
-    # Before the release-branch return: these two verdicts exist because the comparison
-    # could not decide, and that is exactly what a human has to be told on the branch
-    # where the format is frozen. Returning first replaced them with an unqualified OK.
-    if shape_kind in DEFERRALS:
-        print(f"::warning::{DEFERRALS[shape_kind]}")
-
-    if base_branch is not None and base_branch.startswith("rel-"):
-        return check_release_branch(
-            base_branch, shape_kind, head_fragments, head_version, baseline
-        )
-
-    # The bootstrap. No release has carried an audit FORMAT VERSION, so the version derives
-    # to the first one whatever the fragments say and none is demanded. Fragments are still
-    # allowed, and usually wanted: released builds have emitted audit records for some time
-    # without a version field, so a consumer may well be parsing them already, and a change
-    # to what they receive is a change to describe whether or not a number moves.
-    if baseline is None and head_fragments:
-        print(
-            f"Bootstrap:  {len(head_fragments)} fragment(s) present with no released "
-            f"baseline. The version derives to {show(required)} regardless; the fragments "
-            f"are the release note for consumers already parsing these records."
-        )
-
-    # A pull request that only WITHDRAWS fragments is undoing a change no release has
-    # carried, so the comparison's verdict describes the removal of something consumers never
-    # saw. Reported, never enforced: enforcing it would demand a `major` fragment for
-    # reverting a `minor` addition made three days ago.
-    reverting = withdrawn and not contributed
-    if reverting and detected_level:
-        print(
-            f"::warning::This branch withdraws {len(withdrawn)} fragment(s) and adds none, so "
-            f"the `{shape_kind}` verdict above is read as a revert of unreleased work and no "
-            f"fragment is required. If that is wrong — if this removes something a release "
-            f"actually shipped — add a `major` fragment."
-        )
-    elif detected_level:
-        contributed_level = highest(contributed.values())
-        if contributed_level is None or LEVEL_RANK[contributed_level] < LEVEL_RANK[detected_level]:
+    if baseline is None:
+        # The bootstrap. No release has carried an audit format version, so nothing released
+        # can differ and the version derives to the first one. The comparison with the merge
+        # base is printed for the reviewer; it demands nothing. Fragments are still wanted:
+        # released builds emitted audit records before the version field existed, so a
+        # consumer may already parse them.
+        shape_kind = classify_change(merge_base, "HEAD")
+        print(f"Verdict:    format {shape_kind} — no release has carried an audit format yet")
+        if shape_kind in DEFERRALS:
+            print(f"::warning::{DEFERRALS[shape_kind]}")
+        if base_branch is not None and base_branch.startswith("rel-"):
+            return check_release_branch(base_branch, set(), head_fragments, head_version, baseline)
+        if head_fragments:
             print(
-                f"::error::This pull request makes a `{detected_level}` change to the audit "
-                f"log format, but "
-                + (
-                    "records no fragment describing it."
-                    if contributed_level is None
-                    else f"the fragment(s) it adds declare at most `{contributed_level}`."
-                )
+                f"Bootstrap:  {len(head_fragments)} fragment(s) present with no released "
+                f"baseline. The version derives to {show(required)} regardless; the fragments "
+                f"are the release note for consumers already parsing these records."
             )
+    else:
+        released_reasons = change_reasons(tag, "HEAD")
+        new_reasons = released_reasons - change_reasons(tag, merge_base)
+        for level, reason in sorted(released_reasons):
+            mark = "this branch" if (level, reason) in new_reasons else "earlier"
+            print(f"Since {tag}: [{level}, {mark}] {reason}")
+        if base_branch is not None and base_branch.startswith("rel-"):
+            return check_release_branch(
+                base_branch, released_reasons, head_fragments, head_version, baseline
+            )
+        errors = decide(released_reasons, new_reasons, head_fragments, contributed)
+        if errors:
+            for error in errors:
+                print(f"::error::{error[0].upper()}{error[1:]}.")
             print(
-                f"::notice::Copy audit-format/TEMPLATE.md to "
-                f"{FRAGMENT_DIR}<descriptive-name>.md, set `level: {detected_level}`, and "
-                f"describe the change in the terms an operator parsing the log thinks in. "
-                f"Then run `just update-audit-fixtures`, which computes AUDIT_FORMAT from the "
-                f"fragments. You are not asked to pick a version number. See the audit log "
-                f"section of docs/docs/developer-guide.md."
+                f"::notice::Copy audit-format/TEMPLATE.md to {FRAGMENT_DIR}<descriptive-name>.md, "
+                f"set its `level`, and describe the change in the terms an operator parsing the "
+                f"log thinks in. Then run `just update-audit-fixtures`, which computes "
+                f"AUDIT_FORMAT from the fragments. See the audit log section of "
+                f"docs/docs/developer-guide.md."
             )
             return 1
 
@@ -1969,17 +1995,39 @@ def self_test() -> int:
     none_: dict[str, str] = {}
     one = {"a.md": "minor"}
     one_body = {"a.md": "h1"}
-    check("demand: a fragment added is contributed", fragment_demand(none_, one, none_, one_body)[0], one)
-    check("demand: a fragment removed is withdrawn", fragment_demand(one, none_, one_body, none_)[1], one)
-    check("demand: an untouched fragment is neither", fragment_demand(one, one, one_body, one_body)[0], {})
-    check("demand: a raised level is contributed", fragment_demand(one, {"a.md": "major"}, one_body, one_body)[0], {"a.md": "major"})
+    check("demand: a fragment added is contributed", fragment_demand(none_, one, none_, one_body), one)
+    check("demand: a fragment removed is not contributed", fragment_demand(one, none_, one_body, none_), {})
+    check("demand: an untouched fragment is not contributed", fragment_demand(one, one, one_body, one_body), {})
+    check("demand: a raised level is contributed", fragment_demand(one, {"a.md": "major"}, one_body, one_body), {"a.md": "major"})
     # Folding a second change into an existing fragment is the documented way to keep the
     # note describing the final state. It usually leaves the level alone.
-    check("demand: a reworded fragment is contributed", fragment_demand(one, one, one_body, {"a.md": "h2"})[0], one)
+    check("demand: a reworded fragment is contributed", fragment_demand(one, one, one_body, {"a.md": "h2"}), one)
+    check("demand: a renamed fragment is contributed", fragment_demand(one, {"b.md": "minor"}, one_body, {"b.md": "h1"}), {"b.md": "minor"})
+
+    # What a branch owes, measured against the last release.
+    added = ("minor", "schema `A.email` added")
+    removed = ("major", "schema `A.principal` removed")
+    earlier = ("major", "schema `B.kind` removed")
+    check("decide: a revert of unreleased work owes nothing", decide(set(), set(), {}, {}), [])
     check(
-        "demand: a renamed fragment is contributed, and its old path withdrawn",
-        fragment_demand(one, {"b.md": "minor"}, one_body, {"b.md": "h1"}),
-        ({"b.md": "minor"}, one),
+        "decide: deleting an old fragment and removing a released field fails",
+        len(decide({removed}, {removed}, {}, {})),
+        2,
+    )
+    check(
+        "decide: withdrawing a fragment alone fails",
+        len(decide({earlier}, set(), {}, {})),
+        1,
+    )
+    check(
+        "decide: an earlier major does not excuse this branch's minor",
+        len(decide({earlier, added}, {added}, {"old.md": "major"}, {})),
+        1,
+    )
+    check(
+        "decide: a minor fragment covers this branch's minor",
+        decide({earlier, added}, {added}, {"old.md": "major", "new.md": "minor"}, {"new.md": "minor"}),
+        [],
     )
     check("schema: description change is none", classify_schema(schema({"A": actor}), schema({"A": {**actor, "description": "x"}}))[0], "none")
 
