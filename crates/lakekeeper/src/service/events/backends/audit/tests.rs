@@ -139,7 +139,7 @@ fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededE
         occurred_at: chrono::Utc::now(),
         entities,
         actions,
-        extra_context: Arc::new(std::collections::HashMap::new()),
+        extra_context: Arc::new(std::collections::BTreeMap::new()),
         authorizations: Arc::new(vec![sample(Vec::new())]),
     }
 }
@@ -151,10 +151,7 @@ fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededE
 // emitted JSON, and therefore the only thing that can detect an unintended
 // change to the audit format.
 //
-// Every value below is fixed. Random ids or a clock would make each run differ,
-// and at most one `extra_context` field is used per fixture: `extra_context` is a
-// `HashMap`, so two or more entries render in an unstable order and the fixtures
-// would fail at random.
+// Every value below is fixed. Random ids or a clock would make each run differ.
 //
 // To regenerate after a deliberate change: `just update-audit-fixtures`.
 
@@ -500,7 +497,7 @@ fn fixture_succeeded_event(
     entities: EventEntities,
     actions: Vec<ActionDescriptor>,
     extra_context: Arc<
-        std::collections::HashMap<String, crate::service::events::context::ContextEntry>,
+        std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>,
     >,
 ) -> AuthorizationSucceededEvent {
     let entities = Arc::new(entities);
@@ -569,13 +566,13 @@ fn fixture_detailed_decision(action: ActionDescriptor, entity: EntityDescriptor)
 /// emitter that declares the key.
 fn fixture_context(
     entries: &[HandlerContextKey],
-) -> Arc<std::collections::HashMap<String, crate::service::events::context::ContextEntry>> {
+) -> Arc<std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>> {
     Arc::new(
         entries
             .iter()
             .map(|key| {
                 (
-                    key.as_str().to_string(),
+                    key.as_str(),
                     crate::service::events::context::ContextEntry::of(key),
                 )
             })

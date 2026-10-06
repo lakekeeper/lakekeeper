@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::{TableUpdateKind, rest::ErrorModel};
@@ -872,7 +869,7 @@ where
     pub(super) action: Arc<A>,
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
-    pub(super) extra_context: HashMap<String, ContextEntry>,
+    pub(super) extra_context: BTreeMap<&'static str, ContextEntry>,
     /// When `Some`, replaces the per-(entity, action) default that
     /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
     /// Used by batch-style call sites (e.g. `introspect_permissions`) to
@@ -904,7 +901,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             resolved_entity: Unresolved,
             action: Arc::new(action),
             _authz: std::marker::PhantomData,
-            extra_context: HashMap::new(),
+            extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
         }
@@ -924,7 +921,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             resolved_entity: Unresolved,
             action,
             _authz: std::marker::PhantomData,
-            extra_context: HashMap::new(),
+            extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
         }
@@ -1282,7 +1279,7 @@ where
     #[allow(clippy::needless_pass_by_value)]
     pub fn push_extra_context(&mut self, entry: impl crate::audit::RecordContextKey) {
         self.extra_context
-            .insert(entry.wire().text().to_string(), ContextEntry::of(&entry));
+            .insert(entry.wire().text(), ContextEntry::of(&entry));
     }
 
     /// Replace the per-decision `authorizations` list that will be attached to
@@ -1310,7 +1307,7 @@ where
     }
 
     #[must_use]
-    pub fn extra_context(&self) -> &HashMap<String, ContextEntry> {
+    pub fn extra_context(&self) -> &BTreeMap<&'static str, ContextEntry> {
         &self.extra_context
     }
 }

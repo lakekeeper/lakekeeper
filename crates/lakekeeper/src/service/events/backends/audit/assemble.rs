@@ -1,6 +1,6 @@
 //! Event payload in, shape out. The only place a wire field gets its value.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use super::{
     Decision,
@@ -55,7 +55,7 @@ fn authorization(
     occurred_at: chrono::DateTime<chrono::Utc>,
     actions: &[ActionDescriptor],
     entities: &EventEntities,
-    extra_context: &HashMap<String, ContextEntry>,
+    extra_context: &BTreeMap<&'static str, ContextEntry>,
     authorizations: &[Authorization],
     decision: Decision,
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
@@ -86,7 +86,7 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
     ReplayRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
-            contributors(&event.actions, &[], &HashMap::new()),
+            contributors(&event.actions, &[], &BTreeMap::new()),
         ),
         actions: actions(&event.actions),
         entities: entities(&event.entities),
@@ -107,7 +107,7 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
 fn contributors<'a>(
     actions: &'a [ActionDescriptor],
     authorizations: &'a [Authorization],
-    extra_context: &'a HashMap<String, ContextEntry>,
+    extra_context: &'a BTreeMap<&'static str, ContextEntry>,
 ) -> impl Iterator<Item = EmitterStamp> + 'a {
     let from_actions = actions
         .iter()
@@ -138,7 +138,7 @@ pub(crate) fn action(descriptor: &ActionDescriptor) -> ActionRecord {
         context: descriptor
             .context
             .iter()
-            .map(|key| (key.as_str().to_string(), key.value()))
+            .map(|key| (key.as_str(), key.value()))
             .collect(),
     }
 }
@@ -153,7 +153,7 @@ pub(crate) fn entity(descriptor: &EntityDescriptor) -> EntityRecord {
         fields: descriptor
             .fields
             .iter()
-            .map(|field| (field.key.as_str().to_string(), field.value.clone()))
+            .map(|field| (field.key.as_str(), field.value.clone()))
             .collect(),
     }
 }
@@ -182,15 +182,15 @@ fn decisions(authorizations: &[Authorization]) -> Vec<DecisionRecord> {
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is
 /// absent rather than an empty object.
-fn handler_context(extra_context: &HashMap<String, ContextEntry>) -> Option<HandlerContext> {
+fn handler_context(extra_context: &BTreeMap<&'static str, ContextEntry>) -> Option<HandlerContext> {
     if extra_context.is_empty() {
         None
     } else {
         Some(HandlerContext(
             extra_context
                 .iter()
-                .map(|(key, entry)| (key.clone(), entry.value.clone()))
-                .collect::<BTreeMap<_, _>>(),
+                .map(|(key, entry)| (*key, entry.value.clone()))
+                .collect(),
         ))
     }
 }

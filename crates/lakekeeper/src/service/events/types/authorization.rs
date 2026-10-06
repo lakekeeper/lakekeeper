@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -96,7 +96,9 @@ pub struct AuthorizationFailedEvent {
     pub error: Arc<AuthorizationError>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
+    pub extra_context: Arc<
+        std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>,
+    >,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
     /// One synthesised entry per (entity, action) pair, or one entry per inner
@@ -123,7 +125,9 @@ pub struct AuthorizationSucceededEvent {
     pub actions: Arc<Vec<ActionDescriptor>>,
 
     /// Any additional context that may be useful for debugging or auditing
-    pub extra_context: Arc<HashMap<String, crate::service::events::context::ContextEntry>>,
+    pub extra_context: Arc<
+        std::collections::BTreeMap<&'static str, crate::service::events::context::ContextEntry>,
+    >,
 
     /// Per-decision breakdown of the authorizations rolled up into this event.
     /// One synthesised entry per (entity, action) pair, or one entry per inner

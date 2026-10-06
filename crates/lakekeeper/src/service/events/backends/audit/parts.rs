@@ -362,16 +362,16 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
 // name them. `x-audit-key-shapes` on each key vocabulary is where a shaped key's schema is.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
-pub struct HandlerContext(pub(crate) BTreeMap<String, serde_json::Value>);
+pub struct HandlerContext(pub(crate) BTreeMap<&'static str, serde_json::Value>);
 
 /// Closed-key fields in the order they were recorded: what a flattened action or entity object
 /// carries. A map by contract (every key is unique and comes from a closed enum), a `Vec` in
 /// memory so the wire keeps the order the emitter chose, which a sorted map would not.
 #[derive(Debug, Clone, PartialEq)]
-pub struct OrderedFields<V>(pub(crate) Vec<(String, V)>);
+pub struct OrderedFields<V>(pub(crate) Vec<(&'static str, V)>);
 
-impl<V> FromIterator<(String, V)> for OrderedFields<V> {
-    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+impl<V> FromIterator<(&'static str, V)> for OrderedFields<V> {
+    fn from_iter<I: IntoIterator<Item = (&'static str, V)>>(iter: I) -> Self {
         Self(iter.into_iter().collect())
     }
 }
