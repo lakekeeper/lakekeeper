@@ -11,7 +11,8 @@
     {
       "action_name": "create_table",
       "name": "orders",
-      "table_id": "019684ff-0000-7000-8000-000000000002"
+      "table_id": "019684ff-0000-7000-8000-000000000002",
+      "properties": {}
     },
     {
       "action_name": "delete",
@@ -39,7 +40,8 @@
       "action": {
         "action_name": "create_table",
         "name": "orders",
-        "table_id": "019684ff-0000-7000-8000-000000000002"
+        "table_id": "019684ff-0000-7000-8000-000000000002",
+        "properties": {}
       },
       "entity": {
         "entity_type": "namespace",

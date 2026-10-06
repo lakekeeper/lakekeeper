@@ -411,17 +411,6 @@ impl AnyWireStr {
     pub const fn emitter(self) -> EmitterStamp {
         self.emitter
     }
-
-    /// A value from nowhere, for tests that build descriptors by hand. Attributed to
-    /// `lakekeeper`.
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub const fn literal_for_tests(text: &'static str) -> Self {
-        Self {
-            text,
-            emitter: EmitterStamp::of::<crate::Lakekeeper>(),
-        }
-    }
 }
 
 impl<T: Vocabulary> From<Wire<T>> for AnyWireStr {

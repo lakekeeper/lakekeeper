@@ -197,9 +197,8 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
 
     // A table created, then dropped twice under one Idempotency-Key. Three things this
     // reaches that nothing else here does: an authorization record with a POPULATED
-    // `idempotency_key` (every other record in this corpus, and every committed fixture, has
-    // it null), and the `idempotent_replay` family, which carries `action` and `entity` but
-    // no `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
+    // `idempotency_key` (every other record in this corpus leaves it out), and the
+    // `idempotent_replay` family, which carries `actions` and `entities` but no `decision`. The drop endpoint checks idempotency before authorizing, so the replayed
     // call emits the replay record alone.
     // A key is globally unique, not per endpoint: reusing one across two operations is
     // rejected with `IdempotencyKeyReused`, so the create and the drop get their own.

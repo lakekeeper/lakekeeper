@@ -5,11 +5,10 @@ use iceberg::{NamespaceIdent, TableIdent};
 
 use super::*;
 use crate::{
-    WarehouseId,
     api::management::v1::grant::{
         ApplyGrants, ApplyGrantsRequest, RevokeSubtreeGrants, RevokeSubtreeGrantsRequest,
     },
-    audit::{AnyWireStr, validate::contract_fields},
+    audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
@@ -25,11 +24,10 @@ use crate::{
         events::{
             Authorization,
             context::{
-                APIEventActions as _, ActionContextKey, EntityDescriptor, EntityType,
-                EventEntities, FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID,
-                FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID,
-                FIELD_NAME_WAREHOUSE_ID, HandlerContextKey, UserProvidedEntity as _,
-                UserProvidedTable, synthesise_authorizations,
+                APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
+                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
+                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
+                UserProvidedEntity as _, UserProvidedTable, synthesise_authorizations,
             },
         },
         idempotency::IdempotencyKey,
@@ -129,11 +127,7 @@ where
 
 fn succeeded_event(request_metadata: RequestMetadata) -> AuthorizationSucceededEvent {
     let entities = Arc::new(EventEntities::one(EntityDescriptor::new(EntityType::Table)));
-    let actions = Arc::new(vec![
-        ActionDescriptor::builder()
-            .action_name(AnyWireStr::literal_for_tests("read_data"))
-            .build(),
-    ]);
+    let actions = Arc::new(vec![CatalogTableAction::ReadData.action_descriptor()]);
     AuthorizationSucceededEvent {
         request_metadata: Arc::new(request_metadata),
         occurred_at: chrono::Utc::now(),
@@ -361,9 +355,7 @@ fn fixture_namespace_delete_action() -> ActionDescriptor {
 }
 
 fn fixture_read_action() -> ActionDescriptor {
-    ActionDescriptor::builder()
-        .action_name(AnyWireStr::literal_for_tests("read_data"))
-        .build()
+    CatalogTableAction::ReadData.action_descriptor()
 }
 
 /// An action carrying context, so the fixtures pin that nesting too. Both context
@@ -384,11 +376,14 @@ fn fixture_action_with_context() -> ActionDescriptor {
 
 /// A create action, carrying the client-requested name and id.
 fn fixture_create_table_action() -> ActionDescriptor {
-    ActionDescriptor::builder()
-        .action_name(AnyWireStr::literal_for_tests("create_table"))
-        .context(ActionContextKey::Name("orders".to_string()))
-        .context(ActionContextKey::TableId(FIXTURE_TABLE_ID.into()))
-        .build()
+    CatalogNamespaceAction::CreateTable {
+        name: Some("orders".to_string()),
+        table_id: Some(crate::service::TableId::new(
+            FIXTURE_TABLE_ID.parse().expect("fixed test uuid"),
+        )),
+        properties: Arc::new(std::collections::BTreeMap::new()),
+    }
+    .action_descriptor()
 }
 
 /// A drop that asked for both overrides, built from the action's own descriptor.
@@ -605,6 +600,7 @@ fn fixture_error() -> Arc<crate::service::events::AuthorizationError> {
 /// than whichever files happen to exist.
 const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_single",
+    "authz_succeeded_break_glass",
     "authz_succeeded_plural",
     "authz_succeeded_action_entities",
     "authz_succeeded_actions_entity",
@@ -618,6 +614,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
     "grant_created",
+    "grant_created_server",
     "grant_revoked",
     "authz_succeeded_idempotency_key",
     "idempotent_replay",
@@ -652,43 +649,6 @@ fn read_fixture(name: &str) -> serde_json::Value {
 /// repository root; `crate::api::endpoints` uses the same technique for the
 /// committed `OpenAPI` specs.
 const LOGGING_DOC: &str = include_str!("../../../../../../../docs/docs/logging.md");
-
-/// Every complete audit record shown in `docs/docs/logging.md` declares the CURRENT
-/// `AUDIT_FORMAT`.
-#[test]
-fn every_audit_record_example_in_the_docs_declares_the_current_format() {
-    let expected = format!("\"audit_format\": \"{AUDIT_FORMAT}\"");
-    let mut checked = 0;
-
-    for block in LOGGING_DOC.split("```json").skip(1) {
-        let Some(block) = block.split("```").next() else {
-            continue;
-        };
-        // Complete records only. The page also shows field-level fragments — an `actor`
-        // object, an `action` object — which are not records and must not grow a version.
-        if !block.contains("\"event_source\": \"audit\"") {
-            continue;
-        }
-        checked += 1;
-        assert!(
-            block.contains(&expected),
-            "an audit record example in docs/docs/logging.md does not declare \
-             {expected}. Every audit record carries the field, and the same page says so, \
-             so an example without it teaches a consumer the wrong shape. If AUDIT_FORMAT \
-             just changed, update the example records — nothing regenerates them.\n\n{block}"
-        );
-    }
-
-    // A floor, for the same reason the fixture comparison has one: if the block detection
-    // stops matching — the page switches to `json5` fences, say — every assertion above is
-    // skipped and this test passes while checking nothing.
-    assert!(
-        checked >= 10,
-        "expected at least 10 complete audit record examples in docs/docs/logging.md, \
-         found {checked}. Either the examples were removed, or the ```json fence \
-         detection above no longer matches them and this test is now asserting nothing."
-    );
-}
 
 /// Every key in a JSON tree, at any depth, as a flat list.
 ///
@@ -843,6 +803,30 @@ fn fixture_authz_succeeded_single_action_single_entity() {
     });
 
     assert_matches_fixture("authz_succeeded_single", &contract_fields(record));
+}
+
+/// A caller who claims break-glass: the record carries the reason they stated, which the
+/// single-action fixture above leaves out.
+#[test]
+fn fixture_authz_succeeded_break_glass() {
+    let mut metadata = RequestMetadataTestBuilder::builder()
+        .request_id(
+            FIXTURE_REQUEST_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )
+        .build();
+    metadata.with_break_glass(Some("INC-1234 undoing lockout forbid".to_string()));
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+            metadata,
+            EventEntities::one(fixture_table_entity()),
+            vec![fixture_read_action()],
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_break_glass", &contract_fields(record));
 }
 
 /// Several actions and several entities in the same lists the single-item case uses. Also
@@ -1037,8 +1021,8 @@ fn fixture_authz_succeeded_empty_batch_check() {
 ///
 /// The first call of an idempotent operation is authorized like any other and records the
 /// key; only a repeat is served from the store and emits a replay record. Every other
-/// authorization fixture is built from a request without one, so the field is seen as `null`
-/// and nothing pins what a real key looks like next to a real `user_agent`.
+/// authorization fixture is built from a request without one, so the field is left out and
+/// nothing else pins what a real key looks like next to a real `user_agent`.
 #[test]
 fn fixture_authz_succeeded_with_idempotency_key() {
     let mut request_metadata = fixture_metadata();
@@ -1136,7 +1120,7 @@ fn fixture_authz_failed_with_context() {
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`
-/// factor, once naming the refusing check and once with its `check` as null.
+/// factor, once naming the refusing check and once without a `check`.
 #[test]
 fn fixture_authz_failed_admission_gate() {
     let for_bob = || {
@@ -1261,6 +1245,29 @@ fn fixture_grants_changed_emits_one_record_per_triple() {
 
     assert_matches_fixture("grant_revoked", &contract_fields(revoked));
     assert_matches_fixture("grant_created", &contract_fields(created));
+}
+
+/// A grant on the server, to a role: the grant context carries neither a resource id nor a
+/// warehouse, and names the principal as a role.
+#[test]
+fn fixture_grant_created_server() {
+    let principal = UserOrRoleId::Role(crate::service::RoleId::new(
+        FIXTURE_ROLE_ID.parse().expect("fixed test uuid"),
+    ));
+    let records = emit_and_capture(|| {
+        AuditEventListener.grants_changed(GrantsChangedEvent::new(
+            vec![],
+            vec![crate::service::authz::GrantSpec {
+                principal,
+                resource: GrantResource::Server,
+                privilege: "admin".to_string(),
+            }],
+            Arc::new(fixture_metadata()),
+        ))
+    });
+    let [created] = <[_; 1]>::try_from(records).expect("one record for one grant");
+
+    assert_matches_fixture("grant_created_server", &contract_fields(created));
 }
 
 /// Recursively collect every `.rs` file under `dir`.
@@ -1517,24 +1524,6 @@ fn audit_records_carry_the_envelope_keys_consumers_rely_on() {
     }
 }
 
-/// The audit log has to say which client made the call, verbatim — a SIEM
-/// classifies the string, so Lakekeeper must not normalise it away.
-#[test]
-fn an_audit_event_records_the_user_agent_verbatim() {
-    let metadata = RequestMetadataTestBuilder::builder()
-        .user_agent(UserAgent::parse("Apache-Spark/3.5.1 (Scala/2.12)"))
-        .build();
-
-    let event = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
-    });
-
-    assert_eq!(
-        event.get("user_agent").and_then(serde_json::Value::as_str),
-        Some("Apache-Spark/3.5.1 (Scala/2.12)"),
-    );
-}
-
 /// The capture helper must render what the binary renders. Nothing else pins
 /// that, and if it drifts every fixture captured through it silently describes
 /// a shape production never emits.
@@ -1715,153 +1704,15 @@ fn every_fixture_decides_only_on_what_it_lists() {
     );
 }
 
-/// A request that sent no `User-Agent` must be distinguishable from one
-/// that sent a client named "unknown", so the field is null rather than a
-/// sentinel.
-#[test]
-fn an_audit_event_without_a_user_agent_omits_the_key() {
-    let metadata = RequestMetadataTestBuilder::builder().build();
-
-    let event = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
-    });
-
-    assert_eq!(
-        event.get("user_agent"),
-        None,
-        "a caller that sent no `User-Agent` leaves the key out; a `null` would claim the \
-         header was seen and held nothing"
-    );
-}
-
-/// The grant context as `(key, rendered value)` pairs in wire order, a nested object
-/// flattened to `k=v` pairs joined by `,`, so a whole context can be asserted at once.
-fn grant_context(
-    principal: &UserOrRoleId,
-    privilege: &str,
-    resource: &GrantResource,
-) -> Vec<(String, String)> {
-    fn render(value: &serde_json::Value) -> String {
-        match value {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Object(map) => map
-                .iter()
-                .map(|(k, v)| format!("{k}={}", render(v)))
-                .collect::<Vec<_>>()
-                .join(","),
-            other => other.to_string(),
-        }
-    }
-    let json = AuditJson::of(&GrantContextRecord::new(principal, privilege, resource));
-    json.value()
-        .as_object()
-        .expect("a grant context is an object")
-        .iter()
-        .map(|(k, v)| (k.clone(), render(v)))
-        .collect()
-}
-
-/// A revoked grant is hard-deleted, so this context is the only surviving record of
-/// it — every part of the triple has to be present and correctly labelled.
-#[test]
-fn a_grant_context_carries_the_full_triple() {
-    let warehouse_id = crate::service::WarehouseId::new_random();
-    let table_id = crate::service::TableId::new_random();
-    let principal = UserOrRoleId::User(
-        crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
-    );
-
-    let entries = grant_context(
-        &principal,
-        "select",
-        &GrantResource::Table {
-            warehouse_id,
-            table_id,
-        },
-    );
-
-    assert_eq!(
-        entries,
-        vec![
-            ("principal".to_string(), "user=oidc~alice".to_string()),
-            ("privilege".to_string(), "select".to_string()),
-            ("resource_type".to_string(), "table".to_string()),
-            ("resource_id".to_string(), table_id.to_string()),
-            ("warehouse_id".to_string(), warehouse_id.to_string()),
-        ]
-    );
-}
-
-/// A server grant has no id and no warehouse: the resource type is its whole
-/// identity. Those fields are omitted rather than emitted empty, so a consumer can
-/// tell "server-wide" from "an id we failed to record".
-#[test]
-fn a_server_grant_context_omits_the_id_and_warehouse() {
-    let principal = UserOrRoleId::Role(crate::service::RoleId::new_random());
-    let entries = grant_context(&principal, "admin", &GrantResource::Server);
-
-    let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(keys, vec!["principal", "privilege", "resource_type"]);
-    assert_eq!(entries[2].1, "server");
-    // A role principal is labelled as one, so it cannot be read as a user id.
-    assert!(
-        entries[0].1.starts_with("role="),
-        "expected a role-labelled principal, got {}",
-        entries[0].1
-    );
-}
-
-/// The top-level keys a decision entry emits, in wire order.
-fn decision_keys(authorization: &Authorization) -> Vec<String> {
-    AuditJson::of(&assemble::decision(authorization))
-        .value()
-        .as_object()
-        .expect("a decision entry is an object")
-        .keys()
-        .cloned()
-        .collect()
-}
-
 fn sample(determined_by: Vec<DeterminingFactor>) -> Authorization {
     Authorization {
         id: None,
         for_principal: None,
-        action: ActionDescriptor {
-            action_name: AnyWireStr::literal_for_tests("read"),
-            context: Vec::new(),
-        },
+        action: CatalogTableAction::ReadData.action_descriptor(),
         entity: EntityDescriptor::new(EntityType::Table),
         allowed: Some(true),
         determined_by,
     }
-}
-
-#[test]
-fn determined_by_emitted_when_present() {
-    let auth = sample(vec![DeterminingFactor::Policy {
-        policy_id: "policy0".to_string(),
-        name: Some("allow-read".to_string()),
-        effect: PolicyEffect::Permit,
-        source: None,
-    }]);
-    assert_eq!(
-        decision_keys(&auth),
-        vec!["action", "entity", "allowed", "determined_by"],
-    );
-}
-
-/// An authorizer that reports no factors says so, rather than leaving the key out.
-///
-/// "Nothing determined this" and "this record does not carry that key" are different
-/// answers, and a consumer asking why a decision went the way it did needs to tell them
-/// apart.
-#[test]
-fn determined_by_is_empty_rather_than_absent() {
-    let auth = sample(Vec::new());
-    assert_eq!(
-        decision_keys(&auth),
-        vec!["action", "entity", "allowed", "determined_by"]
-    );
 }
 
 /// `strum` derives one name from a variant and the attribute derives another, while a
@@ -1894,210 +1745,6 @@ fn a_derived_action_name_is_the_name_that_reaches_the_wire() {
         "`CatalogTableAction::ReadData` reaches the wire as `{on_the_wire}`, which is not \
          among the names {variants:?} `strum` derives."
     );
-}
-
-/// Built from the production types rather than by hand: the record's claim is
-/// that it matches what a real drop reports, which a hand-rolled descriptor
-/// cannot demonstrate.
-fn replay_event(warehouse_id: WarehouseId, actor: Actor) -> IdempotentReplayEvent {
-    let request_metadata = RequestMetadataTestBuilder::builder()
-        .request_id(
-            FIXTURE_REQUEST_ID
-                .parse::<uuid::Uuid>()
-                .expect("fixed test uuid"),
-        )
-        .actor(actor)
-        .user_agent(UserAgent::parse("Apache-Spark/3.5.1"))
-        .build();
-    let entities = UserProvidedTable {
-        warehouse_id,
-        table: TableIdent {
-            namespace: NamespaceIdent::new("sales".to_string()),
-            name: "orders".to_string(),
-        }
-        .into(),
-    }
-    .event_entities();
-
-    IdempotentReplayEvent {
-        request_metadata: Arc::new(request_metadata),
-        occurred_at: chrono::Utc::now(),
-        entities: Arc::new(entities),
-        actions: Arc::new(vec![
-            CatalogTableAction::Drop {
-                force: true,
-                purge: true,
-            }
-            .action_descriptor(),
-        ]),
-        idempotency_key: IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000001")
-            .expect("a valid uuid"),
-    }
-}
-
-/// A replay has to be attributable — who, which action with which flags, and
-/// against which target — and it must not claim an authorization decision,
-/// because none was made.
-#[test]
-fn a_replay_records_the_actor_action_and_target_but_no_decision() {
-    let warehouse_id = WarehouseId::new_random();
-    let event = replay_event(
-        warehouse_id,
-        Actor::Principal(UserId::try_from("oidc~alice").expect("a valid user id")),
-    );
-
-    let event = emit_and_capture_one(|| AuditEventListener.idempotent_replay_served(event));
-
-    assert_eq!(
-        event.get("record_type").and_then(serde_json::Value::as_str),
-        Some("replay"),
-        "a replay names its own shape; it does not borrow `operation` and `outcome` from the \
-         operational family to be recognised"
-    );
-    assert_eq!(event.get("operation"), None);
-    assert_eq!(event.get("outcome"), None);
-    assert_eq!(
-        event
-            .get("idempotency_key")
-            .and_then(serde_json::Value::as_str),
-        Some("0198f2c0-0000-7000-8000-000000000001"),
-        "the record that served the request has to be identifiable"
-    );
-
-    // Who. Without this the record says a drop was replayed but not by whom,
-    // which is the question the event exists to answer.
-    assert_eq!(
-        event
-            .pointer("/actor/principal")
-            .and_then(serde_json::Value::as_str),
-        Some("oidc~alice"),
-    );
-    assert_eq!(
-        event
-            .get("privilege_source")
-            .and_then(serde_json::Value::as_str),
-        Some("authorizer"),
-    );
-    assert_eq!(
-        event.get("user_agent").and_then(serde_json::Value::as_str),
-        Some("Apache-Spark/3.5.1"),
-    );
-
-    // What, including the flags: a purging force drop must not be recorded as
-    // a plain one.
-    assert_eq!(
-        event
-            .pointer("/actions/0/action_name")
-            .and_then(serde_json::Value::as_str),
-        Some("drop"),
-    );
-    assert_eq!(
-        event
-            .pointer("/actions/0/force")
-            .and_then(serde_json::Value::as_bool),
-        Some(true),
-    );
-    assert_eq!(
-        event
-            .pointer("/actions/0/purge")
-            .and_then(serde_json::Value::as_bool),
-        Some(true),
-    );
-
-    // Against what, as the caller named it.
-    assert_eq!(
-        event
-            .pointer("/entities/0/entity_type")
-            .and_then(serde_json::Value::as_str),
-        Some("table"),
-    );
-    assert_eq!(
-        event
-            .pointer("/entities/0/warehouse_id")
-            .and_then(serde_json::Value::as_str),
-        Some(warehouse_id.to_string().as_str()),
-    );
-    assert_eq!(
-        event
-            .pointer("/entities/0/namespace")
-            .and_then(serde_json::Value::as_str),
-        Some("sales"),
-    );
-    assert_eq!(
-        event
-            .pointer("/entities/0/table")
-            .and_then(serde_json::Value::as_str),
-        Some("orders"),
-        "the target is the name the caller sent, since a replay resolves nothing"
-    );
-
-    assert_eq!(
-        event.get("decision"),
-        None,
-        "no authorization ran, so the record must not imply one"
-    );
-}
-
-/// The key is on every audit record, not only the replay one: it is what ties
-/// a retry to the request that did the work. Where an endpoint authorizes
-/// before detecting the replay, the original carries the key too, so the pair
-/// is the only sign of a retry — neither record marks itself as one.
-#[test]
-fn an_authorization_record_carries_the_idempotency_key() {
-    let key = IdempotencyKey::parse("0198f2c0-0000-7000-8000-000000000002").expect("valid");
-    let mut metadata = RequestMetadataTestBuilder::builder().build();
-    metadata.with_idempotency_key(key);
-
-    let event = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
-    });
-
-    assert_eq!(
-        event
-            .get("idempotency_key")
-            .and_then(serde_json::Value::as_str),
-        Some("0198f2c0-0000-7000-8000-000000000002"),
-    );
-
-    // A request without one leaves the key out, as for `user_agent`.
-    let without = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(
-            RequestMetadataTestBuilder::builder().build(),
-        ))
-    });
-    assert_eq!(without.get("idempotency_key"), None);
-}
-
-/// A caller claiming an emergency override has to be visible in the audit
-/// log even when no authorizer acts on the claim — the built-in authorizers
-/// ignore the header, so this event is the only record that it was sent.
-#[test]
-fn an_audit_event_records_the_break_glass_reason() {
-    let mut metadata = RequestMetadataTestBuilder::builder().build();
-    metadata.with_break_glass(Some("INC-1234 undoing lockout forbid".to_string()));
-
-    let event = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
-    });
-
-    assert_eq!(
-        event.get("break_glass").and_then(serde_json::Value::as_str),
-        Some("INC-1234 undoing lockout forbid"),
-    );
-}
-
-/// Nearly every request claims nothing, and an absent field says exactly what
-/// a null would, so the field is omitted rather than padding every
-/// authorization event in the catalog with `"break_glass": null`.
-#[test]
-fn an_audit_event_without_a_break_glass_claim_omits_the_field() {
-    let metadata = RequestMetadataTestBuilder::builder().build();
-
-    let event = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(metadata))
-    });
-
-    assert_eq!(event.get("break_glass"), None);
 }
 
 // ── the registry ─────────────────────────────────────────────────────────────
@@ -2532,6 +2179,12 @@ fn every_audit_record_example_in_the_docs_validates() {
                 "an audit record example in docs/docs/logging.md is not valid JSON: {e}\n\n{block}"
             )
         });
+        // The schema takes any `MAJOR.MINOR`, so the version is checked here: nothing
+        // regenerates the examples when `AUDIT_FORMAT` moves.
+        assert_eq!(
+            record["audit_format"], AUDIT_FORMAT,
+            "an audit record example in docs/docs/logging.md declares another format:\n\n{block}"
+        );
         crate::audit::validate::assert_valid_record(
             &schema,
             &record,
@@ -2539,8 +2192,10 @@ fn every_audit_record_example_in_the_docs_validates() {
         );
     }
 
+    // A floor: if the block detection stops matching — the page switches to `json5` fences,
+    // say — every assertion above is skipped and this test passes while checking nothing.
     assert!(
-        checked >= 8,
+        checked >= 10,
         "only {checked} audit record examples found in docs/docs/logging.md; the page is \
          supposed to show one per family and several per authorization case, so this is \
          reading the wrong file or the wrong fences"
