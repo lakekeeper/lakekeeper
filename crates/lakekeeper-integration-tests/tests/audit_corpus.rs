@@ -53,14 +53,20 @@ use std::sync::Arc;
 use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{
+        RequestMetadataTestBuilder,
         iceberg::v1::{
             DataAccess, NamespaceParameters, namespace::NamespaceService as _,
             tables::TablesService as _,
         },
-        management::v1::role::Service as _,
+        management::v1::{
+            grant::{ListGrantsQuery, Service as _},
+            role::Service as _,
+        },
     },
     server::CatalogServer,
     service::{
+        UserId,
+        authn::Actor,
         authz::AllowAllAuthorizer,
         events::backends::audit::{AuditEventListener, contract},
         idempotency::IdempotencyKey,
@@ -79,7 +85,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 12;
+const EXPECTED_RECORDS: usize = 13;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -335,6 +341,25 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         role_request(Some("system")),
         ctx.clone(),
         random_request_metadata(),
+    )
+    .await;
+
+    // The project-wide grant listing about another principal: `read_subtree_grants` on the
+    // project entity, with the subtree scope fields and `self-read` context.
+    let _ = lakekeeper::api::management::v1::ApiServer::list_grants(
+        ctx.clone(),
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(UserId::new_unchecked("oidc", "alice")))
+            .project_id(Some(project_id.clone()))
+            .build(),
+        ListGrantsQuery {
+            principal_user: Some(UserId::new_unchecked("oidc", "bob")),
+            principal_role: None,
+        },
+        lakekeeper::api::iceberg::v1::PaginationQuery::new(
+            lakekeeper::api::iceberg::v1::PageToken::Empty,
+            None,
+        ),
     )
     .await;
 

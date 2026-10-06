@@ -92,6 +92,8 @@ The same request shape works at every level:
 
 `GET` on any of these lists the grants held there; `POST` applies a diff.
 
+Where grants are stored in the catalog database, server grants go to users only. Roles belong to a project, so a role holding a server grant would hand server-wide authority to whoever manages that project's role members; a write naming a role is refused with `ServerGrantToRole`. Authorizers that keep their own grants accept roles at the server; under OpenFGA, see [server roles](./authorization-openfga.md#roles-with-server-access).
+
 ## Finding out what you may grant
 
 `.../actions` does not report whether you may hand a privilege on — that is a separate right. Ask the resource:
@@ -100,7 +102,7 @@ The same request shape works at every level:
 GET /management/v1/warehouse/{warehouse_id}/grants/grantable-privileges
 ```
 
-Every privilege the level has is returned, each marked `allowed` for you. Add `principalUser` or `principalRole` to ask on someone else's behalf, which requires permission to read that resource's grants.
+Every privilege the level has is returned, each marked `allowed` for you. Add `principalUser` or `principalRole` to ask on someone else's behalf, which requires permission to check what others may do on that resource.
 
 ## Reviewing who has access
 
@@ -130,7 +132,7 @@ GET /management/v1/grants?principalRole=<role_id>
 
 Name exactly one of the two. To read every grant on a single resource, use that resource's own listing instead.
 
-Asking about another principal requires the project's grant-read permission; asking about yourself is free. Server grants belong to no project and are excluded — use `GET /management/v1/server/grants`.
+Asking about another principal needs the project's `read_subtree_grants` action: the answer spans every resource in the project, so it is an enumeration capability like a [subtree listing](#everything-held-under-a-namespace-or-warehouse). Where grants are stored in the catalog, it is decided apart from reading the project's own grants. Asking about yourself is free. Server grants belong to no project and are excluded — use `GET /management/v1/server/grants`.
 
 !!! warning "Not available under OpenFGA"
     OpenFGA stores permissions per object, so it cannot answer this without reading its whole store and returns `GrantListingNotImplemented` (501). Read one resource's grants from its own endpoint, or query OpenFGA directly. Deployments that keep grants in the catalog database answer it normally.

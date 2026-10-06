@@ -151,6 +151,10 @@ Two consequences are worth knowing:
 
 We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.
 
+### Roles with server access
+
+A role can hold the server's `admin` or `operator`, and its members hold it too. Whoever manages the role's members therefore decides who administers the server: the project's `security_admin` and `project_admin`, and the role's owners. We recommend a dedicated management project for such roles, administered by server admins only. Its `role_creator` should be a server admin too, because a role's creator owns it. For a role synced from a role provider, the provider decides its members.
+
 ## OpenFGA in Production
 
 When deploying OpenFGA in production environments, ensure you follow the [OpenFGA Production Checklist](https://openfga.dev/docs/best-practices/running-in-production).

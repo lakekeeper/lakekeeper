@@ -2367,6 +2367,23 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn rejects_server_grant_to_a_role(pool: PgPool) {
+        let role_id = seed_role(&pool).await;
+        let err = sqlx::query(
+            "INSERT INTO grant_assignment (principal_type, role_id, resource_type, privilege) \
+             VALUES ('role', $1, 'server', 'admin')",
+        )
+        .bind(role_id)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.as_database_error().unwrap().constraint(),
+            Some("grant_server_principal_is_user")
+        );
+    }
+
+    #[sqlx::test]
     async fn rejects_namespace_grant_without_warehouse(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2408,11 +2425,14 @@ mod tests {
     #[sqlx::test]
     async fn rejects_principal_type_mismatch(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
+        let project_id = seed_project(&pool).await;
         let err = sqlx::query(
-            "INSERT INTO grant_assignment (principal_type, user_id, resource_type, privilege) \
-             VALUES ('role', $1, 'server', 'admin')",
+            "INSERT INTO grant_assignment \
+             (principal_type, user_id, resource_type, privilege, project_id) \
+             VALUES ('role', $1, 'project', 'describe', $2)",
         )
         .bind(&user)
+        .bind(&project_id)
         .execute(&pool)
         .await
         .unwrap_err();
@@ -3105,7 +3125,11 @@ mod tests {
         insert_grants(
             &[
                 user_spec(&user, GrantResource::Server, "describe"),
-                role_spec(role, GrantResource::Server, "manage"),
+                role_spec(
+                    role,
+                    GrantResource::Project((*project_id).clone()),
+                    "manage",
+                ),
                 role_spec(
                     role,
                     GrantResource::Project((*project_id).clone()),
@@ -3361,8 +3385,8 @@ mod tests {
             &[
                 user_spec(&user, user_grant.clone(), "select"),
                 role_spec(role_id, role_grant.clone(), "select"),
-                // Held by a role outside the effective set.
-                role_spec(unheld_role, GrantResource::Server, "select"),
+                // Held by a role outside the effective set, on a requested resource.
+                role_spec(unheld_role, role_grant.clone(), "manage"),
             ],
             &mut txn,
         )
@@ -3374,7 +3398,7 @@ mod tests {
             UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap()),
             UserOrRoleId::Role(role_id),
         ];
-        // Server is requested, so the exclusion of the unheld role's server grant is
+        // The unheld role's grant is on a requested resource, so its exclusion is
         // attributable to the principal narrowing alone.
         let resources = [
             GrantResource::Server,
@@ -3400,33 +3424,30 @@ mod tests {
     /// principal rather than as an error.
     #[sqlx::test]
     async fn resource_listing_narrows_to_one_principal(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, _) = initialize_warehouse(state, None, None, None, true).await;
+        let project = GrantResource::Project((*project_id).clone());
         let alice = seed_user(&pool, "oidc~alice").await;
         let bob = seed_user(&pool, "oidc~bob").await;
-        let role_id = seed_role(&pool).await;
+        let role_id = seed_role_in(&pool, &project_id, "narrowed").await;
 
         let mut txn = pool.begin().await.unwrap();
         let specs = vec![
-            user_spec(&alice, GrantResource::Server, "admin"),
-            user_spec(&bob, GrantResource::Server, "operator"),
-            GrantSpec {
-                principal: UserOrRoleId::Role(role_id.into()),
-                resource: GrantResource::Server,
-                privilege: "operator".to_string(),
-            },
+            user_spec(&alice, project.clone(), "admin"),
+            user_spec(&bob, project.clone(), "operator"),
+            role_spec(role_id, project.clone(), "operator"),
         ];
         insert_grants(&specs, &mut txn).await.unwrap();
         txn.commit().await.unwrap();
 
         let listed = |principal: Option<UserOrRoleId>| {
             let pool = pool.clone();
+            let project = project.clone();
             async move {
-                let page = list_grants(
-                    &GrantFilter::on(GrantResource::Server, principal),
-                    no_pagination(),
-                    &pool,
-                )
-                .await
-                .unwrap();
+                let page =
+                    list_grants(&GrantFilter::on(project, principal), no_pagination(), &pool)
+                        .await
+                        .unwrap();
                 page.grants
                     .into_iter()
                     .map(|g| (g.principal, g.privilege))
@@ -3439,7 +3460,7 @@ mod tests {
             listed(Some(alice_principal.clone())).await,
             vec![(alice_principal, "admin".to_string())]
         );
-        let role_principal = UserOrRoleId::Role(role_id.into());
+        let role_principal = UserOrRoleId::Role(role_id);
         assert_eq!(
             listed(Some(role_principal.clone())).await,
             vec![(role_principal, "operator".to_string())]

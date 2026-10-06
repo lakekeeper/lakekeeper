@@ -509,8 +509,20 @@ pub enum CatalogProjectAction {
     ListTags,
     /// Can list the grants held on this project.
     ReadGrants,
+    /// Can list every grant one principal holds anywhere in this project: on the project,
+    /// its warehouses, namespaces, tables, views, generic tables and tag definitions.
+    /// Covers more than `ReadGrants`, which covers the project's own grants.
+    /// Not listed in project actions where the authorizer keeps its own grants (OpenFGA),
+    /// because the listing is not available there.
+    ///
+    /// `scope` states what the listing covers, on the same terms as the warehouse's
+    /// `ReadSubtreeGrants`. Every enforced check carries it; an absent scope is the
+    /// base-capability question permission introspection asks.
+    ReadSubtreeGrants {
+        scope: Option<SubtreeGrantScope>,
+    },
 }
-static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock::new(|| {
+static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 18]> = LazyLock::new(|| {
     [
         CatalogProjectAction::CreateWarehouse { name: None },
         CatalogProjectAction::Delete,
@@ -532,11 +544,12 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock:
         CatalogProjectAction::CreateTag { name: None },
         CatalogProjectAction::ListTags,
         CatalogProjectAction::ReadGrants,
+        CatalogProjectAction::ReadSubtreeGrants { scope: None },
     ]
 });
 impl CatalogProjectAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogProjectAction; 17] {
+    pub fn variants() -> &'static [CatalogProjectAction; 18] {
         &PROJECT_ACTION_VARIANTS
     }
 }
@@ -561,6 +574,14 @@ impl CatalogAction for CatalogProjectAction {
                 if let Some(source_system) = source_system {
                     b = b.context_pairs(source_system.requested_context());
                 }
+            }
+            Self::ReadSubtreeGrants { scope } => {
+                b = b.context_pairs(
+                    scope
+                        .as_ref()
+                        .map(SubtreeGrantScope::context)
+                        .unwrap_or_default(),
+                );
             }
             // Actions that contribute no audit context. Listed explicitly rather than
             // matched with `_`, so that adding an action forces a decision about what
@@ -2054,6 +2075,7 @@ pub enum CatalogProjectActionKind {
     CreateTag,
     ListTags,
     ReadGrants,
+    ReadSubtreeGrants,
 }
 impl From<&CatalogProjectAction> for CatalogProjectActionKind {
     fn from(action: &CatalogProjectAction) -> Self {
@@ -2075,6 +2097,7 @@ impl From<&CatalogProjectAction> for CatalogProjectActionKind {
             CatalogProjectAction::CreateTag { .. } => Self::CreateTag,
             CatalogProjectAction::ListTags => Self::ListTags,
             CatalogProjectAction::ReadGrants => Self::ReadGrants,
+            CatalogProjectAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
         }
     }
 }
@@ -2730,12 +2753,11 @@ where
         })
     }
 
-    /// Answering for another principal discloses that principal's access, so the actor
-    /// must hold the resource's `ReadGrants` action. **The caller enforces that**, since
-    /// only it holds the resolved entity each family's action check needs. An
-    /// implementation may add its own equivalent when it is free — `OpenFGA` folds the
-    /// tuple into the same batch — but it is not required to, and must not rely on being
-    /// the only thing standing between a caller and someone else's access.
+    /// **The implementation gates `for_user`.** Answering for another principal discloses
+    /// that principal's access, so return `CannotInspectPermissions` when the actor may
+    /// not inspect `for_user`'s permissions on `target`, as the `are_allowed_*_actions`
+    /// methods do. No caller checks it beforehand. An answer that does not depend on
+    /// `for_user`, such as denying everything, discloses nothing and needs no gate.
     ///
     /// Deliberately *not* required to mask an invisible resource. Authority to grant is
     /// independent of authority to see — a security administrator may manage a
@@ -3752,6 +3774,24 @@ pub mod tests {
 
         for (action, expected) in [
             (
+                CatalogProjectAction::ReadSubtreeGrants {
+                    scope: Some(shape.clone()),
+                },
+                serde_json::json!({"action": "read_subtree_grants", "scope": of}),
+            ),
+            (
+                CatalogProjectAction::ReadSubtreeGrants { scope: None },
+                serde_json::json!({"action": "read_subtree_grants", "scope": any}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+            let deserialized: CatalogProjectAction =
+                serde_json::from_value(expected).expect("deserialize");
+            assert_eq!(deserialized, action);
+        }
+
+        for (action, expected) in [
+            (
                 CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
                 serde_json::json!({"action": "read_subtree_grants", "scope": any}),
             ),
@@ -3819,6 +3859,17 @@ pub mod tests {
             })
             .count();
         assert_eq!(namespace, 2, "namespace subtree actions, enumerated as Any");
+
+        let project = CatalogProjectAction::variants()
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    CatalogProjectAction::ReadSubtreeGrants { scope: None }
+                )
+            })
+            .count();
+        assert_eq!(project, 1, "project subtree read, enumerated as Any");
     }
 
     #[test]
@@ -4237,10 +4288,25 @@ pub mod tests {
         async fn are_allowed_grants_impl(
             &self,
             _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
-            _target: &GrantTarget<'_>,
+            for_user: Option<&UserOrRole>,
+            target: &GrantTarget<'_>,
             checks: &[GrantAuthorityCheck<'_>],
         ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            // Answering for another principal is gated here, as the trait requires.
+            // Blocking `<level>:ReadGrants` refuses it, keyed like the action checks.
+            let level = match target.resource_type() {
+                ResourceType::Server => "server",
+                ResourceType::Project => "project",
+                ResourceType::Warehouse => "warehouse",
+                ResourceType::Namespace => "namespace",
+                ResourceType::Table => "table",
+                ResourceType::View => "view",
+                ResourceType::GenericTable => "generic_table",
+                ResourceType::Tag => "tag",
+            };
+            if for_user.is_some() && self.action_is_blocked(&format!("{level}:ReadGrants")) {
+                return Err(CannotInspectPermissions::new(&level).into());
+            }
             // Authority per direction, so a test can hold revoke authority alone and
             // watch the grant side of a diff be refused.
             Ok(checks

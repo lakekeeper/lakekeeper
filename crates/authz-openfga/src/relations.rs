@@ -914,8 +914,12 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::GetProjectTasks => ProjectRelation::CanGetProjectTasks,
             CatalogProjectAction::ControlProjectTasks => ProjectRelation::CanControlProjectTasks,
             // Same permission as `APIProjectAction::ReadAssignments`; see the
-            // grant/assignment naming note at the top of this file.
-            CatalogProjectAction::ReadGrants => ProjectRelation::CanReadAssignments,
+            // grant/assignment naming note at the top of this file. The project-wide
+            // listing asks the subtree read before answering 501; both are answered at the
+            // project grant-read bar.
+            CatalogProjectAction::ReadGrants | CatalogProjectAction::ReadSubtreeGrants { .. } => {
+                ProjectRelation::CanReadAssignments
+            }
         }
     }
 }

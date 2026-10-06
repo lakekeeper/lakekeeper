@@ -68,7 +68,7 @@ The `Lakekeeper::User` entity also exposes an optional `email` attribute extract
 |------------------------------------------------------------------|-----------|
 | Roles come from OIDC/token claims or a role provider (e.g. LDAP) | `principal.project_roles.contains({provider_id: "oidc", source_id: "my-group"})` |
 | Directory group names are unique across all your providers       | `principal.global_role_ids.contains("my-group")` *(requires `GLOBAL_ROLE_IDS_ENABLED`)* |
-| Roles are managed in Lakekeeper (via the management API)         | At actions inside a project, `principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})`, or `principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"` for one project's role. At server actions, a server grant to the role. See [Roles managed in Lakekeeper](#roles-managed-in-lakekeeper) |
+| Roles are managed in Lakekeeper (via the management API)         | At actions inside a project, `principal.project_roles.contains({provider_id: "lakekeeper", source_id: "analysts"})`, or `principal in Lakekeeper::Role::"<project-id>/lakekeeper~analysts"` for one project's role. At server actions a Lakekeeper role does not count: name a group, or grant the users. See [Roles managed in Lakekeeper](#roles-managed-in-lakekeeper) |
 | Roles come from an external entities file                        | Either approach works; `project_roles` is simpler |
 
 `project_roles` matches by provider and role name alone, with no project ID. `principal in Lakekeeper::Role::...` needs the project ID, which is inconvenient to embed in policy files. For groups, `project_roles` is also the form that works at every action, server actions included.
@@ -110,7 +110,7 @@ What a user carries depends on the action:
 - **Actions inside a project** (project, warehouse and below): every role the user holds in that object's project, groups and Lakekeeper roles, with every role those are nested in.
 - **Server actions** (every action on `Lakekeeper::Server`, user management included): the user's groups, in `project_roles` and `global_role_ids`. They are the same for every `x-project-id`. `roles` is empty; `principal in Role::"..."` and `request_project` work only at actions inside a project.
 
-A Lakekeeper role counts at server actions through a server grant. Act as yourself: a request with `x-assume-role` is denied at server actions. When Lakekeeper loads or reloads its policies, the server-action check refuses a policy that would stop nobody at a server action, and the log shows the fix.
+A Lakekeeper role does not count at server actions: name a group, or give the users [server grants](#server-grants). Act as yourself: a request with `x-assume-role` is denied at server actions. When Lakekeeper loads or reloads its policies, the server-action check refuses a policy that would stop nobody at a server action, and the log shows the fix.
 
 #### Name groups with the flat form
 
@@ -125,9 +125,9 @@ permit (
 when { principal.project_roles.contains({provider_id: "ldap", source_id: "user-admins"}) };
 ```
 
-#### Server grants for Lakekeeper roles
+#### Server grants
 
-Grant the role a privilege on the server ([`/management/v1/server/grants`](./grants.md#where-you-can-grant)), and load these four permits, one per privilege. No predefined policy decides server actions, so a server grant does nothing without them:
+Grant a user a privilege on the server ([`/management/v1/server/grants`](./grants.md#where-you-can-grant)), and load these four permits, one per privilege. No predefined policy decides server actions, so a server grant does nothing without them:
 
 ```cedar
 permit (principal, action in Lakekeeper::Action::"ServerDescribeActions", resource is Lakekeeper::Server)
@@ -143,7 +143,7 @@ permit (principal, action in Lakekeeper::Action::"ServerGrantActions", resource 
 when { resource.principal_privileges.direct.manage_grants };
 ```
 
-Every member of the role holds its grants, so whoever manages the role's members decides who has them. If nobody can reach server administration yet, an identity from [`LAKEKEEPER__INSTANCE_ADMINS`](./instance-admins.md) can set the first grant.
+Server grants go to users only. A role belongs to a project, so a role holding a server grant would hand server-wide authority to whoever manages that project's role members. To give a team server access, name its group with the flat form above. If nobody can reach server administration yet, an identity from [`LAKEKEEPER__INSTANCE_ADMINS`](./instance-admins.md) can set the first grant.
 
 #### Forbid a group
 

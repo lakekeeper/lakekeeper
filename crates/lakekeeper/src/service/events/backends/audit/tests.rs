@@ -8,6 +8,7 @@ use valuable::{Valuable, Value, Visit};
 use super::{contract::contract_fields, *};
 use crate::{
     WarehouseId,
+    api::management::v1::check::UserOrRole as AuthzUserOrRole,
     request_metadata::{PrivilegeSource, RequestMetadata, RequestMetadataTestBuilder, UserAgent},
     service::{
         admission::{
@@ -17,7 +18,9 @@ use crate::{
         authn::UserId,
         authz::{
             ActionDescriptor, CatalogAction as _, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, DeterminingFactor, PolicyEffect, RoleSourceSystem,
+            CatalogTableAction, DeterminingFactor, PolicyEffect, ResourceType, RoleSourceSystem,
+            RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges, SubtreeGrantScope,
+            SubtreeResourceTypes,
         },
         events::context::{
             ActionContextKey, EntityField, EntityType, EventEntities, FIELD_NAME_NAMESPACE,
@@ -467,6 +470,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_admission_gate",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
+    "authz_succeeded_project_subtree_grants",
     "grant_created",
     "grant_revoked",
     "idempotent_replay",
@@ -983,6 +987,50 @@ fn fixture_authz_succeeded_create_role_source_system() {
 
     assert_matches_fixture(
         "authz_succeeded_create_role_source_system",
+        &contract_fields(record),
+    );
+}
+
+/// `GET /management/v1/grants` about another principal: `read_subtree_grants` on the
+/// project entity, with the six scope fields and `self-read: false`. Built from the real
+/// action, with the scope that listing asks.
+#[test]
+fn fixture_authz_succeeded_project_subtree_grants() {
+    let action = CatalogProjectAction::ReadSubtreeGrants {
+        scope: Some(SubtreeGrantScope {
+            resource_types: SubtreeResourceTypes::new(
+                <ResourceType as strum::VariantArray>::VARIANTS
+                    .iter()
+                    .copied()
+                    .filter(|kind| *kind != ResourceType::Server)
+                    .collect(),
+            )
+            .expect("a project holds at least one resource kind"),
+            root_level: RootLevelGrants::Included,
+            privileges: SubtreeGrantPrivileges::Every {},
+            principal: SubtreeGrantPrincipal::One(AuthzUserOrRole::User(UserId::new_unchecked(
+                "oidc", "bob",
+            ))),
+            dry_run: false,
+        }),
+    };
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            entities: Arc::new(EventEntities::one(
+                EntityDescriptor::new(EntityType::Project).field(
+                    FIELD_NAME_PROJECT_ID,
+                    &"00000000-0000-0000-0000-000000000000",
+                ),
+            )),
+            actions: Arc::new(vec![action.action_descriptor()]),
+            extra_context: fixture_context(&[("self-read", "false")]),
+            authorizations: Arc::new(vec![fixture_plain_authorization()]),
+        })
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_project_subtree_grants",
         &contract_fields(record),
     );
 }

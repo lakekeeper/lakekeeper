@@ -968,8 +968,9 @@ pub mod v1 {
     /// ancestor is listed under the ancestor. Server grants belong to no project and are
     /// not included.
     ///
-    /// Listing your own grants needs no extra permission; any other principal requires
-    /// the project-level grant-read permission.
+    /// Listing your own grants needs the project's `get_metadata` action. Listing any
+    /// other principal's grants needs the project's `read_subtree_grants` action,
+    /// because the answer spans every resource in the project.
     ///
     /// **Availability depends on the configured authorizer.** This listing crosses every
     /// resource in the project, which an authorizer that stores permissions per resource
@@ -1386,6 +1387,10 @@ pub mod v1 {
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
     /// Idempotent. Success is `204` with no body: whether an entry was already in
     /// the requested state is not reported.
+    ///
+    /// Where grants are stored in the catalog, server grants go to users only and a
+    /// write naming a role is refused with `400 ServerGrantToRole`. An authorizer that
+    /// keeps its own grants (OpenFGA) accepts roles.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -3581,8 +3586,8 @@ pub mod v1 {
     /// Every privilege this server publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this server's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this server (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3608,8 +3613,8 @@ pub mod v1 {
     /// Every privilege this project publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this project's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this project (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3635,8 +3640,8 @@ pub mod v1 {
     /// Every privilege this warehouse publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this warehouse's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this warehouse (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3669,8 +3674,8 @@ pub mod v1 {
     /// Every privilege this namespace publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this namespace's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this namespace (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3704,8 +3709,8 @@ pub mod v1 {
     /// Every privilege this table publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this table's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this table (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3739,8 +3744,8 @@ pub mod v1 {
     /// Every privilege this view publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this view's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this view (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3774,8 +3779,8 @@ pub mod v1 {
     /// Every privilege this generic table publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this generic table's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this generic table (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
@@ -3813,8 +3818,8 @@ pub mod v1 {
     /// Every privilege this tag definition publishes, each marked with whether the caller may
     /// administer it here. Not filtered: a picker needs to show the ones it
     /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
-    /// another principal's behalf, which requires authority to read this tag definition's
-    /// grants.
+    /// another principal's behalf, which requires permission to check what others may
+    /// do on this tag definition (`403 CannotInspectPermissions` otherwise).
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
