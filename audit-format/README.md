@@ -1,15 +1,6 @@
 # Audit log format changes
 
-`AUDIT_FORMAT` is not edited by hand and does not move once per pull request. It is
-derived:
-
-```text
-AUDIT_FORMAT = the version the last release tag declares, raised once by the highest level
-               among the fragments in unreleased/ that tag does not carry
-```
-
-So a release raises the audit format version at most once however many changes it
-carries, and a major change absorbs every minor change in the same cycle.
+`AUDIT_FORMAT` is not edited by hand and does not move once per pull request: it is derived from the last release tag and the fragments here. The audit log section of `docs/docs/developer-guide.md` states the rule and what each level means.
 
 ## Files
 

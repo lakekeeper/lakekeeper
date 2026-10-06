@@ -1,63 +1,6 @@
 //! `#[audit_part]`: the one attribute every type that reaches the Lakekeeper audit log
-//! carries.
-//!
-//! Five placements:
-//!
-//! - **A part** (`#[audit_part]` on a struct or a data enum): a nested object of a record.
-//!   Expands to `#[derive(Serialize, JsonSchema)]` through `lakekeeper`'s re-exports, so the
-//!   defining crate needs no direct dependency on either; to
-//!   `impl lakekeeper::audit::AuditPart for T { type Emitter = crate::audit_emitter::Emitter; }`,
-//!   binding the type to the emitter of the crate that defines it; and to a registry entry.
-//!   Every named field needs a doc comment: it is the field's description in the schema.
-//! - **A context** (`#[audit_part(context)]` on a struct): the `context` object of an operation
-//!   record. Same as a part, registered as a context.
-//! - **A shape** (`#[audit_part(shape = "authorization")]` on a struct, in `lakekeeper` only): a
-//!   whole record. Expands to its schema, its registry entry, and its `emit(self, message)`:
-//!   the audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
-//!   `record_type`, with every field under its own name and a field that serializes to `null`
-//!   left off. The field list is the struct's, so the record and its schema cannot differ.
-//! - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
-//!   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
-//!   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
-//!   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
-//!   field and every value with its doc comment. No derives are added and `AuditPart` is not
-//!   implemented: such an enum often already serializes differently for an API. The set is
-//!   open: the schema lists its values in `x-audit-values`, and a release may add one. Add
-//!   `closed` for a set that cannot grow without a major version, such as `decision`; the
-//!   schema then lists its values as an `enum`.
-//!   Outside Lakekeeper only `keys_of = "context"` is accepted: the other objects take their
-//!   keys from a Lakekeeper enum, so a vocabulary declared elsewhere could not be emitted.
-//! - **A key vocabulary** (`#[audit_part(keys_of = "entity")]`): its variant names are the
-//!   *keys* of one object, here an `entity`. Same expansion, except that `as_wire` yields a
-//!   `WireKey<Emitter>`, which converts into no value type — so a key cannot be passed where a
-//!   value is expected, or the other way round — and the registry entry is a `Kind::Keys`.
-//!   The distinction is not cosmetic: a new value on
-//!   a field changes no format, while a new key is a new field, which is a minor version.
-//!
-//! Every name a vocabulary puts on the wire is its variant name in `snake_case`, or the name
-//! `#[audit(rename = "...")]` gives that variant. `strum` and `serde` attributes are not read:
-//! an enum that is also an API type keeps its API spelling to itself. The macro rejects any
-//! name that is not `lower_snake_case`, unless the vocabulary is spelled somewhere else —
-//! another product publishes the values, or they mirror a vocabulary that does — in which case
-//! it adds `external_values` and says how with `#[audit(rename_all = "...")]`. Name that
-//! vocabulary in the enum's doc comment.
-//!
-//! Each placement takes a closed set of `#[audit(...)]` keys, each `key = "string"`: a
-//! vocabulary enum takes `rename_all` (with `external_values` only); a variant of a value
-//! vocabulary takes `rename` and `carries`; a field of such a variant takes `expands_to`, which
-//! every unnamed field of an action needs; a variant of a key vocabulary takes `rename`; a
-//! part takes none. An unknown key, a key given twice and a value that is not a string are
-//! rejected. The attributes are consumed here and never reach the compiler.
-//!
-//! Registry entries exist in **debug builds only**: the entry is behind
-//! `#[cfg(debug_assertions)]`, so release binaries carry neither the registry nor the
-//! schema-generation code it keeps alive. Tests that read the registry run in the dev profile;
-//! in a `--release` build `lakekeeper::audit::Registration::all()` panics and says so instead of
-//! failing obscurely.
-//!
-//! Rules enforced at expansion: no type or const generic parameters (lifetimes are fine and
-//! become `'static` in the registry); every named field of a part or context has a doc
-//! comment.
+//! carries. The reference — its placements and the `#[audit(...)]` keys each takes — is on
+//! [`macro@audit_part`].
 
 use std::collections::BTreeMap;
 
@@ -181,7 +124,65 @@ fn lit_str(expr: &Expr, what: &str) -> Result<String> {
     ))
 }
 
-/// Declares a type as part of the audit log. See the crate documentation.
+/// Declares a type as part of the audit log.
+///
+/// Five placements:
+///
+/// - **A part** (`#[audit_part]` on a struct or a data enum): a nested object of a record.
+///   Expands to `#[derive(Serialize, JsonSchema)]` through `lakekeeper`'s re-exports, so the
+///   defining crate needs no direct dependency on either; to
+///   `impl lakekeeper::audit::AuditPart for T { type Emitter = crate::audit_emitter::Emitter; }`,
+///   binding the type to the emitter of the crate that defines it; and to a registry entry.
+///   Every named field needs a doc comment: it is the field's description in the schema.
+/// - **A context** (`#[audit_part(context)]` on a struct): the `context` object of an operation
+///   record. Same as a part, registered as a context.
+/// - **A shape** (`#[audit_part(shape = "authorization")]` on a struct, in `lakekeeper` only): a
+///   whole record. Expands to its schema, its registry entry, and its `emit(self, message)`:
+///   the audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
+///   `record_type`, with every field under its own name and a field that serializes to `null`
+///   left off. The field list is the struct's, so the record and its schema cannot differ.
+/// - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
+///   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
+///   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`, and
+///   `WIRE_VARIANTS` / `WIRE_NAMES`, and to a registry entry whose `Kind::Values` carries the
+///   field and every value with its doc comment. No derives are added and `AuditPart` is not
+///   implemented: such an enum often already serializes differently for an API. The set is
+///   open: the schema lists its values in `x-audit-values`, and a release may add one. Add
+///   `closed` for a set that cannot grow without a major version, such as `decision`; the
+///   schema then lists its values as an `enum`.
+///   Outside Lakekeeper only `keys_of = "context"` is accepted: the other objects take their
+///   keys from a Lakekeeper enum, so a vocabulary declared elsewhere could not be emitted.
+/// - **A key vocabulary** (`#[audit_part(keys_of = "entity")]`): its variant names are the
+///   *keys* of one object, here an `entity`. Same expansion, except that `as_wire` yields a
+///   `WireKey<Emitter>`, which converts into no value type — so a key cannot be passed where a
+///   value is expected, or the other way round — and the registry entry is a `Kind::Keys`.
+///   The distinction is not cosmetic: a new value on
+///   a field changes no format, while a new key is a new field, which is a minor version.
+///
+/// Every name a vocabulary puts on the wire is its variant name in `snake_case`, or the name
+/// `#[audit(rename = "...")]` gives that variant. `strum` and `serde` attributes are not read:
+/// an enum that is also an API type keeps its API spelling to itself. The macro rejects any
+/// name that is not `lower_snake_case`, unless the vocabulary is spelled somewhere else —
+/// another product publishes the values, or they mirror a vocabulary that does — in which case
+/// it adds `external_values` and says how with `#[audit(rename_all = "...")]`. Name that
+/// vocabulary in the enum's doc comment.
+///
+/// Each placement takes a closed set of `#[audit(...)]` keys, each `key = "string"`: a
+/// vocabulary enum takes `rename_all` (with `external_values` only); a variant of a value
+/// vocabulary takes `rename` and `carries`; a field of such a variant takes `expands_to`, which
+/// every unnamed field of an action needs; a variant of a key vocabulary takes `rename`; a
+/// part takes none. An unknown key, a key given twice and a value that is not a string are
+/// rejected. The attributes are consumed here and never reach the compiler.
+///
+/// Registry entries exist in **debug builds only**: the entry is behind
+/// `#[cfg(debug_assertions)]`, so release binaries carry neither the registry nor the
+/// schema-generation code it keeps alive. Tests that read the registry run in the dev profile;
+/// in a `--release` build `lakekeeper::audit::Registration::all()` panics and says so instead of
+/// failing obscurely.
+///
+/// Rules enforced at expansion: no type or const generic parameters (lifetimes are fine and
+/// become `'static` in the registry); every named field of a part or context, and every key
+/// of a key vocabulary, has a doc comment.
 #[proc_macro_attribute]
 pub fn audit_part(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as Args);

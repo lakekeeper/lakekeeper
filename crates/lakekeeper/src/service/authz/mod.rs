@@ -1921,6 +1921,7 @@ impl CatalogGenericTableAction {
     }
 }
 impl EventAction for CatalogGenericTableAction {
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {

@@ -30,35 +30,11 @@ use crate::service::events::{
     IdempotentReplayEvent,
 };
 
-/// Wire-format version of every `event_source = "audit"` record, emitted
-/// unconditionally as the `audit_format` field.
+/// The `MAJOR.MINOR` version of the audit record's shape, carried on every
+/// `event_source = "audit"` record as `audit_format`.
 ///
-/// **Not edited by hand.** The value is derived from committed state — the version the
-/// last release tag declares, raised once by the highest level among the changes recorded
-/// since (`audit-format/unreleased/*.md`) — and written by `just update-audit-fixtures`. A release therefore raises it at most once however many
-/// changes it carries, and a major change absorbs every minor change in the same cycle.
-///
-/// **MAJOR** covers a `major` change: an existing field renamed, retyped, or structurally
-/// moved — including a scalar becoming an object, an object becoming an array, or a field
-/// changing case or separator — or a wire value renamed.
-///
-/// **MINOR** covers a `minor` change: a field added and nothing existing changed.
-/// Consumers must ignore unknown fields.
-///
-/// The value describes a RELEASED build. On an unreleased build it names the version the
-/// next release will carry, which that build may not yet emit in full; `docs/docs/logging.md`
-/// states this to consumers.
-///
-/// Consumers must split on `'.'` and compare each half as an **integer**. Do not
-/// compare the string lexically: `"1.10"` sorts *before* `"1.9"`.
-///
-/// One counter covers both audit families, authorization and operational. Separate
-/// counters would be worse for the operational family: its `context` is supplied by
-/// whoever builds an [`OperationRecord`], including crates outside this repository, so no
-/// version stamped here could describe those shapes accurately.
-///
-/// See the audit-log section of `docs/docs/developer-guide.md` for what to do when
-/// the format changes, and `docs/docs/logging.md` for the consumer-facing contract.
+/// Derived from `audit-format/` by the format checker. Never edited by hand: write a fragment
+/// instead. See the audit log section of `docs/docs/developer-guide.md`.
 pub const AUDIT_FORMAT: &str = "1.0";
 
 /// The `event_source` every audit record carries: what marks a log line as one.
