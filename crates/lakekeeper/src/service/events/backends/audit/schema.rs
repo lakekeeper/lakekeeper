@@ -26,7 +26,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::{SchemaGenerator, generate::SchemaSettings};
-use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::part::{Kind, Registration};
@@ -138,18 +137,11 @@ fn drop_null_alternative(spec: &mut Value) {
     }
 }
 
-/// Insert `map` under `extension` on a vocabulary's definition, or nothing when it is empty.
-fn add_key_map<V: Serialize>(def: &mut Value, extension: &str, map: &BTreeMap<&str, V>) {
-    if !map.is_empty()
-        && let Some(object) = def.as_object_mut()
-    {
-        object.insert(extension.to_owned(), json!(map));
-    }
-}
-
-/// What each key holds, keyed by the object and the key: the schema schemars writes for the
-/// type the key holds, from the generator the rest of the document is written with, so a part
-/// a key holds lands under `$defs` like any other.
+/// Each key as a property of the object it belongs to, keyed by the object and the key: the
+/// schema schemars writes for the type the key holds, from the generator the rest of the
+/// document is written with, so a part a key holds lands under `$defs` like any other. An
+/// `entity` key holds nothing, and its value is a string. The key's doc comment is the
+/// property's description.
 ///
 /// The keys of `regs`, and every key of an `action` or an `entity` whoever registered it: an
 /// action of one crate carries the keys Lakekeeper declares for that object.
@@ -165,32 +157,19 @@ fn key_schemas(generator: &mut SchemaGenerator, regs: &[&Registration]) -> KeySc
             continue;
         };
         for name in names {
-            if let Some(schema) = name.value {
-                out.entry((object, name.text))
-                    .or_insert_with(|| schema(generator).to_value());
-            }
+            out.entry((object, name.text)).or_insert_with(|| {
+                let mut spec = name.value.map_or_else(
+                    || json!({ "type": "string" }),
+                    |schema| schema(generator).to_value(),
+                );
+                if let Some(object) = spec.as_object_mut() {
+                    object.insert("description".into(), json!(name.doc));
+                }
+                spec
+            });
         }
     }
     out
-}
-
-/// The keys of `reg` whose value is a whole object, each pointing at that object's definition.
-fn key_shapes(
-    reg: &Registration,
-    key_schemas: &KeySchemas,
-    vocabularies: &BTreeSet<String>,
-) -> BTreeMap<&'static str, Value> {
-    let Kind::Keys { object, names } = reg.kind else {
-        return BTreeMap::new();
-    };
-    names
-        .iter()
-        .filter_map(|name| {
-            let schema = key_schemas.get(&(object, name.text))?;
-            let target = schema.get("$ref")?.as_str()?.rsplit('/').next()?;
-            (!vocabularies.contains(target)).then(|| (name.text, schema.clone()))
-        })
-        .collect()
 }
 
 /// The definitions the registrations contribute, plus every type they reference.
@@ -204,11 +183,6 @@ fn key_shapes(
 fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     let mut generator = SchemaGenerator::new(SchemaSettings::draft2020_12());
     let key_schemas = key_schemas(&mut generator, regs);
-    let vocabularies: BTreeSet<String> =
-        registrations(|reg| matches!(reg.kind, Kind::Values { .. }))
-            .iter()
-            .map(|reg| short_type_name((reg.type_name)()))
-            .collect();
     let mut defs: BTreeMap<String, Value> = BTreeMap::new();
     let mut claimed: BTreeMap<String, &'static str> = BTreeMap::new();
     let mut claim = |name: &str, type_name: &'static str| {
@@ -237,7 +211,10 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                 claim(&name, (reg.type_name)());
                 defs.insert(name, schema);
             }
-            Kind::Values { .. } | Kind::Keys { .. } => {
+            // A key is published as a property of the object it belongs to, with its own
+            // description, so a key set needs no definition of its own.
+            Kind::Keys { .. } => {}
+            Kind::Values { .. } => {
                 // A name is a string in a list, so JSON Schema gives it nowhere to carry its
                 // own description. This map is where a variant's doc comment reaches a
                 // consumer; without it the schema lists the names and explains none of them.
@@ -250,17 +227,9 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                     .collect();
                 let mut names: Vec<&str> = reg.kind.names().iter().map(|n| n.text).collect();
                 names.sort_unstable();
-                // A value vocabulary names the field its values fill; a key vocabulary names
-                // the object its variants are keys of. Different extensions, because a
-                // consumer and the format check both act on the difference: a new value
-                // changes no format, a new key adds a field.
-                let place = match reg.kind {
-                    Kind::Keys { .. } => "x-audit-keys-of",
-                    _ => "x-audit-field",
-                };
                 // An open value set lists its values beside `type`, not as an `enum`, so a
-                // validator accepts a value a later release adds. A closed set and a key set
-                // cannot grow without a format change, so `enum` states exactly what they are.
+                // validator accepts a value a later release adds. A closed set cannot grow
+                // without a format change, so `enum` states exactly what it is.
                 let listed = match reg.kind {
                     Kind::Values { closed: false, .. } => "x-audit-values",
                     _ => "enum",
@@ -269,19 +238,14 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
                     "type": "string",
                     listed: names,
                     "x-audit-kind": reg.kind.as_str(),
-                    place: reg.kind.wire_place(),
+                    "x-audit-field": reg.kind.wire_place(),
                 });
-                // What a vocabulary says about its own names, keyed by name. These sit on
-                // the vocabulary and not on the object the names belong to, because the
-                // object is shared: `context` takes keys from every emitter, and the crate
-                // that declares the object has never heard of the others. A consumer reads
-                // what a key holds from the schema of whoever declared the key.
-                add_key_map(&mut def, "x-audit-descriptions", &descriptions);
-                add_key_map(
-                    &mut def,
-                    "x-audit-key-shapes",
-                    &key_shapes(reg, &key_schemas, &vocabularies),
-                );
+                // What a vocabulary says about its own values, keyed by value.
+                if !descriptions.is_empty()
+                    && let Some(object) = def.as_object_mut()
+                {
+                    object.insert("x-audit-descriptions".into(), json!(descriptions));
+                }
                 let name = short_type_name((reg.type_name)());
                 claim(&name, (reg.type_name)());
                 defs.insert(name, def);
@@ -382,15 +346,16 @@ pub fn assert_carried_keys_are_declared_keys<E: super::AuditEmitter>() {
     );
 }
 
-/// The nested key-value objects of a record: the vocabulary holding an object's keys, and
-/// the definition of that object where the emitter declaring the keys also owns the object.
-const NESTED: [(&str, &str); 1] = [("context", "HandlerContext")];
+/// The objects whose keys are properties: the vocabulary holding an object's keys, and the
+/// definition of that object. Where the emitter declaring the keys does not own the object,
+/// its schema says what its own keys hold in a definition of the same name.
+const NESTED: [(&str, &str); 2] = [("context", "HandlerContext"), ("entity", "EntityRecord")];
 
-/// Type the keys of a nested object that this emitter declares.
+/// Publish the keys this emitter declares for a nested object as that object's properties.
 ///
 /// The object stays open — `additionalProperties` is untouched — because another product
 /// contributes keys of its own, and the crate owning this definition has never heard of
-/// them. A key of another product is typed by the branches of that product's own schema.
+/// them. A key of another product is typed by that product's own schema.
 fn type_nested_keys(
     defs: &mut BTreeMap<String, Value>,
     regs: &[&Registration],
@@ -405,14 +370,7 @@ fn type_nested_keys(
             })
             .flatten()
             .filter_map(|name| {
-                let mut spec = key_schemas.get(&(vocabulary, name.text))?.clone();
-                // The key's own doc comment: a property of a published object carries its
-                // description like any other, and a test holds every property to that.
-                if !name.doc.is_empty()
-                    && let Some(object) = spec.as_object_mut()
-                {
-                    object.insert("description".into(), json!(name.doc));
-                }
+                let spec = key_schemas.get(&(vocabulary, name.text))?.clone();
                 Some((name.text.to_string(), spec))
             })
             .collect();
@@ -432,7 +390,12 @@ fn type_nested_keys(
             })
         });
         if let Some(object) = def.as_object_mut() {
-            object.insert("properties".into(), Value::Object(properties));
+            let existing = object
+                .entry("properties")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(existing) = existing.as_object_mut() {
+                existing.extend(properties);
+            }
         }
     }
 }

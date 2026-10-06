@@ -8,43 +8,6 @@
   },
   "x-audit-crate": "lakekeeper",
   "$defs": {
-    "ActionContextKey": {
-      "type": "string",
-      "enum": [
-        "allow_partial",
-        "base_location",
-        "created_before",
-        "deletes",
-        "destination",
-        "dry_run",
-        "force",
-        "format",
-        "generic_table_id",
-        "name",
-        "narrowed_privileges",
-        "principal",
-        "principals",
-        "privilege_scope",
-        "privileges",
-        "project_id",
-        "properties",
-        "purge",
-        "recursive",
-        "removed_properties",
-        "requested_provider_id",
-        "requested_source_id",
-        "resource_types",
-        "root_level",
-        "source",
-        "table_id",
-        "target_refs",
-        "update_kinds",
-        "updated_properties",
-        "writes"
-      ],
-      "x-audit-kind": "keys",
-      "x-audit-keys-of": "action"
-    },
     "ActionRecord": {
       "type": "object",
       "properties": {
@@ -78,7 +41,8 @@
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The namespace path the entity is being moved from."
               }
             }
           }
@@ -98,23 +62,27 @@
             "properties": {
               "deletes": {
                 "type": "integer",
-                "format": "int64"
+                "format": "int64",
+                "description": "The number of entries the request asked to revoke, before deduplication."
               },
               "principals": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
               },
               "privileges": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege."
               },
               "writes": {
                 "type": "integer",
-                "format": "int64"
+                "format": "int64",
+                "description": "The number of entries the request asked to grant, before deduplication."
               }
             }
           }
@@ -136,25 +104,29 @@
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The property keys being removed."
               },
               "target_refs": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The branch or tag references the commit targets."
               },
               "update_kinds": {
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/TableUpdateKind"
-                }
+                },
+                "description": "The kinds of update the commit contains."
               },
               "updated_properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties being set, verbatim. The keys are the client's data."
               }
             }
           }
@@ -173,22 +145,27 @@
           "then": {
             "properties": {
               "base_location": {
-                "type": "string"
+                "type": "string",
+                "description": "The storage location the client requested."
               },
               "format": {
-                "type": "string"
+                "type": "string",
+                "description": "The table format the client requested."
               },
               "generic_table_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The generic-table id the client requested."
               },
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties the client supplied, verbatim. The keys are the client's data."
               }
             }
           }
@@ -207,13 +184,15 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties the client supplied, verbatim. The keys are the client's data."
               }
             }
           }
@@ -232,10 +211,12 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "project_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The project id the client requested."
               }
             }
           }
@@ -254,13 +235,16 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "requested_provider_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The role provider the client named."
               },
               "requested_source_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The source id the client named."
               }
             }
           }
@@ -279,16 +263,19 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties the client supplied, verbatim. The keys are the client's data."
               },
               "table_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The table id the client requested."
               }
             }
           }
@@ -307,7 +294,8 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               }
             }
           }
@@ -326,13 +314,15 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               },
               "properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties the client supplied, verbatim. The keys are the client's data."
               }
             }
           }
@@ -351,7 +341,8 @@
           "then": {
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "The name the client asked to create."
               }
             }
           }
@@ -370,13 +361,16 @@
           "then": {
             "properties": {
               "force": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked to force the operation."
               },
               "purge": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked to purge the data."
               },
               "recursive": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked for a recursive delete."
               }
             }
           }
@@ -395,10 +389,12 @@
           "then": {
             "properties": {
               "force": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked to force the operation."
               },
               "purge": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked to purge the data."
               }
             }
           }
@@ -420,10 +416,12 @@
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The namespace path the entity is being moved to."
               },
               "force": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked to force the operation."
               }
             }
           }
@@ -442,28 +440,34 @@
           "then": {
             "properties": {
               "dry_run": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the call only reports what it would do and changes nothing."
               },
               "narrowed_privileges": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string"
+                "type": "string",
+                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
               },
               "privilege_scope": {
-                "$ref": "#/$defs/PrivilegeScope"
+                "$ref": "#/$defs/PrivilegeScope",
+                "description": "`every` when the request reaches every privilege a matching grant can carry, `only` when it names a set."
               },
               "resource_types": {
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/ResourceType"
-                }
+                },
+                "description": "The resource kinds the request reaches."
               },
               "root_level": {
-                "$ref": "#/$defs/RootLevelGrants"
+                "$ref": "#/$defs/RootLevelGrants",
+                "description": "`included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are."
               }
             }
           }
@@ -482,40 +486,49 @@
           "then": {
             "properties": {
               "allow_partial": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the client asked a revocation to proceed despite grants it could not revoke."
               },
               "created_before": {
-                "type": "string"
+                "type": "string",
+                "description": "RFC 3339 time: only grants created before it are in range. Absent when the request does not narrow on it."
               },
               "dry_run": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "`true` when the call only reports what it would do and changes nothing."
               },
               "narrowed_privileges": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string"
+                "type": "string",
+                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
               },
               "privilege_scope": {
-                "$ref": "#/$defs/PrivilegeScope"
+                "$ref": "#/$defs/PrivilegeScope",
+                "description": "`every` when the request reaches every privilege a matching grant can carry, `only` when it names a set."
               },
               "privileges": {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege."
               },
               "resource_types": {
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/ResourceType"
-                }
+                },
+                "description": "The resource kinds the request reaches."
               },
               "root_level": {
-                "$ref": "#/$defs/RootLevelGrants"
+                "$ref": "#/$defs/RootLevelGrants",
+                "description": "`included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are."
               }
             }
           }
@@ -537,13 +550,15 @@
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "The property keys being removed."
               },
               "updated_properties": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
-                }
+                },
+                "description": "The properties being set, verbatim. The keys are the client's data."
               }
             }
           }
@@ -562,10 +577,12 @@
           "then": {
             "properties": {
               "requested_provider_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The role provider the client named."
               },
               "requested_source_id": {
-                "type": "string"
+                "type": "string",
+                "description": "The source id the client named."
               }
             }
           }
@@ -1279,37 +1296,84 @@
       "description": "A single factor that contributed to an authorization decision.\n\nDiscriminated by `type`: `policy` names a policy the authorizer matched,\n`system-authority` records that a built-in authority tier decided the request, and\n`admission-gate` records that an admission gate would refuse the user. The schema is\na closed `oneOf` over those three, so a further kind is a schema change that generated\nclients have to be rebuilt for.",
       "x-audit-kind": "part"
     },
-    "EntityField": {
-      "type": "string",
-      "enum": [
-        "generic_table",
-        "generic_table_id",
-        "namespace",
-        "namespace_id",
-        "project_id",
-        "role_id",
-        "role_provider_id",
-        "role_source_id",
-        "server_id",
-        "table",
-        "table_id",
-        "table_location",
-        "tag_definition_id",
-        "task_id",
-        "user_id",
-        "view",
-        "view_id",
-        "warehouse_id"
-      ],
-      "x-audit-kind": "keys",
-      "x-audit-keys-of": "entity"
-    },
     "EntityRecord": {
       "type": "object",
       "properties": {
         "entity_type": {
           "$ref": "#/$defs/EntityType",
           "description": "The kind of resource: `table`, `namespace`, `warehouse`, …"
+        },
+        "server_id": {
+          "type": "string",
+          "description": "The server."
+        },
+        "project_id": {
+          "type": "string",
+          "description": "The containing project."
+        },
+        "warehouse_id": {
+          "type": "string",
+          "description": "The containing warehouse."
+        },
+        "namespace": {
+          "type": "string",
+          "description": "The namespace's name, its levels joined by `.`."
+        },
+        "namespace_id": {
+          "type": "string",
+          "description": "The namespace's id."
+        },
+        "table": {
+          "type": "string",
+          "description": "The table's name, qualified by its namespace."
+        },
+        "table_id": {
+          "type": "string",
+          "description": "The table's id."
+        },
+        "table_location": {
+          "type": "string",
+          "description": "The table's storage location."
+        },
+        "view": {
+          "type": "string",
+          "description": "The view's name, qualified by its namespace."
+        },
+        "view_id": {
+          "type": "string",
+          "description": "The view's id."
+        },
+        "task_id": {
+          "type": "string",
+          "description": "The task's id."
+        },
+        "role_id": {
+          "type": "string",
+          "description": "The role's id in this catalog."
+        },
+        "role_source_id": {
+          "type": "string",
+          "description": "The role's id in the source it came from."
+        },
+        "role_provider_id": {
+          "type": "string",
+          "description": "The provider the role was resolved from."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "The user's id."
+        },
+        "generic_table": {
+          "type": "string",
+          "description": "The generic table's name, qualified by its namespace."
+        },
+        "generic_table_id": {
+          "type": "string",
+          "description": "The generic table's id."
+        },
+        "tag_definition_id": {
+          "type": "string",
+          "description": "The tag definition's id."
         }
       },
       "required": [
@@ -1437,25 +1501,6 @@
           "type": "boolean",
           "description": "Whether a grant read asked about the caller's own grants."
         }
-      }
-    },
-    "HandlerContextKey": {
-      "type": "string",
-      "enum": [
-        "entity_id",
-        "invoked_by",
-        "queue_name",
-        "self_provisioning",
-        "self_read"
-      ],
-      "x-audit-kind": "keys",
-      "x-audit-keys-of": "context",
-      "x-audit-descriptions": {
-        "entity_id": "The id of the entity a task operation addressed.",
-        "invoked_by": "Which operation invoked this one, when a handler acts on behalf of another.",
-        "queue_name": "The task queue an operation addressed.",
-        "self_provisioning": "Whether the user creation was the caller provisioning itself.",
-        "self_read": "Whether a grant read asked about the caller's own grants."
       }
     },
     "InstanceAdminAction": {

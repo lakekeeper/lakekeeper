@@ -413,6 +413,18 @@ fn expand_vocabulary(
                 ),
             ));
         }
+        // A key is a property of the object it belongs to, and every property the schema
+        // publishes carries a description.
+        if matches!(vocabulary, Vocabulary::Keys(_)) && !has_doc(&v.attrs) {
+            return Err(Error::new_spanned(
+                v,
+                format!(
+                    "the key `{wire}` has no doc comment. It is a property of the object it \
+                     belongs to, and its doc comment is that property's description in the \
+                     schema."
+                ),
+            ));
+        }
         let vident = &v.ident;
         let pattern = match &v.fields {
             Fields::Unit => quote!(Self::#vident),

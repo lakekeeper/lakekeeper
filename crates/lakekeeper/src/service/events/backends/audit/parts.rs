@@ -359,7 +359,8 @@ fn grant_resource_id(resource: &GrantResource) -> Option<String> {
 /// Only the keys relevant to that request appear. What a given key carries is stated for that
 /// key, not here, because a product that plugs into Lakekeeper contributes keys of its own.
 // Typed as a free map: the keys come from every emitter's own vocabulary, so this type cannot
-// name them. `x-audit-key-shapes` on each key vocabulary is where a shaped key's schema is.
+// name them. The schema publishes each emitter's keys as properties of its own definition of
+// this object.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandlerContext(pub(crate) BTreeMap<&'static str, serde_json::Value>);

@@ -84,7 +84,7 @@ Four sets are closed by what they mean: `decision`, `root_level`, `privilege_sco
 
 In the [schema](audit/schema.md) every value set has its own definition, and a field holding one of its values points at it. An open set lists its values under `x-audit-values`, so a validator accepts a value added after your copy of the schema was generated. A closed set lists them as an `enum`, which a validator enforces.
 
-A new *key* is a different matter: it is a new field, so it raises MINOR and appears in the release notes. Ignore keys you do not recognise, as the MINOR rule above already says, but you will not meet one without a version to explain it. The [schema](audit/schema.md) marks which sets are which — `x-audit-kind: "enum"` for a set of values, `x-audit-kind: "keys"` for a set of keys.
+A new *key* is a different matter: it is a new field, so it raises MINOR and appears in the release notes. Ignore keys you do not recognise, as the MINOR rule above already says, but you will not meet one without a version to explain it. In the [schema](audit/schema.md) every key is a property of its object, with its type and description.
 
 That promise covers the values Lakekeeper itself emits. Other components write to the same log and name their own values, and `audit_format` does not govern those — whoever ships the component does. The `emitters` object names every component whose names a record carries, each with that component's own version.
 

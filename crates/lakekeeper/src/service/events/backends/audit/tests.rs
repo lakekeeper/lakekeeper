@@ -2484,14 +2484,32 @@ fn the_generated_schema_is_self_contained_and_documented() {
             _ => {}
         }
     }
+    fn properties_described(name: &str, def: &serde_json::Value) {
+        if let Some(props) = def["properties"].as_object() {
+            for (prop, spec) in props {
+                // A branch's `if` names the value it matches; it describes nothing.
+                if spec.get("const").is_some() && spec.as_object().is_some_and(|o| o.len() == 1) {
+                    continue;
+                }
+                assert!(
+                    spec.get("description").is_some(),
+                    "{name}.{prop} has no description"
+                );
+            }
+        }
+        for branch in def["allOf"].as_array().into_iter().flatten() {
+            properties_described(name, &branch["then"]);
+        }
+    }
     let schema = audit_schema_for("lakekeeper");
     let defs = schema["$defs"].as_object().expect("$defs");
-    // every registration appears
+    // every registration appears, except a key set: its keys are properties of their object
     for reg in Registration::for_emitter::<crate::Lakekeeper>()
         .filter(|r| !(r.type_name)().contains("::tests::"))
     {
         let name = match reg.kind {
-            Kind::Values { .. } | Kind::Keys { .. } => short_type_name((reg.type_name)()),
+            Kind::Keys { .. } => continue,
+            Kind::Values { .. } => short_type_name((reg.type_name)()),
             _ => (reg.schema_name.expect("part schema name"))().to_string(),
         };
         assert!(
@@ -2508,16 +2526,9 @@ fn the_generated_schema_is_self_contained_and_documented() {
             .unwrap_or_else(|| panic!("unexpected $ref {r}"));
         assert!(defs.contains_key(name), "$ref {r} does not resolve");
     }
-    // every property of every part is described
+    // every property is described, including those an `if`/`then` branch adds
     for (name, def) in defs {
-        if let Some(props) = def["properties"].as_object() {
-            for (prop, spec) in props {
-                assert!(
-                    spec.get("description").is_some(),
-                    "{name}.{prop} has no description"
-                );
-            }
-        }
+        properties_described(name, def);
     }
     // a value's description belongs to a value the set actually has
     for (name, def) in defs {

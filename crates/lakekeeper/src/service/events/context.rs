@@ -48,23 +48,41 @@ use crate::{
 #[audit_part(keys_of = "entity")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
 pub enum EntityField {
+    /// The server.
     ServerId,
+    /// The containing project.
     ProjectId,
+    /// The containing warehouse.
     WarehouseId,
+    /// The namespace's name, its levels joined by `.`.
     Namespace,
+    /// The namespace's id.
     NamespaceId,
+    /// The table's name, qualified by its namespace.
     Table,
+    /// The table's id.
     TableId,
+    /// The table's storage location.
     TableLocation,
+    /// The view's name, qualified by its namespace.
     View,
+    /// The view's id.
     ViewId,
+    /// The task's id.
     TaskId,
+    /// The role's id in this catalog.
     RoleId,
+    /// The role's id in the source it came from.
     RoleSourceId,
+    /// The provider the role was resolved from.
     RoleProviderId,
+    /// The user's id.
     UserId,
+    /// The generic table's name, qualified by its namespace.
     GenericTable,
+    /// The generic table's id.
     GenericTableId,
+    /// The tag definition's id.
     TagDefinitionId,
 }
 
@@ -183,35 +201,65 @@ pub const ENTITY_TYPE_TAG: EntityType = EntityType::Tag;
 #[audit_part(keys_of = "action")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionContextKey {
+    /// `true` when the client asked a revocation to proceed despite grants it could not revoke.
     AllowPartial(bool),
+    /// The storage location the client requested.
     BaseLocation(String),
+    /// RFC 3339 time: only grants created before it are in range. Absent when the request does not narrow on it.
     CreatedBefore(String),
+    /// The number of entries the request asked to revoke, before deduplication.
     Deletes(i64),
+    /// The namespace path the entity is being moved to.
     Destination(Vec<String>),
+    /// `true` when the call only reports what it would do and changes nothing.
     DryRun(bool),
+    /// `true` when the client asked to force the operation.
     Force(bool),
+    /// The table format the client requested.
     Format(String),
+    /// The generic-table id the client requested.
     GenericTableId(String),
+    /// The name the client asked to create.
     Name(String),
+    /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
     NarrowedPrivileges(Vec<String>),
+    /// Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
     Principal(String),
+    /// The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
     Principals(Vec<String>),
+    /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
     PrivilegeScope(Wire<PrivilegeScope>),
+    /// The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege.
     Privileges(Vec<String>),
+    /// The project id the client requested.
     ProjectId(String),
+    /// The properties the client supplied, verbatim. The keys are the client's data.
     Properties(BTreeMap<String, String>),
+    /// `true` when the client asked to purge the data.
     Purge(bool),
+    /// `true` when the client asked for a recursive delete.
     Recursive(bool),
+    /// The property keys being removed.
     RemovedProperties(Vec<String>),
+    /// The role provider the client named.
     RequestedProviderId(String),
+    /// The source id the client named.
     RequestedSourceId(String),
+    /// The resource kinds the request reaches.
     ResourceTypes(Vec<Wire<ResourceType>>),
+    /// `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are.
     RootLevel(Wire<RootLevelGrants>),
+    /// The namespace path the entity is being moved from.
     Source(Vec<String>),
+    /// The table id the client requested.
     TableId(String),
+    /// The branch or tag references the commit targets.
     TargetRefs(Vec<String>),
+    /// The kinds of update the commit contains.
     UpdateKinds(Vec<Wire<TableUpdateKind>>),
+    /// The properties being set, verbatim. The keys are the client's data.
     UpdatedProperties(BTreeMap<String, String>),
+    /// The number of entries the request asked to grant, before deduplication.
     Writes(i64),
 }
 

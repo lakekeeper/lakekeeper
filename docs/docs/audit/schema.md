@@ -56,19 +56,15 @@ The schema carries these extension keywords. A generic JSON Schema tool ignores 
 | Keyword | On | Meaning |
 |---|---|---|
 | `x-audit-emitter` | the document | The product this schema describes, and the version of what it contributes |
-| `x-audit-kind` | each definition | `shape` for a whole record, `part` for a nested object, `context` for an operation's own detail, `enum` for a set of values, open or closed, `keys` for a closed set of object keys |
+| `x-audit-kind` | each definition | `shape` for a whole record, `part` for a nested object, `context` for an operation's own detail, `enum` for a set of values, open or closed |
 | `x-audit-values` | an open `enum` | The values the set held when the schema was generated. A later release may add one |
 | `x-audit-field` | each `enum` | The field whose values these are. Several fields draw from more than one set, so the set alone does not tell you where it is used |
-| `x-audit-keys-of` | each `keys` | The object whose keys these are |
-| `x-audit-descriptions` | an `enum` or `keys` | What each name means, keyed by the name. Present for the names that carry a description; a name absent from the map has none |
-| `x-audit-key-shapes` | a `keys` set | What sits under a key whose value is an object, keyed by the key and pointing at the definition. Present only where at least one key declares a shape, so its absence means none does |
+| `x-audit-descriptions` | an `enum` | What each value means, keyed by the value. Present for the values that carry a description; a value absent from the map has none |
 | `x-audit-open` | a property | The value comes from whichever product wrote the record, so this schema cannot list what it may hold |
-
-Value sets and `keys` sets are both lists of strings, and they change in different ways.
 
 A value set lists what one field can hold. An open set may gain a value in any release, and your consumer must treat an unrecognised one as data, not as an error. Adding one is not a format change. A closed set gains a value only in a major version.
 
-A `keys` set lists the keys of an object, so its members are field names. A later release may add one, and that *is* a format change — a minor one — because the object gains a field. Removing either is a major change.
+The keys of an object are its `properties`, each with its type and description. An action's keys depend on its `action_name`, so `ActionRecord` lists them per action in `allOf` branches. A later release may add a key, and that *is* a format change — a minor one — because the object gains a field. Removing a key or a value is a major change.
 
 ## Versions
 
