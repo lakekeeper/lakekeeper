@@ -108,7 +108,7 @@ pub mod audit {
         AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, EmitterStamp,
         Kind, OperationRecord, OperationValues, OutcomeValues, RecordContextKey, RecordOrigin,
         Registration, Vocabulary, Wire, WireKey, WireName, enabled, is_emitter_name,
-        is_major_minor, warn_on_retired_audit_filter,
+        is_major_minor, log_format, warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::{schema, validate};

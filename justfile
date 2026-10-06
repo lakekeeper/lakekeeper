@@ -83,9 +83,9 @@ check-audit-format base="origin/main":
     python3 .github/scripts/check-audit-format.py {{base}}
 
 # Changes nothing. See .github/RELEASING.md.
-# Print the audit log block for the release notes of the last release tag
-audit-format-release-notes:
-    @python3 .github/scripts/check-audit-format.py --release-notes
+# Print the audit log block for the release notes of a tagged release
+audit-format-release-notes version:
+    @python3 .github/scripts/check-audit-format.py --release-notes {{version}}
 
 # Refuses, and changes nothing, until the first line of every fragment is in this release's
 # section of the release notes. Paste the output of `audit-format-release-notes` first.

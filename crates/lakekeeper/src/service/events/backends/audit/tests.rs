@@ -77,21 +77,9 @@ where
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let logs = CapturedLogs::default();
-    // Mirrors the binary's subscriber. Every setting is pinned, including those
-    // matching today's defaults, so a `tracing-subscriber` upgrade that changes a
-    // default cannot silently change what every test sees.
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        // Production sets this; `Json::default()` leaves it `true`. Without it
-        // the helper renders a `span` object the binary never emits whenever a
-        // span is active, as the router's request span always is in production.
-        .with_current_span(false)
-        .with_span_list(true)
-        // Production gates these on `CONFIG_BIN.debug.extended_logs`, off by
-        // default. Pinned off so line numbers never leak into a captured record.
-        .with_file(false)
-        .with_line_number(false)
+    // The binary's log format, without file and line numbers, which would leak into a
+    // captured record.
+    let subscriber = crate::audit::log_format(false)
         .with_writer(logs.clone())
         .finish();
 

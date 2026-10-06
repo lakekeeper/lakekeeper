@@ -781,9 +781,7 @@ mod tests {
         }
 
         let buf = Buf::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
+        let subscriber = crate::audit::log_format(false)
             .with_writer(buf.clone())
             .finish();
         tracing::subscriber::with_default(subscriber, emit);

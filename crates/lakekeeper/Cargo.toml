@@ -106,6 +106,7 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+tracing-subscriber = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
 url = { workspace = true }
@@ -136,7 +137,6 @@ similar = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
-tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints.rust]

@@ -438,18 +438,19 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Only a pull request has a merge base to compare against; this workflow also runs on
-    # pushes and manual dispatches, where there is nothing to gate. The condition sits on
-    # the steps rather than on the job: a skipped job skips everything that `needs` it,
-    # which would stop `tests-pass` reporting on pushes to main. With no job-level
-    # condition the job runs, does nothing, and succeeds.
+    # Runs on pull requests and on pushes. A pull request that passed against an older base
+    # can merge after a release tag or after another format change; the push run checks
+    # the branch as merged. The condition sits on the steps rather than on the job: a
+    # skipped job skips everything that `needs` it, which would stop `tests-pass` reporting
+    # on manual dispatches. With no job-level condition the job runs, does nothing, and
+    # succeeds.
     #
     # Nothing here reads the pull request title or body. What a format change owes is a
     # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
     # read and the release recipe can assemble. A description gate could do neither.
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           persist-credentials: false
           # Needs the base commit to diff against and the last release tag as the version
@@ -457,15 +458,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Check the change is recorded and AUDIT_FORMAT is the version it implies
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          # The branch this pull request targets. A `rel-*` branch freezes the audit log
-          # format: a patch that moved it would give one version number two meanings, one
-          # per release line, with no way for a consumer to tell them apart.
-          BASE_BRANCH: ${{ github.base_ref }}
+          # A pull request compares with its base; a push with the commit the branch
+          # pointed at before, or with the first parent when that is not available.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          # The branch the change lands on. A `rel-*` branch freezes the audit log format:
+          # a patch that moved it would give one version number two meanings, one per
+          # release line, with no way for a consumer to tell them apart.
+          BASE_BRANCH: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
         run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
           python3 .github/scripts/check-audit-format.py "${BASE_SHA}" --base-branch "${BASE_BRANCH}"
       - name: Self-test the checker
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: python3 .github/scripts/check-audit-format.py --self-test

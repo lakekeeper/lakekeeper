@@ -142,9 +142,11 @@ A build between releases (`main`, a `rel-*` branch, or a build from source) carr
 
 Patch releases never change the audit log format: every `x.y.z` emits what `x.y.0` emitted.
 
-| Lakekeeper release | `audit_format` |
-| ------------------ | -------------- |
-| 0.13.x and earlier | not emitted    |
+Each row holds from its release up to the release in the next row.
+
+| From Lakekeeper release | `audit_format` |
+| ----------------------- | -------------- |
+| (earlier)               | not emitted    |
 
 ##### Not covered by `audit_format`
 

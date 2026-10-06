@@ -6,7 +6,27 @@
 //! order (`serde_json` runs with `preserve_order`) and absent optionals are absent, not `null`.
 
 use serde::Serialize;
+use tracing_subscriber::fmt::{
+    SubscriberBuilder,
+    format::{Format, Json, JsonFields},
+};
 use valuable::{Listable, Mappable, Valuable, Value, Visit};
+
+/// The JSON log format every binary installs: one JSON object per line, with an event's
+/// fields as top-level keys.
+///
+/// An audit record's shape is the shape of its line under this format, so every test that
+/// captures records uses it too. `extended_logs` adds the source file and line number to each
+/// line.
+pub fn log_format(extended_logs: bool) -> SubscriberBuilder<JsonFields, Format<Json>> {
+    tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_span_list(true)
+        .with_file(extended_logs)
+        .with_line_number(extended_logs)
+}
 
 /// A rendered record part: a JSON tree carried as one `tracing` field.
 ///
@@ -186,17 +206,11 @@ mod tests {
         }
     }
 
-    /// Emit `value` through the bridge under the JSON formatter the binary configures, and
+    /// Emit `value` through the bridge under the binary's log format, and
     /// return what the subscriber wrote for the field.
     fn through_subscriber(value: &serde_json::Value) -> serde_json::Value {
         let logs = Captured::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(false)
-            .with_span_list(true)
-            .with_writer(logs.clone())
-            .finish();
+        let subscriber = log_format(false).with_writer(logs.clone()).finish();
         let bridged = AuditJson::from(value.clone());
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(probe = tracing::field::valuable(&bridged), "probe");

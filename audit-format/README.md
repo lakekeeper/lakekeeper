@@ -6,7 +6,7 @@
 
 | Path | What |
 |------|------|
-| `unreleased/*.md` | One fragment per change: its level, and text for the release notes. Written in the pull request that makes the change. Fragments the last release tag carries shipped with it; `just audit-format-release` clears them. |
+| `unreleased/*.md` | One fragment per change: its level, and text for the release notes. Written in the pull request that makes the change. Fragments the last release tag carries with the same text shipped with it; `just audit-format-release` clears them. |
 | `TEMPLATE.md` | What a fragment looks like. Not a fragment: only `unreleased/*.md` is read. |
 
 ## Writing a fragment

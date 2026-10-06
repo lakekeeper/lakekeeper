@@ -19,7 +19,7 @@ This schema describes what **Lakekeeper** contributes to a record. A product run
 | Lakekeeper        | `lakekeeper`       | `schema.json`       |
 | Lakekeeper+       | `lakekeeper_plus`  | `schema-plus.json`  |
 
-Each schema is published by its own product's releases. `schema-plus.json` is present from the first Lakekeeper+ release with an audit format.
+The docs of a release carry that release's schemas: `schema.json` from the Lakekeeper release, and `schema-plus.json` from the Lakekeeper+ release of the same minor version, added once it is out. The `nightly` docs carry the schemas of releases still in development.
 
 The keys of `emitters` on a record name the products that contributed to it, so they tell you which schemas apply. Each value is the version of that product's contribution. A record naming two products, for example when an authorizer added an action name or a `context` key to a record Lakekeeper built, is governed by both schemas.
 

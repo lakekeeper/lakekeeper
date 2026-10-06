@@ -139,13 +139,9 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     // Thread-local, not global: `sqlx::test` runs on a current-thread runtime, so the
     // detached `tokio::spawn` that dispatches audit events is polled on this same thread
     // and sees this subscriber. A global subscriber would race with other test binaries.
-    // Mirrors the binary's formatter so the captured records are shaped like production's.
+    // The binary's log format, so the captured records are shaped like production's.
     let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(false)
-            .with_span_list(true)
+        lakekeeper::audit::log_format(false)
             .with_writer(logs.clone())
             .finish(),
     );

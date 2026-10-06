@@ -21,7 +21,7 @@ in CI rather than in a Rust test.
 
 Check a branch:  python3 .github/scripts/check-audit-format.py <base-ref> [--base-branch <name>]
 Write the version: python3 .github/scripts/check-audit-format.py --write-version
-Release notes:   python3 .github/scripts/check-audit-format.py --release-notes
+Release notes:   python3 .github/scripts/check-audit-format.py --release-notes <version>
 After a release: python3 .github/scripts/check-audit-format.py --release <version>
 Self-test:       python3 .github/scripts/check-audit-format.py --self-test
 Read version:    python3 .github/scripts/check-audit-format.py --print-version <rev>
@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from functools import lru_cache
 import re
 import hashlib
 import subprocess
@@ -43,6 +44,11 @@ AUDIT_DIR = "crates/lakekeeper/src/service/events/backends/audit"
 # The published schema of this repository's emitter, written by `just update-audit-schema`.
 # Diffed across the merge base like the fixtures.
 SCHEMA_PATH = "docs/docs/audit/schema.json"
+
+# The parts of a fixture record this repository's emitter owns, as JSON pointers, or `None`
+# for the whole record. An emitter that fills in only some of a record compares only those
+# parts: a change to the rest is another emitter's, and versioned there.
+FIXTURE_PATHS: list[str] | None = None
 
 # Optional per-repository overrides of the paths above, so another repository can run this
 # checker on its own schema and declaration. Read once from the working tree, first.
@@ -57,12 +63,13 @@ def load_config() -> None:
     """Override the path constants from `CONFIG_PATH`, if the file exists.
 
     Covers every path and pattern the checker uses: the version constant and the tree
-    searched for it, the schema, the fragments, the release tag pattern, the release notes
-    and the release table. The defaults are Lakekeeper's, so this repository needs no config
+    searched for it, the field the release notes name, the upstream emitter, the developer
+    guide, the schema, the fragments, the parts of a fixture compared, the release tag
+    pattern, the release notes and the release table. The defaults are Lakekeeper's, so this repository needs no config
     file.
     """
     global AUDIT_DIR, SCHEMA_PATH, FRAGMENT_DIR, RELEASE_TAG_PATTERN, RELEASE_NOTES_PATH
-    global RELEASE_TABLE_PATH
+    global RELEASE_TABLE_PATH, FIXTURE_PATHS, VERSION_FIELD, DEVELOPER_GUIDE, UPSTREAM
     global VERSION_CONST, VERSION_SEARCH_PATH
     global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
@@ -80,6 +87,10 @@ def load_config() -> None:
     RELEASE_NOTES_PATH = config.get("release_notes", RELEASE_NOTES_PATH)
     RELEASE_TABLE_PATH = config.get("release_table", RELEASE_TABLE_PATH)
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
+    FIXTURE_PATHS = config.get("fixture_paths", FIXTURE_PATHS)
+    VERSION_FIELD = config.get("version_field", VERSION_FIELD)
+    DEVELOPER_GUIDE = config.get("developer_guide", DEVELOPER_GUIDE)
+    UPSTREAM = config.get("upstream", UPSTREAM)
     VERSION_CONST = config.get("version_const", VERSION_CONST)
     VERSION_SEARCH_PATH = config.get("version_search_path", VERSION_SEARCH_PATH)
     GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE = version_patterns(VERSION_CONST)
@@ -192,6 +203,16 @@ RELEASE_TAG_PATTERN = r"v(\d+)\.(\d+)\.(\d+)"
 # The release notes, which a fragment must reach before it is cleared.
 RELEASE_NOTES_PATH = "site/docs/about/release-notes.md"
 
+# Where a record carries this repository's version, as the release notes name it.
+VERSION_FIELD = "audit_format"
+
+# Where the checker's messages send a developer for the rules.
+DEVELOPER_GUIDE = "the audit log section of docs/docs/developer-guide.md"
+
+# Another emitter whose version this repository's records also carry, as `{"field": ...,
+# "name": ..., "notes": ...}`, or `None`. The release notes then say when that version moved.
+UPSTREAM: dict | None = None
+
 # The page whose table says which format each release emits, or `None` for a repository
 # without one.
 RELEASE_TABLE_PATH: str | None = "docs/docs/logging.md"
@@ -202,8 +223,8 @@ RELEASE_TABLE_PATH: str | None = "docs/docs/logging.md"
 LEVELS = ("none", "minor", "major")
 LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 
-# The minimum fragment level a fixture or schema verdict demands. `unknown` is absent: it is
-# left to a human (see `DEFERRALS`), since renaming a fixture alone triggers it.
+# The fragment level a fixture or schema verdict implies. `unknown`, a fixture compared with
+# nothing by name, implies none; `fixture_reasons` matches renamed fixtures.
 REQUIRED_LEVEL = {"breaking": "major", "additive": "minor"}
 
 FRAGMENT_LEVEL_RE = re.compile(r"^level:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
@@ -307,26 +328,77 @@ def last_release_tag(rev: str) -> str:
     return tags[-1]
 
 
+History = list[tuple[str, dict[str, str]]]
+
+
+def fragment_history(rev: str) -> History:
+    """Every release tag reachable from `rev`, oldest first, with its fragments as
+    path -> digest. The last entry is the baseline."""
+    last_release_tag(rev)
+    return [(tag, fragment_bodies_at(tag)) for tag in release_tags(rev)]
+
+
+def first_shipped(path: str, history: History, digest: str) -> str | None:
+    """The tag that shipped `path` with the text `digest`: the first of the run of tags, ending
+    at the last one, that each carried it unchanged. None when the last tag does not carry it.
+
+    A fragment cleared and later restored word for word starts a new run, so it ships again.
+    """
+    shipped = None
+    for tag, carried in reversed(history):
+        if carried.get(path) != digest:
+            break
+        shipped = tag
+    return shipped
+
+
+def shipped_by(history: History) -> dict[str, str]:
+    """The fragments the last tag in `history` shipped, as path -> digest: those it carries
+    that the tag before it did not carry with the same text.
+
+    A fragment left in place after its release, and every fragment on a `rel-*` branch cut
+    from a tag, is carried by the next tag too; only the first one shipped it. The rule is the
+    one `split_fragments` uses, so whatever raised a version is listed in its notes.
+    """
+    _, carried = history[-1]
+    previous = history[-2][1] if len(history) > 1 else {}
+    return {path: digest for path, digest in carried.items() if previous.get(path) != digest}
+
+
 def split_fragments(
-    levels: dict[str, str], digests: dict[str, str], at_tag: dict[str, str], tag: str
+    levels: dict[str, str],
+    digests: dict[str, str],
+    history: History,
+    before: dict[str, str],
 ) -> tuple[dict[str, str], dict[str, str]]:
     """The fragments as `(unreleased, released)`, each path -> level.
 
-    A fragment absent at the last release tag is unreleased: it raises the version. One that
-    the tag already carries, unchanged, shipped with that release and only waits to be
-    cleared. One the tag carries with different text describes a release that already
-    happened, so editing it is an error: write a new fragment.
+    A fragment is its file name and its text. One the last release tag carries unchanged
+    shipped with a release and only waits to be cleared. Any other is unreleased and raises
+    the version, including one that reuses the name of a cleared fragment.
+
+    `before` is the fragments as path -> digest before this change. A fragment the tag carries
+    that `before` still held unchanged, and that has different text now, was edited after it
+    shipped. That is an error: it would rewrite the notes of a release that already happened.
     """
-    edited = sorted(path for path in levels if path in at_tag and at_tag[path] != digests[path])
+    tag, at_tag = history[-1]
+    edited = sorted(
+        path
+        for path in levels
+        if path in at_tag and at_tag[path] != digests[path] and before.get(path) == at_tag[path]
+    )
     if edited:
         raise SystemExit(
             f"::error::{len(edited)} fragment(s) shipped with {tag} and were edited since:\n  "
             + "\n  ".join(edited)
             + "\n::notice::A released fragment describes that release and is cleared by "
-            "`just audit-format-release`. Restore it, and describe a new change in a new fragment."
+            "`just audit-format-release`. Restore it, and describe a new change in a new "
+            "fragment."
         )
-    unreleased = {path: level for path, level in levels.items() if path not in at_tag}
-    released = {path: level for path, level in levels.items() if path in at_tag}
+    released = {
+        path: level for path, level in levels.items() if at_tag.get(path) == digests[path]
+    }
+    unreleased = {path: level for path, level in levels.items() if path not in released}
     return unreleased, released
 
 
@@ -365,6 +437,7 @@ def fragments_at(rev: str) -> dict[str, str]:
     }
 
 
+@lru_cache(maxsize=None)
 def fragment_bodies_at(rev: str) -> dict[str, str]:
     """The fragments at `rev`, as path -> a digest of the file.
 
@@ -462,6 +535,22 @@ def shape(value: object, path: str = "") -> set[str]:
     return out
 
 
+def fixture_shape(record: object) -> set[str]:
+    """The shape of a fixture record, restricted to `FIXTURE_PATHS` when set."""
+    entries = shape(record)
+    if FIXTURE_PATHS is None:
+        return entries
+    return {
+        entry
+        for entry in entries
+        if any(
+            entry.split("\t", 1)[0] == prefix
+            or entry.startswith((f"{prefix}/", f"{prefix}[]"))
+            for prefix in FIXTURE_PATHS
+        )
+    }
+
+
 def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
     """`none`, `additive`, `breaking`, or `unknown`, comparing fixtures by name.
 
@@ -497,16 +586,6 @@ def classify_shape(base: dict[str, set[str]], head: dict[str, set[str]]) -> str:
 
 class CheckFailed(Exception):
     """A checked condition failed. The message is already GitHub-annotated."""
-
-
-# The verdict left to a human. It demands no fragment and is reported as a warning.
-DEFERRALS = {
-    "unknown": (
-        "Could not verify the change level: fixtures present before have no counterpart now "
-        "(renamed, merged or removed), so there was nothing to compare them against. Check by "
-        "hand that the fragments describe what actually changed."
-    ),
-}
 
 
 def schema_at(rev: str) -> dict | None:
@@ -828,8 +907,8 @@ def classify_change(merge_base: str, head_ref: str) -> str:
             f"::error::no audit fixtures under {AUDIT_DIR}/fixtures/ at {head_ref}. This "
             f"checker cannot compare anything without them; fix the layout."
         )
-    base_shapes = {n: shape(r) for n, r in base_records.items()}
-    head_shapes = {n: shape(r) for n, r in head_records.items()}
+    base_shapes = {n: fixture_shape(r) for n, r in base_records.items()}
+    head_shapes = {n: fixture_shape(r) for n, r in head_records.items()}
     shape_kind = classify_shape(base_shapes, head_shapes)
     compared = sorted(set(base_shapes) & set(head_shapes))
     print(
@@ -880,19 +959,57 @@ def merge_schema_verdict(shape_kind: str, merge_base: str, head_ref: str) -> str
 def change_reasons(old: str, new: str) -> set[tuple[str, str]]:
     """Every format change from `old` to `new`, as `(level, reason)`: fixture shapes compared
     by name, and the schema. A `none` finding changes no format and is left out."""
-    found: set[tuple[str, str]] = set()
-    before, after = fixtures_at(old), fixtures_at(new)
-    for name in sorted(set(before) & set(after)):
-        was, now = shape(before[name]), shape(after[name])
-        for entry in sorted(was - now):
-            found.add(("major", f"fixture `{name}`: {entry.replace(chr(9), ' ')} is gone"))
-        for entry in sorted(now - was):
-            found.add(("minor", f"fixture `{name}`: {entry.replace(chr(9), ' ')} is new"))
+    before = {name: fixture_shape(record) for name, record in fixtures_at(old).items()}
+    after = {name: fixture_shape(record) for name, record in fixtures_at(new).items()}
+    found = fixture_reasons(before, after)
     old_schema, new_schema = schema_at(old), schema_at(new)
     if old_schema is not None and new_schema is not None:
         for level, where, why in schema_findings(old_schema, new_schema):
             if level != "none":
                 found.add((level, f"schema `{where}` {why}"))
+    return found
+
+
+def fixture_reasons(
+    before: dict[str, set[str]], after: dict[str, set[str]]
+) -> set[tuple[str, str]]:
+    """Every shape change from `before` to `after`, as `(level, reason)`.
+
+    A fixture is compared with the fixture of the same name. A fixture whose name is gone is
+    compared with the one that took its place: among the names that are new, the one missing
+    the fewest of its entries. A twin under an old name never stands in for it, or a field
+    dropped in a rename would hide behind the twin. With no new name the fixture was deleted:
+    what no fixture records any more is a `major` change.
+
+    For a renamed fixture, an entry counts as new only when no fixture recorded it before, so
+    a rename into a richer scenario does not read as an addition.
+    """
+    found: set[tuple[str, str]] = set()
+    new_names = sorted(set(after) - set(before))
+    recorded_before = set().union(*before.values()) if before else set()
+    for name in sorted(before):
+        was = before[name]
+        if name in after:
+            now, label, added = after[name], f"`{name}`", after[name] - was
+        elif new_names:
+            other = min(new_names, key=lambda n: (len(was - after[n]), len(after[n]), n))
+            now, label = after[other], f"`{name}` (now `{other}`)"
+            added = (now - was) - recorded_before
+        else:
+            everything = set().union(*after.values()) if after else set()
+            for entry in sorted(was - everything):
+                found.add(
+                    (
+                        "major",
+                        f"fixture `{name}` is gone, and no fixture records "
+                        f"{entry.replace(chr(9), ' ')}",
+                    )
+                )
+            continue
+        for entry in sorted(was - now):
+            found.add(("major", f"fixture {label}: {entry.replace(chr(9), ' ')} is gone"))
+        for entry in sorted(added):
+            found.add(("minor", f"fixture {label}: {entry.replace(chr(9), ' ')} is new"))
     return found
 
 
@@ -987,6 +1104,19 @@ def check_release_branch(
     return 1
 
 
+def report_missing_fragments(errors: list[str]) -> int:
+    """Print what `decide` found wrong, and how to fix it."""
+    for error in errors:
+        print(f"::error::{error[0].upper()}{error[1:]}.")
+    print(
+        f"::notice::Copy audit-format/TEMPLATE.md to {FRAGMENT_DIR}<descriptive-name>.md, "
+        f"set its `level`, and describe the change for an operator parsing the log. "
+        f"Then run `just update-audit-fixtures`, which computes "
+        f"AUDIT_FORMAT from the fragments. See {DEVELOPER_GUIDE}."
+    )
+    return 1
+
+
 def run(base_ref: str, base_branch: str | None = None) -> int:
     merge_base = _git("merge-base", base_ref, "HEAD").strip()
     head_version = declared_version("HEAD")
@@ -1025,12 +1155,16 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
     baseline = declared_version(tag)
     print(f"Release:    {tag}, which declares {show(baseline)}")
     head_fragments, released = split_fragments(
-        fragments_at("HEAD"), fragment_bodies_at("HEAD"), fragment_bodies_at(tag), tag
+        fragments_at("HEAD"),
+        fragment_bodies_at("HEAD"),
+        fragment_history("HEAD"),
+        fragment_bodies_at(merge_base),
     )
     base_fragments = {
         path: level for path, level in fragments_at(merge_base).items() if path not in released
     }
-    if released:
+    on_release_branch = base_branch is not None and base_branch.startswith("rel-")
+    if released and not on_release_branch:
         print(
             f"::warning::{len(released)} fragment(s) shipped with {tag} and are still here:\n  "
             + "\n  ".join(sorted(released))
@@ -1071,20 +1205,23 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 
     if baseline is None:
         # The bootstrap: no release has carried an audit format version, so the version
-        # derives to the first one. The merge-base comparison is printed for the reviewer and
-        # demands nothing. Fragments are still wanted: released builds emitted audit records
-        # without the version field, and consumers may already parse them.
+        # derives to the first one. What this branch changes still owes a fragment: released
+        # builds emitted audit records without the version field, consumers may already parse
+        # them, and the fragments are the release note that tells them what moved.
         shape_kind = classify_change(merge_base, "HEAD")
         print(f"Verdict:    format {shape_kind} — no release has carried an audit format yet")
-        if shape_kind in DEFERRALS:
-            print(f"::warning::{DEFERRALS[shape_kind]}")
         if base_branch is not None and base_branch.startswith("rel-"):
             return check_release_branch(base_branch, set(), head_fragments, head_version, baseline)
+        new_reasons = change_reasons(merge_base, "HEAD")
+        for level, reason in sorted(new_reasons):
+            print(f"This branch: [{level}] {reason}")
+        errors = decide(set(), new_reasons, head_fragments, contributed)
+        if errors:
+            return report_missing_fragments(errors)
         if head_fragments:
             print(
                 f"Bootstrap:  {len(head_fragments)} fragment(s) present with no released "
-                f"baseline. The version derives to {show(required)} regardless; the fragments "
-                f"are the release note for consumers already parsing these records."
+                f"baseline. The version derives to {show(required)} regardless."
             )
     else:
         released_reasons = change_reasons(tag, "HEAD")
@@ -1098,16 +1235,7 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
             )
         errors = decide(released_reasons, new_reasons, head_fragments, contributed)
         if errors:
-            for error in errors:
-                print(f"::error::{error[0].upper()}{error[1:]}.")
-            print(
-                f"::notice::Copy audit-format/TEMPLATE.md to {FRAGMENT_DIR}<descriptive-name>.md, "
-                f"set its `level`, and describe the change for an operator parsing the log. "
-                f"Then run `just update-audit-fixtures`, which computes "
-                f"AUDIT_FORMAT from the fragments. See the audit log section of "
-                f"docs/docs/developer-guide.md."
-            )
-            return 1
+            return report_missing_fragments(errors)
 
     # Equality, not "did it move". The version is derived from committed state, so any other
     # value is wrong in a way that says something false to consumers — and equality is what
@@ -1144,13 +1272,18 @@ def run(base_ref: str, base_branch: str | None = None) -> int:
 def worktree_split() -> tuple[str, tuple[int, int] | None, dict[str, str], dict[str, str]]:
     """The last release tag, the version it declares, and the working tree's fragments split
     into `(unreleased, released)` against it."""
-    tag = last_release_tag("HEAD")
+    history = fragment_history("HEAD")
+    tag = history[-1][0]
     levels = worktree_fragments()
-    digests = {
-        path: hashlib.sha256(Path(path).read_text().encode()).hexdigest() for path in levels
-    }
-    unreleased, released = split_fragments(levels, digests, fragment_bodies_at(tag), tag)
+    unreleased, released = split_fragments(
+        levels, worktree_digests(levels), history, fragment_bodies_at("HEAD")
+    )
     return tag, declared_version(tag), unreleased, released
+
+
+def worktree_digests(paths) -> dict[str, str]:
+    """The working tree's fragments at `paths`, as path -> a digest of the file."""
+    return {path: hashlib.sha256(Path(path).read_text().encode()).hexdigest() for path in paths}
 
 
 def worktree_fragments() -> dict[str, str]:
@@ -1218,28 +1351,103 @@ HEADINGS = {
 }
 
 
-def release_notes() -> int:
-    """Print the audit log block for the release notes of the last release. Mutates nothing.
+def release_tag(version: str) -> str:
+    """The tag of the release `version`. An error when it is not here, which in a fresh
+    checkout means the tags were not fetched."""
+    tag = f"v{version.lstrip('v')}"
+    if not re.fullmatch(RELEASE_TAG_PATTERN, tag):
+        raise SystemExit(f"::error::{version} is not a release version (`{RELEASE_TAG_PATTERN}`).")
+    found = subprocess.run(
+        ["git", "rev-parse", "--quiet", "--verify", f"refs/tags/{tag}^{{commit}}"],
+        capture_output=True,
+    )
+    if found.returncode != 0:
+        raise SystemExit(
+            f"::error::there is no tag {tag} here. Tag the release first, or fetch the tags "
+            f"(`git fetch --tags`), and rerun."
+        )
+    return tag
 
-    Every fragment that release shipped appears, grouped by level, however few version
-    numbers the cycle consumed: the version says how badly a consumer is affected, this list
-    says what happened.
+
+def upstream_version_at(rev: str) -> str | None:
+    """The upstream emitter's version the fixtures at `rev` carry, or None.
+
+    Every fixture is a whole record, so each carries it; they must agree.
     """
-    tag, version, _, fragments = worktree_split()
-    if not fragments:
+    if UPSTREAM is None:
+        return None
+    values = {
+        record.get(UPSTREAM["field"])
+        for record in fixtures_at(rev).values()
+        if isinstance(record, dict) and UPSTREAM["field"] in record
+    }
+    if len(values) > 1:
+        raise SystemExit(
+            f"::error::the fixtures at {rev} carry {len(values)} values of "
+            f"`{UPSTREAM['field']}`: {sorted(map(str, values))}. Regenerate them."
+        )
+    return next(iter(values), None)
+
+
+def upstream_change(previous: str | None, current: str | None) -> tuple[str, str] | None:
+    """The `(level, text)` of the release-notes entry for the upstream emitter's version moving
+    from `previous` to `current`, or None when it did not move."""
+    upstream = UPSTREAM or {}
+    name = upstream.get("name", "Upstream")
+    field = upstream.get("field", "audit_format")
+    notes = upstream.get("notes", "see its release notes")
+    if current is None or previous == current:
+        return None
+    if previous is None:
+        return (
+            "major",
+            f"{name}'s part of each record carries `{field}` **{current}**, its first version. "
+            f"{name}'s release notes list what changed: {notes}",
+        )
+    level = "major" if previous.split(".")[0] != current.split(".")[0] else "minor"
+    return (
+        level,
+        f"{name}'s part of each record changed: `{field}` is **{current}** (was {previous}). "
+        f"{name}'s release notes list what changed: {notes}",
+    )
+
+
+def release_notes(version: str) -> int:
+    """Print the audit log block for the release notes of the release `version`. Mutates
+    nothing.
+
+    Read from the release tag: every fragment that release shipped appears, grouped by level,
+    however few version numbers the cycle consumed. The version says how badly a consumer is
+    affected, this list says what happened. With an upstream emitter configured, a move of its
+    version is listed too.
+    """
+    tag = release_tag(version)
+    history = fragment_history(tag)
+    shipped = shipped_by(history)
+    texts = {path: _git("show", f"{tag}:{path}") for path in sorted(shipped)}
+    levels = {path: parse_fragment(text, f"{path} at {tag}") for path, text in texts.items()}
+    previous_tag = history[-2][0] if len(history) > 1 else None
+    previous = declared_version(previous_tag) if previous_tag else None
+    current = declared_version(tag)
+    upstream = upstream_change(
+        upstream_version_at(previous_tag) if previous_tag else None, upstream_version_at(tag)
+    )
+    if not shipped and upstream is None:
+        if previous is not None and current != previous:
+            raise SystemExit(
+                f"::error::{tag} moved `{VERSION_FIELD}` from {show(previous)} to "
+                f"{show(current)}, but ships no fragment that says why. Find the change since "
+                f"{previous_tag} and describe it in the notes by hand."
+            )
         print("_No audit log format changes in this release._")
         return 0
-    tags = release_tags("HEAD")
-    previous = declared_version(tags[-2]) if len(tags) > 1 else None
 
-    print("### Audit log format")
+    print("#### Audit log format")
     print()
     for level in ("major", "minor", "none"):
-        bodies = [
-            fragment_body(Path(path).read_text())
-            for path in sorted(fragments)
-            if fragments[path] == level
-        ]
+        bodies = [fragment_body(texts[path]) for path in texts if levels[path] == level]
+        if upstream is not None and upstream[0] == level:
+            bodies.append(upstream[1])
         if not bodies:
             continue
         print(HEADINGS[level])
@@ -1251,7 +1459,9 @@ def release_notes() -> int:
                 print(f"  {line}" if line.strip() else "")
         print()
     was = "the first version" if previous is None else f"was {show(previous)}"
-    print(f"Records from {tag} carry `audit_format` **{show(version)}** ({was}).")
+    if current == previous:
+        was = "unchanged"
+    print(f"Records from {tag} carry `{VERSION_FIELD}` **{show(current)}** ({was}).")
     return 0
 
 
@@ -1298,7 +1508,8 @@ def do_release(version: str) -> int:
     """Clear the fragments the release `version` shipped, once their text is in its notes.
 
     Run after the release is tagged. The tag is the baseline, so nothing is moved: the
-    fragments it carries already raise nothing, and this only removes them.
+    fragments it carries already raise nothing, and this only removes them. A fragment an
+    earlier release shipped and nobody cleared goes too, checked against that release's notes.
     """
     tag, declared, _, fragments = worktree_split()
     if tag.lstrip("v") != version.lstrip("v"):
@@ -1307,6 +1518,12 @@ def do_release(version: str) -> int:
             f"release first; its fragments are the ones present at the tag. Nothing has been "
             f"changed."
         )
+    history = fragment_history("HEAD")
+    digests = worktree_digests(fragments)
+    by_release: dict[str, list[str]] = {}
+    for path in sorted(fragments):
+        shipped = first_shipped(path, history, digests[path]) or tag
+        by_release.setdefault(shipped.lstrip("v"), []).append(path)
 
     # Clearing the fragments is the only destructive step in this scheme: their prose exists
     # nowhere else, so deleting it before it reaches the release notes loses the only
@@ -1319,39 +1536,42 @@ def do_release(version: str) -> int:
                 f"::error::{RELEASE_NOTES_PATH} does not exist, so there is nowhere for "
                 f"{len(fragments)} fragment(s) to have been written. See .github/RELEASING.md."
             )
-        section = release_notes_section(notes.read_text(), version)
-        if section is None:
-            raise SystemExit(
-                f"::error::{RELEASE_NOTES_PATH} has no section for {version}. Add the "
-                f"`## v{version} (date)` section first, then paste the block from "
-                f"`just audit-format-release-notes` into it, and rerun this. Nothing has been "
-                f"changed."
-            )
-        bodies = {path: fragment_body(Path(path).read_text()) for path in fragments}
-        missing = unwritten_fragments(section, bodies)
-        if missing:
-            raise SystemExit(
-                f"::error::{len(missing)} of {len(fragments)} audit format fragment(s) do not "
-                f"appear in the {version} section of {RELEASE_NOTES_PATH}:\n  "
-                + "\n  ".join(missing)
-                + "\n::notice::Run `just audit-format-release-notes` and paste its block into "
-                "that section, then rerun this. The prose in a fragment exists nowhere else. "
-                "Nothing has been changed."
-            )
+        text = notes.read_text()
+        for shipped, paths in sorted(by_release.items()):
+            section = release_notes_section(text, shipped)
+            if section is None:
+                raise SystemExit(
+                    f"::error::{RELEASE_NOTES_PATH} has no section for {shipped}. Add the "
+                    f"`## v{shipped} (date)` section first, then paste the block from "
+                    f"`just audit-format-release-notes {shipped}` into it, and rerun this. "
+                    f"Nothing has been changed."
+                )
+            bodies = {path: fragment_body(Path(path).read_text()) for path in paths}
+            missing = unwritten_fragments(section, bodies)
+            if missing:
+                raise SystemExit(
+                    f"::error::{len(missing)} of {len(paths)} audit format fragment(s) do not "
+                    f"appear in the {shipped} section of {RELEASE_NOTES_PATH}:\n  "
+                    + "\n  ".join(missing)
+                    + f"\n::notice::Run `just audit-format-release-notes {shipped}` and paste "
+                    "its block into that section, then rerun this. The prose in a fragment "
+                    "exists nowhere else. Nothing has been changed."
+                )
 
     for path in sorted(fragments):
         Path(path).unlink()
     print(
-        f"Cleared {len(fragments)} fragment(s) shipped with {tag}, all of them present in the "
-        f"{version} section of {RELEASE_NOTES_PATH}."
+        f"Cleared {len(fragments)} fragment(s), each present in the section of "
+        f"{RELEASE_NOTES_PATH} for the release that shipped it: "
+        + (", ".join(f"{v} ({len(p)})" for v, p in sorted(by_release.items())) or "none")
+        + "."
     )
     # The standing table in the logging docs is what a consumer actually looks up: "which
     # format does the version I am running emit?". Printed, because the table is prose.
-    tags = release_tags("HEAD")
-    previous = declared_version(tags[-2]) if len(tags) > 1 else None
+    previous = declared_version(history[-2][0]) if len(history) > 1 else None
     if declared != previous and RELEASE_TABLE_PATH is not None:
         print()
-        print(f"Add this row to the release table in {RELEASE_TABLE_PATH}:")
+        print(f"Add this row at the bottom of the release table in {RELEASE_TABLE_PATH}:")
         print()
         print(f"| {version} | `{show(declared)}` |")
     return 0
@@ -1420,9 +1640,7 @@ def self_test() -> int:
 
     # ── what a verdict demands ──────────────────────────────────────────────────
     #
-    # `unknown` fires whenever a fixture is renamed, so it must not demand a fragment.
     check("unknown demands no fragment", REQUIRED_LEVEL.get("unknown"), None)
-    check("unknown still says something", bool(DEFERRALS.get("unknown")), True)
     check("breaking demands a major fragment", REQUIRED_LEVEL["breaking"], "major")
     check("additive demands a minor fragment", REQUIRED_LEVEL["additive"], "minor")
     check("none demands no fragment", REQUIRED_LEVEL.get("none"), None)
@@ -1464,7 +1682,7 @@ def self_test() -> int:
 
 ## v0.14.0 (2026-09-14)
 
-### Audit log format
+#### Audit log format
 
 **Breaking changes** — an existing parser must be updated:
 
@@ -1557,9 +1775,10 @@ def self_test() -> int:
     check("a prerelease tag does not", bool(tag_re.fullmatch("v0.14.0-rc.1")), False)
     check("a bare version does not", bool(tag_re.fullmatch("0.13.1")), False)
 
-    def split(levels, digests, at_tag):
+    def split(levels, digests, at_tag, before=None, earlier=None):
+        history = [("v0.9.0", earlier or {}), ("v1.0.0", at_tag)]
         try:
-            return split_fragments(levels, digests, at_tag, "v1.0.0")
+            return split_fragments(levels, digests, history, at_tag if before is None else before)
         except SystemExit as error:
             return f"rejected: {error}"
 
@@ -1583,6 +1802,56 @@ def self_test() -> int:
         split({"a.md": "minor", "b.md": "major"}, {"a.md": "x", "b.md": "z"}, {"a.md": "x"}),
         ({"b.md": "major"}, {"a.md": "minor"}),
     )
+    # File names describe the change in a few words, so a later change can arrive at the same
+    # name. Once the shipped fragment is cleared, the name is free again.
+    check(
+        "a cleared name reused for a new change is unreleased",
+        split({"a.md": "minor"}, {"a.md": "y"}, {"a.md": "x"}, before={}),
+        ({"a.md": "minor"}, {}),
+    )
+    check(
+        "a name an older release shipped, reused, is unreleased",
+        split({"a.md": "major"}, {"a.md": "y"}, {}, earlier={"a.md": "x"}),
+        ({"a.md": "major"}, {}),
+    )
+
+    # The notes of a release list what its tag carries that no earlier release carried with
+    # the same text: a fragment left uncleared, or carried onto a `rel-*` branch, is not listed
+    # twice, and a reused name with new text is listed.
+    check(
+        "a release ships what is new at its tag",
+        shipped_by([("v1.0.0", {"a.md": "x"}), ("v1.1.0", {"a.md": "x", "b.md": "y"})]),
+        {"b.md": "y"},
+    )
+    check(
+        "a patch release on a branch cut from the tag ships nothing again",
+        shipped_by([("v1.0.0", {"a.md": "x"}), ("v1.0.1", {"a.md": "x"})]),
+        {},
+    )
+    check(
+        "a reused name with new text ships again",
+        shipped_by([("v1.0.0", {"a.md": "x"}), ("v1.1.0", {"a.md": "y"})]),
+        {"a.md": "y"},
+    )
+    check("the first release ships all it carries", shipped_by([("v1.0.0", {"a.md": "x"})]), {"a.md": "x"})
+    check(
+        "a fragment cleared and restored word for word ships again",
+        shipped_by([("v1.0.0", {"a.md": "x"}), ("v1.1.0", {}), ("v1.2.0", {"a.md": "x"})]),
+        {"a.md": "x"},
+    )
+    left = [("v1.0.0", {"a.md": "x"}), ("v1.1.0", {"a.md": "x"})]
+    check("a fragment left in place shipped with its first tag", first_shipped("a.md", left, "x"), "v1.0.0")
+    restored = [("v1.0.0", {"a.md": "x"}), ("v1.1.0", {}), ("v1.2.0", {"a.md": "x"})]
+    check("a restored fragment shipped with the tag after the gap", first_shipped("a.md", restored, "x"), "v1.2.0")
+    reused = [("v1.0.0", {"a.md": "x"}), ("v1.1.0", {"a.md": "y"})]
+    check("a reused name shipped with its own tag", first_shipped("a.md", reused, "y"), "v1.1.0")
+
+    # Lakekeeper Plus records carry Lakekeeper's version too; the Plus notes say when it moved.
+    check("an upstream version that did not move", upstream_change("1.0", "1.0"), None)
+    check("an upstream minor", upstream_change("1.0", "1.1")[0], "minor")
+    check("an upstream major", upstream_change("1.4", "2.0")[0], "major")
+    check("the first upstream version", upstream_change(None, "1.0")[0], "major")
+    check("an upstream version no record carries", upstream_change("1.0", None), None)
 
     # Exactly one declaration is required, and agreeing values do not excuse a second one.
     def ambiguity(found):
@@ -1655,6 +1924,60 @@ def self_test() -> int:
         ),
         "additive",
     )
+    # After a release, a fixture is never simply dropped from the comparison: a fixture with
+    # a new name that records all of a gone one's shape is its successor, and what no fixture
+    # records any more is a `major` change.
+    def reasons(before, after):
+        found = fixture_reasons(
+            {n: shape(r) for n, r in before.items()}, {n: shape(r) for n, r in after.items()}
+        )
+        return sorted(level for level, _ in found)
+
+    check("a pure rename changes nothing", reasons({"old": a}, {"new": a}), [])
+    check(
+        "a rename plus a removal is major",
+        reasons({"old": {"a": 1, "b": 2}}, {"new": {"a": 1}}),
+        ["major"],
+    )
+    check(
+        "a rename plus an addition is minor",
+        reasons({"old": {"a": 1}}, {"new": {"a": 1, "b": 2}}),
+        ["minor"],
+    )
+    check("a deleted fixture whose shape survives elsewhere", reasons({"f": a, "g": a}, {"f": a}), [])
+    check(
+        "a rename that drops a field is major even beside a twin of the old shape",
+        reasons({"f": {"a": 1, "b": 2}, "g": {"a": 1, "b": 2}}, {"f2": {"a": 1}, "g": {"a": 1, "b": 2}}),
+        ["major"],
+    )
+    check(
+        "a rename into a richer scenario adds nothing another fixture already had",
+        reasons({"f": {"a": 1}, "g": {"a": 1, "b": 2}}, {"f2": {"a": 1, "b": 2}, "g": {"a": 1, "b": 2}}),
+        [],
+    )
+    check(
+        "a deleted fixture whose shape survives nowhere is major",
+        reasons({"f": a, "g": {"b": 1}}, {"f": a}),
+        ["major"],
+    )
+    check(
+        "merged into an existing, larger fixture adds nothing",
+        reasons({"f": {"a": 1, "b": 2}, "g": {"a": 1}}, {"f": {"a": 1, "b": 2}}),
+        [],
+    )
+    check("every fixture deleted is major", "major" in reasons({"f": a}, {}), True)
+
+    # An emitter that fills in only part of a record compares only that part.
+    global FIXTURE_PATHS
+    saved, FIXTURE_PATHS = FIXTURE_PATHS, ["/context", "/operation"]
+    record = {"actor": {"id": "x"}, "context": {"k": [1]}, "contexts": 1, "operation": "o"}
+    check(
+        "only the owned parts are compared",
+        sorted(fixture_shape(record)),
+        sorted({"/context\tobject", "/context/k\tarray", "/context/k[]\tint", "/operation\tstr"}),
+    )
+    FIXTURE_PATHS = saved
+
     # Shape classification, including the cases that must NOT count as format changes.
     check("identical", classify_shape({"f": shape(a)}, {"f": shape(a)}), "none")
     check(
@@ -2061,8 +2384,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--release-notes",
-        action="store_true",
-        help="print the audit log block for the release notes; mutates nothing",
+        metavar="VERSION",
+        help="print the audit log block for the release notes of VERSION; mutates nothing",
     )
     parser.add_argument(
         "--release",
@@ -2078,8 +2401,8 @@ def main(argv: list[str]) -> int:
         return print_version(args.print_version)
     if args.write_version:
         return write_version()
-    if args.release_notes:
-        return release_notes()
+    if args.release_notes is not None:
+        return release_notes(args.release_notes)
     if args.release is not None:
         return do_release(args.release)
     if args.base_ref is None:
@@ -2094,7 +2417,7 @@ if __name__ == "__main__":
         # A rejected change, reported on stdout like every other `::error::` line the run
         # prints, so the log reads in order.
         print(error)
-        print("\nSee the audit log section of docs/docs/developer-guide.md.")
+        print(f"\nSee {DEVELOPER_GUIDE}.")
         sys.exit(1)
     except AmbiguousVersion as error:
         # A broken declaration, not a rejected change — exit 2 so the two are distinguishable.

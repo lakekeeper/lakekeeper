@@ -22,7 +22,7 @@ pub use parts::{
     ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityRecord, ErrorRecord,
     GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord, UserSubjectRecord,
 };
-pub use render::AuditJson;
+pub use render::{AuditJson, log_format};
 pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
 
 use crate::service::events::{
