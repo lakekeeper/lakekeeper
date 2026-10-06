@@ -588,229 +588,219 @@ def require_same_emitter(base: dict, head: dict, whence: str) -> tuple[str | Non
     return (head_name or base_name, base_format or "?", head_format or "?")
 
 
-def _type_of(spec: object) -> str:
-    """The comparable type of a property: its JSON type, `$ref`, or the shape of its variants."""
+# Keywords that carry prose, or say which document this is, and nothing about the shape of a
+# record. Stripped before two schemas are compared.
+PROSE_KEYWORDS = frozenset(
+    {
+        "description",
+        "title",
+        "$schema",
+        "$comment",
+        "examples",
+        "x-audit-descriptions",
+        "x-audit-emitter",
+    }
+)
+
+
+def canonical(spec: object) -> object:
+    """`spec` with its prose stripped and its equivalent spellings made equal.
+
+    A `oneOf` or `anyOf` whose branches are all constants is a closed list of values, the same
+    statement as an `enum`, so it becomes one. A list of types is a set. Everything else is
+    kept, so a difference the diff below does not understand still shows as a difference.
+    """
+    if isinstance(spec, list):
+        return [canonical(item) for item in spec]
     if not isinstance(spec, dict):
-        return json.dumps(spec, sort_keys=True)
-    if "$ref" in spec:
-        return f"ref:{spec['$ref']}"
-    if "enum" in spec:
-        return "enum"
-    if "const" in spec:
-        return f"const:{json.dumps(spec['const'], sort_keys=True)}"
-    for key in ("anyOf", "oneOf"):
-        if key in spec:
-            return key + "[" + ",".join(sorted(_type_of(v) for v in spec[key])) + "]"
-    kind = spec.get("type", "any")
-    if isinstance(kind, list):
-        kind = "|".join(sorted(str(k) for k in kind))
-    if kind == "array":
-        return f"array[{_type_of(spec.get('items', {}))}]"
-    return str(kind)
-
-
-def _branches(spec: dict) -> list | None:
-    """The `oneOf`/`anyOf` branches of a definition, or `None` when it has neither."""
+        return spec
+    out = {key: canonical(value) for key, value in spec.items() if key not in PROSE_KEYWORDS}
     for key in ("oneOf", "anyOf"):
-        if isinstance(spec.get(key), list):
-            return spec[key]
+        branches = out.get(key)
+        if (
+            isinstance(branches, list)
+            and branches
+            and all(
+                isinstance(branch, dict) and "const" in branch and set(branch) <= {"const", "type"}
+                for branch in branches
+            )
+        ):
+            del out[key]
+            out["enum"] = sorted((branch["const"] for branch in branches), key=json.dumps)
+            types = {branch.get("type") for branch in branches}
+            if len(types) == 1 and None not in types:
+                out.setdefault("type", types.pop())
+    if isinstance(out.get("type"), list):
+        out["type"] = sorted(out["type"])
+    return out
+
+
+def fingerprint(spec: object) -> str:
+    """A canonical spelling of `spec`, equal for two schemas that say the same thing."""
+    return json.dumps(canonical(spec), sort_keys=True)
+
+
+def _branch_key(branch: object) -> str | None:
+    """What pairs one branch of a union or an `allOf` with its older self.
+
+    The value a consumer routes on: the branch's own constant, the constant its `type`
+    property pins, the constant its `if` matches, or the definition it points at. `None` for a
+    branch that has none of these: it is compared by its whole content instead.
+    """
+    if not isinstance(branch, dict):
+        return None
+    if "const" in branch:
+        return f"const {json.dumps(branch['const'])}"
+    tag = (branch.get("properties") or {}).get("type")
+    if isinstance(tag, dict) and "const" in tag:
+        return f"type {json.dumps(tag['const'])}"
+    for matched in ((branch.get("if") or {}).get("properties") or {}).values():
+        if isinstance(matched, dict) and "const" in matched:
+            return str(matched["const"])
+    if "$ref" in branch:
+        return f"$ref {branch['$ref']}"
     return None
+
+
+def _values(spec: dict) -> tuple[list | None, bool]:
+    """A definition's list of values and whether the set is closed: an `enum` is closed, an
+    open set lists its values under `x-audit-values`."""
+    if isinstance(spec.get("enum"), list):
+        return spec["enum"], True
+    if isinstance(spec.get("x-audit-values"), list):
+        return spec["x-audit-values"], False
+    return None, False
+
+
+def diff_schemas(base: object, head: object, path: str, out: list) -> None:
+    """Every difference between two schemas made [`canonical`], as `(level, path, reason)`
+    tuples.
+
+    Fails closed: a difference no rule below names is `major`. The rules:
+
+    - A property removed is `major`, added is `minor`, also when it is required. An existing
+      property becoming required or optional is `major`.
+    - A value removed from a set is `major`. A value added is `none` for an open set and
+      `major` for a closed one. Opening a set is `none`; closing it is `major`.
+    - Union and `allOf` branches are paired by `_branch_key`; the rest are compared as a
+      multiset of fingerprints. A branch removed is `major`. An `allOf` branch added is
+      `minor`: it says what a new value of the field carries. A union branch added is `major`:
+      a validator holding the older schema rejects a record that takes it.
+    """
+    if fingerprint(base) == fingerprint(head):
+        return
+    if not (isinstance(base, dict) and isinstance(head, dict)):
+        out.append(("major", path, "changed"))
+        return
+    handled = {"properties", "required", "enum", "x-audit-values", "oneOf", "anyOf", "allOf",
+               "items", "additionalProperties", "$defs", "then", "if"}
+
+    b_props, h_props = base.get("properties") or {}, head.get("properties") or {}
+    b_req, h_req = set(base.get("required") or []), set(head.get("required") or [])
+    for prop in sorted(set(b_props) - set(h_props)):
+        out.append(("major", f"{path}.{prop}", "removed"))
+    for prop in sorted(set(h_props) - set(b_props)):
+        out.append(("minor", f"{path}.{prop}", "added" + (" (required)" if prop in h_req else "")))
+    for prop in sorted(set(b_props) & set(h_props)):
+        if prop in h_req and prop not in b_req:
+            out.append(("major", f"{path}.{prop}", "became required"))
+        if prop in b_req and prop not in h_req:
+            out.append(("major", f"{path}.{prop}", "became optional"))
+        diff_schemas(b_props[prop], h_props[prop], f"{path}.{prop}", out)
+    # A name required without being a property: compared as a set.
+    for gone in sorted((b_req - set(b_props)) ^ (h_req - set(h_props))):
+        out.append(("major", path, f"required `{gone}` changed"))
+
+    b_values, b_closed = _values(base)
+    h_values, h_closed = _values(head)
+    if b_values is not None or h_values is not None:
+        if b_values is None or h_values is None:
+            out.append(("major", path, "became a set of values" if b_values is None else "is no longer a set of values"))
+        else:
+            for gone in sorted(set(map(json.dumps, b_values)) - set(map(json.dumps, h_values))):
+                out.append(("major", path, f"lost the value {gone}"))
+            for added in sorted(set(map(json.dumps, h_values)) - set(map(json.dumps, b_values))):
+                if h_closed:
+                    out.append(("major", path, f"closed set gained the value {added}"))
+                else:
+                    out.append(("none", path, f"gained the value {added}"))
+            if b_closed and not h_closed:
+                out.append(("none", path, "opened its set of values"))
+            if h_closed and not b_closed:
+                out.append(("major", path, "closed its set of values"))
+
+    for key in ("oneOf", "anyOf", "allOf"):
+        b_branches, h_branches = base.get(key), head.get(key)
+        if b_branches is None and h_branches is None:
+            continue
+        # An object with no conditionals is one with an empty list of them: the first one is
+        # a branch added like any other.
+        if key == "allOf":
+            b_branches = [] if b_branches is None else b_branches
+            h_branches = [] if h_branches is None else h_branches
+        if not isinstance(b_branches, list) or not isinstance(h_branches, list):
+            out.append(("major", path, f"`{key}` added" if b_branches is None else f"`{key}` removed"))
+            continue
+        b_keyed = {k: v for v in b_branches if (k := _branch_key(v)) is not None}
+        h_keyed = {k: v for v in h_branches if (k := _branch_key(v)) is not None}
+        added_level = "minor" if key == "allOf" else "major"
+        for gone in sorted(set(b_keyed) - set(h_keyed)):
+            out.append(("major", f"{path}[{gone}]", "branch removed"))
+        for added in sorted(set(h_keyed) - set(b_keyed)):
+            out.append((added_level, f"{path}[{added}]", "branch added"))
+        for both in sorted(set(b_keyed) & set(h_keyed)):
+            b_branch, h_branch = b_keyed[both], h_keyed[both]
+            if key == "allOf":
+                diff_schemas(b_branch.get("then"), h_branch.get("then"), f"{path}[{both}]", out)
+                if fingerprint(b_branch.get("if")) != fingerprint(h_branch.get("if")):
+                    out.append(("major", f"{path}[{both}]", "matches differently"))
+            else:
+                diff_schemas(b_branch, h_branch, f"{path}[{both}]", out)
+        b_rest = Counter(fingerprint(v) for v in b_branches if _branch_key(v) is None)
+        h_rest = Counter(fingerprint(v) for v in h_branches if _branch_key(v) is None)
+        for gone in sorted((b_rest - h_rest).elements()):
+            out.append(("major", path, f"lost the untagged branch {gone}"))
+        for added in sorted((h_rest - b_rest).elements()):
+            out.append((added_level, path, f"gained the untagged branch {added}"))
+
+    for key in ("items", "additionalProperties"):
+        if key in base or key in head:
+            b_sub, h_sub = base.get(key, True), head.get(key, True)
+            if isinstance(b_sub, dict) and isinstance(h_sub, dict):
+                diff_schemas(b_sub, h_sub, f"{path}.<{key}>", out)
+            elif fingerprint(b_sub) != fingerprint(h_sub):
+                out.append(("major", path, f"`{key}` changed"))
+
+    for key in sorted((set(base) | set(head)) - handled - PROSE_KEYWORDS):
+        if fingerprint(base.get(key)) != fingerprint(head.get(key)):
+            out.append(("major", path, f"`{key}` went from {json.dumps(base.get(key))} to {json.dumps(head.get(key))}"))
 
 
 def classify_schema(base: dict, head: dict) -> tuple[str, list[str]]:
     """`none`, `additive` or `breaking` for the change from `base` to `head`, with the reasons.
 
-    Definitions are the unit: a definition removed, a property removed or retyped, a property
-    made required, or a name removed from a set breaks a parser. A definition or an optional
-    property added, or a value added to a value set, does not. Descriptions carry no shape and
-    are ignored. So is every `x-audit-*` annotation but one: `x-audit-kind` says whether a list
-    of names holds a field's values or an object's keys, and an addition means different things
-    for the two.
+    Definitions are compared by name: one removed is `major`, one added `minor`, and a pair
+    is compared by [`diff_schemas`]. Reasons name the path, so a reader finds the change.
     """
-    reasons: list[str] = []
-    kind = "none"
-
-    def bump(level: str, reason: str) -> None:
-        nonlocal kind
-        reasons.append(reason)
-        if LEVEL_RANK.get(REQUIRED_LEVEL.get(level, "none"), 0) > LEVEL_RANK.get(
-            REQUIRED_LEVEL.get(kind, "none"), 0
-        ):
-            kind = level
-
-    base_defs, head_defs = base["$defs"], head["$defs"]
+    found: list[tuple[str, str, str]] = []
+    base, head = canonical(base), canonical(head)
+    base_defs, head_defs = base.get("$defs") or {}, head.get("$defs") or {}
     for name in sorted(set(base_defs) - set(head_defs)):
-        bump("breaking", f"definition `{name}` removed")
+        found.append(("major", name, "definition removed"))
     for name in sorted(set(head_defs) - set(base_defs)):
-        bump("additive", f"definition `{name}` added")
+        found.append(("minor", name, "definition added"))
     for name in sorted(set(base_defs) & set(head_defs)):
-        b, h = base_defs[name], head_defs[name]
-        if isinstance(b.get("enum"), list) and isinstance(h.get("enum"), list):
-            # Two kinds of name list, and they differ in what an addition means. A value
-            # vocabulary lists what one field can hold, and the format promises that set is
-            # open, so a new value changes nothing for a consumer. A key vocabulary lists the
-            # KEYS of an object, so its names are field names: one more is one more field,
-            # which is exactly what `minor` is for.
-            # What the names ARE: a field's values or an object's keys, and which field or
-            # object. A list that keeps its names but changes what they name is a different
-            # statement about the wire, which no consumer absorbs silently.
-            for ann in ("x-audit-kind", "x-audit-field", "x-audit-keys-of"):
-                if b.get(ann) != h.get(ann):
-                    bump(
-                        "breaking",
-                        f"`{name}`: {ann} went from {b.get(ann)!r} to {h.get(ann)!r}",
-                    )
-            keys = "keys" in (h.get("x-audit-kind"), b.get("x-audit-kind"))
-            noun = "key" if keys else "value"
-            for gone in sorted(set(b["enum"]) - set(h["enum"])):
-                bump("breaking", f"`{name}` lost the {noun} `{gone}`")
-            gained = sorted(set(h["enum"]) - set(b["enum"]))
-            if gained and keys:
-                for added in gained:
-                    bump("additive", f"`{name}` gained the key `{added}`")
-            elif gained:
-                reasons.append(f"`{name}` gained values (no format change)")
-            # What sits under a key. A key whose value gains, loses or changes its shape
-            # changes the type a consumer finds there, which no reader absorbs on its own —
-            # unlike a new key, which one can ignore. The shape's own fields are compared
-            # where that definition is, so only the pairing is judged here.
-            b_shapes = b.get("x-audit-key-shapes", {})
-            h_shapes = h.get("x-audit-key-shapes", {})
-            for key in sorted(set(b_shapes) | set(h_shapes)):
-                was, now = b_shapes.get(key), h_shapes.get(key)
-                if was == now:
-                    continue
-                if was is None:
-                    if key not in set(b["enum"]):
-                        # The key itself is new, already counted additive above. A key born
-                        # holding an object takes nothing away from a consumer: there was
-                        # no value there to change type.
-                        continue
-                    bump("breaking", f"`{name}`: key `{key}` now holds an object")
-                elif now is None:
-                    bump("breaking", f"`{name}`: key `{key}` no longer holds an object")
-                else:
-                    bump("breaking", f"`{name}`: key `{key}` holds a different shape")
-            continue
-
-        # A definition whose branches are `oneOf`/`anyOf` rather than an `enum` list: what
-        # schemars writes for an enum whose variants carry doc comments, and for a tagged
-        # union. Without this the whole definition falls through to the property comparison
-        # with no properties on either side, and a removed branch reads as no change at all.
-        # Compared as a MULTISET: two object branches both render as `object`, so a set would
-        # collapse them and hide the loss of one.
-        b_branches, h_branches = _branches(b), _branches(h)
-        if b_branches is not None and h_branches is not None:
-            b_rendered = Counter(_type_of(v) for v in b_branches)
-            h_rendered = Counter(_type_of(v) for v in h_branches)
-            for branch in sorted((b_rendered - h_rendered).elements()):
-                bump("breaking", f"`{name}` lost the variant `{branch}`")
-            gained = sorted((h_rendered - b_rendered).elements())
-            if gained:
-                # All-constant branches are a value set, where the format promises openness;
-                # anything else is a new object shape a consumer has to be ready for.
-                values_only = all("const" in v for v in b_branches + h_branches if isinstance(v, dict))
-                for branch in gained:
-                    if values_only:
-                        reasons.append(f"`{name}` gained the value `{branch}` (no format change)")
-                    else:
-                        bump("additive", f"`{name}` gained the variant `{branch}`")
-            # A branch that survived on both sides is still an object a consumer reads, so
-            # its own properties are compared the same way a definition's are. Branches are
-            # paired by their discriminator, which is what a reader routes on; a branch
-            # without one is paired by its rendered type, which is all there is to go on.
-            b_by_key = {
-                k: v
-                for v in b_branches
-                if isinstance(v, dict) and (k := _branch_key(v)) is not None
-            }
-            h_by_key = {
-                k: v
-                for v in h_branches
-                if isinstance(v, dict) and (k := _branch_key(v)) is not None
-            }
-            for key in sorted(set(b_by_key) & set(h_by_key)):
-                compare_properties(f"{name}/{key}", b_by_key[key], h_by_key[key], bump)
-            continue
-
-        # Conditional branches: an `allOf` of `if`/`then` pairs, which is how a flattened
-        # object says which keys one of its values brings with it — `drop` carries `force`
-        # and `purge`. A branch is paired by the value its `if` matches, because that is what
-        # a consumer routes on, and its `then` is an object read like any other. Falls
-        # through rather than `continue`s: the definition's own properties still count.
-        b_cond, h_cond = _conditionals(b), _conditionals(h)
-        for value in sorted(set(b_cond) - set(h_cond)):
-            bump("breaking", f"`{name}` no longer says what `{value}` carries")
-        for value in sorted(set(h_cond) - set(b_cond)):
-            bump("additive", f"`{name}` now says what `{value}` carries")
-        for value in sorted(set(b_cond) & set(h_cond)):
-            compare_properties(f"{name}[{value}]", b_cond[value], h_cond[value], bump)
-
-        compare_properties(name, b, h, bump)
+        diff_schemas(base_defs[name], head_defs[name], name, found)
+    rest_base = {k: v for k, v in base.items() if k != "$defs"}
+    rest_head = {k: v for k, v in head.items() if k != "$defs"}
+    diff_schemas(rest_base, rest_head, "(root)", found)
+    level = highest(level for level, _, _ in found) or "none"
+    kind = {"major": "breaking", "minor": "additive"}.get(level, "none")
+    reasons = [
+        f"`{where}` {why}" + ("" if lvl != "none" else " (no format change)")
+        for lvl, where, why in found
+    ]
     return kind, reasons
-
-
-def _conditionals(spec: dict) -> dict:
-    """The `if`/`then` branches of a definition, keyed by the value the `if` matches on.
-
-    One branch per value of the field the object is discriminated by, so that value is what
-    pairs a branch with its older self across two revisions.
-    """
-    out: dict[str, dict] = {}
-    for branch in spec.get("allOf") or []:
-        if not isinstance(branch, dict) or not isinstance(branch.get("then"), dict):
-            continue
-        for matched in ((branch.get("if") or {}).get("properties") or {}).values():
-            if isinstance(matched, dict) and "const" in matched:
-                out[str(matched["const"])] = branch["then"]
-                break
-    return out
-
-
-def _branch_key(branch: dict) -> str | None:
-    """The discriminator that identifies one branch of a `oneOf` across two revisions.
-
-    A tagged union carries one — `{"type": {"const": "policy"}}` — and it is what a consumer
-    switches on, so it is what pairs a branch with its older self. `None` for a branch
-    without one: two untagged object branches are indistinguishable, and pairing them by
-    position would report the difference between unrelated shapes.
-    """
-    const = (branch.get("properties", {}) or {}).get("type", {})
-    if isinstance(const, dict) and "const" in const:
-        return str(const["const"])
-    return None
-
-
-def compare_properties(name: str, b: dict, h: dict, bump) -> None:
-    """Property-by-property comparison of two objects, reporting through `bump`.
-
-    Used for a whole definition and for one branch of a `oneOf`. A branch is an object a
-    consumer reads like any other, so reading it by a different rule would let a rename
-    inside a union pass as no change.
-    """
-    b_props, h_props = b.get("properties", {}) or {}, h.get("properties", {}) or {}
-    b_req, h_req = set(b.get("required", []) or []), set(h.get("required", []) or [])
-    for prop in sorted(set(b_props) - set(h_props)):
-        bump("breaking", f"`{name}.{prop}` removed")
-    for prop in sorted(set(h_props) - set(b_props)):
-        bump("additive", f"`{name}.{prop}` added" + (" (required)" if prop in h_req else ""))
-    for prop in sorted(set(b_props) & set(h_props)):
-        if _type_of(b_props[prop]) != _type_of(h_props[prop]):
-            bump(
-                "breaking",
-                f"`{name}.{prop}` retyped: {_type_of(b_props[prop])} -> {_type_of(h_props[prop])}",
-            )
-        if prop in h_req and prop not in b_req:
-            bump("breaking", f"`{name}.{prop}` became required")
-        # The mirror case, and breaking for the same reason read the other way: a
-        # consumer that relied on the field always being there now meets records
-        # without it.
-        if prop in b_req and prop not in h_req:
-            bump("breaking", f"`{name}.{prop}` became optional")
-    if _type_of(b.get("additionalProperties", True)) != _type_of(
-        h.get("additionalProperties", True)
-    ):
-        bump("breaking", f"`{name}` changed what extra keys it accepts")
 
 
 # Which family a record belongs to. A record that carries `record_type` names its own; one
@@ -2004,34 +1994,62 @@ def self_test() -> int:
     def schema(defs: dict) -> dict:
         return {"$schema": "x", "$defs": defs}
 
+    def verdict(base: dict, head: dict) -> str:
+        return classify_schema(schema(base), schema(head))[0]
+
+    def names(base: dict, head: dict, text: str) -> bool:
+        return any(text in r for r in classify_schema(schema(base), schema(head))[1])
+
     actor = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}}, "required": ["actor_type"]}
     actor_email = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}, "email": {"type": "string"}}, "required": ["actor_type"]}
+    actor_email_req = {**actor_email, "required": ["actor_type", "email"]}
     actor_req = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "string"}}, "required": ["actor_type", "principal"]}
     actor_retyped = {"type": "object", "properties": {"actor_type": {"type": "string"}, "principal": {"type": "integer"}}, "required": ["actor_type"]}
-    decision = {"type": "string", "enum": ["allowed", "denied"]}
-    decision_more = {"type": "string", "enum": ["allowed", "denied", "deferred"]}
-    decision_less = {"type": "string", "enum": ["allowed"]}
-    check("schema: identical is none", classify_schema(schema({"A": actor}), schema({"A": actor}))[0], "none")
-    check("schema: optional property added is additive", classify_schema(schema({"A": actor}), schema({"A": actor_email}))[0], "additive")
-    check("schema: property removed is breaking", classify_schema(schema({"A": actor_email}), schema({"A": actor}))[0], "breaking")
-    check("schema: property made required is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_req}))[0], "breaking")
-    # The mirror of the case above, and breaking for the same reason read the other way: a
-    # consumer that relied on the field always being there now meets records without it.
-    check("schema: property made optional is breaking", classify_schema(schema({"A": actor_req}), schema({"A": actor}))[0], "breaking")
-    check(
-        "schema: property made optional is named",
-        any("became optional" in r for r in classify_schema(schema({"A": actor_req}), schema({"A": actor}))[1]),
-        True,
-    )
-    check("schema: property retyped is breaking", classify_schema(schema({"A": actor}), schema({"A": actor_retyped}))[0], "breaking")
-    check("schema: definition added is additive", classify_schema(schema({"A": actor}), schema({"A": actor, "B": actor}))[0], "additive")
-    check("schema: definition removed is breaking", classify_schema(schema({"A": actor, "B": actor}), schema({"A": actor}))[0], "breaking")
-    check("schema: enum value added is none", classify_schema(schema({"D": decision}), schema({"D": decision_more}))[0], "none")
-    check("schema: enum value removed is breaking", classify_schema(schema({"D": decision}), schema({"D": decision_less}))[0], "breaking")
+    actor_described = {**actor, "description": "Who acted.", "properties": {**actor["properties"], "principal": {"type": "string", "description": "The id."}}}
+    check("schema: identical is none", verdict({"A": actor}, {"A": actor}), "none")
+    check("schema: a description changed is none", verdict({"A": actor}, {"A": actor_described}), "none")
+    check("schema: optional property added is additive", verdict({"A": actor}, {"A": actor_email}), "additive")
+    check("schema: a new required property is additive", verdict({"A": actor}, {"A": actor_email_req}), "additive")
+    check("schema: property removed is breaking", verdict({"A": actor_email}, {"A": actor}), "breaking")
+    check("schema: the removed property is named by its path", names({"A": actor_email}, {"A": actor}, "`A.email` removed"), True)
+    check("schema: property made required is breaking", verdict({"A": actor}, {"A": actor_req}), "breaking")
+    check("schema: property made optional is breaking", verdict({"A": actor_req}, {"A": actor}), "breaking")
+    check("schema: property made optional is named by its path", names({"A": actor_req}, {"A": actor}, "`A.principal` became optional"), True)
+    check("schema: property retyped is breaking", verdict({"A": actor}, {"A": actor_retyped}), "breaking")
+    check("schema: definition added is additive", verdict({"A": actor}, {"A": actor, "B": actor}), "additive")
+    check("schema: definition removed is breaking", verdict({"A": actor, "B": actor}, {"A": actor}), "breaking")
+    check("schema: a type list is a set", verdict({"T": {"type": ["string", "null"]}}, {"T": {"type": ["null", "string"]}}), "none")
 
-    # Conditional branches: how a flattened object says which keys one of its values brings
-    # with it. Without these the whole `allOf` was invisible, and an action silently losing a
-    # key — or a key changing type under it — read as no change at all.
+    # Value sets: an open set lists its values under `x-audit-values`, a closed one as `enum`.
+    open_set = {"type": "string", "x-audit-values": ["allowed", "denied"], "x-audit-kind": "enum", "x-audit-field": "outcome"}
+    open_more = {**open_set, "x-audit-values": ["allowed", "denied", "deferred"]}
+    open_less = {**open_set, "x-audit-values": ["allowed"]}
+    closed_set = {"type": "string", "enum": ["allowed", "denied"], "x-audit-kind": "enum", "x-audit-field": "decision"}
+    closed_more = {**closed_set, "enum": ["allowed", "denied", "deferred"]}
+    closed_less = {**closed_set, "enum": ["allowed"]}
+    check("schema: an open set gaining a value is none", verdict({"D": open_set}, {"D": open_more}), "none")
+    check("schema: an open set losing a value is breaking", verdict({"D": open_set}, {"D": open_less}), "breaking")
+    check("schema: a closed set gaining a value is breaking", verdict({"D": closed_set}, {"D": closed_more}), "breaking")
+    check("schema: a closed set losing a value is breaking", verdict({"D": closed_set}, {"D": closed_less}), "breaking")
+    check("schema: the lost value is named", names({"D": closed_set}, {"D": closed_less}, 'lost the value "denied"'), True)
+    reopened = {**{k: v for k, v in closed_set.items() if k != "enum"}, "x-audit-values": closed_set["enum"]}
+    check("schema: opening a set is none", verdict({"D": closed_set}, {"D": reopened}), "none")
+    check("schema: closing a set is breaking", verdict({"D": reopened}, {"D": closed_set}), "breaking")
+    check("schema: a vocabulary changing its field is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-field": "decision"}}), "breaking")
+    check("schema: a vocabulary changing kind is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-kind": "part"}}), "breaking")
+    check("schema: an unknown x-audit keyword changing is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-new": True}}), "breaking")
+    check("schema: a format changing is breaking", verdict({"T": {"type": "string"}}, {"T": {"type": "string", "format": "date-time"}}), "breaking")
+
+    # A union of constants is the same statement as an `enum`, and closed like one.
+    effect = {"oneOf": [{"type": "string", "const": "permit"}, {"type": "string", "const": "forbid"}]}
+    effect_less = {"oneOf": [{"type": "string", "const": "permit"}]}
+    effect_more = {"oneOf": effect["oneOf"] + [{"type": "string", "const": "defer"}]}
+    check("schema: a constant lost from a oneOf is breaking", verdict({"E": effect}, {"E": effect_less}), "breaking")
+    check("schema: the lost constant is named", names({"E": effect}, {"E": effect_less}, 'lost the value "forbid"'), True)
+    check("schema: a constant added to a oneOf closes nothing new but is breaking", verdict({"E": effect}, {"E": effect_more}), "breaking")
+    check("schema: a oneOf of constants equals the enum", verdict({"E": effect}, {"E": {"type": "string", "enum": ["forbid", "permit"]}}), "none")
+
+    # Conditional branches: how a flattened object says which keys one of its values brings.
     def carries(**per_action: dict) -> dict:
         return {
             "type": "object",
@@ -2052,100 +2070,39 @@ def self_test() -> int:
     drop_and_commit = carries(drop={"force": {"type": "boolean"}}, commit={"target_refs": {"type": "array"}})
     drop_set = carries(drop={"root_level": {"$ref": "#/$defs/R"}})
     drop_open = carries(drop={"root_level": {"type": "string"}})
-    check("schema: a branch losing a key is breaking", classify_schema(schema({"A": drop}), schema({"A": drop_one}))[0], "breaking")
-    check("schema: a carried key retyped is breaking", classify_schema(schema({"A": drop}), schema({"A": drop_str}))[0], "breaking")
-    check("schema: a branch gaining a key is additive", classify_schema(schema({"A": drop}), schema({"A": drop_more}))[0], "additive")
-    check("schema: an action losing its branch is breaking", classify_schema(schema({"A": drop_and_commit}), schema({"A": drop_one}))[0], "breaking")
-    check("schema: an action gaining a branch is additive", classify_schema(schema({"A": drop_one}), schema({"A": drop_and_commit}))[0], "additive")
-    check("schema: dropping every branch is breaking", classify_schema(schema({"A": drop}), schema({"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}))[0], "breaking")
-    check("schema: a key losing its value set is breaking", classify_schema(schema({"A": drop_set}), schema({"A": drop_open}))[0], "breaking")
-    check(
-        "schema: the action that lost a key is named",
-        any("`A[drop].purge` removed" in r for r in classify_schema(schema({"A": drop}), schema({"A": drop_one}))[1]),
-        True,
-    )
+    check("schema: a branch losing a key is breaking", verdict({"A": drop}, {"A": drop_one}), "breaking")
+    check("schema: a carried key retyped is breaking", verdict({"A": drop}, {"A": drop_str}), "breaking")
+    check("schema: a branch gaining a key is additive", verdict({"A": drop}, {"A": drop_more}), "additive")
+    check("schema: an action losing its branch is breaking", verdict({"A": drop_and_commit}, {"A": drop_one}), "breaking")
+    check("schema: an action gaining a branch is additive", verdict({"A": drop_one}, {"A": drop_and_commit}), "additive")
+    check("schema: the first conditional is additive", verdict({"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}, {"A": drop}), "additive")
+    check("schema: dropping every branch is breaking", verdict({"A": drop}, {"A": {"type": "object", "properties": {"action_name": {"type": "string"}}}}), "breaking")
+    check("schema: a key losing its value set is breaking", verdict({"A": drop_set}, {"A": drop_open}), "breaking")
+    check("schema: the action that lost a key is named by its path", names({"A": drop}, {"A": drop_one}, "`A[drop].purge` removed"), True)
 
-    # A vocabulary that keeps its names but changes what they name is a different statement
-    # about the wire: the same list read as a field's values or as an object's keys.
-    values_voc = {"type": "string", "enum": ["a"], "x-audit-kind": "enum", "x-audit-field": "outcome"}
-    keys_voc = {"type": "string", "enum": ["a"], "x-audit-kind": "keys", "x-audit-keys-of": "context"}
-    check("schema: a vocabulary changing kind is breaking", classify_schema(schema({"V": values_voc}), schema({"V": keys_voc}))[0], "breaking")
-    check("schema: a vocabulary changing its field is breaking", classify_schema(schema({"V": values_voc}), schema({"V": {**values_voc, "x-audit-field": "decision"}}))[0], "breaking")
+    # A map whose values change type: what a free-form `context` object holds.
+    free_map = {"type": "object", "additionalProperties": {"type": "string"}}
+    check("schema: a map's value retyped is breaking", verdict({"M": free_map}, {"M": {"type": "object", "additionalProperties": {"type": "object"}}}), "breaking")
+    check("schema: a map closed is breaking", verdict({"M": free_map}, {"M": {"type": "object", "additionalProperties": False}}), "breaking")
 
-    # A key vocabulary. Its names are the keys of an object, so the same edit that is no
-    # change on a value vocabulary adds a field here. Reading the two alike reported a new
-    # audit field as no format change at all.
-    keys = {"type": "string", "enum": ["queue_name", "self_read"], "x-audit-kind": "keys", "x-audit-keys-of": "context"}
-    keys_more = {**keys, "enum": keys["enum"] + ["entity_id"]}
-    keys_less = {**keys, "enum": ["queue_name"]}
-    check("schema: a new key is a new field", classify_schema(schema({"K": keys}), schema({"K": keys_more}))[0], "additive")
-    check(
-        "schema: the new key is named",
-        any("gained the key `entity_id`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_more}))[1]),
-        True,
-    )
-    check("schema: a key removed is breaking", classify_schema(schema({"K": keys}), schema({"K": keys_less}))[0], "breaking")
-    check(
-        "schema: the lost key is named as a key",
-        any("lost the key `self_read`" in r for r in classify_schema(schema({"K": keys}), schema({"K": keys_less}))[1]),
-        True,
-    )
+    # Two untagged object branches render alike, so they are compared as a multiset.
+    tagless = {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}, {"type": "object", "properties": {"b": {"type": "string"}}}]}
+    tagless_less = {"oneOf": [tagless["oneOf"][0]]}
+    check("schema: an untagged branch removed is breaking", verdict({"T": tagless}, {"T": tagless_less}), "breaking")
+    check("schema: an untagged branch added is breaking", verdict({"T": tagless_less}, {"T": tagless}), "breaking")
 
-    # What a key holds. A key whose value stops being a string is a type change where it sits,
-    # which a consumer cannot absorb the way it ignores an unknown key.
-    shaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/A"}}}
-    reshaped = {**keys, "x-audit-key-shapes": {"queue_name": {"$ref": "#/$defs/B"}}}
-    check("schema: a key that starts holding an object is breaking", classify_schema(schema({"K": keys}), schema({"K": shaped}))[0], "breaking")
-    check("schema: a key that stops holding an object is breaking", classify_schema(schema({"K": shaped}), schema({"K": keys}))[0], "breaking")
-    check("schema: a key that holds a different shape is breaking", classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[0], "breaking")
-    check("schema: an unchanged key shape is no change", classify_schema(schema({"K": shaped}), schema({"K": shaped}))[0], "none")
-    born = {**keys, "enum": keys["enum"] + ["entity_id"], "x-audit-key-shapes": {"entity_id": {"$ref": "#/$defs/A"}}}
-    check("schema: a key born holding an object is a new key, not a type change", classify_schema(schema({"K": keys}), schema({"K": born}))[0], "additive")
-    check(
-        "schema: a key born holding an object is not reported as a shape change",
-        any("now holds an object" in r for r in classify_schema(schema({"K": keys}), schema({"K": born}))[1]),
-        False,
-    )
-    check(
-        "schema: the reshaped key is named",
-        any("key `queue_name` holds a different shape" in r for r in classify_schema(schema({"K": shaped}), schema({"K": reshaped}))[1]),
-        True,
-    )
-
-    # A value set written as `oneOf` of constants, which is what schemars produces for an
-    # enum whose variants carry doc comments. Without the branch comparison the whole
-    # definition falls through with no properties on either side and a removal reads as
-    # no change.
-    effect = {"oneOf": [{"type": "string", "const": "permit"}, {"type": "string", "const": "forbid"}]}
-    effect_less = {"oneOf": [{"type": "string", "const": "permit"}]}
-    effect_more = {"oneOf": effect["oneOf"] + [{"type": "string", "const": "defer"}]}
-    check("schema: a constant lost from a oneOf is breaking", classify_schema(schema({"E": effect}), schema({"E": effect_less}))[0], "breaking")
-    check("schema: the lost constant is named",
-          any('const:"forbid"' in r for r in classify_schema(schema({"E": effect}), schema({"E": effect_less}))[1]), True)
-    check("schema: a constant added to a oneOf is not a format change", classify_schema(schema({"E": effect}), schema({"E": effect_more}))[0], "none")
-
-    # Two object branches render alike, so the comparison must be a multiset: a set would
-    # collapse them and hide the loss of one.
-    tagged = {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}, {"type": "object", "properties": {"b": {"type": "string"}}}]}
-    tagged_less = {"oneOf": [tagged["oneOf"][0]]}
-    check("schema: one of two object variants removed is breaking", classify_schema(schema({"T": tagged}), schema({"T": tagged_less}))[0], "breaking")
-    check("schema: an object variant added is additive", classify_schema(schema({"T": tagged_less}), schema({"T": tagged}))[0], "additive")
-
-    # A tagged union's branches are objects a consumer reads, so a rename inside one is a
-    # rename like any other. Pairing is by the discriminator, because that is what the
-    # consumer switches on; two untagged branches stay a multiset, above, since nothing
-    # distinguishes them.
+    # A tagged union pairs its branches by the tag, which is what a consumer switches on.
     factor = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}}}]}
     renamed = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy_id": {"type": "string"}}}]}
     widened = {"oneOf": [{"type": "object", "properties": {"type": {"const": "policy"}, "policy-id": {"type": "string"}, "note": {"type": "string"}}}]}
-    check("schema: a rename inside a tagged branch is breaking", classify_schema(schema({"F": factor}), schema({"F": renamed}))[0], "breaking")
-    check(
-        "schema: the renamed branch property is named with its branch",
-        any("`F/policy.policy-id` removed" in r for r in classify_schema(schema({"F": factor}), schema({"F": renamed}))[1]),
-        True,
-    )
-    check("schema: a field added to a tagged branch is additive", classify_schema(schema({"F": factor}), schema({"F": widened}))[0], "additive")
-    check("schema: an unchanged tagged branch is no change", classify_schema(schema({"F": factor}), schema({"F": factor}))[0], "none")
+    retagged = {"oneOf": [{"type": "object", "properties": {"type": {"const": "rule"}, "policy-id": {"type": "string"}}}]}
+    two_kinds = {"oneOf": factor["oneOf"] + [{"type": "object", "properties": {"type": {"const": "rule"}}}]}
+    check("schema: a rename inside a tagged branch is breaking", verdict({"F": factor}, {"F": renamed}), "breaking")
+    check("schema: the renamed branch property is named by its path", names({"F": factor}, {"F": renamed}, '`F[type "policy"].policy-id` removed'), True)
+    check("schema: a field added to a tagged branch is additive", verdict({"F": factor}, {"F": widened}), "additive")
+    check("schema: an unchanged tagged branch is no change", verdict({"F": factor}, {"F": factor}), "none")
+    check("schema: a renamed tag is breaking", verdict({"F": factor}, {"F": retagged}), "breaking")
+    check("schema: a tagged branch added is breaking", verdict({"F": factor}, {"F": two_kinds}), "breaking")
 
     # What a branch owes the release notes. Pure in its four maps, so every arrangement the
     # gate acts on is checkable here rather than only on a real pull request.
@@ -2245,7 +2202,7 @@ def self_test() -> int:
           _property_spec({"array"}, {"object"}), {"type": "array", "items": {"type": "object"}})
     # The whole point of typing a null: losing it must read as a change.
     check("a field that stops being null is a retype",
-          _type_of(_property_spec({"string", "null"}, set())) != _type_of(_property_spec({"string"}, set())),
+          fingerprint(_property_spec({"string", "null"}, set())) != fingerprint(_property_spec({"string"}, set())),
           True)
     check(
         "schema: the owner that lost the value is named",
