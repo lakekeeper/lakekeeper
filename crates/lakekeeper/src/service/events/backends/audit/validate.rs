@@ -76,7 +76,7 @@ pub fn is_valid_part(schema: &Value, def: &str, value: &Value) -> bool {
 
 /// Validate every nested object of one record against the schema, by its position in the
 /// record: `actor`, the action and entity objects in either arity, every `authorizations[]`
-/// entry, `error`, and the `context` of an operation record against every registered context.
+/// entry, and `error`.
 ///
 /// # Panics
 ///
@@ -111,6 +111,19 @@ pub fn assert_record_parts_valid(schema: &Value, record: &Value, whence: &str) {
     if let Some(error) = record.get("error") {
         assert_valid_part(schema, "ErrorRecord", error, &format!("{whence}: error"));
     }
+}
+
+/// Validate an operation record's `context` against the contexts `schema` declares, when the
+/// record names `schema`'s emitter in `emitters`.
+///
+/// A context is declared by the emitter that produced the record, not by whoever owns the
+/// shape. So a product checks its own records against Lakekeeper's schema for the shape, and
+/// against its own schema here for the context.
+///
+/// # Panics
+///
+/// If the record names this emitter and its `context` matches none of the declared contexts.
+pub fn assert_context_valid(schema: &Value, record: &Value, whence: &str) {
     // An operation record's `context` is declared by the emitter that produced the record,
     // not by whoever owns the shape. A record from another emitter carries a context this
     // schema cannot know, and checking it here would demand that every product's contexts be
@@ -201,4 +214,5 @@ pub fn assert_valid_record(schema: &Value, record: &Value, whence: &str) {
         &format!("{whence}: {record_type}"),
     );
     assert_record_parts_valid(schema, record, whence);
+    assert_context_valid(schema, record, whence);
 }

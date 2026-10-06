@@ -2615,7 +2615,7 @@ fn a_filter_naming_the_retired_target_is_reported() {
 /// and would in effect demand that every product declare its contexts here.
 #[test]
 fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
-    use crate::audit::validate::assert_record_parts_valid;
+    use crate::audit::validate::assert_context_valid;
 
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     let foreign = |name: &str| {
@@ -2630,12 +2630,12 @@ fn a_context_is_checked_only_against_the_emitter_that_declared_it() {
     };
 
     // Another emitter's context: not ours to judge.
-    assert_record_parts_valid(&schema, &foreign("lakekeeper_plus"), "another emitter");
+    assert_context_valid(&schema, &foreign("lakekeeper_plus"), "another emitter");
 
     // Ours, and the context matches none we declare: caught.
     let ours = foreign("lakekeeper");
     let checked = std::panic::catch_unwind(|| {
-        assert_record_parts_valid(&schema, &ours, "this emitter");
+        assert_context_valid(&schema, &ours, "this emitter");
     });
     assert!(
         checked.is_err(),
