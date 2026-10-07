@@ -85,6 +85,7 @@ use crate::{
         },
         events::{
             APIEventContext, GrantsChangedEvent,
+            backends::audit::SubjectRecord,
             context::{
                 APIEventActions, ActionContextKey, HandlerContextKey, IntrospectPermissions,
                 ManagementAction,
@@ -1545,7 +1546,7 @@ const TABULAR_FLAGS: TabularListFlags = TabularListFlags {
 /// diff's size. The counts are kept because deduplication loses them.
 #[derive(Clone, Debug)]
 pub struct ApplyGrants {
-    principals: Vec<String>,
+    principals: Vec<SubjectRecord>,
     privileges: Vec<String>,
     writes: usize,
     deletes: usize,
@@ -1562,17 +1563,24 @@ impl ApplyGrants {
             .collect();
         privileges.sort_unstable();
         privileges.dedup();
-        // Prefixed by kind, matching the wire discriminator, so a user id and a role id
-        // that happen to coincide stay distinguishable in the log.
-        let mut principals: Vec<String> = request
+        // Ordered by kind, then id, so the list is the same however the request ordered it.
+        let mut principals: Vec<(String, UserOrRoleId)> = request
             .entries()
-            .map(|entry| match &entry.principal {
-                UserOrRole::User(user_id) => format!("user:{user_id}"),
-                UserOrRole::Role(assignee) => format!("role:{}", assignee.role_id()),
+            .map(|entry| {
+                let id = UserOrRoleId::from(&entry.principal);
+                let key = match &id {
+                    UserOrRoleId::User(user_id) => format!("user:{user_id}"),
+                    UserOrRoleId::Role(role_id) => format!("role:{role_id}"),
+                };
+                (key, id)
             })
             .collect();
-        principals.sort_unstable();
-        principals.dedup();
+        principals.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        principals.dedup_by(|a, b| a.0 == b.0);
+        let principals = principals
+            .iter()
+            .map(|(_, id)| SubjectRecord::from_id(id))
+            .collect();
         Self {
             principals,
             privileges,
@@ -3851,8 +3859,9 @@ mod tests {
             "an omitted include-root-level records as included: {unfiltered:?}"
         );
         assert!(
-            unfiltered.contains(&("principal".to_string(), "every".to_string())),
-            "covering every principal is stated, never left out: {unfiltered:?}"
+            unfiltered.contains(&("principal_scope".to_string(), "every".to_string()))
+                && !unfiltered.iter().any(|(key, _)| key == "principal"),
+            "covering every principal is stated in the scope, with no principal: {unfiltered:?}"
         );
         assert!(
             unfiltered.contains(&("privilege_scope".to_string(), "every".to_string()))
@@ -3870,7 +3879,8 @@ mod tests {
         assert!(
             narrowed.contains(&("resource_types".to_string(), "[table]".to_string()))
                 && narrowed.contains(&("root_level".to_string(), "excluded".to_string()))
-                && narrowed.contains(&("principal".to_string(), "user:oidc~alice".to_string())),
+                && narrowed.contains(&("principal_scope".to_string(), "one".to_string()))
+                && narrowed.contains(&("principal".to_string(), "{user: oidc~alice}".to_string())),
             "a narrowed request records exactly its narrowing: {narrowed:?}"
         );
         assert!(
@@ -4079,7 +4089,7 @@ mod tests {
             .collect();
         assert_eq!(
             context["principals"],
-            format!("[role:{role_id}, user:oidc~alice]")
+            format!("[{{role: {role_id}}}, {{user: oidc~alice}}]")
         );
         // The privilege is shared by both entries, so dedup collapses it while the
         // counts still distinguish the grant from the revoke.

@@ -601,6 +601,25 @@ _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_cache_hits_total{cache_type="role_ancestors"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="role_ancestors"}`: Total number of cache misses
 
+**User Cache**
+
+Caches each user's email (`UserId → email`). Read only when audit records carry emails (`LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL`, see [Logging](./logging.md)), for a user whose token does not provide one. Unlike the other caches, it also keeps a user without a row and a user without an email, so a service account named on every request costs one database read per TTL.
+
+| Configuration Key                                        | Type    | Default | Description |
+|----------------------------------------------------------|---------|---------|-----|
+| `LAKEKEEPER__CACHE__USER__ENABLED`           | boolean | `true`  | Enable/disable user caching. With the cache disabled, every lookup reads the database. Default: `true` |
+| `LAKEKEEPER__CACHE__USER__CAPACITY`          | integer | `10000` | Maximum number of users held in memory. Default: `10000` |
+| `LAKEKEEPER__CACHE__USER__TIME_TO_LIVE_SECS` | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+
+Creating, updating or deleting a user updates its entry on the worker that handled the change, including users written by first login and by role provider syncs. Other workers keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
+
+_Metrics_: The User cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_cache_size{cache_type="user"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="user"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="user"}`: Total number of cache misses
+- `lakekeeper_cache_fenced_total{cache_type="user"}`: Total number of loaded entries left uncached because a user write overlapped the load
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
@@ -692,7 +711,9 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
-| `LAKEKEEPER__AUDIT__TRACING__ENABLED` | `true` | `false` | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. |
+| `LAKEKEEPER__AUDIT__TRACING__ENABLED` | `false` | `true` | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. |
+| `LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL` | `true` | `false` | Put the email of the users an audit record names on it: the actor, the subjects of its checks, the recipients of its grants. Best-effort, from the token or the [user cache](#caching); absent when not known. See [User Emails on Audit Records](./logging.md#audit-user-emails), including the note on personal data. |
+| `LAKEKEEPER__AUDIT__TRACING__INCLUDE_ROLE_SOURCE_ID` | `false` | `true` | Put a role's `source_id` next to its id and `provider_id` on audit records, read through the [role cache](#caching). Some providers let a source id be a free-form name, so it might hold personal data. See [Role Sources on Audit Records](./logging.md#audit-role-sources). |
 
 ### Trusted Engines
 

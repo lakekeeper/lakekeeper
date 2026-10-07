@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use lakekeeper::{
     CONFIG,
     api::{
@@ -6,7 +8,10 @@ use lakekeeper::{
             ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
         },
     },
-    service::{CreateOrUpdateUserResponse, Result, RoleId, UserId, UserUpsertMode},
+    service::{
+        CreateOrUpdateUserResponse, DatabaseIntegrityError, DeletedUser, Result, RoleId, UserId,
+        UserUpsertMode, UserWrite,
+    },
 };
 
 use super::dbutils::DBErrorHandler;
@@ -21,7 +26,7 @@ pub(super) enum DbUserLastUpdatedWith {
     RoleProvider,
 }
 
-#[derive(sqlx::Type, Debug, Clone, Copy)]
+#[derive(sqlx::Type, Debug, Clone, Copy, PartialEq, Eq)]
 #[sqlx(rename_all = "kebab-case", type_name = "user_type")]
 pub(super) enum DbUserType {
     Application,
@@ -66,14 +71,112 @@ fn display_user_name(id: &str, name: Option<String>) -> String {
 }
 
 #[derive(sqlx::FromRow, Debug)]
-struct UserRow {
-    id: String,
-    name: Option<String>,
-    email: Option<String>,
-    last_updated_with: DbUserLastUpdatedWith,
-    user_type: DbUserType,
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+pub(super) struct UserRow {
+    pub(super) id: String,
+    pub(super) name: Option<String>,
+    pub(super) email: Option<String>,
+    pub(super) last_updated_with: DbUserLastUpdatedWith,
+    pub(super) user_type: DbUserType,
+    pub(super) created_at: chrono::DateTime<chrono::Utc>,
+    pub(super) updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The columns a user lifecycle event reports a change of. `last_updated_with` moving
+/// on its own is no change.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct UserIdentity<'a> {
+    pub(super) name: Option<&'a str>,
+    pub(super) email: Option<&'a str>,
+    pub(super) user_type: DbUserType,
+    pub(super) deleted: bool,
+}
+
+impl UserRow {
+    fn identity(&self, deleted: bool) -> UserIdentity<'_> {
+        UserIdentity {
+            name: self.name.as_deref(),
+            email: self.email.as_deref(),
+            user_type: self.user_type,
+            deleted,
+        }
+    }
+}
+
+/// What a write did to one user row: `None` when it changed none of the columns
+/// [`UserIdentity`] compares. `before` is the row as locked before the write, with
+/// whether it was deleted.
+pub(super) fn user_write(
+    created: bool,
+    after: (UserRow, bool),
+    before: Option<(UserRow, bool)>,
+) -> std::result::Result<Option<UserWrite>, DatabaseIntegrityError> {
+    let (after, after_deleted) = after;
+    if created {
+        return Ok(Some(UserWrite::Created(Arc::new(after.into_user()?))));
+    }
+    if let Some((previous, was_deleted)) = &before
+        && previous.identity(*was_deleted) == after.identity(after_deleted)
+    {
+        return Ok(None);
+    }
+    Ok(Some(UserWrite::Updated {
+        user: Arc::new(after.into_user()?),
+        previous: before
+            .map(|(previous, _)| previous.into_user().map(Arc::new))
+            .transpose()?,
+    }))
+}
+
+/// The rows of `ids` as they are now, with whether each is deleted. Read in the
+/// transaction that wrote them, so the read sees the write.
+pub(super) async fn user_rows(
+    ids: &[String],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<HashMap<String, (UserRow, bool)>, sqlx::Error> {
+    Ok(sqlx::query!(
+        r#"
+        SELECT
+            id,
+            name,
+            email,
+            last_updated_with AS "last_updated_with: DbUserLastUpdatedWith",
+            user_type AS "user_type: DbUserType",
+            created_at,
+            updated_at,
+            deleted_at IS NOT NULL AS "deleted!"
+        FROM users
+        WHERE id = ANY($1::TEXT[])
+        "#,
+        ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await?
+    .into_iter()
+    .map(|row| {
+        (
+            row.id.clone(),
+            (
+                UserRow {
+                    id: row.id,
+                    name: row.name,
+                    email: row.email,
+                    last_updated_with: row.last_updated_with,
+                    user_type: row.user_type,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                },
+                row.deleted,
+            ),
+        )
+    })
+    .collect())
+}
+
+impl UserRow {
+    /// The API user, with a malformed id reported as a database integrity error.
+    pub(super) fn into_user(self) -> std::result::Result<User, DatabaseIntegrityError> {
+        User::try_from(self).map_err(|e| DatabaseIntegrityError::new(e.error.message))
+    }
 }
 
 impl TryFrom<UserRow> for User {
@@ -215,12 +318,27 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 pub(crate) async fn delete_user(
     id: UserId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<Vec<RoleId>>> {
+) -> Result<Option<DeletedUser>> {
     let id = id.to_string();
     let map_err = |e: sqlx::Error| e.into_error_model("Error deleting user".to_string());
 
-    sqlx::query!(
-        r#"SELECT 1 AS "locked!" FROM users WHERE id = $1 FOR NO KEY UPDATE"#,
+    // Also the row as it is before the delete scrubs its name and email: the identity
+    // the user lifecycle event reports.
+    let before = sqlx::query_as!(
+        UserRow,
+        r#"
+        SELECT
+            id,
+            name,
+            email,
+            last_updated_with AS "last_updated_with: DbUserLastUpdatedWith",
+            user_type AS "user_type: DbUserType",
+            created_at,
+            updated_at
+        FROM users
+        WHERE id = $1
+        FOR NO KEY UPDATE
+        "#,
         id,
     )
     .fetch_optional(&mut **transaction)
@@ -255,24 +373,69 @@ pub(crate) async fn delete_user(
         .await
         .map_err(map_err)?;
 
-    Ok(deleted_user.map(|_| affected_roles.into_iter().map(RoleId::new).collect()))
+    let (Some(_), Some(before)) = (deleted_user, before) else {
+        return Ok(None);
+    };
+    Ok(Some(DeletedUser {
+        user: User::try_from(before)?,
+        affected_roles: affected_roles.into_iter().map(RoleId::new).collect(),
+    }))
 }
 
-pub(crate) async fn create_or_update_user<
-    'c,
-    'e: 'c,
-    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
->(
+/// Upserts a user and reports what the write did: created, updated with the row as it
+/// was before, or unchanged.
+///
+/// Locks the row first, like `delete_user` and the role-provider syncs, so the row read
+/// before the write is the row the write replaces. A row another transaction inserts
+/// after that read has no previous row to report.
+pub(crate) async fn create_or_update_user(
     id: &UserId,
     name: &str,
     email: Option<&str>,
     last_updated_with: UserLastUpdatedWith,
     user_type: UserType,
     mode: UserUpsertMode,
-    connection: E,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<CreateOrUpdateUserResponse> {
     let db_last_updated_with: DbUserLastUpdatedWith = last_updated_with.into();
     let backfill_only = matches!(mode, UserUpsertMode::BackfillUnnamedStub);
+    let map_err =
+        |e: sqlx::Error| e.into_error_model("Error creating or updating user".to_string());
+
+    let before = sqlx::query!(
+        r#"
+        SELECT
+            id,
+            name,
+            email,
+            last_updated_with AS "last_updated_with: DbUserLastUpdatedWith",
+            user_type AS "user_type: DbUserType",
+            created_at,
+            updated_at,
+            deleted_at IS NOT NULL AS "deleted!"
+        FROM users
+        WHERE id = $1
+        FOR NO KEY UPDATE
+        "#,
+        id.to_string(),
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(map_err)?
+    .map(|row| {
+        (
+            UserRow {
+                id: row.id,
+                name: row.name,
+                email: row.email,
+                last_updated_with: row.last_updated_with,
+                user_type: row.user_type,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            },
+            row.deleted,
+        )
+    });
 
     // One statement covers both modes. The `DO UPDATE` fires unconditionally for
     // `Overwrite` (`NOT $6`), but for `BackfillUnnamedStub` only when the row is
@@ -296,7 +459,7 @@ pub(crate) async fn create_or_update_user<
                 WHERE NOT $6
                    OR (users.name IS NULL
                        AND users.last_updated_with = 'role-provider'::user_last_updated_with)
-            RETURNING (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with, user_type
+            RETURNING (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with, user_type, deleted_at
         )
         SELECT
             u.created AS "created!",
@@ -306,7 +469,8 @@ pub(crate) async fn create_or_update_user<
             u.created_at AS "created_at!",
             u.updated_at,
             u.last_updated_with AS "last_updated_with!: DbUserLastUpdatedWith",
-            u.user_type AS "user_type!: DbUserType"
+            u.user_type AS "user_type!: DbUserType",
+            u.deleted_at IS NOT NULL AS "deleted!"
         FROM upserted u
         UNION ALL
         SELECT
@@ -317,7 +481,8 @@ pub(crate) async fn create_or_update_user<
             e.created_at AS "created_at!",
             e.updated_at,
             e.last_updated_with AS "last_updated_with!: DbUserLastUpdatedWith",
-            e.user_type AS "user_type!: DbUserType"
+            e.user_type AS "user_type!: DbUserType",
+            e.deleted_at IS NOT NULL AS "deleted!"
         FROM users e
         WHERE e.id = $1 AND NOT EXISTS (SELECT 1 FROM upserted)
         "#,
@@ -328,10 +493,11 @@ pub(crate) async fn create_or_update_user<
         DbUserType::from(user_type) as _,
         backfill_only,
     )
-    .fetch_one(connection)
+    .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error creating or updating user".to_string()))?;
+    .map_err(map_err)?;
     let created = user.created;
+    let deleted = user.deleted;
     let user = UserRow {
         id: user.id,
         name: user.name,
@@ -342,10 +508,21 @@ pub(crate) async fn create_or_update_user<
         updated_at: user.updated_at,
     };
 
-    Ok(if created {
-        CreateOrUpdateUserResponse::Created(User::try_from(user)?)
-    } else {
-        CreateOrUpdateUserResponse::Updated(User::try_from(user)?)
+    if created {
+        return Ok(CreateOrUpdateUserResponse::Created(User::try_from(user)?));
+    }
+    Ok(match before {
+        Some((previous, was_deleted))
+            if previous.identity(was_deleted) == user.identity(deleted) =>
+        {
+            CreateOrUpdateUserResponse::Unchanged(User::try_from(user)?)
+        }
+        before => CreateOrUpdateUserResponse::Updated {
+            user: User::try_from(user)?,
+            previous: before
+                .map(|(previous, _)| User::try_from(previous))
+                .transpose()?,
+        },
     })
 }
 
@@ -401,9 +578,27 @@ mod test {
     use super::*;
     use crate::CatalogState;
 
-    async fn delete_user_committed(state: &CatalogState, user_id: UserId) -> Option<Vec<RoleId>> {
+    async fn delete_user_committed(state: &CatalogState, user_id: UserId) -> Option<DeletedUser> {
         let mut t = state.read_write.write_pool.begin().await.unwrap();
         let result = delete_user(user_id, &mut t).await.unwrap();
+        t.commit().await.unwrap();
+        result
+    }
+
+    async fn create_or_update_user_committed(
+        id: &UserId,
+        name: &str,
+        email: Option<&str>,
+        last_updated_with: UserLastUpdatedWith,
+        user_type: UserType,
+        mode: UserUpsertMode,
+        state: &CatalogState,
+    ) -> CreateOrUpdateUserResponse {
+        let mut t = state.read_write.write_pool.begin().await.unwrap();
+        let result =
+            create_or_update_user(id, name, email, last_updated_with, user_type, mode, &mut t)
+                .await
+                .unwrap();
         t.commit().await.unwrap();
         result
     }
@@ -415,17 +610,16 @@ mod test {
         let user_id = UserId::new_unchecked("oidc", "test_user_1");
         let user_name = "Test User 1";
 
-        create_or_update_user(
+        create_or_update_user_committed(
             &user_id,
             user_name,
             None,
             UserLastUpdatedWith::CreateEndpoint,
             UserType::Human,
             UserUpsertMode::Overwrite,
-            &state.read_write.write_pool,
+            &state,
         )
-        .await
-        .unwrap();
+        .await;
 
         let users = list_users(
             None,
@@ -447,17 +641,16 @@ mod test {
 
         // Update
         let user_name = "Test User 1 Updated";
-        create_or_update_user(
+        create_or_update_user_committed(
             &user_id,
             user_name,
             None,
             UserLastUpdatedWith::CreateEndpoint,
             UserType::Human,
             UserUpsertMode::Overwrite,
-            &state.read_write.write_pool,
+            &state,
         )
-        .await
-        .unwrap();
+        .await;
 
         let users = list_users(
             None,
@@ -477,6 +670,132 @@ mod test {
         assert_eq!(users.users[0].email, None);
     }
 
+    /// What a write reports is what the user lifecycle events fire on: created,
+    /// updated with the previous row, or unchanged when only `last_updated_with` moved.
+    #[sqlx::test]
+    async fn create_or_update_user_reports_what_the_write_did(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user_id = UserId::new_unchecked("oidc", "lifecycle");
+        let upsert = |name: &'static str, email: Option<&'static str>, with| {
+            let state = state.clone();
+            let user_id = user_id.clone();
+            async move {
+                create_or_update_user_committed(
+                    &user_id,
+                    name,
+                    email,
+                    with,
+                    UserType::Human,
+                    UserUpsertMode::Overwrite,
+                    &state,
+                )
+                .await
+            }
+        };
+
+        let created = upsert(
+            "Alice",
+            Some("alice@example.com"),
+            UserLastUpdatedWith::CreateEndpoint,
+        )
+        .await;
+        assert!(matches!(&created, CreateOrUpdateUserResponse::Created(u) if u.name == "Alice"));
+
+        let unchanged = upsert(
+            "Alice",
+            Some("alice@example.com"),
+            UserLastUpdatedWith::UpdateEndpoint,
+        )
+        .await;
+        assert!(matches!(
+            unchanged,
+            CreateOrUpdateUserResponse::Unchanged(_)
+        ));
+        assert!(unchanged.write().is_none());
+
+        let updated = upsert(
+            "Alice",
+            Some("alice@new.example.com"),
+            UserLastUpdatedWith::UpdateEndpoint,
+        )
+        .await;
+        let CreateOrUpdateUserResponse::Updated { user, previous } = updated else {
+            panic!("expected an update, got {updated:?}");
+        };
+        assert_eq!(user.email.as_deref(), Some("alice@new.example.com"));
+        assert_eq!(
+            previous.and_then(|p| p.email).as_deref(),
+            Some("alice@example.com")
+        );
+    }
+
+    /// The delete reports the row as it was, before it scrubbed the name and email.
+    /// Creating the user again reads as an update of the deleted row.
+    #[sqlx::test]
+    async fn delete_user_reports_the_row_before_the_delete(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user_id = UserId::new_unchecked("oidc", "deleted");
+        create_or_update_user_committed(
+            &user_id,
+            "Bob",
+            Some("bob@example.com"),
+            UserLastUpdatedWith::CreateEndpoint,
+            UserType::Human,
+            UserUpsertMode::Overwrite,
+            &state,
+        )
+        .await;
+
+        let deleted = delete_user_committed(&state, user_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(deleted.user.name, "Bob");
+        assert_eq!(deleted.user.email.as_deref(), Some("bob@example.com"));
+
+        let again = create_or_update_user_committed(
+            &user_id,
+            "Bob",
+            Some("bob@example.com"),
+            UserLastUpdatedWith::CreateEndpoint,
+            UserType::Human,
+            UserUpsertMode::Overwrite,
+            &state,
+        )
+        .await;
+        let CreateOrUpdateUserResponse::Updated { previous, .. } = again else {
+            panic!("expected an update of the deleted row, got {again:?}");
+        };
+        assert_eq!(previous.map(|p| p.name).as_deref(), Some("Deleted User"));
+    }
+
+    /// The first-login backfill leaves a named row alone, and says so.
+    #[sqlx::test]
+    async fn a_skipped_backfill_is_unchanged(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user_id = UserId::new_unchecked("oidc", "named");
+        create_or_update_user_committed(
+            &user_id,
+            "Carol",
+            None,
+            UserLastUpdatedWith::CreateEndpoint,
+            UserType::Human,
+            UserUpsertMode::Overwrite,
+            &state,
+        )
+        .await;
+        let backfill = create_or_update_user_committed(
+            &user_id,
+            "Someone Else",
+            None,
+            UserLastUpdatedWith::ConfigCallCreation,
+            UserType::Human,
+            UserUpsertMode::BackfillUnnamedStub,
+            &state,
+        )
+        .await;
+        assert!(matches!(&backfill, CreateOrUpdateUserResponse::Unchanged(u) if u.name == "Carol"));
+    }
+
     #[sqlx::test]
     async fn test_search_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -484,17 +803,16 @@ mod test {
         let user_id = UserId::new_unchecked("kubernetes", "test_user_1");
         let user_name = "Test User 1";
 
-        create_or_update_user(
+        create_or_update_user_committed(
             &user_id,
             user_name,
             None,
             UserLastUpdatedWith::UpdateEndpoint,
             UserType::Application,
             UserUpsertMode::Overwrite,
-            &state.read_write.write_pool,
+            &state,
         )
-        .await
-        .unwrap();
+        .await;
 
         let search_result = search_user("Test", &state.read_write.read_pool)
             .await
@@ -533,17 +851,16 @@ mod test {
         let user_id = UserId::new_unchecked("oidc", "test_user_1");
         let user_name = "Test User 1";
 
-        create_or_update_user(
+        create_or_update_user_committed(
             &user_id,
             user_name,
             None,
             UserLastUpdatedWith::ConfigCallCreation,
             UserType::Application,
             UserUpsertMode::Overwrite,
-            &state.read_write.write_pool,
+            &state,
         )
-        .await
-        .unwrap();
+        .await;
 
         delete_user_committed(&state, user_id).await;
 
@@ -564,7 +881,7 @@ mod test {
         // Delete non-existent user
         let user_id = UserId::new_unchecked("oidc", "test_user_2");
         let result = delete_user_committed(&state, user_id).await;
-        assert_eq!(result, None);
+        assert!(result.is_none());
     }
 
     /// Re-deleting an already soft-deleted user is a no-op: it returns `None`
@@ -577,17 +894,16 @@ mod test {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user_id = UserId::new_unchecked("oidc", "test_user_1");
 
-        create_or_update_user(
+        create_or_update_user_committed(
             &user_id,
             "Test User 1",
             None,
             UserLastUpdatedWith::ConfigCallCreation,
             UserType::Application,
             UserUpsertMode::Overwrite,
-            &state.read_write.write_pool,
+            &state,
         )
-        .await
-        .unwrap();
+        .await;
 
         // First delete acts on the active row.
         let first = delete_user_committed(&state, user_id.clone()).await;
@@ -595,7 +911,7 @@ mod test {
 
         // Second delete finds no active row → no-op, no tombstone reset.
         let second = delete_user_committed(&state, user_id).await;
-        assert_eq!(second, None);
+        assert!(second.is_none());
     }
 
     #[sqlx::test]
@@ -605,17 +921,16 @@ mod test {
             let user_id = UserId::new_unchecked("oidc", &format!("test_user_{i}"));
             let user_name = &format!("test user {i}");
 
-            create_or_update_user(
+            create_or_update_user_committed(
                 &user_id,
                 user_name,
                 None,
                 UserLastUpdatedWith::ConfigCallCreation,
                 UserType::Application,
                 UserUpsertMode::Overwrite,
-                &state.read_write.write_pool,
+                &state,
             )
-            .await
-            .unwrap();
+            .await;
         }
         let users = list_users(
             None,

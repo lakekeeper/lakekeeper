@@ -285,6 +285,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
 
         // Create user in the catalog
+        let mut user_write = None;
         if request_metadata.is_authenticated() {
             let (creation_user_id, name, user_type, email) = parse_create_user_request(
                 &request_metadata,
@@ -296,7 +297,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     update_if_exists: false, // Ignored in `parse_create_user_request`
                 }),
             )?;
-            C::create_or_update_user(
+            user_write = C::create_or_update_user(
                 &creation_user_id,
                 &name,
                 email.as_deref(),
@@ -305,7 +306,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 UserUpsertMode::Overwrite,
                 t.transaction(),
             )
-            .await?;
+            .await?
+            .write();
         }
 
         authorizer.bootstrap(&request_metadata, is_operator).await?;
@@ -321,11 +323,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         t.commit().await?;
 
-        emit_bootstrap_grants_async(
-            &state.v1_state.events,
-            Arc::new(request_metadata.clone()),
-            server_grants,
-        );
+        let request_metadata_arc = Arc::new(request_metadata.clone());
+        state
+            .v1_state
+            .events
+            .users_written_async(user_write, Some(&request_metadata_arc));
+        emit_bootstrap_grants_async(&state.v1_state.events, request_metadata_arc, server_grants);
 
         // If default project is specified, and the project does not exist, create it
         if let Some(default_project_id) = DEFAULT_PROJECT_ID.as_ref() {

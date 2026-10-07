@@ -56,6 +56,42 @@ LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 
 **Note:** Audit logs contain PII: user identities, and a caller-supplied `user_agent` string that some clients fill with host names or OS user names. If you disable them, make sure you have another way to meet compliance and security monitoring needs.
 
+### User Emails on Audit Records {#audit-user-emails}
+
+Audit records name users by their principal id. To also put their email on the record, set:
+
+```bash
+LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL=true
+```
+
+It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, on the users in an `apply_grants` action's `principals` and in a subtree action's `principal`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
+
+The email comes from the caller's token when the token is that user's and carries an email claim (`email`, or `upn` or `preferred_username` when they hold an address). Otherwise it comes from the user's record in the catalog, through the [user cache](./configuration.md#caching), so a user named on every request costs one database read per cache lifetime.
+
+On `admission_decided` records, which are written while the request is still being admitted, the actor's email comes from the token only.
+
+The email is best-effort. It is absent, never `null`, when it is not known: the user has no record or no email, was deleted, or the lookup failed. A lookup never fails or delays a request or a record. On the records written when a user is deleted, for that user's revoked grants, the email is absent: the deletion has already removed it.
+
+**An email is metadata, not identity.** Emails are not unique and can change. Correlate on `principal`, `user` and `role`, never on `email`.
+
+**Note:** With this setting, audit logs hold users' email addresses. An email stays in the log after the user is deleted from the catalog, so plan retention and access for the log accordingly.
+
+### Role Sources on Audit Records {#audit-role-sources}
+
+A role on an audit record carries, next to its id, the provider it comes from and its id there: `provider_id` and `source_id`. With these a reader can find the role at its provider, for example the LDAP group behind it. This applies to every role a record names: `actor.assumed_role`, `authorizations[].for_principal`, `context.principal` on grant records, `principals` on `apply_grants`, and `principal` on subtree grant requests.
+
+```json
+{"role": "1f7b…", "provider_id": "corporate-ldap", "source_id": "engineering"}
+```
+
+`provider_id` is always included. `source_id` is included by default. Some providers let it be a free-form name, so Lakekeeper cannot rule out that it holds personal data. To leave `source_id` out of every record, set:
+
+```bash
+LAKEKEEPER__AUDIT__TRACING__INCLUDE_ROLE_SOURCE_ID=false
+```
+
+Except on `actor.assumed_role`, both are best-effort: absent when the role no longer exists or the lookup failed. They are read through the role cache, so a role named on many records costs one database read per cache lifetime. Correlate on the role's id: a role's source does not change, but its id is what every record carries.
+
 ## Log Types
 
 Lakekeeper produces four types of logs. The first three are identified by their `event_source` field. General application logs have no `event_source` field.
@@ -171,7 +207,7 @@ One exception: the `target` **key** belongs to the subscriber, but its **value**
 |---|---|---|
 | `name` | `actions[].name` · `authorizations[].determined_by[].name` | A resource name · a policy name |
 | `type` | `authorizations[].determined_by[].type` · `error.type` | The kind of deciding factor · the error type |
-| `principal` | `actor.principal` · `context.principal` · `actions[].principal` | Who acted (string) · who holds the grant (object) · who a subtree request reaches (string) |
+| `principal` | `actor.principal` · `context.principal` · `actions[].principal` | Who acted (string) · who holds the grant (object) · whose grants a subtree request reaches (object) |
 | `source` | `actions[].source` · `authorizations[].determined_by[].source` | The namespace path an entity moves from (array) · where a policy came from (string) |
 | `message` | `message` · `context.message` | The subscriber's log message · on an admission record, the gate's own text |
 
@@ -243,6 +279,9 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 // Authenticated user
 {"actor_type": "principal", "principal": "oidc~user@example.com"}
 
+// Authenticated user, with user emails enabled
+{"actor_type": "principal", "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5", "email": "alice@example.com"}
+
 // Assumed role
 {"actor_type": "assumed_role", "principal": "oidc~user@example.com", "assumed_role": {"role_id": "…", "provider_id": "…", "source_id": "…"}}
 
@@ -254,11 +293,12 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 |----------------|--------|---------------------------------------------------------------------------------------------------|
 | `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed_role"`, or `"lakekeeper_internal"`. Always present. |
 | `principal`    | String | The authenticated principal. Present for `principal` and `assumed_role`.                           |
-| `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed_role`. |
+| `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id`, and `source_id` unless [role source ids](#audit-role-sources) are turned off. Present for `assumed_role`. |
+| `email`        | String | The principal's email, for `principal` and `assumed_role`. Only with [user emails](#audit-user-emails) enabled, and only when known. |
 
-**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`.
+**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`. With [user emails](#audit-user-emails) enabled, the user form can also carry `email`: `{"user": "oidc~alice", "email": "alice@example.com"}`. The role form carries `provider_id` and `source_id` when they are known, `source_id` unless [role source ids](#audit-role-sources) are turned off: `{"role": "<uuid>", "provider_id": "corporate-ldap", "source_id": "engineering"}`.
 
-**`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is a string naming whose grants a subtree request reaches (`"every"`, `"user:oidc~alice"`, `"role:<uuid>"`). A query on `principal.user` finds nothing where the value is a string.
+**`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is an object naming the one principal whose grants a subtree request reaches (`{"user": "oidc~alice"}`), present only when `principal_scope` is `one`. A query on `principal.user` finds nothing in `actor`, where the value is a string.
 
 **Context fields** {#audit-context-fields}
 
@@ -353,7 +393,7 @@ A grant change request is checked once as a whole, so one `apply_grants` action 
 
 | Context field | Type   | Description                                                                 |
 |---------------|--------|-----------------------------------------------------------------------------|
-| `principals`  | Array  | The distinct principals the grants are for, each prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `principals`  | Array  | The distinct principals the grants are for, each `{"user": "…"}` or `{"role": "…"}` like `context.principal` on grant records; a user with `email` when [user emails](#audit-user-emails) are enabled and it is known |
 | `privileges`  | Array  | The distinct privilege names in the request                                 |
 | `writes`      | Integer | Number of grant entries requested, before removing duplicates              |
 | `deletes`     | Integer | Number of revocation entries requested, before removing duplicates         |
@@ -370,7 +410,7 @@ A *denied* `apply_grants` has the same detail as an allowed one: what was asked,
 // Denied attempt to grant `modify` to two principals
 {
   "action_name": "apply_grants",
-  "principals": ["role:1f7b…", "user:oidc~alice"],
+  "principals": [{"role": "1f7b…"}, {"user": "oidc~alice"}],
   "privileges": ["modify"],
   "writes": 2,
   "deletes": 0
@@ -381,16 +421,17 @@ A *denied* `apply_grants` has the same detail as an allowed one: what was asked,
 
 Both are checked once, at the root of the subtree, for the whole batch, so one action describes it. The root is the record's `entities` entry.
 
-`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal` always names one user or role. About yourself it records `get_metadata`.
+`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal_scope` is always `one`. About yourself it records `get_metadata`.
 
-Six fields describe the **scope**. It is the same scope the authorizer is asked about. The six fields appear together or not at all; a request without a scope carries none of them.
+Six fields describe the **scope**, plus `principal` when the scope names one principal. It is the same scope the authorizer is asked about. The six fields appear together or not at all; a request without a scope carries none of them.
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
 | `dry_run`        | Boolean | `true` when the call only reports what it would do. A dry run changes nothing, so `true` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` with `true`; a `read_subtree_grants` record from a subtree listing shows `false` |
 | `resource_types` | Array  | The resource kinds the request reaches. At least one, and only kinds the addressed resource covers |
 | `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those below it are. Closed set |
-| `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `principal_scope` | String | `every` when the grants of every principal are in range, `one` when `principal` names the one. Closed set |
+| `principal`      | Object | The one principal whose grants are in range, `{"user": "…"}` or `{"role": "…"}`; a user with `email` when [user emails](#audit-user-emails) are enabled and it is known. Present only when `principal_scope` is `one` |
 | `privilege_scope` | String | `every` when the request reaches every privilege a matching grant can have, including privileges this server no longer lists; `only` when it names a set. Closed set |
 | `narrowed_privileges` | Array | The privileges named when `privilege_scope` is `only`. `[]` when it is `every`, so read `privilege_scope` first |
 
@@ -420,7 +461,7 @@ Each entry stands on its own; you do not need to combine it with the top-level f
 | Field           | Type    | Description                                                                          |
 |-----------------|---------|--------------------------------------------------------------------------------------|
 | `id`            | String  | Identifier of this entry. When the client gives an `id` on a batch-check input, it appears here as sent, and the API response returns the same value. When the client gives none, the API response has no id, and the audit entry uses the item's zero-based position instead. **The API response never carries position-based ids; only the audit entry does.** Absent on single-check entries. |
-| `for_principal` | Object  | Optional. The principal whose permission was checked, when it is not the caller: `{"user": "..."}` or `{"role": "..."}`. Absent means the caller. |
+| `for_principal` | Object  | Optional. The principal whose permission was checked, when it is not the caller: `{"user": "..."}` or `{"role": "..."}`, the user form with `email` when [user emails](#audit-user-emails) are enabled and it is known. Absent means the caller. |
 | `action`        | Object  | One action, in the same shape as an entry of `actions`.                              |
 | `entity`        | Object  | One entity, in the same shape as an entry of `entities`.                             |
 | `allowed`       | Boolean | Whether this check was permitted. `false` means a definite refusal, by the authorizer or by a rule outside it (see [What counts as a denial](#authorization-events)); `error.type` tells which, and a refusal by rule has an empty `determined_by`. Absent when no verdict was reached, as with `internal_authorization_error`, `internal_catalog_error` or `invalid_request_data`. On a record denied with `action_forbidden`, `resource_not_found` or `cannot_see_resource`, every entry is normally `false`; an endpoint that records its own checks gives each entry its own verdict, so a denied record can have an entry with `true`. |
@@ -718,7 +759,7 @@ These records confirm what an `apply_grants` authorization recorded as an attemp
 
 | Context field  | Description                                                                 |
 |----------------|-----------------------------------------------------------------------------|
-| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`                   |
+| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`; the user form with `email` when [user emails](#audit-user-emails) are enabled and it is known |
 | `privilege`    | The privilege name, as the authorizer names it                              |
 | `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition` |
 | `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |
@@ -1198,7 +1239,7 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.act
 cat logs.json | jq -R -r 'fromjson? | select(.event_source == "audit") | .user_agent // "(none sent)"' | sort | uniq -c | sort -rn
 
 # Refused attempts to grant privileges TO a specific principal
-cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.actions // [])[]; .action_name == "apply_grants" and any((.principals // [])[]; . == "user:oidc~alice")) and any((.authorizations // [])[]; .allowed == false))'
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.actions // [])[]; .action_name == "apply_grants" and any((.principals // [])[]; .user == "oidc~alice")) and any((.authorizations // [])[]; .allowed == false))'
 ```
 
 ## Best Practices

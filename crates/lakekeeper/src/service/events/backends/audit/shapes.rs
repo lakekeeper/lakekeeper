@@ -116,6 +116,16 @@ impl RecordOrigin {
     }
 }
 
+impl RecordOrigin {
+    /// The request `request`, with `actor` as its actor: the request's own, enriched.
+    pub(crate) fn of_request(request: &RequestMetadata, actor: ActorRecord) -> Self {
+        Self {
+            actor,
+            request_id: Some(request.request_id().clone()),
+        }
+    }
+}
+
 impl From<&RequestMetadata> for RecordOrigin {
     fn from(request: &RequestMetadata) -> Self {
         Self {

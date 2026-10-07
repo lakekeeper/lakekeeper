@@ -21,9 +21,12 @@
         "tag-definition"
       ],
       "root_level": "included",
-      "principal": "user:oidc~bob",
+      "principal_scope": "one",
       "privilege_scope": "every",
-      "narrowed_privileges": []
+      "narrowed_privileges": [],
+      "principal": {
+        "user": "oidc~bob"
+      }
     }
   ],
   "entities": [
@@ -56,9 +59,12 @@
           "tag-definition"
         ],
         "root_level": "included",
-        "principal": "user:oidc~bob",
+        "principal_scope": "one",
         "privilege_scope": "every",
-        "narrowed_privileges": []
+        "narrowed_privileges": [],
+        "principal": {
+          "user": "oidc~bob"
+        }
       },
       "entity": {
         "entity_type": "project",

@@ -469,9 +469,26 @@ async fn serve_inner<
     } else {
         tracing::info!("Role cache is disabled");
     }
+    if CONFIG.cache.user.enabled {
+        tracing::info!("User cache is enabled, registering user cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::user_cache::UserCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("User cache is disabled");
+    }
     if CONFIG.audit.tracing.enabled {
         tracing::info!("Audit tracing is enabled, registering audit event listener");
-        dispatcher.append(Arc::new(AuditEventListener)).await;
+        if CONFIG.audit.tracing.include_user_email {
+            tracing::info!("Audit records carry user emails");
+        }
+        dispatcher
+            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
+                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
+            ))))
+            .await;
     } else {
         tracing::info!("Audit tracing is disabled");
     }
