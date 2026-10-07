@@ -39,6 +39,11 @@
         {
             "type": "toml",
             "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-audit-macros\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
             "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
         },
         {
