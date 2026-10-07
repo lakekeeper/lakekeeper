@@ -669,6 +669,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         validate_referenced_by(
             referenced_by.as_deref(),
+            &table,
             CONFIG.referenced_by.max_nesting_depth,
         )?;
 
@@ -1203,7 +1204,6 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         &warehouse,
         &namespaces,
         &actions,
-        &table,
     )
     .await?;
 
@@ -1220,7 +1220,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
 /// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
 pub fn interpret_authz_results_for_load_table(
     actions: &[TabularAuthzAction<'_>],
-    authz_results: &[bool],
+    authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,
     table: &TableIdent,
 ) -> Result<(TableInfo, Option<StoragePermissions>), AuthZError> {
@@ -1241,7 +1241,7 @@ pub fn interpret_authz_results_for_load_table(
     let mut can_read = None;
     let mut can_write = None;
 
-    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+    for ((_ns, action), allowed) in actions.iter().zip(authz_results.iter()) {
         match action {
             ActionOnTableOrView::Table(table_action) => {
                 if let Some(existing) = &table_info {
@@ -2595,7 +2595,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true, true];
+        let results = LoadChainDecisions::from(vec![true, true, true]);
 
         let (info, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2621,7 +2621,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true, false];
+        let results = LoadChainDecisions::from(vec![true, true, false]);
 
         let (_, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2646,7 +2646,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, false, false];
+        let results = LoadChainDecisions::from(vec![true, false, false]);
 
         let (_, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2671,7 +2671,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![false, false, false];
+        let results = LoadChainDecisions::from(vec![false, false, false]);
 
         let result = interpret_authz_results_for_load_table(
             &actions,
@@ -2699,7 +2699,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![false, true, true, true];
+        let results = LoadChainDecisions::from(vec![false, true, true, true]);
 
         let result = interpret_authz_results_for_load_table(
             &actions,
@@ -2722,7 +2722,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true]; // Only 2 results for 3 actions
+        let results = LoadChainDecisions::from(vec![true, true]); // Only 2 results for 3 actions
 
         let result = interpret_authz_results_for_load_table(
             &actions,

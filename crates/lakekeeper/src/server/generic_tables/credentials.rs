@@ -17,7 +17,7 @@ use crate::{
     server::{
         maybe_get_secret, require_warehouse_id,
         tables::authorize_load::{
-            AuthorizeLoadTabularObjects, TabularAuthzAction,
+            AuthorizeLoadTabularObjects, LoadChainDecisions, TabularAuthzAction,
             add_namespace_to_tabulars_for_authorize_load_tabular, are_allowed_load_chain_actions,
             build_actions_from_sorted_tabulars_for_authorize_load_tabular,
             check_required_namespaces, check_required_tabulars, effective_referenced_by,
@@ -60,12 +60,12 @@ pub(super) async fn load_generic_table_credentials<
         table_name,
     } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
     validate_referenced_by(
         referenced_by.as_deref(),
+        &table_ident,
         CONFIG.referenced_by.max_nesting_depth,
     )?;
-
-    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
 
     let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
@@ -224,7 +224,6 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
         &warehouse,
         &namespaces,
         &actions,
-        &table,
     )
     .await?;
 
@@ -245,7 +244,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
 
 fn interpret_authz_results_for_load_generic_table(
     actions: &[TabularAuthzAction<'_>],
-    authz_results: &[bool],
+    authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,
     table: &iceberg::TableIdent,
 ) -> Result<(GenericTabularInfo, Option<StoragePermissions>), AuthZError> {
@@ -266,7 +265,7 @@ fn interpret_authz_results_for_load_generic_table(
     let mut can_read = None;
     let mut can_write = None;
 
-    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+    for ((_ns, action), allowed) in actions.iter().zip(authz_results.iter()) {
         match action {
             ActionOnTableOrView::GenericTable(gt_action) => {
                 if let Some(existing) = &gt_info {

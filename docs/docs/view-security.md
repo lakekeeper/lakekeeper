@@ -66,7 +66,7 @@ When a trusted engine sends a `loadTable` or `loadView` request with the `refere
 1. Resolves all views and tables in the chain.
 2. Determines the security model (DEFINER or INVOKER) for each view by checking the configured owner property (e.g. `trino.run-as-owner`).
 3. Walks the chain from entry point to target, switching the "current user" at each DEFINER boundary.
-4. Checks permissions for the correct user at each step in a single batch authorization call.
+4. Checks permissions for the correct user at each step.
 5. Returns the result only if all checks pass.
 
 Without a trusted engine, the `referenced-by` parameter is ignored and only the calling user's permissions on the target resource are checked (standard behavior).

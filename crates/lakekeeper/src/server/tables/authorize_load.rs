@@ -59,6 +59,20 @@ impl From<ReferencedByDepthExceeded> for IcebergErrorResponse {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+#[error("A referenced-by chain must not contain the object being loaded")]
+pub(crate) struct ReferencedByContainsTarget;
+
+impl From<ReferencedByContainsTarget> for IcebergErrorResponse {
+    fn from(value: ReferencedByContainsTarget) -> Self {
+        let typ = "ReferencedByContainsTarget";
+        let boxed = Box::new(value);
+        let message = boxed.to_string();
+
+        ErrorModel::bad_request(message, typ, Some(boxed)).into()
+    }
+}
+
 /// Bounds the client-supplied `referenced_by` chain to `max_depth` views.
 ///
 /// Every entry widens the authorization work for the request: it is resolved,
@@ -84,7 +98,9 @@ pub(crate) fn validate_referenced_by_depth(
 }
 
 /// Validates a client-supplied `referenced_by` chain: its depth, then the
-/// identifier of every entry.
+/// identifier of every entry, then that no entry names `target`, the object
+/// being loaded. Nothing can reference itself; the chain authorization relies
+/// on the target being its last entry.
 ///
 /// Entries are held to the same identifier rules as the target of the request
 /// (`MAX_NAMESPACE_DEPTH`, no `.` in namespace parts, no empty parts or name).
@@ -97,11 +113,16 @@ pub(crate) fn validate_referenced_by_depth(
 /// Depth is checked first, so the per-entry loop is itself bounded.
 pub(crate) fn validate_referenced_by(
     referenced_by: Option<&[ReferencingView]>,
+    target: &TableIdent,
     max_depth: usize,
 ) -> crate::api::Result<()> {
     validate_referenced_by_depth(referenced_by, max_depth)?;
-    for view in referenced_by.unwrap_or(&[]) {
+    let views = referenced_by.unwrap_or(&[]);
+    for view in views {
         super::validate_table_or_view_ident(view.as_ref())?;
+    }
+    if views.iter().any(|view| view.as_ref() == target) {
+        return Err(ReferencedByContainsTarget.into());
     }
     Ok(())
 }
@@ -521,32 +542,67 @@ fn principal_segments<'s, 'a>(
     actions.chunk_by(|a, b| acting_principal(a) == acting_principal(b))
 }
 
-/// A refused check on an intermediate (non-target) view fails every load route:
-/// each consumer of [`build_actions_from_sorted_tabulars_for_authorize_load_tabular`]
-/// returns its error at the first such refusal. A refusal on the target's ident
-/// does not: `loadView` lets a later decision for the target replace it.
-fn refusal_ends_request(action: &TabularAuthzAction<'_>, target: &TableIdent) -> bool {
+/// A refused check on a view fails every load route: each consumer of
+/// [`build_actions_from_sorted_tabulars_for_authorize_load_tabular`] returns its
+/// error at the first refused intermediate view. A target view is the last
+/// entry ([`validate_referenced_by`] keeps it out of the chain), so no segment
+/// follows its refusal.
+fn refusal_ends_request(action: &TabularAuthzAction<'_>) -> bool {
     match &action.1 {
-        ActionOnTableOrView::View(view) => view.info.tabular_ident != *target,
+        ActionOnTableOrView::View(_) => true,
         ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => false,
+    }
+}
+
+/// Decisions for a load chain, one per action, in action order.
+///
+/// Entries from `decided` on were not sent to the authorizer, because a refused
+/// view before them ended the request, and read as refused. Every consumer
+/// returns at that refusal and never reads them; [`Self::iter`] asserts this in
+/// debug builds.
+#[derive(Debug)]
+pub struct LoadChainDecisions {
+    allowed: Vec<bool>,
+    decided: usize,
+}
+
+impl LoadChainDecisions {
+    pub(crate) fn len(&self) -> usize {
+        self.allowed.len()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = bool> + '_ {
+        self.allowed.iter().enumerate().map(|(index, &allowed)| {
+            debug_assert!(
+                index < self.decided,
+                "a load-chain consumer read entry {index}, which the authorizer never decided"
+            );
+            allowed
+        })
+    }
+}
+
+/// Every entry decided, for tests of the consumers.
+#[cfg(test)]
+impl From<Vec<bool>> for LoadChainDecisions {
+    fn from(allowed: Vec<bool>) -> Self {
+        let decided = allowed.len();
+        Self { allowed, decided }
     }
 }
 
 /// Decides a load chain one principal at a time, in chain order.
 ///
-/// A segment that refuses an intermediate view ends the request, so later
-/// segments are not sent to the authorizer: a refused caller never causes a
-/// lookup of a DEFINER owner. Their entries read as refused, which the
-/// consumers never reach — they return at that earlier refusal. A chain
-/// without DEFINER views is one segment and one call.
+/// A segment that refuses a view ends the request, so later segments are not
+/// sent to the authorizer: a refused caller never causes a lookup of a DEFINER
+/// owner. A chain without DEFINER views is one segment and one call.
 pub(crate) async fn are_allowed_load_chain_actions<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
     namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
     actions: &[TabularAuthzAction<'_>],
-    target: &TableIdent,
-) -> Result<Vec<bool>, AuthZError> {
+) -> Result<LoadChainDecisions, AuthZError> {
     let mut results = Vec::with_capacity(actions.len());
     for segment in principal_segments(actions) {
         let decided = authorizer
@@ -566,14 +622,18 @@ pub(crate) async fn are_allowed_load_chain_actions<A: Authorizer>(
         let ends_request = segment
             .iter()
             .zip(&decided)
-            .any(|(action, allowed)| !allowed && refusal_ends_request(action, target));
+            .any(|(action, allowed)| !allowed && refusal_ends_request(action));
         results.extend(decided);
         if ends_request {
             break;
         }
     }
+    let decided = results.len();
     results.resize(actions.len(), false);
-    Ok(results)
+    Ok(LoadChainDecisions {
+        allowed: results,
+        decided,
+    })
 }
 
 #[cfg(test)]
@@ -645,6 +705,10 @@ mod tests {
         }
     }
 
+    fn unrelated_target() -> TableIdent {
+        TableIdent::new(NamespaceIdent::new("ns".to_string()), "target".to_string())
+    }
+
     fn deep_view(depth: usize) -> ReferencingView {
         let parts: Vec<String> = (0..depth).map(|i| format!("ns{i}")).collect();
         ReferencingView::new(TableIdent::new(
@@ -658,10 +722,11 @@ mod tests {
     #[test]
     fn test_validate_referenced_by_rejects_oversized_entry_idents() {
         let ok = [deep_view(MAX_NAMESPACE_DEPTH as usize)];
-        validate_referenced_by(Some(&ok), 10).expect("an entry at the namespace limit is accepted");
+        validate_referenced_by(Some(&ok), &unrelated_target(), 10)
+            .expect("an entry at the namespace limit is accepted");
 
         let too_deep = [deep_view(MAX_NAMESPACE_DEPTH as usize + 1)];
-        let err = validate_referenced_by(Some(&too_deep), 10)
+        let err = validate_referenced_by(Some(&too_deep), &unrelated_target(), 10)
             .expect_err("an entry past the namespace limit is rejected");
         assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
         assert_eq!(err.error.r#type, "NamespaceDepthExceeded");
@@ -674,7 +739,46 @@ mod tests {
         let over: Vec<ReferencingView> = (0..11)
             .map(|_| deep_view(MAX_NAMESPACE_DEPTH as usize + 1))
             .collect();
-        let err = validate_referenced_by(Some(&over), 10).expect_err("rejected");
+        let err =
+            validate_referenced_by(Some(&over), &unrelated_target(), 10).expect_err("rejected");
+        assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+    }
+
+    /// The object being loaded cannot reference itself, wherever it appears in
+    /// the chain.
+    #[test]
+    fn test_validate_referenced_by_rejects_the_target() {
+        let target = unrelated_target();
+        let other = ReferencingView::new(TableIdent::new(
+            NamespaceIdent::new("ns".to_string()),
+            "other".to_string(),
+        ));
+        let chains = [
+            vec![ReferencingView::new(target.clone())],
+            vec![other.clone(), ReferencingView::new(target.clone())],
+            vec![ReferencingView::new(target.clone()), other.clone()],
+        ];
+        for chain in chains {
+            let err = validate_referenced_by(Some(&chain), &target, 10)
+                .expect_err("a chain naming the target is rejected");
+            assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+            assert_eq!(err.error.r#type, "ReferencedByContainsTarget");
+            assert_eq!(
+                err.error.message,
+                "A referenced-by chain must not contain the object being loaded"
+            );
+        }
+        validate_referenced_by(Some(&[other]), &target, 10).expect("other views are accepted");
+        validate_referenced_by(None, &target, 10).expect("no chain is accepted");
+    }
+
+    /// Depth is checked first, so an over-deep chain that also names the target
+    /// reports its depth.
+    #[test]
+    fn test_validate_referenced_by_checks_depth_before_the_target() {
+        let target = TableIdent::new(NamespaceIdent::new("ns".to_string()), "view_0".to_string());
+        let over_limit = referencing_views(11);
+        let err = validate_referenced_by(Some(&over_limit), &target, 10).expect_err("rejected");
         assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
     }
 
@@ -1382,7 +1486,7 @@ mod tests {
             }
         }
 
-        async fn decide(&self, authz: &HidingAuthorizer) -> Result<Vec<bool>, AuthZError> {
+        async fn decide(&self, authz: &HidingAuthorizer) -> Result<LoadChainDecisions, AuthZError> {
             let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
                 &self.resolved,
                 &self.target,
@@ -1393,9 +1497,16 @@ mod tests {
                 &self.warehouse,
                 &HashMap::new(),
                 &actions,
-                &self.target,
             )
             .await
+        }
+
+        fn segment_lengths(&self) -> Vec<usize> {
+            let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+                &self.resolved,
+                &self.target,
+            );
+            principal_segments(&actions).map(<[_]>::len).collect()
         }
 
         async fn load_table(
@@ -1412,7 +1523,6 @@ mod tests {
                 &self.warehouse,
                 &HashMap::new(),
                 &actions,
-                &self.target,
             )
             .await?;
             interpret_authz_results_for_load_table(
@@ -1540,10 +1650,9 @@ mod tests {
         let authz = HidingAuthorizer::new();
         authz.hide_for_user(&principal("caller"), &chain.view_key(0));
 
-        assert_eq!(
-            chain.decide(&authz).await.unwrap(),
-            vec![false, false, false, false, false]
-        );
+        let decisions = chain.decide(&authz).await.unwrap();
+        assert_eq!(decisions.allowed, vec![false, false, false, false, false]);
+        assert_eq!(decisions.decided, 2);
         let err = chain.load_table(&authz).await.unwrap_err();
         let AuthZError::AuthZCannotSeeView(err) = err else {
             panic!("expected AuthZCannotSeeView, got {err:?}");
@@ -1675,11 +1784,12 @@ mod tests {
         let authz = HidingAuthorizer::new();
         authz.fail_tabular_checks_for_user(&principal("owner_b"));
 
-        let err = chain.load_table(&authz).await.unwrap_err();
-        assert_eq!(
-            err.into_error_model().code,
-            StatusCode::SERVICE_UNAVAILABLE.as_u16()
-        );
+        let model = chain
+            .load_table(&authz)
+            .await
+            .unwrap_err()
+            .into_error_model();
+        assert_injected_backend_failure(&model);
         assert_eq!(
             authz.tabular_checks(),
             vec![
@@ -1689,42 +1799,146 @@ mod tests {
         );
     }
 
-    /// A refused check on the target's own ident does not end the chain: `loadView`
-    /// lets a later decision for the target overwrite it.
-    #[tokio::test]
-    async fn test_refused_target_view_does_not_end_the_chain() {
-        let warehouse_id = WarehouseId::new_random();
-        let mut target = ViewInfo::new_random(warehouse_id);
-        target
-            .properties
-            .insert(OWNER_PROPERTY.to_string(), "owner_b".to_string());
-        // The target view is listed in its own referenced-by chain.
-        let mut chain = chain_to(&[], target.clone().into());
-        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, target.namespace_id);
-        let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: OWNER_PROPERTY.to_string(),
-            identities: HashMap::new(),
-        }));
-        chain.resolved = resolve_users_for_authorize_load_tabular(
-            &[
-                (target.clone().into(), namespace.clone()),
-                (target.clone().into(), namespace),
-            ],
-            caller_metadata().actor(),
-            &engines,
-            Some("test"),
-        )
-        .unwrap();
-        let authz = HidingAuthorizer::new();
-        authz.hide_for_user(&principal("caller"), &chain.target_key());
+    fn assert_injected_backend_failure(model: &ErrorModel) {
+        assert_eq!(model.code, StatusCode::SERVICE_UNAVAILABLE.as_u16());
+        assert_eq!(model.r#type, "AuthorizationBackendError");
+        assert_eq!(model.message, "Authorization service is unavailable");
+        assert_eq!(
+            model.source.as_ref().map(ToString::to_string).as_deref(),
+            Some("Tabular checks for this principal fail in the test authorizer")
+        );
+    }
 
-        assert_eq!(chain.decide(&authz).await.unwrap(), vec![false, true]);
+    /// `owner_b` refuses the second DEFINER view, so `owner_c`, who would decide
+    /// the table, is never asked.
+    #[tokio::test]
+    async fn test_refused_later_segment_ends_the_chain() {
+        let (chain, _) = chain(&[Some("owner_b"), Some("owner_c")]);
+        let authz = HidingAuthorizer::new();
+        authz.hide_for_user(&principal("owner_b"), &chain.view_key(1));
+
+        let decisions = chain.decide(&authz).await.unwrap();
+        assert_eq!(
+            decisions.allowed,
+            vec![true, true, false, false, false, false, false]
+        );
+        assert_eq!(decisions.decided, 4);
+        let err = chain.load_table(&authz).await.unwrap_err();
+        let AuthZError::AuthZCannotSeeView(err) = err else {
+            panic!("expected AuthZCannotSeeView, got {err:?}");
+        };
+        assert_eq!(
+            err,
+            AuthZCannotSeeView::new_forbidden(
+                chain.warehouse.warehouse_id,
+                chain.views[1].tabular_ident.clone()
+            )
+            .with_delegated_execution(true)
+        );
+        // Both runs sent the caller's and owner_b's view checks, nothing for owner_c.
+        let batches = vec![
+            view_checks(&chain.view_key(0), None),
+            view_checks(&chain.view_key(1), Some("owner_b")),
+        ];
+        assert_eq!(authz.tabular_checks(), [batches.clone(), batches].concat());
+    }
+
+    /// Counterpart of [`test_refused_later_segment_ends_the_chain`]: a lookup of
+    /// `owner_c` that would fail is never reached, so the response is the refusal.
+    #[tokio::test]
+    async fn test_failing_lookup_after_a_refused_later_segment_is_not_reached() {
+        let (chain, _) = chain(&[Some("owner_b"), Some("owner_c")]);
+        let authz = HidingAuthorizer::new();
+        authz.fail_tabular_checks_for_user(&principal("owner_c"));
+        authz.hide_for_user(&principal("owner_b"), &chain.view_key(1));
+
+        let model = chain
+            .load_table(&authz)
+            .await
+            .unwrap_err()
+            .into_error_model();
+        let expected = AuthZError::from(
+            AuthZCannotSeeView::new_forbidden(
+                chain.warehouse.warehouse_id,
+                chain.views[1].tabular_ident.clone(),
+            )
+            .with_delegated_execution(true),
+        )
+        .into_error_model();
+        assert_eq!(model.code, StatusCode::NOT_FOUND.as_u16());
+        assert_eq!(model.r#type, expected.r#type);
+        assert_eq!(model.message, expected.message);
+        assert_eq!(model.stack, expected.stack);
         assert_eq!(
             authz.tabular_checks(),
             vec![
-                vec![check(&chain.target_key(), "GetMetadata", None)],
-                vec![check(&chain.target_key(), "GetMetadata", Some("owner_b"))],
+                view_checks(&chain.view_key(0), None),
+                view_checks(&chain.view_key(1), Some("owner_b")),
             ]
         );
+    }
+
+    /// A DEFINER view owned by the caller hands over to the caller in delegated
+    /// execution, which is decided in a call of its own.
+    #[tokio::test]
+    async fn test_caller_owned_definer_view_starts_a_segment() {
+        let (chain, table) = chain(&[Some("caller")]);
+        assert_eq!(chain.segment_lengths(), vec![2, 3]);
+
+        let authz = HidingAuthorizer::new();
+        let (info, permissions) = chain.load_table(&authz).await.unwrap();
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(permissions, Some(StoragePermissions::ReadWriteDelete));
+        // The authorizer asks about the caller as itself, still in delegated execution.
+        let delegated_to_caller = |action: &str| RecordedTabularCheck {
+            object: chain.target_key(),
+            action: action.to_string(),
+            user: None,
+            is_delegated_execution: true,
+        };
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                vec![
+                    delegated_to_caller("GetMetadata"),
+                    delegated_to_caller("ReadData"),
+                    delegated_to_caller("WriteData"),
+                ],
+            ]
+        );
+    }
+
+    /// An owner that comes back after another owner is decided once per run.
+    #[tokio::test]
+    async fn test_non_contiguous_owner_is_decided_per_segment() {
+        let (chain, table) = chain(&[Some("owner_b"), Some("owner_c"), Some("owner_b")]);
+        assert_eq!(chain.segment_lengths(), vec![2, 2, 2, 3]);
+
+        let authz = HidingAuthorizer::new();
+        let (info, permissions) = chain.load_table(&authz).await.unwrap();
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(permissions, Some(StoragePermissions::ReadWriteDelete));
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                view_checks(&chain.view_key(1), Some("owner_b")),
+                view_checks(&chain.view_key(2), Some("owner_c")),
+                table_checks(&chain.target_key(), Some("owner_b")),
+            ]
+        );
+    }
+
+    /// Reading an entry the authorizer never decided is a consumer bug.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "which the authorizer never decided")]
+    fn test_reading_an_undecided_entry_panics_in_debug_builds() {
+        let decisions = LoadChainDecisions {
+            allowed: vec![false, false],
+            decided: 1,
+        };
+        let _ = decisions.iter().count();
     }
 }

@@ -14,7 +14,8 @@ use crate::{
     server::{
         require_warehouse_id,
         tables::{
-            add_namespace_to_tabulars_for_authorize_load_tabular, are_allowed_load_chain_actions,
+            LoadChainDecisions, add_namespace_to_tabulars_for_authorize_load_tabular,
+            are_allowed_load_chain_actions,
             build_actions_from_sorted_tabulars_for_authorize_load_tabular,
             check_required_namespaces, check_required_tabulars, effective_referenced_by,
             get_relevant_namespaces_to_authorize_load_tabular,
@@ -58,6 +59,7 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     }
     validate_referenced_by(
         request.referenced_by.as_deref(),
+        &view,
         CONFIG.referenced_by.max_nesting_depth,
     )?;
 
@@ -231,7 +233,6 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
         &warehouse,
         &namespaces,
         &actions,
-        view,
     )
     .await?;
 
@@ -244,7 +245,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
 
 fn interpret_authz_results_for_load_view(
     actions: &[crate::server::tables::TabularAuthzAction<'_>],
-    authz_results: &[bool],
+    authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,
     view: &TableIdent,
 ) -> Result<(ViewInfo, Option<StoragePermissions>), AuthZError> {
@@ -267,7 +268,7 @@ fn interpret_authz_results_for_load_view(
     // definition; it doesn't execute. Intermediate views additionally emit
     // `Select`, and we enforce any denial on them. See
     // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`.
-    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+    for ((_ns, action), allowed) in actions.iter().zip(authz_results.iter()) {
         match action {
             ActionOnTableOrView::View(view_action) => {
                 if view_action.info.tabular_ident == *view {

@@ -58,7 +58,7 @@ pub enum SyncFor {
     /// `for_user` check, a grantee or the owner of a DEFINER view. The sync only
     /// refreshes the user's existing sync record for the project and provider. A
     /// user without one (never synced there, expired by a role delete, or deleted)
-    /// gets [`NoSyncRecord`], and the caller rolls its transaction back.
+    /// gets [`NoSyncRecord`], and the sync writes nothing.
     OtherUser,
 }
 
@@ -410,9 +410,12 @@ impl From<RoleDeletedDuringSync> for ErrorModel {
 }
 
 /// A sync for [`SyncFor::OtherUser`] found no sync record of the user for the
-/// project and provider to refresh. A deleted user has none. The sync may have
-/// written to the transaction before it found the record missing, so the
-/// transaction must be rolled back, never committed.
+/// project and provider to refresh. A deleted user has none. The sync wrote
+/// nothing to the transaction.
+///
+/// Not retryable: a retry fails the same way until a [`SyncFor::Caller`] sync of
+/// the user creates the record. Callers map it, e.g. to the user's stored roles or
+/// none, and do not return it to a client.
 #[derive(thiserror::Error, Debug, PartialEq, Default)]
 #[error("The user has no role sync record for this project and provider to refresh.")]
 pub struct NoSyncRecord {
@@ -1042,11 +1045,11 @@ where
     /// step 5 updates the record's timestamp and never creates one. A user with no
     /// sync record for `(user_id, project_id, provider_id)` gets [`NoSyncRecord`]:
     /// one never synced there, one whose record a role delete expired, and a deleted
-    /// user, since a user delete removes the user's records. The sync may detect the
-    /// missing record only at step 5, after steps 1-4 wrote to `transaction`; on this
-    /// error the caller must roll `transaction` back (or drop it), never commit it.
-    /// A record removed by the delete of a role the sync assigns can surface as
-    /// [`RoleDeletedDuringSync`] instead.
+    /// user, since a user delete removes the user's records. On [`NoSyncRecord`] the
+    /// call has written nothing to `transaction`, so the caller may continue or
+    /// commit it. A record removed by the delete of a role the sync assigns can
+    /// surface as [`RoleDeletedDuringSync`] instead; on it, as on every other error,
+    /// the caller rolls `transaction` back.
     ///
     /// Returns [`RoleProviderMismatchError`] if any role's `ident.provider_id()`
     /// differs from `provider_id`.
@@ -1185,9 +1188,9 @@ where
     /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher`.
     ///
     /// A sync for [`SyncFor::OtherUser`] of a user without a sync record returns
-    /// [`NoSyncRecord`] and drops its transaction uncommitted: it writes nothing,
-    /// caches nothing and emits no event. The same holds when the retry after a
-    /// role delete finds the record gone.
+    /// [`NoSyncRecord`] and rolls its transaction back: it writes nothing, caches
+    /// nothing and emits no event. The same holds when the retry after a role
+    /// delete finds the record gone.
     async fn sync_user_role_assignments(
         user: CatalogUserRoleAssignmentUser<'_>,
         sync_for: SyncFor,
@@ -1224,7 +1227,7 @@ where
             t.transaction(),
         )
         .await;
-        let sync_result = match first {
+        let attempt = match first {
             Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) => {
                 t.rollback().await?;
                 t = Self::Transaction::begin_write(catalog_state.clone()).await?;
@@ -1236,9 +1239,16 @@ where
                     roles,
                     t.transaction(),
                 )
-                .await?
+                .await
             }
-            result => result?,
+            result => result,
+        };
+        let sync_result = match attempt {
+            Ok(sync_result) => sync_result,
+            Err(e) => {
+                t.rollback().await?;
+                return Err(e.into());
+            }
         };
 
         let mut list = ListUserRoleAssignmentsResult {

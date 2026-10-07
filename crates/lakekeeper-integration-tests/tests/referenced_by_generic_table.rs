@@ -22,9 +22,10 @@ use lakekeeper::{
         AuthZViewInfo as _, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
         CatalogTabularOps as _, State, TabularListFlags, Transaction as _, UserId,
         authz::{
-            AllowAllAuthorizer, Authorizer, UserOrRole,
+            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, UserOrRole,
             tests::{HidingAuthorizer, RecordedTabularCheck},
         },
+        events::AuthorizationFailureSource as _,
     },
 };
 use lakekeeper_integration_tests::{
@@ -711,5 +712,170 @@ async fn test_generic_table_credentials_refused_caller_never_sends_owner_checks(
     assert_eq!(
         authz.tabular_checks()[since..].to_vec(),
         vec![vec![check("GetMetadata"), check("Select")]]
+    );
+}
+
+fn tabular_check(object: &str, action: &str, owner: Option<&str>) -> RecordedTabularCheck {
+    RecordedTabularCheck {
+        object: object.to_string(),
+        action: action.to_string(),
+        user: owner.map(user),
+        is_delegated_execution: owner.is_some(),
+    }
+}
+
+/// The checks of one chain entry; `owner` when decided for a DEFINER owner.
+fn checks(object: &str, actions: &[&str], owner: Option<&str>) -> Vec<RecordedTabularCheck> {
+    actions
+        .iter()
+        .map(|action| tabular_check(object, action, owner))
+        .collect()
+}
+
+/// The caller may traverse, the owner may not read the generic table: the owner
+/// is decided in a second call and the refusal is reported for delegated execution.
+#[sqlx::test]
+async fn test_generic_table_credentials_refused_owner_is_decided_after_the_caller(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("owner_b"), &gt_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    let expected = AuthZCannotSeeGenericTable::new_forbidden(whi, table_ident("ns", "my_gt"))
+        .with_delegated_execution(true)
+        .into_error_model();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+    assert_eq!(err.error.message, expected.message, "{err:?}");
+    assert_eq!(
+        err.error.stack,
+        vec!["Access denied during delegated execution via DEFINER view chain".to_string()],
+        "{err:?}"
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&view_key, &["GetMetadata", "Select"], None),
+            checks(
+                &gt_key,
+                &["GetMetadata", "ReadData", "WriteData"],
+                Some("owner_b")
+            ),
+        ]
+    );
+}
+
+/// A caller allowed to traverse reaches the owner, whose failing lookup
+/// surfaces as 503.
+#[sqlx::test]
+async fn test_generic_table_credentials_failing_owner_lookup_surfaces_when_caller_allowed(
+    pool: PgPool,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        err.error.code,
+        StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+        "{err:?}"
+    );
+    assert_eq!(err.error.r#type, "AuthorizationBackendError", "{err:?}");
+    assert_eq!(
+        err.error.message, "Authorization service is unavailable",
+        "{err:?}"
+    );
+    assert_eq!(
+        err.error
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("Tabular checks for this principal fail in the test authorizer"),
+        "{err:?}"
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&view_key, &["GetMetadata", "Select"], None),
+            checks(
+                &gt_key,
+                &["GetMetadata", "ReadData", "WriteData"],
+                Some("owner_b")
+            ),
+        ]
+    );
+}
+
+/// The generic table being loaded cannot appear in its own referenced-by chain.
+#[sqlx::test]
+async fn test_load_generic_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "my_gt")]),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "ReferencedByContainsTarget", "{err:?}");
+    assert_eq!(
+        err.error.message, "A referenced-by chain must not contain the object being loaded",
+        "{err:?}"
     );
 }

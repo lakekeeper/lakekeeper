@@ -4147,6 +4147,7 @@ pub mod tests {
         pub action: String,
         /// `None` when the check is for the actor itself.
         pub user: Option<UserOrRole>,
+        /// Whether the check runs in a DEFINER owner's delegated context.
         pub is_delegated_execution: bool,
     }
 

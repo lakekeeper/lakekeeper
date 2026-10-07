@@ -24,9 +24,10 @@ use lakekeeper::{
         AuthZTableInfo as _, AuthZViewInfo as _, CatalogTabularOps as _, State, TabularListFlags,
         UserId,
         authz::{
-            AllowAllAuthorizer, Authorizer, UserOrRole,
+            AllowAllAuthorizer, AuthZCannotSeeView, Authorizer, UserOrRole,
             tests::{HidingAuthorizer, RecordedTabularCheck},
         },
+        events::AuthorizationFailureSource as _,
     },
 };
 use lakekeeper_integration_tests::{
@@ -1431,6 +1432,20 @@ async fn test_load_table_failing_owner_lookup_surfaces_when_caller_allowed(pool:
         StatusCode::SERVICE_UNAVAILABLE.as_u16(),
         "{err:?}"
     );
+    assert_eq!(err.error.r#type, "AuthorizationBackendError", "{err:?}");
+    assert_eq!(
+        err.error.message, "Authorization service is unavailable",
+        "{err:?}"
+    );
+    assert_eq!(
+        err.error
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("Tabular checks for this principal fail in the test authorizer"),
+        "{err:?}"
+    );
 }
 
 /// An INVOKER-only chain is decided in one call, which asks about tables before views.
@@ -1511,4 +1526,161 @@ async fn test_load_view_refused_caller_never_sends_owner_checks(pool: PgPool) {
         tabular_checks_since(&authz, since),
         vec![intermediate_view_checks(&view_key, None)]
     );
+}
+
+/// `owner_b` refuses the second DEFINER view: `owner_c`, who would decide the
+/// table, is never asked, even with a lookup that would fail.
+#[sqlx::test]
+async fn test_load_table_refused_later_segment_ends_the_chain(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "w1_definer_b", "owner_b").await;
+    create_definer_view(&ctx, &wh, "w2_definer_c", "owner_c").await;
+    let w1_key = view_object_key(&ctx, whi, &table_ident("ns", "w1_definer_b")).await;
+    let w2_key = view_object_key(&ctx, whi, &table_ident("ns", "w2_definer_c")).await;
+    authz.hide_for_user(&user("owner_b"), &w2_key);
+    let chain = [
+        table_ident("ns", "w1_definer_b"),
+        table_ident("ns", "w2_definer_c"),
+    ];
+    let expected_checks = vec![
+        intermediate_view_checks(&w1_key, None),
+        intermediate_view_checks(&w2_key, Some("owner_b")),
+    ];
+    let expected = AuthZCannotSeeView::new_forbidden(whi, table_ident("ns", "w2_definer_c"))
+        .with_delegated_execution(true)
+        .into_error_model();
+
+    for owner_c_lookup_fails in [false, true] {
+        if owner_c_lookup_fails {
+            authz.fail_tabular_checks_for_user(&user("owner_c"));
+        }
+        let since = authz.tabular_checks().len();
+        let err = load_table_through(&ctx, &wh, &chain).await.unwrap_err();
+
+        assert_view_not_found(&err);
+        assert_eq!(err.error.message, expected.message, "{err:?}");
+        assert_eq!(
+            err.error.stack,
+            vec!["Access denied during delegated execution via DEFINER view chain".to_string()],
+            "{err:?}"
+        );
+        assert_eq!(tabular_checks_since(&authz, since), expected_checks);
+    }
+}
+
+fn assert_referenced_by_contains_target(err: &IcebergErrorResponse) {
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "ReferencedByContainsTarget", "{err:?}");
+    assert_eq!(
+        err.error.message, "A referenced-by chain must not contain the object being loaded",
+        "{err:?}"
+    );
+}
+
+/// A view cannot reference itself: `loadView` of a DEFINER view listed in its
+/// own chain is refused before the authorizer is asked.
+#[sqlx::test]
+async fn test_load_view_referenced_by_itself_is_rejected(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "other_view").await;
+
+    let since = authz.tabular_checks().len();
+    let err = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "definer_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(referenced_by(&[
+                table_ident("ns", "other_view"),
+                table_ident("ns", "definer_view"),
+            ])),
+        },
+        ctx.clone(),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
+    assert_eq!(tabular_checks_since(&authz, since), Vec::<Vec<_>>::new());
+}
+
+#[sqlx::test]
+async fn test_load_table_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "my_table")])))
+            .build(),
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
+}
+
+#[sqlx::test]
+async fn test_load_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table_credentials(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableCredentialsRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "my_table")])))
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
 }

@@ -96,6 +96,7 @@ pub(crate) async fn load_table_with_flags<
     }
     validate_referenced_by(
         referenced_by.as_deref(),
+        &table,
         CONFIG.referenced_by.max_nesting_depth,
     )?;
 
