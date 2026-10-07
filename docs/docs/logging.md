@@ -183,6 +183,7 @@ Each row holds from its release up to the release in the next row.
 | From Lakekeeper release | `audit_format` |
 | ----------------------- | -------------- |
 | (earlier)               | not emitted    |
+| 0.14.0                  | `1.0`          |
 
 ##### Not covered by `audit_format`
 
