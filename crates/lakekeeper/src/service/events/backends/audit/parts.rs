@@ -114,7 +114,8 @@ impl ActorRecord {
 }
 
 /// Whether audit records name a role's source id next to its id and provider.
-pub(crate) fn include_role_source_id() -> bool {
+#[must_use]
+pub fn include_role_source_id() -> bool {
     #[cfg(any(test, feature = "test-utils"))]
     if OMIT_ROLE_SOURCE_ID_IN_TESTS.get().is_some() {
         return false;

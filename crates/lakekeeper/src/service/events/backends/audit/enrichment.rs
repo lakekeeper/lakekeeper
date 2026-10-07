@@ -17,10 +17,10 @@ use std::{
 
 use axum_prometheus::metrics;
 
-use super::parts::{claims_email, include_user_email};
+use super::parts::{ActorRecord, claims_email, include_user_email};
 use crate::{
     request_metadata::RequestMetadata,
-    service::{ArcRoleIdent, RoleId, UserId, events::EventCatalog},
+    service::{ArcRoleIdent, RoleId, UserId, events::EventCatalog, user_cache::cached_user_email},
 };
 
 /// The longest a record waits for one kind of lookup.
@@ -186,15 +186,29 @@ async fn role_sources<'a>(
     }
 }
 
-/// Look up the email of one user, best-effort, for a record raised outside a request: the
-/// actor of a role-provider record, say. `None` with emails disabled.
-pub async fn user_email(catalog: &dyn EventCatalog, user_id: &UserId) -> Option<String> {
+/// The actor of a record about `user_id` raised outside the request's own records: a role
+/// resolution, say. It carries the email known without a database read: from `request`'s
+/// token when the token is `user_id`'s and has one, otherwise from the user cache. None with
+/// emails disabled.
+pub async fn principal_with_known_email(
+    user_id: &UserId,
+    request: Option<&RequestMetadata>,
+) -> ActorRecord {
+    let actor = ActorRecord::principal(user_id);
     if !include_user_email() {
-        return None;
+        return actor;
     }
-    lookup_emails(catalog, std::slice::from_ref(user_id))
-        .await
-        .remove(user_id)
+    let from_token = request
+        .filter(|request| request.user_id() == Some(user_id))
+        .and_then(claims_email)
+        .map(str::to_owned);
+    let email = match from_token {
+        Some(email) => Some(email),
+        None => cached_user_email(user_id)
+            .await
+            .and_then(|email| email.email().map(str::to_owned)),
+    };
+    actor.with_email(email)
 }
 
 #[cfg(test)]

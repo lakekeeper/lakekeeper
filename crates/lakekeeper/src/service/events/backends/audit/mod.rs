@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 pub use emitter::{AuditEmitter, EmitterStamp, is_emitter_name};
 use enrichment::Enrichment;
-pub use enrichment::user_email;
+pub use enrichment::principal_with_known_email;
 pub use part::{
     AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
     Registration, Vocabulary, Wire, WireKey, WireName, enabled, warn_on_retired_audit_filter,

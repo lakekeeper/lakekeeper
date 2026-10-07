@@ -128,6 +128,12 @@ pub async fn user_emails<C: CatalogStore>(
     Ok(emails)
 }
 
+/// What the cache holds for `user_id`'s email, without reading the database: `None` on a
+/// miss.
+pub async fn cached_user_email(user_id: &UserId) -> Option<UserEmail> {
+    USER_CACHE.get(user_id).await
+}
+
 /// Read the emails of `user_ids`. A user the read does not return has no row or is
 /// deleted, and is left out.
 async fn load<C: CatalogStore>(

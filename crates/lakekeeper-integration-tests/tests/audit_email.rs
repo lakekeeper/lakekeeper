@@ -21,7 +21,7 @@ use lakekeeper::{
             user::{UserLastUpdatedWith, UserType},
         },
     },
-    audit::include_user_email_in_tests,
+    audit::{ActorRecord, AuditJson, include_user_email_in_tests, principal_with_known_email},
     service::{
         CatalogBackendError, CatalogStore, Transaction, UserId, UserUpsertMode,
         authz::{AllowAllAuthorizer, CatalogServerAction, GrantResource, GrantSpec, UserOrRoleId},
@@ -29,7 +29,7 @@ use lakekeeper::{
             CatalogStoreReader, EventCatalog, EventListener, GrantsChangedEvent,
             backends::audit::AuditEventListener,
         },
-        user_cache::UserEmail,
+        user_cache::{UserEmail, user_emails},
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -253,6 +253,36 @@ async fn the_actor_email_falls_back_to_the_catalog(pool: PgPool) {
         .await;
     let records = f.logs.wait_for(1).await;
     assert_eq!(records[0]["actor"]["email"], "carol@catalog.example.com");
+}
+
+/// An actor for a record raised outside the request's own records takes the email known
+/// without a database read: the token's when it is the user's, otherwise the user cache's.
+#[sqlx::test]
+async fn a_principal_outside_the_request_takes_the_known_email(pool: PgPool) {
+    let f = Fixture::new(pool, None).await;
+    let (alice, bob, carol) = (user("known-alice"), user("known-bob"), user("known-carol"));
+    for (id, email) in [
+        (&alice, "alice@catalog.example.com"),
+        (&bob, "bob@catalog.example.com"),
+        (&carol, "carol@catalog.example.com"),
+    ] {
+        f.user(id, Some(email)).await;
+    }
+    user_emails::<PostgresBackend>(std::slice::from_ref(&bob), f.ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    let alices_request =
+        RequestMetadata::test_user_with_email(alice.clone(), "alice@token.example.com");
+    let email_of = |actor: ActorRecord| AuditJson::of(&actor).value()["email"].clone();
+
+    let from_token = principal_with_known_email(&alice, Some(&alices_request)).await;
+    assert_eq!(email_of(from_token), "alice@token.example.com");
+    // Bob is not the caller: his email comes from the cache, where the lookup above put it.
+    let from_cache = principal_with_known_email(&bob, Some(&alices_request)).await;
+    assert_eq!(email_of(from_cache), "bob@catalog.example.com");
+    // Carol is in the catalog but not in the cache, and the database is not read.
+    let not_cached = principal_with_known_email(&carol, None).await;
+    assert_eq!(email_of(not_cached), Value::Null);
 }
 
 /// Subjects get their emails; one without a user row or without an email gets no field.
