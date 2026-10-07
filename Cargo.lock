@@ -3419,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "axum",
  "bytes",
@@ -3979,7 +3979,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -4072,7 +4072,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-alloc"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "axum-prometheus",
  "serde_json",
@@ -4083,7 +4083,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-audit-macros"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -4093,7 +4093,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-authz-openfga"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4161,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-events-kafka"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-events-nats"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -4197,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-integration-tests"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -4238,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-io"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-secrets-kv2"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4312,7 +4312,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-storage-postgres"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
