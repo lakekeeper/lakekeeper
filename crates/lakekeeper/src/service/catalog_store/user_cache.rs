@@ -150,6 +150,7 @@ async fn load<C: CatalogStore>(
     Ok(emails)
 }
 
+#[cfg(feature = "router")]
 /// Write `email` for `user_id` after a committed user write. Fences any load that read
 /// before the write, so it cannot put the old answer back.
 async fn cache_user_write(user_id: &UserId, email: UserEmail) {

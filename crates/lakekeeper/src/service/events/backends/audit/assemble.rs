@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use super::{
     Decision,
+    email::Emails,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord,
         HandlerContext, SubjectRecord,
@@ -14,7 +15,7 @@ use crate::{
     audit::EmitterStamp,
     request_metadata::{RequestMetadata, UserAgent},
     service::{
-        authz::ActionDescriptor,
+        authz::{ActionDescriptor, UserOrRoleId},
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationSucceededEvent, IdempotentReplayEvent,
@@ -23,7 +24,10 @@ use crate::{
     },
 };
 
-pub(crate) fn authorization_succeeded(event: &AuthorizationSucceededEvent) -> AuthorizationRecord {
+pub(crate) fn authorization_succeeded(
+    event: &AuthorizationSucceededEvent,
+    emails: &Emails,
+) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
         event.occurred_at,
@@ -33,10 +37,14 @@ pub(crate) fn authorization_succeeded(event: &AuthorizationSucceededEvent) -> Au
         &event.authorizations,
         Decision::Allowed,
         None,
+        emails,
     )
 }
 
-pub(crate) fn authorization_failed(event: &AuthorizationFailedEvent) -> AuthorizationRecord {
+pub(crate) fn authorization_failed(
+    event: &AuthorizationFailedEvent,
+    emails: &Emails,
+) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
         event.occurred_at,
@@ -46,6 +54,7 @@ pub(crate) fn authorization_failed(event: &AuthorizationFailedEvent) -> Authoriz
         &event.authorizations,
         Decision::Denied,
         Some((&event.failure_reason, &event.error)),
+        emails,
     )
 }
 
@@ -59,6 +68,7 @@ fn authorization(
     authorizations: &[Authorization],
     decision: Decision,
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
+    emails: &Emails,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
         emitters: Emitters::of(
@@ -69,12 +79,12 @@ fn authorization(
         entities: self::entities(entities),
         request_id: request_metadata.request_id().clone(),
         time: occurred_at.into(),
-        actor: ActorRecord::from_request(request_metadata),
+        actor: actor(request_metadata, emails),
         privilege_source: request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(request_metadata),
         break_glass: request_metadata.break_glass_reason().map(str::to_owned),
         context: handler_context(extra_context),
-        authorizations: decisions(authorizations),
+        authorizations: decisions(authorizations, emails),
         idempotency_key: idempotency_key(request_metadata),
         decision: decision.as_wire(),
         failure_reason: failure.map(|(reason, _)| reason.as_wire()),
@@ -82,7 +92,7 @@ fn authorization(
     }
 }
 
-pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
+pub(crate) fn replay(event: &IdempotentReplayEvent, emails: &Emails) -> ReplayRecord {
     ReplayRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
@@ -92,11 +102,29 @@ pub(crate) fn replay(event: &IdempotentReplayEvent) -> ReplayRecord {
         entities: entities(&event.entities),
         request_id: event.request_metadata.request_id().clone(),
         time: event.occurred_at.into(),
-        actor: ActorRecord::from_request(&event.request_metadata),
+        actor: actor(&event.request_metadata, emails),
         privilege_source: event.request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(&event.request_metadata),
         idempotency_key: event.idempotency_key.as_uuid().to_string(),
     }
+}
+
+/// The request's actor, with its email from the token or, failing that, from `emails`.
+pub(crate) fn actor(request_metadata: &RequestMetadata, emails: &Emails) -> ActorRecord {
+    let actor = ActorRecord::from_request(request_metadata);
+    match request_metadata.user_id() {
+        Some(user_id) if actor.lacks_email() => actor.with_email(emails.get(user_id)),
+        _ => actor,
+    }
+}
+
+/// A principal named as a target, with its email from `emails` when it is a user.
+pub(crate) fn subject(id: &UserOrRoleId, emails: &Emails) -> SubjectRecord {
+    let mut record = SubjectRecord::from_id(id);
+    if let (SubjectRecord::User(user), UserOrRoleId::User(user_id)) = (&mut record, id) {
+        user.email = emails.get(user_id);
+    }
+    record
 }
 
 /// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.
@@ -161,13 +189,13 @@ fn entities(entities: &EventEntities) -> Vec<EntityRecord> {
     entities.entities.iter().map(entity).collect()
 }
 
-pub(crate) fn decision(authorization: &Authorization) -> DecisionRecord {
+pub(crate) fn decision(authorization: &Authorization, emails: &Emails) -> DecisionRecord {
     DecisionRecord {
         id: authorization.id.clone(),
         for_principal: authorization
             .for_principal
             .as_ref()
-            .map(SubjectRecord::from_id),
+            .map(|id| subject(id, emails)),
         action: action(&authorization.action),
         entity: entity(&authorization.entity),
         allowed: authorization.allowed,
@@ -175,8 +203,23 @@ pub(crate) fn decision(authorization: &Authorization) -> DecisionRecord {
     }
 }
 
-fn decisions(authorizations: &[Authorization]) -> Vec<DecisionRecord> {
-    authorizations.iter().map(decision).collect()
+fn decisions(authorizations: &[Authorization], emails: &Emails) -> Vec<DecisionRecord> {
+    authorizations
+        .iter()
+        .map(|authorization| decision(authorization, emails))
+        .collect()
+}
+
+/// The users the decisions of a record are about, for [`Emails::resolve`].
+pub(crate) fn decision_subjects(
+    authorizations: &[Authorization],
+) -> impl Iterator<Item = &crate::service::UserId> {
+    authorizations
+        .iter()
+        .filter_map(|authorization| match &authorization.for_principal {
+            Some(UserOrRoleId::User(user_id)) => Some(user_id),
+            _ => None,
+        })
 }
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is

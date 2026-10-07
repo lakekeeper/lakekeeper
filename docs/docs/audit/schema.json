@@ -602,6 +602,10 @@
         "assumed_role": {
           "description": "The role acted as. Present for `assumed_role`; `principal` is still the human.",
           "$ref": "#/$defs/AssumedRoleRecord"
+        },
+        "email": {
+          "type": "string",
+          "description": "The principal's email, best-effort: only when the operator enabled it, and absent\nwhenever it is not known. Metadata, not identity: correlate on `principal`."
         }
       },
       "required": [
@@ -1889,6 +1893,10 @@
         "user": {
           "type": "string",
           "description": "The user's principal id."
+        },
+        "email": {
+          "type": "string",
+          "description": "The user's email, best-effort: only when the operator enabled it, and absent\nwhenever it is not known. Metadata, not identity: correlate on `user`."
         }
       },
       "required": [

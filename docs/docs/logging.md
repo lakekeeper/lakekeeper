@@ -56,6 +56,26 @@ LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 
 **Note:** Audit logs contain PII: user identities, and a caller-supplied `user_agent` string that some clients fill with host names or OS user names. If you disable them, make sure you have another way to meet compliance and security monitoring needs.
 
+### User Emails on Audit Records {#audit-user-emails}
+
+Audit records name users by their principal id. To also put their email on the record, set:
+
+```bash
+LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL=true
+```
+
+It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
+
+The email comes from the caller's token when the token is that user's and carries an email claim (`email`, or `upn` or `preferred_username` when they hold an address). Otherwise it comes from the user's record in the catalog, through the [user cache](./configuration.md#caching), so a user named on every request costs one database read per cache lifetime.
+
+On `admission_decided` records, which are written while the request is still being admitted, the actor's email comes from the token only.
+
+The email is best-effort. It is absent, never `null`, when it is not known: the user has no record or no email, was deleted, or the lookup failed. A lookup never fails or delays a request or a record. On the records written when a user is deleted, for that user's revoked grants, the email is absent: the deletion has already removed it.
+
+**An email is metadata, not identity.** Emails are not unique and can change. Correlate on `principal`, `user` and `role`, never on `email`.
+
+**Note:** With this setting, audit logs hold users' email addresses. An email stays in the log after the user is deleted from the catalog, so plan retention and access for the log accordingly.
+
 ## Log Types
 
 Lakekeeper produces four types of logs. The first three are identified by their `event_source` field. General application logs have no `event_source` field.
@@ -243,6 +263,9 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 // Authenticated user
 {"actor_type": "principal", "principal": "oidc~user@example.com"}
 
+// Authenticated user, with user emails enabled
+{"actor_type": "principal", "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5", "email": "alice@example.com"}
+
 // Assumed role
 {"actor_type": "assumed_role", "principal": "oidc~user@example.com", "assumed_role": {"role_id": "…", "provider_id": "…", "source_id": "…"}}
 
@@ -255,8 +278,9 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 | `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed_role"`, or `"lakekeeper_internal"`. Always present. |
 | `principal`    | String | The authenticated principal. Present for `principal` and `assumed_role`.                           |
 | `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed_role`. |
+| `email`        | String | The principal's email, for `principal` and `assumed_role`. Only with [user emails](#audit-user-emails) enabled, and only when known. |
 
-**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`.
+**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`. With [user emails](#audit-user-emails) enabled, the user form can also carry `email`: `{"user": "oidc~alice", "email": "alice@example.com"}`.
 
 **`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is a string naming whose grants a subtree request reaches (`"every"`, `"user:oidc~alice"`, `"role:<uuid>"`). A query on `principal.user` finds nothing where the value is a string.
 
@@ -420,7 +444,7 @@ Each entry stands on its own; you do not need to combine it with the top-level f
 | Field           | Type    | Description                                                                          |
 |-----------------|---------|--------------------------------------------------------------------------------------|
 | `id`            | String  | Identifier of this entry. When the client gives an `id` on a batch-check input, it appears here as sent, and the API response returns the same value. When the client gives none, the API response has no id, and the audit entry uses the item's zero-based position instead. **The API response never carries position-based ids; only the audit entry does.** Absent on single-check entries. |
-| `for_principal` | Object  | Optional. The principal whose permission was checked, when it is not the caller: `{"user": "..."}` or `{"role": "..."}`. Absent means the caller. |
+| `for_principal` | Object  | Optional. The principal whose permission was checked, when it is not the caller: `{"user": "..."}` or `{"role": "..."}`, the user form with `email` when [user emails](#audit-user-emails) are enabled and it is known. Absent means the caller. |
 | `action`        | Object  | One action, in the same shape as an entry of `actions`.                              |
 | `entity`        | Object  | One entity, in the same shape as an entry of `entities`.                             |
 | `allowed`       | Boolean | Whether this check was permitted. `false` means a definite refusal, by the authorizer or by a rule outside it (see [What counts as a denial](#authorization-events)); `error.type` tells which, and a refusal by rule has an empty `determined_by`. Absent when no verdict was reached, as with `internal_authorization_error`, `internal_catalog_error` or `invalid_request_data`. On a record denied with `action_forbidden`, `resource_not_found` or `cannot_see_resource`, every entry is normally `false`; an endpoint that records its own checks gives each entry its own verdict, so a denied record can have an entry with `true`. |
@@ -718,7 +742,7 @@ These records confirm what an `apply_grants` authorization recorded as an attemp
 
 | Context field  | Description                                                                 |
 |----------------|-----------------------------------------------------------------------------|
-| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`                   |
+| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`; the user form with `email` when [user emails](#audit-user-emails) are enabled and it is known |
 | `privilege`    | The privilege name, as the authorizer names it                              |
 | `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition` |
 | `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |

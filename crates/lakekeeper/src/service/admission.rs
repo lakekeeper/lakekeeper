@@ -386,6 +386,8 @@ impl<'a> AdmissionContext<'a> {
 pub struct AdmissionTrigger<'a> {
     actor: &'a InternalActor,
     request_id: &'a RequestId,
+    /// The email in the request's token, when audit records carry emails.
+    email: Option<&'a str>,
 }
 
 // The actor's kind only: an assumed role carries its project, name and
@@ -412,6 +414,7 @@ impl<'a> AdmissionTrigger<'a> {
         Self {
             actor: metadata.internal_actor(),
             request_id: metadata.request_id(),
+            email: crate::service::events::backends::audit::parts::claims_email(metadata),
         }
     }
 
@@ -419,6 +422,7 @@ impl<'a> AdmissionTrigger<'a> {
     #[must_use]
     pub fn actor_record(&self) -> crate::audit::ActorRecord {
         crate::audit::ActorRecord::from_internal_actor(self.actor)
+            .with_email(self.email.map(str::to_owned))
     }
 
     /// The triggering request's id.

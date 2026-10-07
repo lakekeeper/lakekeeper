@@ -481,7 +481,14 @@ async fn serve_inner<
     }
     if CONFIG.audit.tracing.enabled {
         tracing::info!("Audit tracing is enabled, registering audit event listener");
-        dispatcher.append(Arc::new(AuditEventListener)).await;
+        if CONFIG.audit.tracing.include_user_email {
+            tracing::info!("Audit records carry user emails");
+        }
+        dispatcher
+            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
+                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
+            ))))
+            .await;
     } else {
         tracing::info!("Audit tracing is disabled");
     }

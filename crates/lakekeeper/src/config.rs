@@ -1099,6 +1099,11 @@ pub(crate) struct AuditConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct AuditTracingConfig {
     pub enabled: bool,
+    /// Put the email of a user principal on audit records, best-effort: the actor's, a
+    /// subject's and a grant recipient's. From the token when it is the principal's and
+    /// carries one, otherwise from the user cache and the database.
+    #[serde(default)]
+    pub include_user_email: bool,
 }
 
 /// Cache for `UserId → ListUserRoleAssignmentsResult` lookups.
@@ -1410,7 +1415,10 @@ impl Default for DynAppConfig {
             max_request_body_size: 32 * 1024 * 1024, // 32 MB
             max_request_time: Duration::from_secs(30),
             audit: AuditConfig {
-                tracing: AuditTracingConfig { enabled: true },
+                tracing: AuditTracingConfig {
+                    enabled: true,
+                    include_user_email: false,
+                },
             },
             maintenance_mode: MaintenanceMode::Off,
         }

@@ -31,14 +31,36 @@ pub struct ActorRecord {
     /// The role acted as. Present for `assumed_role`; `principal` is still the human.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) assumed_role: Option<AssumedRoleRecord>,
+    /// The principal's email, best-effort: only when the operator enabled it, and absent
+    /// whenever it is not known. Metadata, not identity: correlate on `principal`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) email: Option<String>,
 }
 
 impl ActorRecord {
     /// The request's resolved actor. The one way to put a request's caller on a record, so
     /// every record raised while serving it agrees on who the caller is.
+    ///
+    /// With emails enabled, carries the email from the caller's token when it has one.
     #[must_use]
     pub fn from_request(request_metadata: &RequestMetadata) -> Self {
         Self::from_internal_actor(request_metadata.internal_actor())
+            .with_email(claims_email(request_metadata).map(str::to_owned))
+    }
+
+    /// This actor with `email` for its principal. Only a `principal` or `assumed_role` actor
+    /// carries one, and only with emails enabled; `None` keeps the email it has.
+    #[must_use]
+    pub fn with_email(mut self, email: Option<String>) -> Self {
+        if email.is_some() && self.principal.is_some() && include_user_email() {
+            self.email = email;
+        }
+        self
+    }
+
+    /// Whether this actor is a principal that has no email yet.
+    pub(crate) fn lacks_email(&self) -> bool {
+        self.principal.is_some() && self.email.is_none()
     }
 
     /// A bare principal, for records raised without a request: role resolution, syncs.
@@ -48,6 +70,7 @@ impl ActorRecord {
             actor_type: ActorType::Principal.as_wire(),
             principal: Some(id.to_string()),
             assumed_role: None,
+            email: None,
         }
     }
 
@@ -57,6 +80,7 @@ impl ActorRecord {
                 actor_type: ActorType::LakekeeperInternal.as_wire(),
                 principal: None,
                 assumed_role: None,
+                email: None,
             },
             InternalActor::External(actor) => Self::from_actor(actor),
         }
@@ -68,6 +92,7 @@ impl ActorRecord {
                 actor_type: ActorType::Anonymous.as_wire(),
                 principal: None,
                 assumed_role: None,
+                email: None,
             },
             Actor::Principal(user_id) => Self::principal(user_id),
             Actor::Role {
@@ -81,9 +106,42 @@ impl ActorRecord {
                     provider_id: assumed_role.provider_id().to_string(),
                     source_id: assumed_role.source_id().to_string(),
                 }),
+                email: None,
             },
         }
     }
+}
+
+/// Whether the operator enabled emails on audit records.
+pub(crate) fn include_user_email() -> bool {
+    #[cfg(any(test, feature = "test-utils"))]
+    if INCLUDE_USER_EMAIL_IN_TESTS.get().is_some() {
+        return true;
+    }
+    crate::CONFIG.audit.tracing.include_user_email
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+static INCLUDE_USER_EMAIL_IN_TESTS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Make every audit record in this process carry emails, whatever the configuration says.
+/// For a test binary of its own: it cannot be undone, and it reaches every test in the
+/// process.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn include_user_email_in_tests() {
+    let _ = INCLUDE_USER_EMAIL_IN_TESTS.set(());
+}
+
+/// The email in the caller's token, with emails enabled. It belongs to the token's
+/// principal, `request_metadata.user_id()`.
+pub(crate) fn claims_email(request_metadata: &RequestMetadata) -> Option<&str> {
+    if !include_user_email() {
+        return None;
+    }
+    request_metadata
+        .authentication()?
+        .email()
+        .filter(|email| !email.is_empty())
 }
 
 /// The `emitters` object: every product that contributed to a record, keyed by its name, with
@@ -202,6 +260,7 @@ impl SubjectRecord {
         match id {
             UserOrRoleId::User(user) => Self::User(UserSubjectRecord {
                 user: user.to_string(),
+                email: None,
             }),
             UserOrRoleId::Role(role) => Self::Role(RoleSubjectRecord {
                 role: role.to_string(),
@@ -216,6 +275,10 @@ impl SubjectRecord {
 pub struct UserSubjectRecord {
     /// The user's principal id.
     pub(crate) user: String,
+    /// The user's email, best-effort: only when the operator enabled it, and absent
+    /// whenever it is not known. Metadata, not identity: correlate on `user`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) email: Option<String>,
 }
 
 /// A role named as a target.
@@ -321,9 +384,9 @@ pub struct GrantContextRecord {
 }
 
 impl GrantContextRecord {
-    pub(crate) fn new(principal: &UserOrRoleId, privilege: &str, resource: &GrantResource) -> Self {
+    pub(crate) fn new(principal: SubjectRecord, privilege: &str, resource: &GrantResource) -> Self {
         Self {
-            principal: SubjectRecord::from_id(principal),
+            principal,
             privilege: privilege.to_string(),
             resource_type: resource.resource_type().as_wire(),
             resource_id: grant_resource_id(resource),
