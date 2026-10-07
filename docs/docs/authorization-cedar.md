@@ -285,6 +285,7 @@ Notes:
 
 - **`select` and `write` on a container** act on the tables, views and generic tables beneath it, not on the container. Grant `describe` on the container too, so the holder can reach and list what is in it.
 - **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
+- **Moving** a namespace, table, view or generic table to another namespace needs `manage` and `manage_grants` on it, because a move changes which grants apply to it. The destination needs `create` or `manage`. Renaming a table, view or generic table within its namespace needs `manage` alone; renaming a namespace is a move.
 - **`manage_tags`** tags objects without access to their data. On a server or project it acts only on what is beneath; grant `describe` there too to list warehouses and tags. Attaching or removing a tag also needs `apply` or `manage` on the tag. Policies may read tags to decide access, so treat tagging as a governance right.
 - **`apply`** counts only on the tag it is granted on. Attaching the tag also needs `manage_tags` or `manage` on the object.
 - **`read_grants`** reads grants and nothing else: no check of what another user or role may do, no grant, no revoke. On a project the subtree listing is everything one user or role holds in it; on a warehouse or namespace it is every grant at and under it.
@@ -1404,8 +1405,9 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `UpdateNamespaceProperties` | `update_properties` | `NamespaceModifyActions` | Modify namespace properties |
 | `MoveNamespace` | `move` | none | Move the namespace to a new path: the source half of a move |
 | `AcceptMovedNamespaceInNamespace` | `accept_moved_namespace` | none | Accept a namespace moved in as a child. Asked together with `CreateNamespaceInNamespace` |
+| `AcceptMovedTabularInNamespace` | `accept_moved_tabular` | none | Accept a table, view or generic table moved in from another namespace. Asked together with the matching create action |
 
-A move changes what the moved subtree inherits, so `MoveNamespace` and the two `AcceptMovedNamespaceIn…` actions are in no group. Name them to allow a move. Moving out and moving in are decided separately.
+A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTable`, `MoveView`, `MoveGenericTable` and the `AcceptMoved…` actions are in no group. Name them to allow a move. Moving out and moving in are decided separately. The predefined policies allow moving an object out with `manage` together with `manage_grants` on it, and moving something in with `create` or `manage` on the destination.
 
 ### Table Actions
 
@@ -1418,7 +1420,8 @@ A move changes what the moved subtree inherits, so `MoveNamespace` and the two `
 | `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table |
 | `CommitTable` | `commit` | `TableWriteActions` | Commit table changes (data, schema, properties) |
 | `DropTable` | `drop` | `TableModifyActions` | Delete the table |
-| `RenameTable` | `rename` | `TableModifyActions` | Change the table's name or move it to another namespace |
+| `RenameTable` | `rename` | `TableModifyActions` | Change the table's name |
+| `MoveTable` | `move` | none | Move the table to another namespace: the source half of a move. Asked together with `RenameTable` |
 | `UndropTable` | `undrop` | `TableModifyActions` | Restore a soft-deleted table |
 | `ControlTableTasks` | `control_tasks` | `TableModifyActions` | Manage the table's background tasks |
 | `SetTableProtection` | `set_protection` | `TableModifyActions` | Enable or disable deletion protection |
@@ -1436,7 +1439,8 @@ A move changes what the moved subtree inherits, so `MoveNamespace` and the two `
 | `SelectView` | `select` | `ViewSelectActions` | Execute the view to produce rows (also required to traverse the view in a `referenced-by` chain) |
 | `CommitView` | `commit` | `ViewWriteActions` | Commit a new version of the view (definition, properties) |
 | `DropView` | `drop` | `ViewModifyActions` | Delete the view |
-| `RenameView` | `rename` | `ViewModifyActions` | Change the view's name or move it to another namespace |
+| `RenameView` | `rename` | `ViewModifyActions` | Change the view's name |
+| `MoveView` | `move` | none | Move the view to another namespace: the source half of a move. Asked together with `RenameView` |
 | `UndropView` | `undrop` | `ViewModifyActions` | Restore a soft-deleted view |
 | `ControlViewTasks` | `control_tasks` | `ViewModifyActions` | Manage the view's background tasks |
 | `SetViewProtection` | `set_protection` | `ViewModifyActions` | Enable or disable deletion protection |
@@ -1452,7 +1456,8 @@ A move changes what the moved subtree inherits, so `MoveNamespace` and the two `
 | `ReadGenericTableData` | `read_data` | `GenericTableSelectActions` | Read data from the generic table |
 | `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table |
 | `DropGenericTable` | `drop` | `GenericTableModifyActions` | Delete the generic table |
-| `RenameGenericTable` | `rename` | `GenericTableModifyActions` | Change the generic table's name or move it to another namespace |
+| `RenameGenericTable` | `rename` | `GenericTableModifyActions` | Change the generic table's name |
+| `MoveGenericTable` | `move` | none | Move the generic table to another namespace: the source half of a move. Asked together with `RenameGenericTable` |
 | `UndropGenericTable` | `undrop` | `GenericTableModifyActions` | Restore a soft-deleted generic table |
 | `ControlGenericTableTasks` | `control_tasks` | `GenericTableModifyActions` | Manage the generic table's background tasks |
 | `SetGenericTableProtection` | `set_protection` | `GenericTableModifyActions` | Enable or disable deletion protection |
@@ -1531,7 +1536,8 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `CreateGenericTableInNamespace`           | `generic_table_name?: String`, `generic_table_id?: String`, `format?: String`, `base_location?: String`, `initial_generic_table_properties: ResourceProperties` |
 | `DeleteNamespace`                         | `force: Bool`, `purge: Bool`, `recursive: Bool` |
 | `MoveNamespace`                           | `destination: String`, `force: Bool` |
-| `AcceptMovedNamespaceInWarehouse`, `AcceptMovedNamespaceInNamespace` | `source: String` |
+| `MoveTable`, `MoveView`, `MoveGenericTable` | `destination: String` |
+| `AcceptMovedNamespaceInWarehouse`, `AcceptMovedNamespaceInNamespace`, `AcceptMovedTabularInNamespace` | `source: String` |
 | `DropTable`, `DropView`                   | `force: Bool`, `purge: Bool` |
 | `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |
 | `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
