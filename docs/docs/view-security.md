@@ -66,7 +66,7 @@ When a trusted engine sends a `loadTable` or `loadView` request with the `refere
 1. Resolves all views and tables in the chain.
 2. Determines the security model (DEFINER or INVOKER) for each view by checking the configured owner property (e.g. `trino.run-as-owner`).
 3. Walks the chain from entry point to target, switching the "current user" at each DEFINER boundary.
-4. Checks permissions for the correct user at each step in a single batch authorization call.
+4. Checks permissions for the correct user at each step.
 5. Returns the result only if all checks pass.
 
 Without a trusted engine, the `referenced-by` parameter is ignored and only the calling user's permissions on the target resource are checked (standard behavior).
@@ -102,7 +102,7 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-
 
 **What happens when a request is not matched as a trusted engine:**
 
-- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The one exception is a chain deeper than the configured maximum, which is rejected with `400 ReferencedByDepthExceeded` before engine trust is considered.
+- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The exceptions are malformed chains, rejected with `400` before engine trust is considered: a chain deeper than the configured maximum (`ReferencedByDepthExceeded`), or one that names the object being loaded (`ReferencedByContainsTarget`).
 - Only **commits that actually attempt to set or remove a protected owner property** (`create-view` or `commit-view` writing `trino.run-as-owner`) are rejected with `403 ProtectedPropertyModification`. An ignored `referenced-by` on a load does **not** trigger this error.
 
 !!! note "When using the OPA bridge"

@@ -23,7 +23,11 @@ use lakekeeper::{
     service::{
         AuthZTableInfo as _, AuthZViewInfo as _, CatalogTabularOps as _, State, TabularListFlags,
         UserId,
-        authz::{AllowAllAuthorizer, Authorizer, UserOrRole, tests::HidingAuthorizer},
+        authz::{
+            AllowAllAuthorizer, AuthZCannotSeeView, Authorizer, UserOrRole,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
+        events::AuthorizationFailureSource as _,
     },
 };
 use lakekeeper_integration_tests::{
@@ -1247,4 +1251,495 @@ async fn test_load_view_referenced_by_at_limit_succeeds(pool: PgPool) {
         result.is_ok(),
         "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
     );
+}
+
+// ---- Chain decided one principal at a time ----
+
+fn tabular_check(object: &str, action: &str, owner: Option<&str>) -> RecordedTabularCheck {
+    RecordedTabularCheck {
+        object: object.to_string(),
+        action: action.to_string(),
+        user: owner.map(user),
+        is_delegated_execution: owner.is_some(),
+    }
+}
+
+/// The caller's checks on an intermediate view; `owner` when decided for a DEFINER owner.
+fn intermediate_view_checks(view_key: &str, owner: Option<&str>) -> Vec<RecordedTabularCheck> {
+    vec![
+        tabular_check(view_key, "GetMetadata", owner),
+        tabular_check(view_key, "Select", owner),
+    ]
+}
+
+/// What the authorizer was asked since `since` checks were recorded.
+fn tabular_checks_since(authz: &HidingAuthorizer, since: usize) -> Vec<Vec<RecordedTabularCheck>> {
+    authz.tabular_checks()[since..].to_vec()
+}
+
+fn assert_view_not_found(err: &IcebergErrorResponse) {
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchViewException", "{err:?}");
+}
+
+async fn load_table_through(
+    ctx: &ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    views: &[TableIdent],
+) -> Result<(), IcebergErrorResponse> {
+    Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(views)))
+            .build(),
+        ctx.clone(),
+        request_as_user("user_a"),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// A caller refused on the DEFINER entry view never makes the authorizer
+/// decide anything for the view's owner.
+#[sqlx::test]
+async fn test_load_table_refused_caller_never_sends_owner_checks(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_table_through(&ctx, &wh, &[table_ident("ns", "definer_view")])
+        .await
+        .unwrap_err();
+
+    assert_view_not_found(&err);
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![intermediate_view_checks(&view_key, None)]
+    );
+}
+
+/// The caller may traverse, the owner may not read the table: the owner is
+/// decided in a second call and the refusal is reported for delegated execution.
+#[sqlx::test]
+async fn test_load_table_refused_owner_is_decided_after_the_caller(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    let table_key = table_object_key(&ctx, whi, &table_ident("ns", "my_table")).await;
+    authz.hide_for_user(&user("owner_b"), &table_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_table_through(&ctx, &wh, &[table_ident("ns", "definer_view")])
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchTableException", "{err:?}");
+    assert_eq!(
+        err.error.stack,
+        vec!["Access denied during delegated execution via DEFINER view chain".to_string()],
+        "{err:?}"
+    );
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![
+            intermediate_view_checks(&view_key, None),
+            vec![
+                tabular_check(&table_key, "GetMetadata", Some("owner_b")),
+                tabular_check(&table_key, "ReadData", Some("owner_b")),
+                tabular_check(&table_key, "WriteData", Some("owner_b")),
+            ],
+        ]
+    );
+}
+
+/// An authorizer that cannot decide for the owner is never asked when the
+/// caller is refused: the caller gets the refusal, not a 503.
+#[sqlx::test]
+async fn test_load_table_failing_owner_lookup_not_reached_when_caller_refused(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_table_through(&ctx, &wh, &[table_ident("ns", "definer_view")])
+        .await
+        .unwrap_err();
+
+    assert_view_not_found(&err);
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![intermediate_view_checks(&view_key, None)]
+    );
+}
+
+/// Counterpart: a caller allowed to traverse reaches the owner, whose failing
+/// lookup surfaces as 503.
+#[sqlx::test]
+async fn test_load_table_failing_owner_lookup_surfaces_when_caller_allowed(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+
+    let err = load_table_through(&ctx, &wh, &[table_ident("ns", "definer_view")])
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        err.error.code,
+        StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+        "{err:?}"
+    );
+    assert_eq!(err.error.r#type, "AuthorizationBackendError", "{err:?}");
+    assert_eq!(
+        err.error.message, "Authorization service is unavailable",
+        "{err:?}"
+    );
+    assert_eq!(
+        err.error
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("Tabular checks for this principal fail in the test authorizer"),
+        "{err:?}"
+    );
+}
+
+/// An INVOKER-only chain is decided in one call, which asks about tables before views.
+#[sqlx::test]
+async fn test_load_table_invoker_chain_is_one_call(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "invoker_view").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "invoker_view")).await;
+    let table_key = table_object_key(&ctx, whi, &table_ident("ns", "my_table")).await;
+    // Refuse the table so the load ends at authorization and records nothing else.
+    authz.hide_for_user(&user("user_a"), &table_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_table_through(&ctx, &wh, &[table_ident("ns", "invoker_view")])
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchTableException", "{err:?}");
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![
+            vec![
+                tabular_check(&table_key, "GetMetadata", None),
+                tabular_check(&table_key, "ReadData", None),
+                tabular_check(&table_key, "WriteData", None),
+            ],
+            intermediate_view_checks(&view_key, None),
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn test_load_view_refused_caller_never_sends_owner_checks(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "target_view").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let since = authz.tabular_checks().len();
+    let err = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "target_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(referenced_by(&[table_ident("ns", "definer_view")])),
+        },
+        ctx.clone(),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_view_not_found(&err);
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![intermediate_view_checks(&view_key, None)]
+    );
+}
+
+/// `owner_b` refuses the second DEFINER view: `owner_c`, who would decide the
+/// table, is never asked, even with a lookup that would fail.
+#[sqlx::test]
+async fn test_load_table_refused_later_segment_ends_the_chain(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "w1_definer_b", "owner_b").await;
+    create_definer_view(&ctx, &wh, "w2_definer_c", "owner_c").await;
+    let w1_key = view_object_key(&ctx, whi, &table_ident("ns", "w1_definer_b")).await;
+    let w2_key = view_object_key(&ctx, whi, &table_ident("ns", "w2_definer_c")).await;
+    authz.hide_for_user(&user("owner_b"), &w2_key);
+    let chain = [
+        table_ident("ns", "w1_definer_b"),
+        table_ident("ns", "w2_definer_c"),
+    ];
+    let expected_checks = vec![
+        intermediate_view_checks(&w1_key, None),
+        intermediate_view_checks(&w2_key, Some("owner_b")),
+    ];
+    let expected = AuthZCannotSeeView::new_forbidden(whi, table_ident("ns", "w2_definer_c"))
+        .with_delegated_execution(true)
+        .into_error_model();
+
+    for owner_c_lookup_fails in [false, true] {
+        if owner_c_lookup_fails {
+            authz.fail_tabular_checks_for_user(&user("owner_c"));
+        }
+        let since = authz.tabular_checks().len();
+        let err = load_table_through(&ctx, &wh, &chain).await.unwrap_err();
+
+        assert_view_not_found(&err);
+        assert_eq!(err.error.message, expected.message, "{err:?}");
+        assert_eq!(
+            err.error.stack,
+            vec!["Access denied during delegated execution via DEFINER view chain".to_string()],
+            "{err:?}"
+        );
+        assert_eq!(tabular_checks_since(&authz, since), expected_checks);
+    }
+}
+
+fn assert_referenced_by_contains_target(err: &IcebergErrorResponse) {
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "ReferencedByContainsTarget", "{err:?}");
+    assert_eq!(
+        err.error.message, "A referenced-by chain must not contain the object being loaded",
+        "{err:?}"
+    );
+}
+
+/// A view cannot reference itself: `loadView` of a DEFINER view listed in its
+/// own chain is refused before the authorizer is asked.
+#[sqlx::test]
+async fn test_load_view_referenced_by_itself_is_rejected(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "other_view").await;
+
+    let since = authz.tabular_checks().len();
+    let err = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "definer_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(referenced_by(&[
+                table_ident("ns", "other_view"),
+                table_ident("ns", "definer_view"),
+            ])),
+        },
+        ctx.clone(),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
+    assert_eq!(tabular_checks_since(&authz, since), Vec::<Vec<_>>::new());
+}
+
+/// A self-reference that differs from the target only in case is decided as an
+/// intermediate view: the caller needs `GetMetadata` and `Select` on it.
+#[sqlx::test]
+async fn test_load_view_case_variant_self_reference_is_an_intermediate_view(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+
+    let load = |ctx: ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>| {
+        let wh_prefix = prefix(&wh);
+        async move {
+            Server::load_view(
+                ViewParameters {
+                    prefix: Some(wh_prefix),
+                    view: table_ident("ns", "definer_view"),
+                },
+                LoadViewRequest {
+                    data_access: DataAccessMode::ClientManaged,
+                    referenced_by: Some(referenced_by(&[table_ident("ns", "DEFINER_VIEW")])),
+                },
+                ctx,
+                request_as_user("user_a"),
+            )
+            .await
+        }
+    };
+
+    // All allowed: the case variant is decided as an intermediate view for the
+    // caller (GetMetadata + Select), then the target for owner_b (GetMetadata).
+    let since = authz.tabular_checks().len();
+    load(ctx.clone()).await.expect("all allowed loads");
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![
+            intermediate_view_checks(&view_key, None),
+            vec![tabular_check(&view_key, "GetMetadata", Some("owner_b"))],
+        ]
+    );
+
+    // Caller refused: the request ends at the caller's segment with 404.
+    authz.hide_for_user(&user("user_a"), &view_key);
+    let since = authz.tabular_checks().len();
+    let err = load(ctx.clone()).await.unwrap_err();
+    assert_view_not_found(&err);
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![intermediate_view_checks(&view_key, None)]
+    );
+}
+
+#[sqlx::test]
+async fn test_load_table_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "my_table")])))
+            .build(),
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
+}
+
+#[sqlx::test]
+async fn test_load_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let err = Server::load_table_credentials(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableCredentialsRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "my_table")])))
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_referenced_by_contains_target(&err);
 }

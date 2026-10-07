@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE role_assignment_sync SET synced_at = $4\n        WHERE user_id = $1 AND project_id = $2 AND provider_id = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "537a391d80503cd6d2c75e8463e478a8c1c62913b17a180b27a6450229114e68"
+}

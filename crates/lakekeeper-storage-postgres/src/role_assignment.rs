@@ -11,7 +11,7 @@ use lakekeeper::{
         CatalogBackendError, CatalogRoleForAssignment, CatalogRoleMember,
         CatalogUserRoleAssignmentUser, DatabaseIntegrityError, ErrorModel, InvalidPaginationToken,
         LAKEKEEPER_ROLE_PROVIDER_NAME, ListCatalogRoleMembersPage, ListRoleMembersResult,
-        ListRolesPage, ListUserRoleAssignmentsResult, RemoveRoleMembersError,
+        ListRolesPage, ListUserRoleAssignmentsResult, NoSyncRecord, RemoveRoleMembersError,
         RemoveRoleMembersResult, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
         RoleAssignmentUserNotFound, RoleDeletedDuringSync, RoleId, RoleIdNotFoundInProject,
         RoleIdent, RoleMemberKind, RoleMembershipCycle, RoleMembershipDepthExceeded,
@@ -22,6 +22,7 @@ use lakekeeper::{
         UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
     },
 };
+use sqlx::Acquire as _;
 use uuid::Uuid;
 
 use super::{
@@ -367,30 +368,40 @@ pub(crate) async fn sync_role_members_by_ident(
 
 // ─── sync_user_role_assignments_by_provider ───────────────────────────────────
 //
-// Four queries, one transaction:
+// Statements, in order, all in the caller's transaction:
 //   Query 0 – lock the user row (`FOR NO KEY UPDATE`) and read whether it is
 //     deleted. Later statements take their snapshot after the lock, so a user
 //     delete that committed while this waited is seen by all of them.
+//   Record read – `SyncFor::OtherUser` only: a missing or deleted user, or a live
+//     user without the sync record, ends the sync with `NoSyncRecord` before any
+//     write. It takes no lock, so it sits outside the lock order. The user lock
+//     keeps `delete_user` from removing the record until commit; a role delete can
+//     still remove it, which query 2 detects.
+//   SAVEPOINT – `SyncFor::OtherUser` only.
 //   Query 1 – single CTE (PG15-compatible):
 //     1. Upsert the user                          (upserted_user)
 //     2. Bulk upsert desired roles, in source_id order (upserted_roles)
 //     3. DELETE stale assignments                  (removed_assignments)
 //     4. INSERT new assignments ON CONFLICT DO NOTHING (added_assignments)
-//   Query 2 – upsert the sync record. It runs after query 1, so a sync waiting on
-//     a role row holds no sync record: a role delete expires its members' records
-//     in its own transaction while holding that row.
-//   A deleted user synced for `SyncFor::OtherUser` ($11, kept_deleted) skips
-//   steps 1, 3, 4 and query 2.
+//   Query 2 – write the sync record: an upsert for `SyncFor::Caller`; for
+//     `SyncFor::OtherUser` an UPDATE of the existing record, where zero rows means
+//     a role delete expired the record after the record read: the sync returns
+//     `NoSyncRecord`. It runs after query 1, so a sync waiting on a role row holds
+//     no sync record: a role delete expires its members' records in its own
+//     transaction while holding that row.
+//   RELEASE SAVEPOINT, or ROLLBACK TO SAVEPOINT on an error – `SyncFor::OtherUser`
+//     only. The rollback undoes queries 1 and 2, so `NoSyncRecord` leaves the
+//     transaction as the record read left it.
 //   Query 3 – plain SELECT via list_role_assignments_for_user:
 //     Reads the post-sync state (writes from queries 1 and 2 are visible to
 //     subsequent statements in the same transaction).
 //
 // Lock order, shared by every role-assignment writer: users (by id), then roles,
 // then assignment rows, then sync records. Here: the user (query 0), the roles
-// (query 1's upsert), the assignments (query 1), the sync record (query 2). A role
-// delete starts at its role and `delete_user` at its user; both then remove
+// (query 1's upsert), the assignments (query 1), the sync record (query 2). The
+// savepoint takes no lock, and its rollback releases only locks taken after it. A
+// role delete starts at its role and `delete_user` at its user; both then remove
 // assignments before sync records, each step its own statement.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn sync_user_role_assignments_by_provider(
     user: &CatalogUserRoleAssignmentUser<'_>,
     sync_for: SyncFor,
@@ -399,9 +410,6 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
     roles: UniqueRoles<'_, '_>,
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
-    let role_names: Vec<Option<&str>> = roles.iter().map(|r| r.name).collect();
-    let role_descs: Vec<Option<&str>> = roles.iter().map(|r| r.description).collect();
-    let role_src_ids: Vec<&str> = roles.iter().map(|r| r.ident.source_id().as_str()).collect();
     // Capture the timestamp on the client, at the microsecond precision Postgres
     // stores, so the value written and the value returned to the caller are
     // identical, avoiding any clock skew between the DB server and the
@@ -443,8 +451,124 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
             r.deleted,
         )
     });
-    let user_deleted = before.as_ref().is_some_and(|(_, deleted)| *deleted);
-    let kept_deleted = user_deleted && sync_for == SyncFor::OtherUser;
+    let user_deleted = before.as_ref().map(|(_, deleted)| *deleted);
+
+    if sync_for == SyncFor::OtherUser
+        && !live_user_has_sync_record(user, user_deleted, project_id, provider_id, transaction)
+            .await?
+    {
+        return Err(NoSyncRecord::new().into());
+    }
+
+    let written = match sync_for {
+        SyncFor::Caller => {
+            write_user_assignments(
+                user,
+                sync_for,
+                project_id,
+                provider_id,
+                &roles,
+                synced_at,
+                transaction,
+            )
+            .await?
+        }
+        // Query 2 can find the record gone after query 1 wrote; rolling back to the
+        // savepoint keeps `NoSyncRecord` write-free.
+        SyncFor::OtherUser => {
+            let mut savepoint = transaction.begin().await.map_err(map_user_sync_error)?;
+            let written = write_user_assignments(
+                user,
+                sync_for,
+                project_id,
+                provider_id,
+                &roles,
+                synced_at,
+                &mut savepoint,
+            )
+            .await;
+            if written.is_ok() {
+                savepoint.commit().await.map_err(map_user_sync_error)?;
+            } else {
+                savepoint.rollback().await.map_err(map_user_sync_error)?;
+            }
+            written?
+        }
+    };
+
+    let user_write = match written.user_created {
+        None => None,
+        Some(created) => {
+            let id = user.user_id.to_string();
+            let after = user_rows(std::slice::from_ref(&id), transaction)
+                .await
+                .map_err(map_user_sync_error)?
+                .remove(&id)
+                .ok_or_else(|| {
+                    DatabaseIntegrityError::new(format!(
+                        "user `{id}` written by the sync is missing"
+                    ))
+                })?;
+            user_write(created, after, before)?
+        }
+    };
+
+    let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+    let mut role_ids_by_source = written.role_ids_by_source;
+    let requested_roles = roles
+        .iter()
+        .filter_map(|r| {
+            role_ids_by_source
+                .remove(r.ident.source_id().as_str())
+                .map(|role_id| AssignedRole {
+                    role_id: RoleId::new(role_id),
+                    role_ident: Arc::clone(r.ident),
+                    project_id: Arc::clone(&arc_project_id),
+                })
+        })
+        .collect();
+
+    // Query 3: the writes of queries 1 and 2 are visible here, so a plain SELECT
+    // gives the authoritative post-sync state.
+    let all_assignments = list_role_assignments_for_user(user.user_id, &mut **transaction)
+        .await
+        .map_err(SyncUserRoleAssignmentsError::from)?;
+
+    Ok(SyncUserRoleAssignmentsResult {
+        added: written.added_ids.into_iter().map(RoleId::new).collect(),
+        removed: written.removed_ids.into_iter().map(RoleId::new).collect(),
+        requested_roles,
+        synced_at,
+        all_roles: all_assignments.roles,
+        provider_sync_times: all_assignments.provider_sync_times,
+        user_write,
+    })
+}
+
+/// The writes of the user-centric sync: query 1, then query 2.
+struct UserAssignmentWrites {
+    added_ids: Vec<Uuid>,
+    removed_ids: Vec<Uuid>,
+    role_ids_by_source: HashMap<String, Uuid>,
+    /// Whether query 1 created the user (`Some(true)`) or changed it (`Some(false)`).
+    user_created: Option<bool>,
+}
+
+/// Queries 1 and 2 of the user-centric sync, on `conn`: the caller's transaction,
+/// or a savepoint in it.
+#[allow(clippy::too_many_lines)] // query 1 is one CTE
+async fn write_user_assignments(
+    user: &CatalogUserRoleAssignmentUser<'_>,
+    sync_for: SyncFor,
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    roles: &UniqueRoles<'_, '_>,
+    synced_at: chrono::DateTime<chrono::Utc>,
+    conn: &mut sqlx::PgConnection,
+) -> Result<UserAssignmentWrites, SyncUserRoleAssignmentsError> {
+    let role_names: Vec<Option<&str>> = roles.iter().map(|r| r.name).collect();
+    let role_descs: Vec<Option<&str>> = roles.iter().map(|r| r.description).collect();
+    let role_src_ids: Vec<&str> = roles.iter().map(|r| r.ident.source_id().as_str()).collect();
 
     let row = sqlx::query!(
         r#"
@@ -458,12 +582,11 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                 last_updated_with = EXCLUDED.last_updated_with,
                 user_type         = COALESCE($5, users.user_type),
                 deleted_at        = null
-            WHERE NOT $11::BOOLEAN
-              AND (users.name IS DISTINCT FROM COALESCE($2, users.name)
-                OR users.email IS DISTINCT FROM
-                   CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END
-                OR users.user_type IS DISTINCT FROM COALESCE($5, users.user_type)
-                OR users.deleted_at IS NOT NULL)
+            WHERE users.name IS DISTINCT FROM COALESCE($2, users.name)
+               OR users.email IS DISTINCT FROM
+                  CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END
+               OR users.user_type IS DISTINCT FROM COALESCE($5, users.user_type)
+               OR users.deleted_at IS NOT NULL
             RETURNING (xmax = 0) AS created
         ),
         role_input AS (
@@ -521,13 +644,11 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                   SELECT id FROM "role" WHERE provider_id = $6 AND project_id = $7
               )
               AND role_id NOT IN (SELECT id FROM role_ids)
-              AND NOT $11
             RETURNING role_id
         ),
         added_assignments AS (
             INSERT INTO role_assignment (user_id, role_id)
             SELECT $1, id FROM role_ids
-            WHERE NOT $11
             ON CONFLICT (user_id, role_id) DO NOTHING
             RETURNING role_id
         )
@@ -548,9 +669,8 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         &role_names as &[Option<&str>],
         &role_descs as &[Option<&str>],
         &role_src_ids as &[&str],
-        kept_deleted,
     )
-    .fetch_one(&mut **transaction)
+    .fetch_one(&mut *conn)
     .await
     .map_err(map_user_sync_error)?;
 
@@ -567,9 +687,59 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         return Err(RoleDeletedDuringSync::new().into());
     }
 
-    let synced_at = if kept_deleted {
-        None
-    } else {
+    write_user_sync_record(user, sync_for, project_id, provider_id, synced_at, conn).await?;
+
+    Ok(UserAssignmentWrites {
+        added_ids: row.added_ids,
+        removed_ids: row.removed_ids,
+        role_ids_by_source,
+        user_created: row.user_created,
+    })
+}
+
+/// Whether the user of a sync for [`SyncFor::OtherUser`] is live and has a sync
+/// record for `(project_id, provider_id)`. `user_deleted` is query 0's result,
+/// `None` for a missing user. A missing user has no record (foreign key), nor has a
+/// deleted one: a user delete removes its records, and only a caller sync, which
+/// restores the user first, writes one.
+async fn live_user_has_sync_record(
+    user: &CatalogUserRoleAssignmentUser<'_>,
+    user_deleted: Option<bool>,
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<bool, SyncUserRoleAssignmentsError> {
+    if user_deleted != Some(false) {
+        return Ok(false);
+    }
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM role_assignment_sync
+            WHERE user_id = $1 AND project_id = $2 AND provider_id = $3
+        ) AS "exists!"
+        "#,
+        user.user_id.to_string(),
+        &**project_id,
+        provider_id.as_str(),
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(map_user_sync_error)
+}
+
+/// Query 2 of the user-centric sync: upsert the sync record for
+/// [`SyncFor::Caller`], refresh the existing one for [`SyncFor::OtherUser`], which
+/// returns [`NoSyncRecord`] when there is none.
+async fn write_user_sync_record(
+    user: &CatalogUserRoleAssignmentUser<'_>,
+    sync_for: SyncFor,
+    project_id: &ProjectId,
+    provider_id: &RoleProviderId,
+    synced_at: chrono::DateTime<chrono::Utc>,
+    conn: &mut sqlx::PgConnection,
+) -> Result<(), SyncUserRoleAssignmentsError> {
+    if sync_for == SyncFor::Caller {
         sqlx::query!(
             r#"
             INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at)
@@ -581,60 +751,28 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
             provider_id.as_str(),
             synced_at,
         )
-        .execute(&mut **transaction)
+        .execute(&mut *conn)
         .await
         .map_err(map_user_sync_error)?;
-        Some(synced_at)
-    };
-
-    let user_write = match row.user_created {
-        None => None,
-        Some(created) => {
-            let id = user.user_id.to_string();
-            let after = user_rows(std::slice::from_ref(&id), transaction)
-                .await
-                .map_err(map_user_sync_error)?
-                .remove(&id)
-                .ok_or_else(|| {
-                    DatabaseIntegrityError::new(format!(
-                        "user `{id}` written by the sync is missing"
-                    ))
-                })?;
-            user_write(created, after, before)?
-        }
-    };
-
-    let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
-    let requested_roles = roles
-        .iter()
-        .filter_map(|r| {
-            role_ids_by_source
-                .remove(r.ident.source_id().as_str())
-                .map(|role_id| AssignedRole {
-                    role_id: RoleId::new(role_id),
-                    role_ident: Arc::clone(r.ident),
-                    project_id: Arc::clone(&arc_project_id),
-                })
-        })
-        .collect();
-
-    // Second query within the same transaction: the CTE-driven INSERT/DELETE
-    // (added_assignments / removed_assignments) and sync_ts upsert writes are
-    // now visible, so a plain SELECT gives the authoritative post-sync state
-    // without any snapshot-visibility gymnastics.
-    let all_assignments = list_role_assignments_for_user(user.user_id, &mut **transaction)
-        .await
-        .map_err(SyncUserRoleAssignmentsError::from)?;
-
-    Ok(SyncUserRoleAssignmentsResult {
-        added: row.added_ids.into_iter().map(RoleId::new).collect(),
-        removed: row.removed_ids.into_iter().map(RoleId::new).collect(),
-        requested_roles,
+        return Ok(());
+    }
+    let refreshed = sqlx::query!(
+        r#"
+        UPDATE role_assignment_sync SET synced_at = $4
+        WHERE user_id = $1 AND project_id = $2 AND provider_id = $3
+        "#,
+        user.user_id.to_string(),
+        &**project_id,
+        provider_id.as_str(),
         synced_at,
-        all_roles: all_assignments.roles,
-        provider_sync_times: all_assignments.provider_sync_times,
-        user_write,
-    })
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(map_user_sync_error)?;
+    if refreshed.rows_affected() == 0 {
+        return Err(NoSyncRecord::new().into());
+    }
+    Ok(())
 }
 
 // ─── list_role_assignments_for_user ──────────────────────────────────────────
@@ -6222,8 +6360,7 @@ mod tests {
         );
         assert_eq!(list.provider_sync_times[0].provider_id, provider);
         assert_eq!(
-            Some(list.provider_sync_times[0].synced_at),
-            result.synced_at,
+            list.provider_sync_times[0].synced_at, result.synced_at,
             "retrieved synced_at must match the value returned by the sync call"
         );
     }
@@ -6996,10 +7133,400 @@ mod tests {
         (row.name, row.deleted)
     }
 
-    /// A sync for another user leaves a deleted user deleted: it writes no
-    /// assignment and no sync record, and still returns each requested role's row.
+    /// `(name, email, last_updated_with, deleted, updated_at)` of a user row.
+    type UserRowState = (
+        Option<String>,
+        Option<String>,
+        String,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+    );
+    /// `(provider_id, source_id, id, name, updated_at)` of a role row.
+    type RoleRowState = (
+        String,
+        String,
+        Uuid,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+    );
+    /// `(project_id, provider_id, synced_at)` of a sync record.
+    type SyncRecordState = (String, String, chrono::DateTime<chrono::Utc>);
+
+    /// Every row a user-centric sync of one user in one project can write.
+    #[derive(Debug, PartialEq)]
+    struct SyncRows {
+        user: Option<UserRowState>,
+        /// The project's roles, by provider and source id.
+        roles: Vec<RoleRowState>,
+        /// The user's assigned role ids, sorted.
+        assignments: Vec<Uuid>,
+        /// The user's sync records in every project, by project and provider.
+        sync_records: Vec<SyncRecordState>,
+    }
+
+    async fn sync_rows(pool: &sqlx::PgPool, user_id: &UserId, project_id: &ProjectId) -> SyncRows {
+        let user = sqlx::query_as(
+            "SELECT name, email, last_updated_with::text, deleted_at IS NOT NULL, updated_at \
+             FROM users WHERE id = $1",
+        )
+        .bind(user_id.to_string())
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        let roles = sqlx::query_as(
+            r#"SELECT provider_id, source_id, id, name, updated_at FROM "role"
+               WHERE project_id = $1 ORDER BY provider_id, source_id"#,
+        )
+        .bind(&**project_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let assignments = sqlx::query_scalar(
+            "SELECT role_id FROM role_assignment WHERE user_id = $1 ORDER BY role_id",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let sync_records = sqlx::query_as(
+            "SELECT project_id, provider_id, synced_at FROM role_assignment_sync \
+             WHERE user_id = $1 ORDER BY project_id, provider_id",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        SyncRows {
+            user,
+            roles,
+            assignments,
+            sync_records,
+        }
+    }
+
+    /// Run the in-transaction sync for another user, then commit the transaction,
+    /// which the contract allows after `NoSyncRecord`: whatever the sync wrote
+    /// persists.
+    async fn sync_other_user_committed(
+        state: &CatalogState,
+        user: &CatalogUserRoleAssignmentUser<'_>,
+        project_id: &ProjectId,
+        provider: &RoleProviderId,
+        roles: &[CatalogRoleForAssignment<'_>],
+    ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = sync_user_role_assignments_by_provider(
+            user,
+            SyncFor::OtherUser,
+            project_id,
+            provider,
+            ur(roles),
+            t.transaction(),
+        )
+        .await;
+        t.commit().await.unwrap();
+        result
+    }
+
+    fn assert_no_sync_record(
+        result: &Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError>,
+    ) {
+        assert!(
+            matches!(result, Err(SyncUserRoleAssignmentsError::NoSyncRecord(_))),
+            "expected NoSyncRecord, got {result:?}"
+        );
+    }
+
+    fn assert_no_sync_record_response(
+        result: &lakekeeper::api::Result<lakekeeper::service::SyncedUserRoleAssignments>,
+    ) {
+        let err = result.as_ref().expect_err("the user has no sync record");
+        assert_eq!(err.error.r#type, "NoSyncRecord");
+        assert_eq!(err.error.code, 409);
+    }
+
+    /// Delete a role and expire its members' sync records in one committed
+    /// transaction, as the role delete endpoint does.
+    async fn delete_role_expiring_syncs(
+        state: &CatalogState,
+        project_id: &ProjectId,
+        role_id: RoleId,
+        provider: &RoleProviderId,
+        members: &[UserId],
+    ) {
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(project_id, role_id, t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::delete_role(&arc_project, role_id, t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::expire_role_assignment_syncs_impl(
+            project_id,
+            provider,
+            members,
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+    }
+
+    /// A sync for another user with a sync record refreshes it like a caller
+    /// sync: it converges the assignments, updates the user and stamps the record.
     #[sqlx::test]
-    async fn user_assignments_other_user_sync_keeps_deleted_user_deleted(pool: sqlx::PgPool) {
+    async fn other_user_sync_refreshes_an_existing_record(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let group_2 = Arc::new(RoleIdent::new_unchecked("ldap", "group-2"));
+        let group_3 = Arc::new(RoleIdent::new_unchecked("ldap", "group-3"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-9"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &make_user(&user_id, "Test User 9"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+            ]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let group_1_id = seeded.requested_roles[0].role_id;
+        let group_2_id = seeded.requested_roles[1].role_id;
+        sqlx::query(
+            "UPDATE role_assignment_sync SET synced_at = '2020-01-01T00:00:00Z' WHERE user_id = $1",
+        )
+        .bind(user_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = sync_user_role_assignments_by_provider(
+            &make_user(&user_id, "Test User 9 Renamed"),
+            SyncFor::OtherUser,
+            &project_id,
+            &provider,
+            ur(&[
+                make_role(&group_2, "Group 2"),
+                make_role(&group_3, "Group 3"),
+            ]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let requested: Vec<&RoleIdent> = result
+            .requested_roles
+            .iter()
+            .map(|r| &*r.role_ident)
+            .collect();
+        assert_eq!(requested, vec![&*group_2, &*group_3]);
+        assert_eq!(result.requested_roles[0].role_id, group_2_id);
+        let group_3_id = result.requested_roles[1].role_id;
+        assert_eq!(result.added, vec![group_3_id]);
+        assert_eq!(result.removed, vec![group_1_id]);
+        let mut all_roles: Vec<RoleId> = result.all_roles.iter().map(|r| r.role_id).collect();
+        all_roles.sort_by_key(|id| **id);
+        let mut expected_roles = vec![group_2_id, group_3_id];
+        expected_roles.sort_by_key(|id| **id);
+        assert_eq!(all_roles, expected_roles);
+        let sync_times: Vec<(&ProjectId, &RoleProviderId, chrono::DateTime<chrono::Utc>)> = result
+            .provider_sync_times
+            .iter()
+            .map(|s| (&*s.project_id, &s.provider_id, s.synced_at))
+            .collect();
+        assert_eq!(sync_times, vec![(&project_id, &provider, result.synced_at)]);
+
+        let rows = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(
+            rows.sync_records,
+            vec![(project_id.to_string(), "ldap".to_string(), result.synced_at)]
+        );
+        let mut assigned = vec![*group_2_id, *group_3_id];
+        assigned.sort();
+        assert_eq!(rows.assignments, assigned);
+        assert_eq!(
+            user_row(&pool, &user_id).await,
+            (Some("Test User 9 Renamed".to_string()), false)
+        );
+    }
+
+    /// A sync for another user who has sync records, but none for this project and
+    /// provider, writes nothing.
+    #[sqlx::test]
+    async fn other_user_sync_without_a_record_for_the_provider_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let other_project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let other_provider = RoleProviderId::new_unchecked("okta");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let engineering = Arc::new(RoleIdent::new_unchecked("okta", "engineering"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-10"));
+        let user = make_user(&user_id, "Test User 10");
+        for (project, provider_id, ident, name) in [
+            (&project_id, &other_provider, &engineering, "Engineering"),
+            (&other_project_id, &provider, &group_1, "Group 1"),
+        ] {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            sync_user_role_assignments_by_provider(
+                &user,
+                SyncFor::Caller,
+                project,
+                provider_id,
+                ur(&[make_role(ident, name)]),
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+            t.commit().await.unwrap();
+        }
+        let before = sync_rows(&pool, &user_id, &project_id).await;
+        let before_roles: Vec<(&str, &str)> = before
+            .roles
+            .iter()
+            .map(|(provider, source, ..)| (provider.as_str(), source.as_str()))
+            .collect();
+        assert_eq!(before_roles, vec![("okta", "engineering")]);
+
+        let result = sync_other_user_committed(
+            &state,
+            &make_user(&user_id, "Test User 10 Renamed"),
+            &project_id,
+            &provider,
+            &[make_role(&group_1, "Group 1")],
+        )
+        .await;
+
+        assert_no_sync_record(&result);
+        assert_eq!(sync_rows(&pool, &user_id, &project_id).await, before);
+    }
+
+    /// A sync for another user who does not exist creates no user, no role, no
+    /// assignment and no sync record.
+    #[sqlx::test]
+    async fn other_user_sync_of_an_unknown_user_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-4"));
+
+        let result = sync_other_user_committed(
+            &state,
+            &make_user(&user_id, "Test User 4"),
+            &project_id,
+            &provider,
+            &[make_role(&group_1, "Group 1")],
+        )
+        .await;
+
+        assert_no_sync_record(&result);
+        assert_eq!(
+            sync_rows(&pool, &user_id, &project_id).await,
+            SyncRows {
+                user: None,
+                roles: vec![],
+                assignments: vec![],
+                sync_records: vec![],
+            }
+        );
+    }
+
+    /// A sync for another user whose record a role delete expired writes nothing:
+    /// it recreates neither the deleted role nor its assignment, creates no role and
+    /// writes no sync record.
+    #[sqlx::test]
+    async fn other_user_sync_after_a_role_delete_expired_the_record_writes_nothing(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let group_2 = Arc::new(RoleIdent::new_unchecked("ldap", "group-2"));
+        let group_3 = Arc::new(RoleIdent::new_unchecked("ldap", "group-3"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-11"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &make_user(&user_id, "Test User 11"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+            ]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let group_2_id = seeded.requested_roles[1].role_id;
+        delete_role_expiring_syncs(
+            &state,
+            &project_id,
+            seeded.requested_roles[0].role_id,
+            &provider,
+            &[(*user_id).clone()],
+        )
+        .await;
+        let before = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(before.assignments, vec![*group_2_id]);
+        assert_eq!(before.sync_records, vec![]);
+
+        let result = sync_other_user_committed(
+            &state,
+            &make_user(&user_id, "Test User 11 Renamed"),
+            &project_id,
+            &provider,
+            &[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+                make_role(&group_3, "Group 3"),
+            ],
+        )
+        .await;
+
+        assert_no_sync_record(&result);
+        let after = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(after, before);
+        let roles: Vec<(&str, Uuid)> = after
+            .roles
+            .iter()
+            .map(|(_, source, id, ..)| (source.as_str(), *id))
+            .collect();
+        assert_eq!(roles, vec![("group-2", *group_2_id)]);
+    }
+
+    /// A sync for another user leaves a deleted user deleted and writes nothing: a
+    /// deleted user has no sync record.
+    #[sqlx::test]
+    async fn other_user_sync_of_a_deleted_user_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let provider = RoleProviderId::new_unchecked("ldap");
@@ -7023,13 +7550,227 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
         soft_delete_user(&state, &user_id).await;
+        let before = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(before.assignments, Vec::<Uuid>::new());
+        assert_eq!(before.sync_records, vec![]);
+
+        let result = sync_other_user_committed(
+            &state,
+            &user,
+            &project_id,
+            &provider,
+            &[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+            ],
+        )
+        .await;
+
+        assert_no_sync_record(&result);
+        let after = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(after, before);
+        let roles: Vec<(&str, Uuid)> = after
+            .roles
+            .iter()
+            .map(|(_, source, id, ..)| (source.as_str(), *id))
+            .collect();
+        assert_eq!(roles, vec![("group-1", *seeded.requested_roles[0].role_id)]);
+        assert_eq!(
+            user_row(&pool, &user_id).await,
+            (Some("Deleted User".to_string()), true)
+        );
+    }
+
+    /// A sync for another user leaves a deleted user deleted and writes nothing,
+    /// even when a sync record of the user survives.
+    #[sqlx::test]
+    async fn other_user_sync_of_a_deleted_user_with_a_record_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let group_2 = Arc::new(RoleIdent::new_unchecked("ldap", "group-2"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-13"));
+        let user = make_user(&user_id, "Test User 13");
 
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let result = sync_user_role_assignments_by_provider(
+        let seeded = sync_user_role_assignments_by_provider(
             &user,
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&[make_role(&group_1, "Group 1")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        soft_delete_user(&state, &user_id).await;
+        let stale = chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        sqlx::query(
+            "INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(user_id.to_string())
+        .bind(&*project_id)
+        .bind(provider.as_str())
+        .bind(stale)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let before = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(before.assignments, Vec::<Uuid>::new());
+        assert_eq!(
+            before.sync_records,
+            vec![(project_id.to_string(), "ldap".to_string(), stale)]
+        );
+
+        let result = sync_other_user_committed(
+            &state,
+            &user,
+            &project_id,
+            &provider,
+            &[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+            ],
+        )
+        .await;
+
+        assert_no_sync_record(&result);
+        let after = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(after, before);
+        let roles: Vec<(&str, Uuid)> = after
+            .roles
+            .iter()
+            .map(|(_, source, id, ..)| (source.as_str(), *id))
+            .collect();
+        assert_eq!(roles, vec![("group-1", *seeded.requested_roles[0].role_id)]);
+        assert_eq!(
+            user_row(&pool, &user_id).await,
+            (Some("Deleted User".to_string()), true)
+        );
+    }
+
+    /// A sync for another user without a sync record ends before its first write:
+    /// it does not wait on a role row another transaction holds.
+    #[sqlx::test]
+    async fn other_user_sync_without_a_record_ends_before_locking_a_role(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&group_1, "Group 1")];
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let bob_id = Arc::new(UserId::new_unchecked("oidc", "bob"));
+        provision_user(&state, &bob_id, "Bob").await;
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &make_user(&alice_id, "Alice"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&roles),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let before = sync_rows(&pool, &bob_id, &project_id).await;
+
+        let mut lock_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            seeded.requested_roles[0].role_id,
+            lock_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sync_other_user_committed(
+                &state,
+                &make_user(&bob_id, "Bob"),
+                &project_id,
+                &provider,
+                &roles,
+            ),
+        )
+        .await
+        .expect("the sync does not wait on the locked role");
+        lock_tx.rollback().await.unwrap();
+
+        assert_no_sync_record(&result);
+        assert_eq!(sync_rows(&pool, &bob_id, &project_id).await, before);
+    }
+
+    /// The standalone sync for another user without a sync record commits nothing,
+    /// returns `NoSyncRecord` and leaves the user's cached assignments untouched.
+    #[sqlx::test]
+    async fn standalone_other_user_sync_without_a_record_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-2"));
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+        provision_user(&state, &user_id, "Test User 2").await;
+        let before = sync_rows(&pool, &user_id, &project_id).await;
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+
+        let synced = PostgresBackend::sync_user_role_assignments(
+            make_user(&user_id, "Test User 2 Renamed"),
             SyncFor::OtherUser,
+            &project_id,
+            &provider,
+            &[make_role(&group_1, "Group 1")],
+            state.clone(),
+            &dispatcher,
+        )
+        .await;
+
+        assert_no_sync_record_response(&synced);
+        assert_eq!(sync_rows(&pool, &user_id, &project_id).await, before);
+        let cached = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&warmed, &cached),
+            "the sync wrote no cache entry"
+        );
+    }
+
+    /// A role delete that expires the user's record while a sync for another user
+    /// runs, after the sync read the record, ends the sync with `NoSyncRecord` at
+    /// its refresh of the record, and the sync writes nothing.
+    #[sqlx::test]
+    async fn other_user_sync_whose_record_is_expired_mid_sync_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let group_2 = Arc::new(RoleIdent::new_unchecked("ldap", "group-2"));
+        let group_3 = Arc::new(RoleIdent::new_unchecked("ldap", "group-3"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-12"));
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &make_user(&user_id, "Test User 12"),
+            SyncFor::Caller,
             &project_id,
             &provider,
             ur(&[
@@ -7041,81 +7782,241 @@ mod tests {
         .await
         .unwrap();
         t.commit().await.unwrap();
+        let group_1_id = seeded.requested_roles[0].role_id;
+        let group_2_id = seeded.requested_roles[1].role_id;
+        let before = sync_rows(&pool, &user_id, &project_id).await;
 
-        assert_eq!(result.synced_at, None, "nothing was assigned");
-        assert!(result.added.is_empty());
-        assert!(result.removed.is_empty());
-        assert!(result.all_roles.is_empty());
-        assert!(result.provider_sync_times.is_empty());
-        let requested: Vec<(&RoleIdent, &ProjectId)> = result
-            .requested_roles
-            .iter()
-            .map(|r| (&*r.role_ident, &*r.project_id))
-            .collect();
-        assert_eq!(
-            requested,
-            vec![(&*group_1, &project_id), (&*group_2, &project_id)]
-        );
-        assert_eq!(
-            result.requested_roles[0].role_id, seeded.requested_roles[0].role_id,
-            "an existing role keeps its row"
-        );
-
-        assert_eq!(
-            user_row(&pool, &user_id).await,
-            (Some("Deleted User".to_string()), true)
-        );
-        let list = list_role_assignments_for_user(&user_id, &pool)
+        // The role delete removes the group-1 assignment and expires the record,
+        // uncommitted: the sync below still reads the record, then waits on the
+        // assignment row it removes.
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        assert!(list.roles.is_empty(), "no assignment row");
-        assert!(list.provider_sync_times.is_empty(), "no sync record");
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            group_1_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::expire_role_assignment_syncs_impl(
+            &project_id,
+            &provider,
+            &[(*user_id).clone()],
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        let renamed = make_user(&user_id, "Test User 12 Renamed");
+        let roles = [
+            make_role(&group_2, "Group 2"),
+            make_role(&group_3, "Group 3"),
+        ];
+        let sync = sync_other_user_committed(&state, &renamed, &project_id, &provider, &roles);
+        let commit_delete = async {
+            wait_for_lock_waiter(&pool).await;
+            delete_tx.commit().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(sync, commit_delete);
+
+        assert_no_sync_record(&result);
+        let after = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(
+            after,
+            SyncRows {
+                user: before.user.clone(),
+                roles: before
+                    .roles
+                    .iter()
+                    .filter(|(_, _, id, ..)| *id != *group_1_id)
+                    .cloned()
+                    .collect(),
+                assignments: vec![*group_2_id],
+                sync_records: vec![],
+            }
+        );
     }
 
-    /// The standalone sync for another user returns the requested roles' rows and
-    /// no sync time for a deleted user, and leaves the user's cached assignments
-    /// untouched.
+    /// The standalone sync for another user whose record a role delete expires
+    /// after the sync read it, by the delete of a role the sync removes, returns
+    /// `NoSyncRecord` without a retry and writes nothing.
     #[sqlx::test]
-    async fn standalone_other_user_sync_of_deleted_user_returns_roles(pool: sqlx::PgPool) {
+    async fn standalone_other_user_sync_whose_record_is_expired_mid_sync_writes_nothing(
+        pool: sqlx::PgPool,
+    ) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let provider = RoleProviderId::new_unchecked("ldap");
         let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
-        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-2"));
+        let group_2 = Arc::new(RoleIdent::new_unchecked("ldap", "group-2"));
+        let group_3 = Arc::new(RoleIdent::new_unchecked("ldap", "group-3"));
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-14"));
         let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
-        provision_user(&state, &user_id, "Test User 2").await;
-        soft_delete_user(&state, &user_id).await;
-        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &make_user(&user_id, "Test User 14"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&[
+                make_role(&group_1, "Group 1"),
+                make_role(&group_2, "Group 2"),
+            ]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let group_1_id = seeded.requested_roles[0].role_id;
+        let group_2_id = seeded.requested_roles[1].role_id;
+        let before = sync_rows(&pool, &user_id, &project_id).await;
 
-        let synced = PostgresBackend::sync_user_role_assignments(
-            make_user(&user_id, "Test User 2"),
+        // The role delete removes the group-1 assignment and expires the record,
+        // uncommitted: the sync below still reads the record, then waits on the
+        // assignment row it removes.
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            group_1_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::expire_role_assignment_syncs_impl(
+            &project_id,
+            &provider,
+            &[(*user_id).clone()],
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        let roles = [
+            make_role(&group_2, "Group 2"),
+            make_role(&group_3, "Group 3"),
+        ];
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&user_id, "Test User 14 Renamed"),
             SyncFor::OtherUser,
             &project_id,
             &provider,
-            &[make_role(&group_1, "Group 1")],
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        let commit_delete = async {
+            wait_for_lock_waiter(&pool).await;
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, commit_delete);
+
+        assert_no_sync_record_response(&synced);
+        assert_eq!(
+            sync_rows(&pool, &user_id, &project_id).await,
+            SyncRows {
+                user: before.user.clone(),
+                roles: before
+                    .roles
+                    .iter()
+                    .filter(|(_, _, id, ..)| *id != *group_1_id)
+                    .cloned()
+                    .collect(),
+                assignments: vec![*group_2_id],
+                sync_records: vec![],
+            }
+        );
+    }
+
+    /// A standalone sync for another user that waits on the delete of a role it
+    /// assigns, and whose record the delete expires, retries after the delete
+    /// commits; the retry finds no record, and the sync writes nothing.
+    #[sqlx::test]
+    async fn standalone_other_user_sync_retried_after_a_role_delete_writes_nothing(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
+        let roles = [make_role(&ident, "Group 1")];
+        let dispatcher = lakekeeper::service::events::EventDispatcher::new(vec![]);
+        let alice_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let first = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice"),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            &roles,
             state.clone(),
             &dispatcher,
         )
         .await
         .unwrap();
+        let deleted_role_id = first.assignments.roles[0].role_id;
+        let before = sync_rows(&pool, &alice_id, &project_id).await;
 
-        assert_eq!(synced.synced_at, None);
-        assert_eq!(synced.requested_roles.len(), 1);
-        assert_eq!(*synced.requested_roles[0].role_ident, *group_1);
-        assert!(synced.assignments.roles.is_empty());
-        assert!(synced.assignments.provider_sync_times.is_empty());
-        assert_eq!(
-            user_row(&pool, &user_id).await,
-            (Some("Deleted User".to_string()), true)
-        );
-        let cached = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        assert!(
-            Arc::ptr_eq(&warmed, &cached),
-            "the sync wrote no cache entry"
+        PostgresBackend::lock_role_and_count_grants_impl(
+            &project_id,
+            deleted_role_id,
+            delete_tx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        // The sync reads the record, then waits on the locked role row.
+        let sync = PostgresBackend::sync_user_role_assignments(
+            make_user(&alice_id, "Alice Renamed"),
+            SyncFor::OtherUser,
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &dispatcher,
+        );
+        let delete = async {
+            wait_for_lock_waiter(&pool).await;
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+                .await
+                .unwrap();
+            PostgresBackend::expire_role_assignment_syncs_impl(
+                &project_id,
+                &provider,
+                &[(*alice_id).clone()],
+                delete_tx.transaction(),
+            )
+            .await
+            .unwrap();
+            delete_tx.commit().await.unwrap();
+        };
+        let (synced, ()) = tokio::join!(sync, delete);
+
+        assert_no_sync_record_response(&synced);
+        assert_eq!(
+            sync_rows(&pool, &alice_id, &project_id).await,
+            SyncRows {
+                user: before.user.clone(),
+                roles: vec![],
+                assignments: vec![],
+                sync_records: vec![],
+            }
         );
     }
 
@@ -7137,7 +8038,7 @@ mod tests {
             .unwrap();
         let synced = sync_user_role_assignments_by_provider(
             &user,
-            SyncFor::OtherUser,
+            SyncFor::Caller,
             &project_id,
             &provider,
             ur(&[make_role(&group_1, "Group 1")]),
@@ -7177,16 +8078,32 @@ mod tests {
     }
 
     /// A sync for another user that waits on a user delete sees the committed
-    /// delete: the user stays deleted and gets no assignment and no sync record.
+    /// delete, which removed the user's sync record: the sync returns
+    /// `NoSyncRecord`, and the user stays deleted with no assignment and no record.
     #[sqlx::test]
-    async fn other_user_sync_waiting_on_a_user_delete_keeps_user_deleted(pool: sqlx::PgPool) {
+    async fn other_user_sync_waiting_on_a_user_delete_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let provider = RoleProviderId::new_unchecked("ldap");
         let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
         let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-8"));
         let user = make_user(&user_id, "Test User 8");
-        provision_user(&state, &user_id, "Test User 8").await;
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let seeded = sync_user_role_assignments_by_provider(
+            &user,
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            ur(&[make_role(&group_1, "Group 1")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let before = sync_rows(&pool, &user_id, &project_id).await;
 
         // The delete runs and holds the user row until it commits.
         let mut delete_tx = PostgresTransaction::begin_write(state.clone())
@@ -7197,23 +8114,8 @@ mod tests {
             .unwrap()
             .expect("the user is active");
 
-        let sync = async {
-            let mut t = PostgresTransaction::begin_write(state.clone())
-                .await
-                .unwrap();
-            let result = sync_user_role_assignments_by_provider(
-                &user,
-                SyncFor::OtherUser,
-                &project_id,
-                &provider,
-                ur(&[make_role(&group_1, "Group 1")]),
-                t.transaction(),
-            )
-            .await
-            .unwrap();
-            t.commit().await.unwrap();
-            result
-        };
+        let roles = [make_role(&group_1, "Group 1")];
+        let sync = sync_other_user_committed(&state, &user, &project_id, &provider, &roles);
         // Commit the delete only once the sync waits on the user row.
         let commit_delete = async {
             wait_for_lock_waiter(&pool).await;
@@ -7221,18 +8123,17 @@ mod tests {
         };
         let (result, ()) = tokio::join!(sync, commit_delete);
 
-        assert_eq!(result.synced_at, None);
-        assert!(result.added.is_empty());
-        assert_eq!(result.requested_roles.len(), 1);
+        assert_no_sync_record(&result);
         assert_eq!(
             user_row(&pool, &user_id).await,
             (Some("Deleted User".to_string()), true)
         );
-        let list = list_role_assignments_for_user(&user_id, &pool)
-            .await
-            .unwrap();
-        assert!(list.roles.is_empty(), "no assignment row");
-        assert!(list.provider_sync_times.is_empty(), "no sync record");
+        let after = sync_rows(&pool, &user_id, &project_id).await;
+        assert_eq!(after.roles, before.roles, "the role row is untouched");
+        let roles: Vec<Uuid> = after.roles.iter().map(|(_, _, id, ..)| *id).collect();
+        assert_eq!(roles, vec![*seeded.requested_roles[0].role_id]);
+        assert_eq!(after.assignments, Vec::<Uuid>::new());
+        assert_eq!(after.sync_records, vec![]);
     }
 
     /// A sync for the caller restores a deleted user and assigns the roles.
@@ -7262,7 +8163,6 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
 
-        assert!(result.synced_at.is_some());
         assert_eq!(result.added, vec![result.requested_roles[0].role_id]);
         assert_eq!(
             user_row(&pool, &user_id).await,
@@ -7273,45 +8173,7 @@ mod tests {
             .unwrap();
         assert_eq!(list.roles.len(), 1);
         assert_eq!(list.provider_sync_times.len(), 1);
-    }
-
-    /// A sync for another user creates a user that does not exist yet and assigns
-    /// the roles.
-    #[sqlx::test]
-    async fn user_assignments_other_user_sync_creates_unknown_user(pool: sqlx::PgPool) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = make_project(&state).await;
-        let provider = RoleProviderId::new_unchecked("ldap");
-        let group_1 = Arc::new(RoleIdent::new_unchecked("ldap", "group-1"));
-        let user_id = Arc::new(UserId::new_unchecked("oidc", "test-user-4"));
-        let user = make_user(&user_id, "Test User 4");
-
-        let mut t = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
-        let result = sync_user_role_assignments_by_provider(
-            &user,
-            SyncFor::OtherUser,
-            &project_id,
-            &provider,
-            ur(&[make_role(&group_1, "Group 1")]),
-            t.transaction(),
-        )
-        .await
-        .unwrap();
-        t.commit().await.unwrap();
-
-        assert!(result.synced_at.is_some());
-        assert_eq!(result.added, vec![result.requested_roles[0].role_id]);
-        assert_eq!(
-            user_row(&pool, &user_id).await,
-            (Some("Test User 4".to_string()), false)
-        );
-        let list = list_role_assignments_for_user(&user_id, &pool)
-            .await
-            .unwrap();
-        assert_eq!(list.roles.len(), 1);
-        assert_eq!(list.provider_sync_times.len(), 1);
+        assert_eq!(list.provider_sync_times[0].synced_at, result.synced_at);
     }
 
     /// A role member sync leaves a deleted member deleted and unassigned, and

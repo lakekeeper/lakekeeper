@@ -669,6 +669,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         validate_referenced_by(
             referenced_by.as_deref(),
+            &table,
             CONFIG.referenced_by.max_nesting_depth,
         )?;
 
@@ -1192,15 +1193,19 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         token_idp_id,
     )?;
 
-    // 9. Build actions and check all authorizations in batch.
+    // 9. Build actions and decide them one acting principal at a time.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
         &table,
     );
-    let authz_results = authorizer
-        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
-        .await?
-        .into_allowed();
+    let authz_results = are_allowed_load_chain_actions(
+        &authorizer,
+        request_metadata,
+        &warehouse,
+        &namespaces,
+        &actions,
+    )
+    .await?;
 
     // 10. Interpret authorization results.
     let (table_info, storage_permissions) =
@@ -1213,9 +1218,9 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
 /// to its corresponding action. This avoids relying on positional indices.
 ///
 /// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
-pub fn interpret_authz_results_for_load_table(
+pub(crate) fn interpret_authz_results_for_load_table(
     actions: &[TabularAuthzAction<'_>],
-    authz_results: &[bool],
+    authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,
     table: &TableIdent,
 ) -> Result<(TableInfo, Option<StoragePermissions>), AuthZError> {
@@ -1236,7 +1241,7 @@ pub fn interpret_authz_results_for_load_table(
     let mut can_read = None;
     let mut can_write = None;
 
-    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+    for ((_ns, action), allowed) in actions.iter().zip(authz_results.iter()) {
         match action {
             ActionOnTableOrView::Table(table_action) => {
                 if let Some(existing) = &table_info {
@@ -2721,7 +2726,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true, true];
+        let results = LoadChainDecisions::from(vec![true, true, true]);
 
         let (info, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2747,7 +2752,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true, false];
+        let results = LoadChainDecisions::from(vec![true, true, false]);
 
         let (_, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2772,7 +2777,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, false, false];
+        let results = LoadChainDecisions::from(vec![true, false, false]);
 
         let (_, perms) = interpret_authz_results_for_load_table(
             &actions,
@@ -2797,7 +2802,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![false, false, false];
+        let results = LoadChainDecisions::from(vec![false, false, false]);
 
         let result = interpret_authz_results_for_load_table(
             &actions,
@@ -2825,7 +2830,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![false, true, true, true];
+        let results = LoadChainDecisions::from(vec![false, true, true, true]);
 
         let result = interpret_authz_results_for_load_table(
             &actions,
@@ -2848,7 +2853,7 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = vec![true, true]; // Only 2 results for 3 actions
+        let results = LoadChainDecisions::from(vec![true, true]); // Only 2 results for 3 actions
 
         let result = interpret_authz_results_for_load_table(
             &actions,

@@ -255,7 +255,7 @@ async fn role_provider_syncs_fire_for_the_users_they_write(pool: PgPool) {
     let ident = Arc::new(RoleIdent::new_unchecked(provider.as_str(), "analysts"));
     let ctx = f.ctx.clone();
     let project_id = Arc::clone(&f.project_id);
-    let sync = |email: Option<&'static str>| {
+    let sync = |sync_for: SyncFor, email: Option<&'static str>| {
         let ctx = ctx.clone();
         let carol = Arc::clone(&carol);
         let provider = provider.clone();
@@ -270,7 +270,7 @@ async fn role_provider_syncs_fire_for_the_users_they_write(pool: PgPool) {
                     user_type: None,
                     updated_with: UserLastUpdatedWith::RoleProvider,
                 },
-                SyncFor::OtherUser,
+                sync_for,
                 &project_id,
                 &provider,
                 &[CatalogRoleForAssignment {
@@ -286,18 +286,19 @@ async fn role_provider_syncs_fire_for_the_users_they_write(pool: PgPool) {
         }
     };
 
-    sync(Some("carol@example.com")).await;
+    // Only the user's own sync creates them.
+    sync(SyncFor::Caller, Some("carol@example.com")).await;
     let Seen::Created(created) = f.next().await else {
         panic!("expected a created event")
     };
     assert_eq!(created.user.id, *carol);
     assert!(created.request_metadata.is_none());
 
-    // The same sync again changes nothing.
-    sync(Some("carol@example.com")).await;
+    // A sync for another user refreshes; the same values change nothing.
+    sync(SyncFor::OtherUser, Some("carol@example.com")).await;
     f.none().await;
 
-    sync(Some("carol@new.example.com")).await;
+    sync(SyncFor::OtherUser, Some("carol@new.example.com")).await;
     let Seen::Updated(updated) = f.next().await else {
         panic!("expected an updated event")
     };
