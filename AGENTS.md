@@ -55,7 +55,22 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
 - Describe current behavior in comments: no "rather than", "instead of", "no longer", "previously", and no plan or task labels. Version changelogs are exempt — stating the delta is their purpose.
-- Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
+
+## Docs
+
+Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.github/RELEASING.md`.
+
+- Readers are operators, many not native English speakers. Write plain, full sentences with common words.
+- Lead with what the feature does for the operator, then explain the mechanism roughly.
+- Leave protocol detail (headers, JSON shapes, endpoint paths, error-type lists, formulas) to the API reference, unless the reader must act on it.
+- For a standard feature, link the upstream spec. Don't map which endpoint implements which part of it.
+- Never refer to something the reader can't know ("the endpoint current clients use", "the earlier meaning"). Name it or drop it.
+- No caveats about what might get wrong.
+- Avoid ambiguous words: write "if it did not change", not "if not"; write "upper and lower case", not "case".
+- Verify every claim against the merged code, not the PR description.
+- Trim after fact-checking. Never delete still-true text without saying so.
+- One line per paragraph, no hard wrapping.
+- Indent nested lists and blocks under a list item by 4 spaces. After an indented paragraph or code block, leave a blank line before the next item, or MkDocs merges the items.
 
 ## Architecture
 

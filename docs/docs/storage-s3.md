@@ -50,15 +50,15 @@ The `storage-credential` of an S3 Warehouse has `"type": "s3"` and one of these 
 
 ## Remote Signing
 
-Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables; see [Remote signing for generic tables](./generic-tables.md#remote-signing-s3-without-sts).
+With remote signing, clients get no storage credentials. Before each S3 request, the client asks Lakekeeper to sign it. Lakekeeper checks that the user may access the table and that the request stays inside the table's location, then signs the request with the Warehouse's credentials. The client sends the signed request to S3 itself, so data does not pass through Lakekeeper. Remote signing does not need STS, so it also works when the storage has no STS or `sts-enabled` is `false`. It is part of the [Iceberg REST specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) and works for Iceberg tables and [Generic Tables](./generic-tables.md#remote-signing-s3-without-sts).
 
-Remote signing also covers prefix listings (`ListObjectsV2`), which clients use for maintenance operations such as Spark's `remove_orphan_files` with `prefix_listing => true` (requires `iceberg-spark-runtime` 1.10 or newer). The `prefix` must address a directory inside the table's location, i.e. it has to end with a `/` when listing the table location itself. S3 matches list prefixes as raw strings, so the prefix `warehouse/ns/table` would also return the keys of a sibling `warehouse/ns/table_other`, and is rejected. Iceberg's `FileSystemWalker` appends the `/` before listing; clients that don't are expected to normalize their prefix.
+Lakekeeper also signs requests that list the files in a table location, for example for Spark's `remove_orphan_files` with `prefix_listing => true` (`iceberg-spark-runtime` 1.10 or newer). To list the whole table location, the prefix must end with `/`; otherwise it would also match other tables whose names start the same way. Iceberg adds the `/` itself.
 
-Some older remote signing clients cannot handle table-specific signing endpoints, so Lakekeeper has to identify the table by its location in the storage. S3 resources can be addressed in path style or virtual-host style, and by default Lakekeeper detects the style with a heuristic. If the heuristic does not fit your setup, set `remote-signing-url-style`:
+To check a request, Lakekeeper reads the bucket and key from its URL. Older clients do not tell Lakekeeper which table a request is for, so Lakekeeper also uses them to find the table. S3 URLs carry the bucket either in the path (path style) or in the host name (virtual-host style). By default, Lakekeeper detects the style. If the detection does not fit your setup, set `remote-signing-url-style`:
 
 - `path` always uses the first path segment as the bucket name.
-- `virtual_host` uses the first subdomain if it is followed by `.s3` or `.s3-`.
-- `auto`, the default, tries `virtual_host` first and falls back to `path`.
+- `virtual_host` always uses the first part of the host name as the bucket name.
+- `auto`, the default, uses the part of the host name before `.s3.` or `.s3-` (or the first part for Cloudflare R2), and otherwise the first path segment.
 
 ## AWS
 

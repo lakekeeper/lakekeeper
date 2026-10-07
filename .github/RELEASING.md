@@ -18,8 +18,8 @@ titles.
 Write a clear PR description of the user-visible change and its benefit (not the
 implementation). That's the only ask — no special block, no label.
 
-Optionally add a dedicated **`## Release notes`** section in the PR description to fix
-the exact customer-facing wording for a subtle or high-impact change.
+Optionally add a dedicated **`## Release notes`** section in the PR description to propose
+the customer-facing wording for a subtle or high-impact change.
 
 ## Before the release
 
@@ -53,7 +53,7 @@ git switch -c "release-notes-$VERSION"   # every change below goes on this branc
    ```
 
 2. **Read each PR's description and summarise it** (agent-assisted is fine; use a PR's
-   `## Release notes` section verbatim when it has one):
+   `## Release notes` section as the starting point when it has one):
 
    ```bash
    gh pr view <N> --repo lakekeeper/lakekeeper --json title,body
@@ -69,11 +69,10 @@ git switch -c "release-notes-$VERSION"   # every change below goes on this branc
    just audit-format-release-notes "$VERSION"   # prints the block; changes nothing
    ```
 
-   The command reads the tag and lists the fragments the tag carries that the release before it did not carry with the same text. It fails when the version moved but no fragment says why. It prints either `_No audit log format changes in this release._`, or a block starting with `#### Audit log format`:
+   The command reads the tag and lists the fragments the tag carries that the release before it did not carry with the same text. It fails when the version moved but no fragment says why. It prints either `_No audit log format changes in this release._`, or a block starting with `### Audit log format`:
 
    - **No changes:** paste nothing, and skip `just audit-format-release`.
-   - **The block has a "Breaking changes" list:** paste it unchanged as the last part of `### Breaking Changes` in the `## $TAG` section. Create that heading if the section has none.
-   - **Otherwise:** paste it unchanged as the last part of `### Upgrade Notes`, created the same way.
+   - **Otherwise:** paste it unchanged as the last section of `## $TAG`, after `### Upgrade Notes`. If the block has a "Breaking changes" list, also add this item at the end of `### Breaking Changes`: `- **Audit log format.** Existing parsers of the audit log must be updated. See Audit log format below.`
 
    Then clear the fragments:
 
@@ -104,11 +103,11 @@ git switch -c "release-notes-$VERSION"   # every change below goes on this branc
    sed -i.bak -E "s|^(site_name:[[:space:]]+docs/).*|\1$MINOR|" "../lakekeeper-docs/$MINOR/mkdocs.yml" && rm "../lakekeeper-docs/$MINOR/mkdocs.yml.bak"
    ```
 
-   Check that `logging.md` in the snapshot differs from the tag's only by the table row (`git diff --no-index`); if `main` changed it further since the tag, keep the tag's version and add the row by hand. Commit the folder to the `docs` branch through a pull request. In the same release-notes pull request or a follow-up, add `- Release X.Y.x: "!include versions/X.Y.x/mkdocs.yml"` above the previous release in the `versions` nav of `site/mkdocs.yml`. For a patch release, the folder stays as it is: a patch never changes the audit log format.
+   Check that `logging.md` in the snapshot differs from the tag's only by the table row (`git diff --no-index`); if `main` changed it further since the tag, keep the tag's version and add the row by hand. Commit the folder to the `docs` branch through a pull request. Once that pull request has merged, add `- Release X.Y.x: "!include versions/X.Y.x/mkdocs.yml"` above the previous release under `Docs:` in `site/mkdocs.yml`, in a pull request to `main`. For a patch release, the folder stays as it is: a patch never changes the audit log format.
 
 ## After the release
 
-1. **Remove `"release-as"`** from `release-please/release-please-config.json` on `main` in a pull request, if it was set. Left in place, the next release is cut under the same version again.
+1. **Remove `"release-as"`** from `release-please/release-please-config.json` in a pull request, if it was set: on `main` after a minor release, on the `rel-*` branch after a patch release. Left in place, the next release is cut under the same version again.
 2. **Tell Lakekeeper Plus the tag commit.** A Plus release pins a Lakekeeper release (see its `docs/releasing.md`); it needs `git rev-parse "$TAG^{commit}"`.
 3. From now on every pull request that changes what an audit record carries adds a fragment, and CI computes and checks the version. Nothing else is manual until the next release.
 
@@ -120,33 +119,26 @@ A patch never changes the audit log format: CI rejects a pull request to the bra
 
 ## House style
 
-Keep entries customer-facing and short — **one line per change, benefit first**. Inline
-only the single most important setting (flag / env var); link everything else to the
-docs. Add `### Highlights` only when 2-3 changes genuinely stand out. Omit empty
-sections. Link the (public) PRs as Markdown links. Credit external contributors with
-`(thanks @handle)`.
+Many readers do not speak English as their first language. Write so that they can follow without a dictionary.
 
-Sections, in order: **Highlights · Features · Bug Fixes · Breaking Changes · Upgrade
-Notes**. The audit log block goes where step 4 says.
+- **Full sentences in plain English.** Short sentences, common words, active voice. No idioms and no internal terms (crate, trait or function names; "single-flight", "seam", "read-through"), except in a bullet written for people who build on the crates. Name things as the docs and the API name them.
+- **One bullet per change, benefit first.** A short bold label, then one to three sentences: what the user can do now, or what no longer goes wrong. Inline only the single most important setting (env var, field or endpoint).
+- **Compact: link the docs, don't repeat them.** A new feature gets one bullet and a link to its docs section; the details live there. If a feature has no docs yet, write them before the release instead of putting the details here. Link with absolute, versioned URLs (`https://docs.lakekeeper.io/docs/X.Y.x/<page>/#anchor`): for a minor release, the `X.Y.x` folder only exists after step 7, and the site link check skips absolute URLs, so check each page and anchor by hand.
+- **Breaking changes and upgrade notes say what to do.** Name who is affected and the concrete action. Say who is not affected when that is most readers ("Prebuilt binaries and images are not affected").
+- Add `### Highlights` only when 2-3 changes genuinely stand out. Omit empty sections. Link the (public) PRs as Markdown links. Credit external contributors with `(thanks @handle)`.
+
+Sections, in order: **Highlights · Features · Bug Fixes · Breaking Changes · Upgrade Notes**. The audit log block goes where step 4 says.
 
 ## What to leave out / collapse
 
 The `CHANGELOG.md` PR list is raw input, not the release notes. Curate it:
 
-- **Don't list a bug fix for code first introduced in the same release.** If the feature
-  and its follow-up fix both land in this version, the bug never shipped — fold the fix
-  into the feature (or drop it). Check with `git show <last-release-tag>:<path>`: if the
-  fixed code/route didn't exist at the previous release, it's a same-release fix. (A fix
-  for a path that *did* exist at the last release is a real, listable fix.)
-- **One line per feature, even when it spanned several PRs.** Backend + management API +
-  console PRs for the same capability are a single entry citing all the PRs together.
-- **Highlight what matters to OSS users.** The OSS authorizer is OpenFGA; changes that
-  only affect the built-in/internal authorization store are not OSS highlights (OpenFGA
-  already covers most of that ground) — keep them to a modest Features line or omit.
-- **Don't re-announce features that shipped in a parallel `rel-*` patch.** Patch releases
-  are cut from `rel-*` branches, so `main`'s release-please CHANGELOG re-lists those PRs
-  under the next minor (it diffs `last-main-release...this`). Put them in the patch's own
-  notes section and omit them here. Add the patch section too if it was never written up.
+- **Compare against the newest patch of the previous minor.** Readers assume that `X.Y.0` contains everything from the newest `X.(Y-1).z` that exists on release day (0.14.0 contains 0.13.6). release-please diffs against the last release on `main`, so its list re-includes every PR that was backported to a `rel-*` branch. Leave those PRs out, and describe a later change to such a feature as the change since that patch. Add the patch's own section too if it was never written up. List the backports with `git log $(git describe --tags --abbrev=0 origin/main)..<newest-patch-tag>` and match them to `main` by PR number: cherry-picks get new SHAs, and a few carry no PR number.
+- **Describe the final state once.** A feature that was added and then changed or fixed several times in the same release gets one bullet that describes how it works at release, citing all its PRs. Leave out states that never shipped.
+- **Don't list a bug fix for code first introduced in the same release.** If the feature and its follow-up fix both land in this version, the bug never shipped: fold the fix into the feature or drop it. Check with `git show <newest-patch-tag>:<path>`: if the fixed code or route didn't exist there, it's a same-release fix. A fix is listable only when the bug itself is present at `<newest-patch-tag>`; code that existed there may have broken on `main` later.
+- **One line per feature, even when it spanned several PRs.** Backend + management API + console PRs for the same capability are a single entry citing all the PRs together.
+- **Highlight what matters to OSS users.** The OSS authorizer is OpenFGA; changes that only affect the built-in/internal authorization store are not OSS highlights (OpenFGA already covers most of that ground): keep them to a modest Features line or omit them. Changes that only matter under Cedar belong in the Lakekeeper+ notes.
+- **Check PR descriptions against the merged code.** Descriptions go stale during review: endpoint names, defaults and status codes change. Read the squash commit and its diff. release-please's breaking-changes list is also incomplete (it misses footers such as `BREAKING CHANGE (OpenFGA authorizer only):`), so also run `git log <newest-patch-tag>..<tag> --grep 'BREAKING CHANGE'`.
 
 ## Notes
 

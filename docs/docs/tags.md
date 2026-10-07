@@ -1,10 +1,10 @@
 ---
-description: "Attach governance tags such as pii or sensitivity=restricted to warehouses, namespaces, tables, views and columns for classification and access control."
+description: "Attach governance tags such as pii or sensitivity=restricted to warehouses, namespaces, tables, views, generic tables and columns for classification, discovery and, with Cedar in Lakekeeper Plus, access control."
 ---
 
 # Governance Tags
 
-Governance tags let you attach a controlled vocabulary of labels — `pii`, `sensitivity=restricted`, `deprecated` — to catalog objects (Warehouses, Namespaces, Tables, Views, Generic Tables, and columns). They are metadata for classification, discovery, and access control.
+Governance tags let you attach a controlled vocabulary of labels — `pii`, `sensitivity=restricted`, `deprecated` — to catalog objects (Warehouses, Namespaces, Tables, Views, Generic Tables, and columns). They are metadata for classification and discovery. With [Cedar](authorization-cedar.md#tag-based-access-control)<span class="lkp"></span> in Lakekeeper Plus, policies can also use them for access control. Under OpenFGA, tags do not change access decisions.
 
 !!! warning "Preview"
     This API is in preview and may change in a backward-incompatible way in a future release.
@@ -35,7 +35,7 @@ Create a definition by `POST`ing to `/management/v1/tag-definition`:
 }
 ```
 
-- **`name`** — unique within the project, case-insensitively. `.` is a hierarchy delimiter (e.g. `pii.classification`); a name may not begin or end with `.` or contain empty segments.
+- **`name`** — unique within the project, case-insensitively. `.` is a hierarchy delimiter (e.g. `pii.classification`); a name may not begin or end with `.` or contain empty segments. The names `system` and `lakekeeper`, and names that start with `system.` or `lakekeeper.`, are reserved.
 - **`scope`** — the object types the definition may be attached to: any of `warehouse`, `namespace`, `table`, `view`, `generic-table`, `column`. Attaching to an out-of-scope object type is rejected.
 - **`value-kind`** — how values are constrained (see below).
 
@@ -51,9 +51,9 @@ Create a definition by `POST`ing to `/management/v1/tag-definition`:
 
 ### Evolving a definition
 
-`POST /management/v1/tag-definition/{id}` updates a definition, with guardrails that keep already-applied tags valid:
+`POST /management/v1/tag-definition/{id}` updates a definition, with guardrails that keep already-applied tags valid. The body must contain `name` and the full `scope`. Omitting `description` removes it.
 
-- **`scope` can only be widened** — the new scope must contain every currently configured type. Removing a scope that objects are already tagged under is rejected.
+- **`scope` can only be widened** — the new scope must contain every currently configured type. Removing an object type from `scope` is rejected, even if no object of that type carries the tag.
 - **`add-allowed-values`** adds to an enumerated definition's set; existing values are never removed.
 - **`value-kind` is immutable.**
 
@@ -86,20 +86,24 @@ The full set of attachment endpoints, one per object type:
 | View | `/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}` |
 | Generic Table | `/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags/{tag_name}` |
 
-Each supports `PUT` (attach or update the value), `DELETE` (detach), and `GET` (list the object's tags). Objects are addressed by UUID; tags and columns by name.
+Each supports `PUT` (attach or update the value) and `DELETE` (detach). `GET` on the same path without `/{tag_name}` lists the object's tags. Objects are addressed by UUID; tags and columns by name.
 
 **Applying is idempotent.** Re-applying the same value is a no-op — it does not change the attachment's timestamp. Applying a *different* value updates it in place.
+
+### Column tags
+
+In the path, give the column name. For a nested field, join the names with `.`, for example `address.city`. Lakekeeper stores the tag on the column's field ID, so the tag stays when the column is renamed. `GET /management/v1/warehouse/{warehouse_id}/table/{table_id}/column-tags` lists every tagged column of a table with its tags in one call.
 
 ### Who may apply tags
 
 Attaching a tag to an object requires **both**:
 
-- the **manage-tags** capability on the target object (independent of write/DDL rights, so classification can be separated from data ownership), and
+- the **manage-tags** capability on the target object, or on its table for a column. It is independent of write rights, so classification can be separated from data ownership.
 - the **apply** capability on the tag definition — a per-definition delegation point for "who may apply *this* tag".
 
 ## Effective (inherited) tags
 
-Tags applied high in the hierarchy apply to everything beneath. Pass `?effective=true` to any tag-list endpoint to get an object's **effective** tags — its own tags plus those inherited from its ancestors:
+Tags applied high in the hierarchy apply to everything beneath. Pass `?effective=true` to any `GET .../tags` endpoint to get an object's **effective** tags — its own tags plus those inherited from its ancestors:
 
 ```http
 GET /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags?effective=true
@@ -110,9 +114,9 @@ GET /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags?effective=true
 - **Columns are direct-only** — a column's effective tags are exactly its own; it does not inherit its table's tags.
 - Each returned tag carries an **`inherited-from`** field naming the ancestor it came from; it is absent for the object's own (direct) tags.
 
-Under Cedar, policies read these effective tags directly; see [Tag-Based Access Control](authorization-cedar.md#tag-based-access-control).
+With Cedar in Lakekeeper Plus<span class="lkp"></span>, policies read these effective tags directly; see [Tag-Based Access Control](authorization-cedar.md#tag-based-access-control).
 
-Effective tags are gated only on your access to the **queried object**: an inherited tag is part of that object's effective governance, so anyone who can read the object's tags sees them, values included. Granting someone tag-read access to a sub-object therefore also exposes the tags it inherits from above.
+Reading an object's tags requires permission to see the object's metadata (`describe` in OpenFGA). Effective tags are gated only on your access to the **queried object**: an inherited tag is part of that object's effective governance, so anyone who can read the object's tags sees them, values included. Granting someone `describe` on a sub-object therefore also exposes the tags it inherits from above.
 
 ## Finding where a tag is used
 
@@ -122,8 +126,9 @@ To list every object a definition is attached to, use the reverse lookup:
 GET /management/v1/tag-definition/{tag_definition_id}/attachments?value=restricted
 ```
 
-- Results are keyset-paginated; the optional `value` filter narrows to a single value.
-- This is gated more strictly than reading one object's tags — it requires the definition's **owner** or a project **security admin**, because enumerating every object a tag touches is a broad disclosure.
+Results are paginated and can be filtered by `value`, `targetType`, `warehouseId`, `createdAfter` and `createdBefore`. Tags on [soft-deleted](concepts.md#soft-deletion) objects are not listed.
+
+The reverse lookup is gated more strictly than reading one object's tags — it requires the definition's **owner** or a project **security admin**, because enumerating every object a tag touches is a broad disclosure.
 
 !!! note "Direct attachments only"
     The reverse lookup returns objects the definition is attached to **directly**. It does not expand inheritance, so it will not list objects that merely *inherit* the tag from an ancestor. A completeness sweep ("which objects are effectively `pii`?") must also account for inherited tags via the effective-tags view above.

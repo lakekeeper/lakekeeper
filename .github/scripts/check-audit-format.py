@@ -1442,7 +1442,7 @@ def release_notes(version: str) -> int:
         print("_No audit log format changes in this release._")
         return 0
 
-    print("#### Audit log format")
+    print("### Audit log format")
     print()
     for level in ("major", "minor", "none"):
         bodies = [fragment_body(texts[path]) for path in texts if levels[path] == level]
@@ -1452,11 +1452,15 @@ def release_notes(version: str) -> int:
             continue
         print(HEADINGS[level])
         print()
-        for body in bodies:
+        for i, body in enumerate(bodies):
             lines = body.splitlines()
+            # The docs site's Markdown reads an item right after an indented line as a
+            # continuation of it, and nests a block under an item only at four spaces.
+            if i:
+                print()
             print(f"- {lines[0]}")
             for line in lines[1:]:
-                print(f"  {line}" if line.strip() else "")
+                print(f"    {line}" if line.strip() else "")
         print()
     was = "the first version" if previous is None else f"was {show(previous)}"
     if current == previous:
@@ -1682,7 +1686,7 @@ def self_test() -> int:
 
 ## v0.14.0 (2026-09-14)
 
-#### Audit log format
+### Audit log format
 
 **Breaking changes** — an existing parser must be updated:
 

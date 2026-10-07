@@ -118,7 +118,11 @@ Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion).
 
 ### Namespaces
 
-Each Warehouses can contain multiple Namespaces. Namespaces can be nested and serve as containers for Namespaces, Tables and Views. Using the `/catalog` API, a Namespace cannot be dropped unless it is empty. A cascade-drop API is added in one of the next releases as part of the `/management` API.
+Each Warehouse can contain multiple Namespaces. Namespaces can be nested and serve as containers for Namespaces, Tables and Views. By default, a Namespace can only be dropped if it is empty. To drop it together with everything it contains, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
+
+#### Moving and Renaming Namespaces
+
+You can move a Namespace to another parent in the same Warehouse, rename it, or both, in the UI or with the management API. Everything in it moves with it, and files stay where they are. A Namespace that contains other Namespaces cannot be moved or renamed, a [protected](#protection) Namespace needs `force`, and the `full-hierarchy` storage layout [prevents some moves](./storage-layout.md#layout-types). For the required permissions, see [OpenFGA](./authorization-openfga.md#moving-namespaces-under-managed-access) or [Cedar](./authorization-cedar.md#namespace-actions)<span class="lkp"></span>.
 
 ### Tables & Views
 
@@ -136,6 +140,10 @@ Users can be provisioned to Lakekeeper by either of the following endpoints:
 ### Roles
 
 Projects can contain multiple Roles, allowing Roles to be reused in all Warehouses within the Project. Roles can be nested arbitrarily, meaning that a role can contain other roles within it. Roles can be provisioned automatically using the `/management/v1/role` endpoint or manually created via the UI. We are looking into SCIM support to simplify role provisioning. Please consider upvoting the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/497) if this would be of interest to you.
+
+## Conditional Table Loads
+
+Clients such as Iceberg Java 1.11 and newer can ask whether a table changed since they last loaded it. If it did not change, Lakekeeper answers `304 Not Modified` and does not send the metadata again. If the earlier response contained vended credentials, Lakekeeper stops answering `304` well before they expire, so the client gets new credentials.
 
 ## Dropping Tables
 
@@ -246,7 +254,7 @@ Lakekeeper relies on a persistent backend (Postgres) and an optional authorizati
 
 **Migration is required before each Lakekeeper upgrade.** You must run the migration before starting the `lakekeeper serve` command to ensure all system components are properly updated and configured. Without running the migration first, the `lakekeeper serve` command will fail to start with the error: "Database is not up to date with binary, make sure to run the migrate command before starting the server." Migrations are designed to be resilient - you can safely skip intermediate versions and migrate directly to your target version. If the system is already up to date, the migration command will exit immediately without making any changes.
 
-**All migrations run within a transaction,** ensuring that either the entire migration completes successfully or the database remains unchanged. This prevents partial migrations that could leave your system in an inconsistent state.
+**All Postgres migrations run within a single transaction,** ensuring that either the entire migration completes successfully or the database remains unchanged. This prevents partial migrations that could leave your system in an inconsistent state.
 
 **Always create a backup of your Postgres database before running migrations.** While migrations are designed to be safe, having a backup ensures you can restore your system to a known good state if needed.
 

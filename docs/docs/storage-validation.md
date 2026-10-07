@@ -35,11 +35,12 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
   "checks": [
     { "name": "profile-well-formed", "status": "passed", "duration-ms": 0 },
     { "name": "profile-compatible", "status": "skipped", "reason": "Only applies when updating an existing warehouse." },
-    { "name": "warehouse-name-valid", "status": "passed", "duration-ms": 3 },
-    { "name": "location-exclusive", "status": "passed", "duration-ms": 3 },
     { "name": "spec-mutable", "status": "skipped", "reason": "Only applies when updating an existing warehouse." },
     { "name": "format-version-policy-consistent", "status": "passed", "duration-ms": 0 },
     { "name": "managed-by-allowed", "status": "passed", "duration-ms": 0 },
+    { "name": "warehouse-name-valid", "status": "passed", "duration-ms": 0 },
+    { "name": "warehouse-id-available", "status": "skipped", "reason": "No warehouse id was requested; the server will assign one." },
+    { "name": "location-exclusive", "status": "passed", "duration-ms": 0 },
     { "name": "storage-client-initialized", "status": "passed", "duration-ms": 41 },
     { "name": "lakekeeper-read-write", "status": "passed", "duration-ms": 212 },
     { "name": "vended-credentials-issued", "status": "passed", "duration-ms": 180 },
@@ -62,7 +63,8 @@ Request bodies are exactly the bodies of the endpoints they stand in for — val
 | `profile-well-formed` | The storage profile is internally consistent and can be normalized |
 | `profile-compatible` | The new profile is a permitted evolution of the current one |
 | `warehouse-name-valid` | The name is well-formed and not already used in the project. Compared case-insensitively, matching the database's uniqueness constraint |
-| `location-exclusive` | No other Warehouse in the project already occupies this location |
+| `warehouse-id-available` | The requested `warehouse-id` is not used by another Warehouse in the project. Skipped when no ID is requested. Warehouse IDs are unique across all projects, so creating can still fail if another project uses the ID |
+| `location-exclusive` | No other Warehouse in the project uses this location, a location inside it, or a location that contains it |
 | `spec-mutable` | The Warehouse's spec is not locked to an external control plane |
 | `format-version-policy-consistent` | The Iceberg format-version policy is self-consistent |
 | `managed-by-allowed` | The caller may create a Warehouse under the requested `managed-by` |
@@ -91,8 +93,8 @@ New checks may be added in future releases. `duration-ms` is reported for diagno
 
 ## Limits
 
-Validation is advisory: a concurrent request can still take the Warehouse name or change a bucket policy between validating and creating.
+Validation is advisory. Between validating and creating, another request can still take the Warehouse name, ID or location, or change a bucket policy.
 
 Validation writes and deletes probe objects under the Warehouse location, so it needs the same storage permissions as normal operation. Cleanup removes the probe prefix recursively.
 
-Storage probes must finish within two thirds of `LAKEKEEPER__MAX_REQUEST_TIME` (20 seconds by default), counted from the request's arrival, and cleanup within the following sixth. A probe or cleanup that runs out fails with `StorageProbeTimeout`, so storage that Lakekeeper cannot reach still produces a report that names the stalled check instead of the request timing out. Connections to storage and to its credential endpoints (STS, token services) time out after 5 seconds.
+Storage probes must finish within two thirds of `LAKEKEEPER__MAX_REQUEST_TIME` (20 seconds with the default of 30 seconds). A probe that runs out of time fails with `StorageProbeTimeout`, so the report names the check that did not finish and the request does not time out. Connecting to storage, or to the service that issues its credentials (such as STS), times out after 5 seconds.
