@@ -30,15 +30,17 @@ mod move_namespace {
         use lakekeeper::{
             ProjectId, WarehouseId,
             api::{
-                ApiContext, RequestMetadata, RequestMetadataTestBuilder,
+                ApiContext, RequestMetadata,
                 management::v1::{
                     ApiServer,
+                    check::{RoleAssignee, UserOrRole},
                     namespace::{MoveNamespaceRequest, NamespaceManagementService as _},
+                    role::{CreateRoleRequest, Service as _},
                 },
             },
             service::{
                 CachePolicy, CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest,
-                NamespaceId, State, Transaction, UserId, authn::Actor, authz::Authorizer as _,
+                NamespaceId, State, Transaction, UserId, authz::Authorizer as _,
             },
         };
         use lakekeeper_authz_openfga::{
@@ -46,7 +48,10 @@ mod move_namespace {
             new_authorizer_in_empty_store_from_default_config,
             reconcile_hierarchy_tuples_from_catalog,
         };
-        use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
+        use lakekeeper_integration_tests::{
+            SetupTestCatalog, assumed_role_metadata, grant_on_namespace, grant_on_namespace_to,
+            memory_io_profile, principal_metadata, set_namespace_managed_access,
+        };
         use lakekeeper_storage_postgres::{PostgresAdvisoryLock, PostgresBackend, SecretsState};
         use sqlx::PgPool;
 
@@ -73,10 +78,7 @@ mod move_namespace {
         }
 
         fn metadata(user_id: &UserId, project_id: &ProjectId) -> RequestMetadata {
-            RequestMetadataTestBuilder::builder()
-                .actor(Actor::Principal(user_id.clone()))
-                .project_id(Some(project_id.clone().into()))
-                .build()
+            principal_metadata(user_id, project_id)
         }
 
         fn ns_ident(parts: &[&str]) -> NamespaceIdent {
@@ -285,6 +287,135 @@ mod move_namespace {
 
             let after = drift_report(&ctx, &pool).await;
             assert_eq!(after.tuples_deleted, 0);
+        }
+
+        /// The owner of a namespace may move it under a parent where they hold `create`.
+        /// Under a parent with managed access, they also need `manage_grants` there.
+        #[sqlx::test]
+        async fn moving_a_namespace_into_a_managed_parent_needs_grant_authority_there(
+            pool: PgPool,
+        ) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let src = create_ns(&ctx, &admin_md, warehouse_id, &["src"]).await;
+            let open = create_ns(&ctx, &admin_md, warehouse_id, &["open"]).await;
+            let managed = create_ns(&ctx, &admin_md, warehouse_id, &["managed"]).await;
+            set_namespace_managed_access(&ctx, &admin_md, managed, true).await;
+
+            let owner = UserId::new_unchecked("oidc", "owner");
+            let owner_md = metadata(&owner, &project_id);
+            for namespace in [src, open, managed] {
+                for privilege in ["describe", "create"] {
+                    grant_on_namespace(&ctx, &admin_md, warehouse_id, namespace, privilege, &owner)
+                        .await;
+                }
+            }
+            let mine = create_ns(&ctx, &owner_md, warehouse_id, &["src", "mine"]).await;
+            let move_to = |parent: &'static str| {
+                ApiServer::move_namespace(
+                    mine,
+                    warehouse_id,
+                    MoveNamespaceRequest {
+                        destination: ns_ident(&[parent, "mine"]),
+                        force: false,
+                    },
+                    ctx.clone(),
+                    owner_md.clone(),
+                )
+            };
+
+            move_to("open")
+                .await
+                .expect("the owner may move the namespace where they can create");
+
+            let err = move_to("managed").await.unwrap_err();
+            assert_eq!(err.error.code, 403, "{err:?}");
+            assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+            grant_on_namespace(
+                &ctx,
+                &admin_md,
+                warehouse_id,
+                managed,
+                "manage_grants",
+                &owner,
+            )
+            .await;
+            move_to("managed")
+                .await
+                .expect("manage_grants at the managed parent permits the move");
+            let reloaded = PostgresBackend::get_namespace_cache_aware(
+                warehouse_id,
+                mine,
+                CachePolicy::Skip,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(reloaded.namespace_ident(), &ns_ident(&["managed", "mine"]));
+        }
+
+        /// Under an assumed role, managed access cannot be evaluated, so moving a namespace
+        /// is refused. A user holding the same grants may move it.
+        #[sqlx::test]
+        async fn an_assumed_role_cannot_move_a_namespace(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let src = create_ns(&ctx, &admin_md, warehouse_id, &["src"]).await;
+            let dst = create_ns(&ctx, &admin_md, warehouse_id, &["dst"]).await;
+            let movable = create_ns(&ctx, &admin_md, warehouse_id, &["src", "movable"]).await;
+
+            let role = ApiServer::create_role(
+                CreateRoleRequest::builder()
+                    .name("movers".to_string())
+                    .build(),
+                ctx.clone(),
+                admin_md.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+            let user = UserId::new_unchecked("oidc", "mover");
+            for namespace in [src, dst] {
+                for privilege in ["describe", "create", "modify", "manage_grants"] {
+                    grant_on_namespace_to(
+                        &ctx,
+                        &admin_md,
+                        warehouse_id,
+                        namespace,
+                        privilege,
+                        UserOrRole::Role(RoleAssignee::from_role(role)),
+                    )
+                    .await;
+                    grant_on_namespace(&ctx, &admin_md, warehouse_id, namespace, privilege, &user)
+                        .await;
+                }
+            }
+            let move_as = |md: RequestMetadata| {
+                ApiServer::move_namespace(
+                    movable,
+                    warehouse_id,
+                    MoveNamespaceRequest {
+                        destination: ns_ident(&["dst", "movable"]),
+                        force: false,
+                    },
+                    ctx.clone(),
+                    md,
+                )
+            };
+
+            let err = move_as(assumed_role_metadata(&user, role, &project_id))
+                .await
+                .unwrap_err();
+            assert_eq!(err.error.code, 403, "{err:?}");
+            assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+            move_as(metadata(&user, &project_id))
+                .await
+                .expect("the same grants held by the user permit the move");
         }
     }
 }

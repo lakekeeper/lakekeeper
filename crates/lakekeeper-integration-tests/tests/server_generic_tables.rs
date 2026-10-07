@@ -16,16 +16,19 @@ use lakekeeper::{
             types::DropParams,
             v1::{DataAccessMode, namespace::NamespaceParameters},
         },
+        management::v1::warehouse::TabularDeleteProfile,
     },
     server::CatalogServer,
     service::{
-        CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _,
-        authz::AllowAllAuthorizer,
+        CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _, UserId,
+        authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         idempotency::IdempotencyKey,
         storage::{MemoryProfile, StorageProfile},
     },
 };
-use lakekeeper_integration_tests::{get_api_context, random_request_metadata};
+use lakekeeper_integration_tests::{
+    create_ns, get_api_context, memory_io_profile, random_request_metadata, setup_simple,
+};
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
     warehouse::test::initialize_warehouse,
@@ -643,6 +646,123 @@ async fn test_rename_generic_table_cross_namespace(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(loaded.table.name, "movable");
+}
+
+/// Two namespaces and a generic table `movable` in the first, under a `HidingAuthorizer`.
+async fn move_generic_table_setup(
+    pool: PgPool,
+) -> (
+    lakekeeper::api::ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    HidingAuthorizer,
+    String,
+    NamespaceIdent,
+    NamespaceIdent,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let source_ns = create_ns(ctx.clone(), prefix.clone(), "from_ns".to_string())
+        .await
+        .namespace;
+    let dest_ns = create_ns(ctx.clone(), prefix.clone(), "to_ns".to_string())
+        .await
+        .namespace;
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: source_ns.clone(),
+        },
+        create_request("movable"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    (ctx, authz, prefix, source_ns, dest_ns)
+}
+
+/// Moving a generic table into another namespace needs `move` on it, not just `rename`.
+#[sqlx::test]
+async fn test_move_generic_table_without_move_on_source(pool: PgPool) {
+    let (ctx, authz, prefix, source_ns, dest_ns) = move_generic_table_setup(pool).await;
+    authz.block_action("generic_table:Move");
+
+    let err = CatalogServer::rename_generic_table(
+        Some(prefix.clone().into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&dest_ns, "movable"),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "GenericTableActionForbidden");
+
+    // A rename within the namespace does not ask `move`.
+    CatalogServer::rename_generic_table(
+        Some(prefix.into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&source_ns, "renamed"),
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+/// Moving a generic table into another namespace needs `accept_moved_tabular` on the
+/// destination, not just `create_generic_table`; the refusal is recorded as `move`.
+#[sqlx::test]
+async fn test_move_generic_table_without_accept_moved_tabular_on_destination(pool: PgPool) {
+    use lakekeeper::service::events::{EventListener, context::ActionContextKey};
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, prefix, source_ns, dest_ns) = move_generic_table_setup(pool).await;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+    authz.block_action("namespace:AcceptMovedTabular");
+
+    let err = CatalogServer::rename_generic_table(
+        Some(prefix.into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&dest_ns, "movable"),
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
+    assert_eq!(
+        listener.recorded_actions(),
+        (
+            vec![],
+            vec![vec![RecordedAction {
+                action_name: "move".to_string(),
+                context: vec![ActionContextKey::Destination(vec!["to_ns".to_string()])],
+            }]],
+        )
+    );
 }
 
 #[sqlx::test]

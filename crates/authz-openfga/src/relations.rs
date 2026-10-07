@@ -1360,6 +1360,7 @@ pub enum NamespaceRelation {
     CanSetProtection,
     CanMove,
     CanAcceptMovedNamespace,
+    CanAcceptMovedTabular,
     // -- Revoke actions --
     CanRevokeCreate,
     CanRevokeDescribe,
@@ -1521,6 +1522,8 @@ pub(super) enum APINamespaceAction {
     Move,
     /// May accept a namespace being moved in as a child of this namespace.
     AcceptMovedNamespace,
+    /// May accept a table, view or generic table being moved in from another namespace.
+    AcceptMovedTabular,
     UpdateProperties,
     GetMetadata,
     ReadAssignments,
@@ -1577,6 +1580,7 @@ impl ReducedRelation for APINamespaceAction {
             APINamespaceAction::Delete => NamespaceRelation::CanDelete,
             APINamespaceAction::Move => NamespaceRelation::CanMove,
             APINamespaceAction::AcceptMovedNamespace => NamespaceRelation::CanAcceptMovedNamespace,
+            APINamespaceAction::AcceptMovedTabular => NamespaceRelation::CanAcceptMovedTabular,
             APINamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
             APINamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
             APINamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,
@@ -1604,6 +1608,9 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::Move { .. } => NamespaceRelation::CanMove,
             CatalogNamespaceAction::AcceptMovedNamespace { .. } => {
                 NamespaceRelation::CanAcceptMovedNamespace
+            }
+            CatalogNamespaceAction::AcceptMovedTabular { .. } => {
+                NamespaceRelation::CanAcceptMovedTabular
             }
             CatalogNamespaceAction::UpdateProperties { .. } => {
                 NamespaceRelation::CanUpdateProperties
@@ -1680,6 +1687,7 @@ pub enum TableRelation {
     CanGetMetadata,
     CanCommit,
     CanRename,
+    CanMove,
     CanIncludeInList,
     CanManageTags,
     CanReadAssignments,
@@ -1836,6 +1844,8 @@ pub(super) enum APITableAction {
     GetMetadata,
     Commit,
     Rename,
+    /// May move this table into another namespace.
+    Move,
     ReadAssignments,
     GrantPassGrants,
     GrantManageGrants,
@@ -1890,6 +1900,7 @@ impl ReducedRelation for APITableAction {
             APITableAction::GetMetadata => TableRelation::CanGetMetadata,
             APITableAction::Commit => TableRelation::CanCommit,
             APITableAction::Rename => TableRelation::CanRename,
+            APITableAction::Move => TableRelation::CanMove,
             APITableAction::ReadAssignments => TableRelation::CanReadAssignments,
             APITableAction::GrantPassGrants => TableRelation::CanGrantPassGrants,
             APITableAction::GrantManageGrants => TableRelation::CanGrantManageGrants,
@@ -1917,6 +1928,7 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
             CatalogTableAction::Commit { .. } => TableRelation::CanCommit,
             CatalogTableAction::Rename => TableRelation::CanRename,
+            CatalogTableAction::Move { .. } => TableRelation::CanMove,
             CatalogTableAction::IncludeInList => TableRelation::CanIncludeInList,
             CatalogTableAction::Undrop => TableRelation::CanUndrop,
             CatalogTableAction::GetTasks => TableRelation::CanGetTasks,
@@ -1975,6 +1987,7 @@ pub enum ViewRelation {
     CanGetMetadata,
     CanSelect,
     CanRename,
+    CanMove,
     CanIncludeInList,
     CanManageTags,
     CanReadAssignments,
@@ -2130,6 +2143,8 @@ pub(super) enum APIViewAction {
     GetMetadata,
     Select,
     Rename,
+    /// May move this view into another namespace.
+    Move,
     ReadAssignments,
     GrantPassGrants,
     GrantManageGrants,
@@ -2183,6 +2198,7 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::GetMetadata => ViewRelation::CanGetMetadata,
             APIViewAction::Select => ViewRelation::CanSelect,
             APIViewAction::Rename => ViewRelation::CanRename,
+            APIViewAction::Move => ViewRelation::CanMove,
             APIViewAction::ReadAssignments => ViewRelation::CanReadAssignments,
             APIViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
             APIViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
@@ -2209,6 +2225,7 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
             CatalogViewAction::Select => ViewRelation::CanSelect,
             CatalogViewAction::Rename => ViewRelation::CanRename,
+            CatalogViewAction::Move { .. } => ViewRelation::CanMove,
             CatalogViewAction::IncludeInList => ViewRelation::CanIncludeInList,
             CatalogViewAction::Undrop => ViewRelation::CanUndrop,
             CatalogViewAction::GetTasks => ViewRelation::CanGetTasks,
@@ -2271,6 +2288,7 @@ pub enum GenericTableRelation {
     CanReadData,
     CanGetMetadata,
     CanRename,
+    CanMove,
     CanIncludeInList,
     CanGetTasks,
     CanControlTasks,
@@ -2322,6 +2340,7 @@ impl ReducedRelation for CatalogGenericTableAction {
             CatalogGenericTableAction::ManageTags => GenericTableRelation::CanManageTags,
             CatalogGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
             CatalogGenericTableAction::Rename => GenericTableRelation::CanRename,
+            CatalogGenericTableAction::Move { .. } => GenericTableRelation::CanMove,
             CatalogGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
             CatalogGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
             CatalogGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
@@ -2513,6 +2532,8 @@ pub(super) enum APIGenericTableAction {
     ReadData,
     GetMetadata,
     Rename,
+    /// May move this generic table into another namespace.
+    Move,
     IncludeInList,
     GetTasks,
     ControlTasks,
@@ -2538,6 +2559,7 @@ impl ReducedRelation for APIGenericTableAction {
             APIGenericTableAction::ReadData => GenericTableRelation::CanReadData,
             APIGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
             APIGenericTableAction::Rename => GenericTableRelation::CanRename,
+            APIGenericTableAction::Move => GenericTableRelation::CanMove,
             APIGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
             APIGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
             APIGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,

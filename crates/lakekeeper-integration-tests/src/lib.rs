@@ -13,8 +13,10 @@
 //! [`lakekeeper_storage_postgres::test_utils`] so that crate's own inline
 //! tests can use them without a dev-dep cycle.
 
+mod authz_helper;
 mod internal_helper;
 mod pagination_macro; // exports `impl_pagination_tests!` via `#[macro_export]`
+pub use authz_helper::*;
 pub use internal_helper::*;
 // `pastey` is needed at the macro call sites because `impl_pagination_tests!`
 // expands to `paste! { ... }`. Re-export it so downstream test files don't
@@ -298,6 +300,41 @@ impl CapturingAuthzListener {
             .map(|e| e.failure_reason.clone())
             .collect()
     }
+
+    /// The actions each succeeded and each failed record names, in order — so a test can
+    /// pin which action a request was recorded under.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn recorded_actions(&self) -> (Vec<Vec<RecordedAction>>, Vec<Vec<RecordedAction>>) {
+        fn recorded(
+            actions: &[lakekeeper::service::authz::ActionDescriptor],
+        ) -> Vec<RecordedAction> {
+            actions
+                .iter()
+                .map(|a| RecordedAction {
+                    action_name: a.action_name.to_string(),
+                    context: a.context.clone(),
+                })
+                .collect()
+        }
+        let events = self.events.lock().unwrap();
+        (
+            events
+                .succeeded
+                .iter()
+                .map(|e| recorded(&e.actions))
+                .collect(),
+            events.failed.iter().map(|e| recorded(&e.actions)).collect(),
+        )
+    }
+}
+
+/// One action of a captured authorization record: its name and its context keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedAction {
+    pub action_name: String,
+    pub context: Vec<lakekeeper::service::events::context::ActionContextKey>,
 }
 
 /// Test-only public reach into [`lakekeeper::service::post_migration_hooks`]'s

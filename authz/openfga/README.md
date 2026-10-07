@@ -4,22 +4,42 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.12`
+## `v4.13`
 
 ```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
+Adds the relations that gate moving a table, view or generic table into another namespace, requires grant authority for accepting a moved namespace only under managed access, and splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
 
-Supersedes `v4.11`, which reached no release. `v4.11` carried the subtree grant relations; `v4.12` adds the privilege split on top. A store already provisioned with `v4.11` from a `main` build must see a higher version to pick up the new relations, hence the bump. `v4.11` is no longer registered; stores on it migrate straight to `v4.12`.
+Supersedes `v4.11` and `v4.12`, neither of which reached a release. `v4.11` carried the subtree grant relations, `v4.12` added the privilege split, and `v4.13` adds the tabular move relations on top. A store already provisioned with either from a `main` build must see a higher version to pick up the new relations, hence the bumps. Neither is registered any more; stores on either migrate straight to `v4.13`.
+
+### Tabular moves
+
+`lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
+
+- Add `can_move` (from `manage_grants and modify_effective`), the source-side check, mirroring `can_move` on a namespace. A moved tabular inherits the destination's grants, so the actor must hold grant authority on it as well as write access. Under `managed_access` ownership does not confer `manage_grants`, so an owner cannot move a tabular out of a managed subtree.
+
+`namespace`:
+
+- Add `can_accept_moved_tabular`, the destination-side check, mirroring `can_accept_moved_namespace`. It is asked together with `can_create_table`, `can_create_view` or `can_create_generic_table`. It is `create_effective` on a namespace that is not under managed access, and `manage_grants and create_effective` on one that is, directly or through an ancestor namespace or the warehouse (`managed_access_inheritance`).
+
+Both are relations of their own, so a later change to namespace moves does not change what a tabular move requires.
+
+### Namespace moves
+
+`namespace`, `warehouse`:
+
+- `can_accept_moved_namespace` follows the same rule as `can_accept_moved_tabular`: `create_effective`, plus `manage_grants` when the destination is under managed access. A moved object arrives with its grants; outside managed access, anyone with `create` may already grant there through ownership of what they create, so grant authority is required only where managed access withholds it. `can_move` on the source is unchanged.
+
+Managed access is stored as `user:*` and `role:*`, which a role's `assignee` userset does not match, so for a role the model sees no managed access. The relaxed acceptance therefore assumes no assumed-role session: the server denies `can_move`, `can_accept_moved_tabular` and `can_accept_moved_namespace` for a role, and refuses changing a namespace's managed access under an assumed role, as it refuses grants below the warehouse.
 
 ### Subtree grant relations
 
 `warehouse`, `namespace`:
 
-- Add `can_read_subtree_assignments` and `can_revoke_subtree_assignments`, both from `manage_grants`. Reading or revoking every grant in a subtree is administration-grade, and `manage_grants` is the relation whose reach is the subtree. These arrived with `v4.11` and are listed here because `v4.12` is the first released version to carry them.
+- Add `can_read_subtree_assignments` and `can_revoke_subtree_assignments`, both from `manage_grants`. Reading or revoking every grant in a subtree is administration-grade, and `manage_grants` is the relation whose reach is the subtree. These arrived with `v4.11` and are listed here because `v4.13` is the first released version to carry them.
 
 ### Split privileges
 

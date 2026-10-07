@@ -41,7 +41,30 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "The namespace path the entity is being moved from."
+                "description": "Where the entity is being moved from: for a namespace, its current full path; for a\ntable, view or generic table, the path of the namespace it leaves."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "accept_moved_tabular"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Where the entity is being moved from: for a namespace, its current full path; for a\ntable, view or generic table, the path of the namespace it leaves."
               }
             }
           }
@@ -416,7 +439,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "The namespace path the entity is being moved to."
+                "description": "Where the entity is being moved to: for a namespace, its full new path; for a table,\nview or generic table, the path of the destination namespace, without the new name."
               },
               "force": {
                 "type": "boolean",
@@ -956,6 +979,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_data",
         "read_grants",
         "rename",
@@ -967,6 +991,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this generic table.",
+        "move": "Rename this generic table into another namespace. Asked in addition to `rename` when a\nrename changes the namespace.\n\nThe move changes which grants the generic table inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this generic table."
       }
     },
@@ -975,6 +1000,7 @@
       "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "accept_moved_namespace",
+        "accept_moved_tabular",
         "create_generic_table",
         "create_namespace",
         "create_table",
@@ -998,7 +1024,8 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
-        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, so an authorizer may require grant authority here in\naddition to `create`. OpenFGA does when this entity is under managed access.",
+        "accept_moved_tabular": "Accept a table, view or generic table being moved in from another namespace.\n\nThe tabular counterpart of `accept_moved_namespace`, asked together with the matching\n`create_*` action: a moved tabular arrives carrying its direct grants.",
         "manage_tags": "Attach/detach governance tags on this namespace.",
         "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
         "read_grants": "Can list the grants held on this namespace.",
@@ -1091,6 +1118,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_data",
         "read_grants",
         "rename",
@@ -1102,6 +1130,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this table.",
+        "move": "Rename this table into another namespace. Asked in addition to `rename` when a\nrename changes the namespace.\n\nThe move changes which grants the table inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this table."
       }
     },
@@ -1158,6 +1187,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_grants",
         "rename",
         "select",
@@ -1168,6 +1198,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this view.",
+        "move": "Rename this view into another namespace. Asked in addition to `rename` when a\nrename changes the namespace.\n\nThe move changes which grants the view inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this view."
       }
     },
@@ -1205,7 +1236,7 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
-        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, so an authorizer may require grant authority here in\naddition to `create`. OpenFGA does when this entity is under managed access.",
         "manage_tags": "Attach/detach governance tags on this warehouse.",
         "read_grants": "Can list the grants held on this warehouse.",
         "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `read_grants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",

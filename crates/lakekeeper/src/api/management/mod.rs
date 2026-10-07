@@ -4003,18 +4003,17 @@ pub mod v1 {
     /// single-element path moves the namespace to the warehouse root. The path must not be
     /// empty.
     ///
-    /// Requires grant authority at **both** ends, because re-parenting makes the namespace's
-    /// contents inherit the destination subtree's permissions without any assignment being
-    /// recorded:
+    /// Requires:
     ///
     /// - `move` on the namespace being moved,
     /// - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
     ///   the warehouse, when moving to the root).
     ///
-    /// Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
-    /// write privilege (`modify` at the source, `create` at the destination). `create_namespace`
-    /// alone is not sufficient at the destination: it authorizes adding an *empty* child,
-    /// whereas a move arrives carrying existing contents and their grants.
+    /// Re-parenting makes the namespace's contents inherit the destination subtree's
+    /// permissions without any assignment being recorded, and the namespace arrives carrying
+    /// its contents and their grants. With OpenFGA, `move` requires `manage_grants` and
+    /// `modify`; `accept_moved_namespace` requires `create`, plus `manage_grants` when the
+    /// destination is under managed access.
     ///
     /// Constraints:
     /// - Namespaces that contain child namespaces cannot be moved.

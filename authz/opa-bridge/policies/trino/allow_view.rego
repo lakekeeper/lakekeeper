@@ -51,6 +51,7 @@ allow_view_rename if {
 	target_catalog := input.action.targetResource.table.catalogName
 	target_schema := input.action.targetResource.table.schemaName
 	require_schema_access_simple(target_catalog, target_schema, "create_view")
+	require_rename_target_access("view", source_catalog, source_schema, source_table, target_catalog, target_schema)
 }
 
 allow_view_drop if {

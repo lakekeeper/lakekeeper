@@ -362,15 +362,61 @@ impl From<CredentialsError> for IcebergErrorResponse {
 /// What a failed STS request returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StsRejection {
-    pub http_status: Option<u16>,
+    http_status: Option<u16>,
     /// The error code, e.g. `AccessDenied`.
-    pub code: Option<String>,
+    code: Option<String>,
     /// The endpoint's own error message, or a fixed description of the failure.
-    pub message: Option<String>,
-    pub request_id: Option<String>,
+    message: Option<String>,
+    request_id: Option<String>,
 }
 
 impl StsRejection {
+    /// Longest `code` or `request_id` kept, in characters.
+    pub const MAX_FIELD_CHARS: usize = 256;
+    /// Longest `message` kept, in characters.
+    pub const MAX_MESSAGE_CHARS: usize = 2048;
+
+    /// The fields come from the endpoint: `message` is cut to [`Self::MAX_MESSAGE_CHARS`],
+    /// `code` and `request_id` to [`Self::MAX_FIELD_CHARS`], and a cut field ends in `…`.
+    /// Control characters, line and paragraph separators and invisible formatting
+    /// characters are replaced by spaces.
+    #[must_use]
+    pub fn new(
+        http_status: Option<u16>,
+        code: Option<String>,
+        message: Option<String>,
+        request_id: Option<String>,
+    ) -> Self {
+        Self {
+            http_status,
+            code: code.map(|v| clean_endpoint_text(&v, Self::MAX_FIELD_CHARS)),
+            message: message.map(|v| clean_endpoint_text(&v, Self::MAX_MESSAGE_CHARS)),
+            request_id: request_id.map(|v| clean_endpoint_text(&v, Self::MAX_FIELD_CHARS)),
+        }
+    }
+
+    #[must_use]
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    /// The error code, e.g. `AccessDenied`.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// The endpoint's own error message, or a fixed description of the failure.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    #[must_use]
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
     /// The answer on one line, e.g. `AccessDenied (HTTP 403): User ... is not authorized`.
     #[must_use]
     pub fn summary(&self) -> String {
@@ -405,6 +451,39 @@ impl StsRejection {
             .as_ref()
             .map(|id| format!("STS request ID: {id}"))
     }
+}
+
+/// `value` cut to `max_chars` characters, with `…` appended when cut, and every character
+/// that is not shown as itself replaced by a space.
+fn clean_endpoint_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut cleaned: String = chars
+        .by_ref()
+        .take(max_chars)
+        .map(|c| if is_hidden_char(c) { ' ' } else { c })
+        .collect();
+    if chars.next().is_some() {
+        cleaned.push('…');
+    }
+    cleaned
+}
+
+/// Control characters, line and paragraph separators, and the format characters that are
+/// invisible or reorder text: zero-width, bidirectional and tag characters.
+fn is_hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -296,3 +296,39 @@ require_view_access_simple(lakekeeper_id, warehouse_name, namespace_name, view_n
 	value.results[0].allowed == true
 	count(value.results) == 1
 }
+
+# Check a table or view move into another namespace: `move` on the tabular and
+# `accept_moved_tabular` on the destination namespace. `kind` is "table" or "view".
+require_tabular_move_access(
+	lakekeeper_id, warehouse_name, kind, namespace_name,
+	tabular_name, destination_namespace_name, user,
+) if {
+	warehouse_id := warehouse_id_for_name(lakekeeper_id, warehouse_name)
+	results := batch_check_results(lakekeeper_id, [
+		build_tabular_move_check(warehouse_id, kind, namespace_name, tabular_name, destination_namespace_name, user),
+		build_accept_moved_tabular_check(warehouse_id, destination_namespace_name, namespace_name, user),
+	])
+	count(results) == 2
+	every result in results {
+		result.allowed == true
+	}
+}
+
+build_tabular_move_check(warehouse_id, kind, namespace_name, tabular_name, destination_namespace_name, user) := {
+	"operation": {kind: {
+		"action": {"action": "move", "destination": destination_namespace_name},
+		"warehouse-id": warehouse_id,
+		"namespace": namespace_name,
+		"table": tabular_name,
+	}},
+	"identity": {"user": user},
+}
+
+build_accept_moved_tabular_check(warehouse_id, namespace_name, source_namespace_name, user) := {
+	"operation": {"namespace": {
+		"action": {"action": "accept_moved_tabular", "source": source_namespace_name},
+		"warehouse-id": warehouse_id,
+		"namespace": namespace_name,
+	}},
+	"identity": {"user": user},
+}

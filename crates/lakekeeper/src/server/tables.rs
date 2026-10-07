@@ -368,6 +368,18 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
+        // Before any storage read. `CreateTable` is checked after the read: its properties
+        // and table id are only known from the metadata file.
+        let namespace = authorizer
+            .require_namespace_action(
+                event_ctx.request_metadata(),
+                &warehouse,
+                provided_ns,
+                namespace,
+                CatalogNamespaceAction::GetMetadata,
+            )
+            .await
+            .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let storage_profile = &warehouse.storage_profile;
@@ -380,18 +392,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let storage_secret_ref = storage_secret.as_deref();
         let file_io = storage_profile.file_io(storage_secret_ref).await?;
         let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
-        let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
-        validate_table_properties(table_metadata.properties().keys())?;
-        storage_profile.require_allowed_location(&table_location)?;
-        // Register is the only way a table enters the warehouse without going
-        // through `createTable`, so without this the format-version policy is
-        // advisory: a v3 file could be registered into a v1/v2-only warehouse
-        // and only fail later, in whichever engine cannot read it.
-        create_table::ensure_format_version_allowed(
-            table_metadata.format_version(),
-            &warehouse.allowed_format_versions,
-        )?;
 
+        // Checked before the file's contents are validated, so a caller who may not create
+        // here learns only that the file exists and parses.
         let action = CatalogNamespaceAction::CreateTable {
             name: Some(request.name.clone()),
             table_id: Some(TableId::from(table_metadata.uuid())),
@@ -412,11 +415,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 event_ctx.request_metadata(),
                 &warehouse,
                 provided_ns,
-                namespace,
+                Ok(Some(namespace)),
                 action,
             )
             .await;
         let (event_ctx, namespace) = event_ctx.emit_authz(authz_result)?;
+
+        let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
+        validate_table_properties(table_metadata.properties().keys())?;
+        storage_profile.require_allowed_location(&table_location)?;
+        // Register is the only way a table enters the warehouse without going
+        // through `createTable`, so without this the format-version policy is
+        // advisory: a v3 file could be registered into a v1/v2-only warehouse
+        // and only fail later, in whichever engine cannot read it.
+        create_table::ensure_format_version_allowed(
+            table_metadata.format_version(),
+            &warehouse.allowed_format_versions,
+        )?;
 
         let namespace_id = namespace.namespace_id();
         let table_metadata = Arc::new(table_metadata);

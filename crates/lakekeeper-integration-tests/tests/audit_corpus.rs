@@ -82,7 +82,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 14;
+const EXPECTED_RECORDS: usize = 17;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -277,6 +277,35 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
+    // A rename into another namespace is recorded as `move`, with the destination
+    // namespace as `destination` context; renaming it back is a second `move`.
+    let moves_namespace = NamespaceIdent::from_vec(vec!["audit_corpus_moves".to_string()]).unwrap();
+    let _ = CatalogServer::create_namespace(
+        Some(warehouse.clone().into()),
+        iceberg_ext::catalog::rest::CreateNamespaceRequest {
+            namespace: moves_namespace.clone(),
+            properties: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    for (from, to) in [
+        (namespace.clone(), moves_namespace.clone()),
+        (moves_namespace.clone(), namespace.clone()),
+    ] {
+        let _ = CatalogServer::rename_table(
+            Some(warehouse.clone().into()),
+            iceberg_ext::catalog::rest::RenameTableRequest {
+                source: iceberg::TableIdent::new(from, "audited_table".to_string()),
+                destination: iceberg::TableIdent::new(to, "audited_table".to_string()),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await;
+    }
+
     // Property updates carry `updated_properties` and `removed_properties`.
     let _ = CatalogServer::update_namespace_properties(
         namespace_params.clone(),
@@ -447,6 +476,23 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         });
     assert_eq!(empty_commit["entities"], serde_json::json!([]));
     assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
+
+    // The two renames across namespaces, each a `move` naming its destination namespace.
+    let mut moves = records
+        .iter()
+        .flat_map(|record| record["actions"].as_array().cloned().unwrap_or_default())
+        .filter(|action| action["action_name"] == "move")
+        .collect::<Vec<_>>();
+    moves.sort_by_key(ToString::to_string);
+    assert_eq!(
+        moves,
+        vec![
+            serde_json::json!({"action_name": "move", "destination": ["audit_corpus"]}),
+            serde_json::json!({"action_name": "move", "destination": ["audit_corpus_moves"]}),
+        ],
+        "move records:\n{}",
+        describe(&records)
+    );
 
     eprintln!("audit corpus: {} record(s) checked", records.len());
 }

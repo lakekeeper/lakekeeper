@@ -30,7 +30,7 @@ mod rename_tabular {
         use lakekeeper::{
             ProjectId, WarehouseId,
             api::{
-                ApiContext, RequestMetadata, RequestMetadataTestBuilder,
+                ApiContext, RequestMetadata,
                 data::v1::generic_tables::{
                     CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
                     RenameGenericTableRequest, RenameGenericTableTarget,
@@ -47,15 +47,15 @@ mod rename_tabular {
                 },
                 management::v1::{
                     ApiServer,
-                    check::UserOrRole,
-                    grant::{ApplyGrantsRequest, GrantEntry, Service as _},
+                    check::{RoleAssignee, UserOrRole},
+                    role::{CreateRoleRequest, Service as _},
                 },
             },
             server::CatalogServer,
             service::{
                 AuthZTableInfo as _, CatalogNamespaceOps as _, CatalogStore,
                 CatalogTabularOps as _, GenericTableFormat, NamespaceId, State, TableId,
-                TabularListFlags, Transaction as _, UserId, authn::Actor, authz::Authorizer as _,
+                TabularListFlags, Transaction as _, UserId, authz::Authorizer as _,
             },
         };
         use lakekeeper_authz_openfga::{
@@ -64,7 +64,9 @@ mod rename_tabular {
             reconcile_hierarchy_tuples_from_catalog,
         };
         use lakekeeper_integration_tests::{
-            SetupTestCatalog, create_table_request, create_view_request, memory_io_profile,
+            SetupTestCatalog, assumed_role_metadata, create_table_request, create_view_request,
+            grant_on_namespace, grant_on_namespace_to, memory_io_profile,
+            post_namespace_managed_access, principal_metadata, set_namespace_managed_access,
         };
         use lakekeeper_storage_postgres::{PostgresAdvisoryLock, PostgresBackend, SecretsState};
         use sqlx::PgPool;
@@ -92,10 +94,7 @@ mod rename_tabular {
         }
 
         fn metadata(user_id: &UserId, project_id: &ProjectId) -> RequestMetadata {
-            RequestMetadataTestBuilder::builder()
-                .actor(Actor::Principal(user_id.clone()))
-                .project_id(Some(project_id.clone().into()))
-                .build()
+            principal_metadata(user_id, project_id)
         }
 
         fn ns(name: &str) -> NamespaceIdent {
@@ -142,32 +141,6 @@ mod rename_tabular {
                 DataAccess::not_specified(),
                 ctx.clone(),
                 md.clone(),
-            )
-            .await
-            .unwrap();
-        }
-
-        /// Grant one privilege on a namespace, through the same endpoint an operator uses.
-        async fn grant_on_namespace(
-            ctx: &Ctx,
-            md: &RequestMetadata,
-            warehouse_id: WarehouseId,
-            namespace_id: NamespaceId,
-            privilege: &str,
-            user: &UserId,
-        ) {
-            Server::apply_namespace_grants(
-                warehouse_id,
-                namespace_id,
-                ctx.clone(),
-                md.clone(),
-                ApplyGrantsRequest {
-                    writes: vec![GrantEntry {
-                        privilege: privilege.to_string(),
-                        principal: UserOrRole::User(user.clone()),
-                    }],
-                    deletes: vec![],
-                },
             )
             .await
             .unwrap();
@@ -441,6 +414,353 @@ mod rename_tabular {
 
             let after_drift = drift_report(&ctx).await;
             assert_eq!(after_drift.tuples_deleted, 0, "{after_drift:?}");
+        }
+
+        /// Moving a table into another namespace needs grant authority on the table, as
+        /// moving a namespace does: `modify` on the table and `create` at the destination
+        /// are not enough.
+        #[sqlx::test]
+        async fn moving_a_table_needs_grant_authority_on_the_table(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let before = create_namespace(&ctx, &admin_md, warehouse_id, "before").await;
+            let after = create_namespace(&ctx, &admin_md, warehouse_id, "after").await;
+            create_table(&ctx, &admin_md, warehouse_id, "before", "tbl").await;
+
+            let developer = UserId::new_unchecked("oidc", "developer");
+            let developer_md = metadata(&developer, &project_id);
+            for privilege in ["describe", "modify"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, before, privilege, &developer)
+                    .await;
+            }
+            for privilege in ["describe", "create"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, after, privilege, &developer)
+                    .await;
+            }
+            let move_table = || {
+                CatalogServer::rename_table(
+                    Some(Prefix(warehouse_id.to_string())),
+                    rename(("before", "tbl"), ("after", "tbl")),
+                    ctx.clone(),
+                    developer_md.clone(),
+                )
+            };
+
+            let err = move_table().await.unwrap_err();
+            assert_eq!(err.error.code, 403, "{err:?}");
+            assert_eq!(err.error.r#type, "TableActionForbidden");
+
+            grant_on_namespace(
+                &ctx,
+                &admin_md,
+                warehouse_id,
+                before,
+                "manage_grants",
+                &developer,
+            )
+            .await;
+            move_table()
+                .await
+                .expect("grant authority on the table and create at an unmanaged destination");
+            assert!(can_load_table(&ctx, &admin_md, warehouse_id, "after", "tbl").await);
+        }
+
+        /// The owner of a table may move it into a namespace where they hold `create`. Into
+        /// a namespace under managed access, they also need `manage_grants` there.
+        #[sqlx::test]
+        async fn moving_a_table_into_a_managed_namespace_needs_grant_authority_there(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let before = create_namespace(&ctx, &admin_md, warehouse_id, "before").await;
+            let open = create_namespace(&ctx, &admin_md, warehouse_id, "open").await;
+            let managed = create_namespace(&ctx, &admin_md, warehouse_id, "managed").await;
+            set_namespace_managed_access(&ctx, &admin_md, managed, true).await;
+
+            let owner = UserId::new_unchecked("oidc", "owner");
+            let owner_md = metadata(&owner, &project_id);
+            for namespace in [before, open, managed] {
+                for privilege in ["describe", "create"] {
+                    grant_on_namespace(&ctx, &admin_md, warehouse_id, namespace, privilege, &owner)
+                        .await;
+                }
+            }
+            create_table(&ctx, &owner_md, warehouse_id, "before", "tbl").await;
+            let move_table = |from: &'static str, to: &'static str| {
+                CatalogServer::rename_table(
+                    Some(Prefix(warehouse_id.to_string())),
+                    rename((from, "tbl"), (to, "tbl")),
+                    ctx.clone(),
+                    owner_md.clone(),
+                )
+            };
+
+            move_table("before", "open")
+                .await
+                .expect("the owner may move the table where they can create");
+            assert!(can_load_table(&ctx, &owner_md, warehouse_id, "open", "tbl").await);
+
+            let err = move_table("open", "managed").await.unwrap_err();
+            assert_eq!(err.error.code, 403, "{err:?}");
+            assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+            assert!(can_load_table(&ctx, &owner_md, warehouse_id, "open", "tbl").await);
+
+            grant_on_namespace(
+                &ctx,
+                &admin_md,
+                warehouse_id,
+                managed,
+                "manage_grants",
+                &owner,
+            )
+            .await;
+            move_table("open", "managed")
+                .await
+                .expect("manage_grants at the managed destination permits the move");
+            assert!(can_load_table(&ctx, &owner_md, warehouse_id, "managed", "tbl").await);
+        }
+
+        /// Inside a `managed_access` namespace ownership confers no `manage_grants`, so the
+        /// owner of a table cannot move it out to a namespace where they could grant on it.
+        #[sqlx::test]
+        async fn the_owner_cannot_move_a_table_out_of_a_managed_namespace(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let managed = create_namespace(&ctx, &admin_md, warehouse_id, "managed").await;
+            let open = create_namespace(&ctx, &admin_md, warehouse_id, "open").await;
+            set_namespace_managed_access(&ctx, &admin_md, managed, true).await;
+
+            let owner = UserId::new_unchecked("oidc", "owner");
+            let owner_md = metadata(&owner, &project_id);
+            for privilege in ["describe", "create"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, managed, privilege, &owner).await;
+            }
+            for privilege in ["describe", "create", "manage_grants"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, open, privilege, &owner).await;
+            }
+            create_table(&ctx, &owner_md, warehouse_id, "managed", "tbl").await;
+            let move_out = || {
+                CatalogServer::rename_table(
+                    Some(Prefix(warehouse_id.to_string())),
+                    rename(("managed", "tbl"), ("open", "tbl")),
+                    ctx.clone(),
+                    owner_md.clone(),
+                )
+            };
+
+            let err = move_out().await.unwrap_err();
+            assert_eq!(err.error.code, 403, "{err:?}");
+            assert_eq!(err.error.r#type, "TableActionForbidden");
+            assert!(can_load_table(&ctx, &owner_md, warehouse_id, "managed", "tbl").await);
+
+            set_namespace_managed_access(&ctx, &admin_md, managed, false).await;
+            move_out()
+                .await
+                .expect("outside managed access, ownership confers manage_grants");
+            assert!(can_load_table(&ctx, &owner_md, warehouse_id, "open", "tbl").await);
+        }
+
+        /// Under an assumed role, managed access cannot be evaluated, so moving a table out
+        /// of or into a managed namespace and changing a namespace's managed access are
+        /// refused. A user holding the same grants acts as the model says.
+        #[sqlx::test]
+        async fn an_assumed_role_cannot_move_tables_or_change_managed_access(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let open = create_namespace(&ctx, &admin_md, warehouse_id, "open").await;
+            let managed = create_namespace(&ctx, &admin_md, warehouse_id, "managed").await;
+            set_namespace_managed_access(&ctx, &admin_md, managed, true).await;
+            create_table(&ctx, &admin_md, warehouse_id, "open", "out").await;
+            create_table(&ctx, &admin_md, warehouse_id, "managed", "in").await;
+
+            let role = Server::create_role(
+                CreateRoleRequest::builder()
+                    .name("movers".to_string())
+                    .build(),
+                ctx.clone(),
+                admin_md.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+            let user = UserId::new_unchecked("oidc", "mover");
+            for namespace in [open, managed] {
+                for privilege in ["describe", "create", "modify", "manage_grants"] {
+                    grant_on_namespace_to(
+                        &ctx,
+                        &admin_md,
+                        warehouse_id,
+                        namespace,
+                        privilege,
+                        UserOrRole::Role(RoleAssignee::from_role(role)),
+                    )
+                    .await;
+                    grant_on_namespace(&ctx, &admin_md, warehouse_id, namespace, privilege, &user)
+                        .await;
+                }
+            }
+            let role_md = assumed_role_metadata(&user, role, &project_id);
+            let user_md = metadata(&user, &project_id);
+            let move_table = |md: &RequestMetadata, from: &'static str, to: &'static str| {
+                let name = if from == "open" { "out" } else { "in" };
+                CatalogServer::rename_table(
+                    Some(Prefix(warehouse_id.to_string())),
+                    rename((from, name), (to, name)),
+                    ctx.clone(),
+                    md.clone(),
+                )
+            };
+
+            for (from, to) in [("open", "managed"), ("managed", "open")] {
+                let err = move_table(&role_md, from, to).await.unwrap_err();
+                assert_eq!(err.error.code, 403, "{from} -> {to}: {err:?}");
+                assert_eq!(
+                    err.error.r#type, "NamespaceActionForbidden",
+                    "{from} -> {to}"
+                );
+            }
+            let (status, body) = post_namespace_managed_access(&ctx, &role_md, open, true).await;
+            assert_eq!(status, 400, "{body}");
+            assert_eq!(
+                body["error"]["type"], "NotSupportedWithAssumedRole",
+                "{body}"
+            );
+            assert_eq!(
+                body["error"]["message"],
+                "Changing managed access of a namespace is not supported while acting under an \
+                 assumed role",
+                "{body}"
+            );
+
+            move_table(&user_md, "open", "managed")
+                .await
+                .expect("manage_grants and create at the managed destination permit the move");
+            move_table(&user_md, "managed", "open")
+                .await
+                .expect("manage_grants and modify inside the managed namespace permit the move");
+            set_namespace_managed_access(&ctx, &user_md, open, true).await;
+        }
+
+        /// The action names `GET .../actions` reports as allowed for `md`.
+        async fn allowed_actions(ctx: &Ctx, md: &RequestMetadata, uri: String) -> Vec<String> {
+            use lakekeeper::axum::{
+                Router,
+                body::Body,
+                http::{Request, StatusCode},
+            };
+            use tower::ServiceExt as _;
+
+            let router: Router = Router::new()
+                .nest("/management/v1", Server::new_v1_router(&ctx.v1_state.authz))
+                .with_state(ctx.clone());
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .extension(md.clone())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = lakekeeper::axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            body["allowed-actions"]
+                .as_array()
+                .expect("allowed-actions is an array")
+                .iter()
+                .map(|action| action["action"].as_str().unwrap().to_string())
+                .collect()
+        }
+
+        /// `move` and `accept_moved_tabular` resolve to their own relations: grant
+        /// authority alone reports neither, write access alone reports `rename` but not
+        /// `move`, and `create` alone reports `accept_moved_tabular` only outside managed
+        /// access.
+        #[sqlx::test]
+        async fn move_is_reported_only_with_grant_authority_and_write_access(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = metadata(&admin, &project_id);
+
+            let before = create_namespace(&ctx, &admin_md, warehouse_id, "before").await;
+            let after = create_namespace(&ctx, &admin_md, warehouse_id, "after").await;
+            create_table(&ctx, &admin_md, warehouse_id, "before", "tbl").await;
+            let table_id = PostgresBackend::get_table_info(
+                warehouse_id,
+                TableIdent::new(ns("before"), "tbl".to_string()),
+                TabularListFlags::active(),
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .table_id();
+
+            let user = UserId::new_unchecked("oidc", "mover");
+            let user_md = metadata(&user, &project_id);
+            let table_uri =
+                format!("/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions");
+            let after_uri =
+                format!("/management/v1/warehouse/{warehouse_id}/namespace/{after}/actions");
+            let has = |actions: &[String], name: &str| actions.iter().any(|a| a == name);
+
+            for privilege in ["describe", "manage_grants"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, before, privilege, &user).await;
+            }
+            for privilege in ["describe", "create"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, after, privilege, &user).await;
+            }
+            let table = allowed_actions(&ctx, &user_md, table_uri.clone()).await;
+            assert_eq!((has(&table, "rename"), has(&table, "move")), (false, false));
+            let namespace = allowed_actions(&ctx, &user_md, after_uri.clone()).await;
+            assert_eq!(
+                (
+                    has(&namespace, "create_table"),
+                    has(&namespace, "accept_moved_tabular")
+                ),
+                (true, true)
+            );
+            set_namespace_managed_access(&ctx, &admin_md, after, true).await;
+            let namespace = allowed_actions(&ctx, &user_md, after_uri.clone()).await;
+            assert_eq!(
+                (
+                    has(&namespace, "create_table"),
+                    has(&namespace, "accept_moved_tabular")
+                ),
+                (true, false)
+            );
+
+            grant_on_namespace(&ctx, &admin_md, warehouse_id, before, "modify", &user).await;
+            grant_on_namespace(&ctx, &admin_md, warehouse_id, after, "manage_grants", &user).await;
+            let table = allowed_actions(&ctx, &user_md, table_uri).await;
+            assert_eq!((has(&table, "rename"), has(&table, "move")), (true, true));
+            let namespace = allowed_actions(&ctx, &user_md, after_uri).await;
+            assert_eq!(
+                (
+                    has(&namespace, "create_table"),
+                    has(&namespace, "accept_moved_tabular")
+                ),
+                (true, true)
+            );
+
+            // Write access without grant authority: `rename` but not `move`.
+            let writer = UserId::new_unchecked("oidc", "writer");
+            for privilege in ["describe", "modify"] {
+                grant_on_namespace(&ctx, &admin_md, warehouse_id, before, privilege, &writer).await;
+            }
+            let table = allowed_actions(
+                &ctx,
+                &metadata(&writer, &project_id),
+                format!("/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
+            )
+            .await;
+            assert_eq!((has(&table, "rename"), has(&table, "move")), (true, false));
         }
 
         /// A rename *within* one namespace changes no hierarchy, so the re-parent is

@@ -62,6 +62,7 @@ allow_table_rename if {
 	target_catalog := input.action.targetResource.table.catalogName
 	target_schema := input.action.targetResource.table.schemaName
 	require_schema_access_simple(target_catalog, target_schema, "create_table")
+	require_rename_target_access("table", source_catalog, source_schema, source_table, target_catalog, target_schema)
 }
 
 allow_table_modify if {

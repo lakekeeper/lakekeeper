@@ -170,6 +170,8 @@ pub enum OpenFGAError {
     InvalidQuery(String),
     #[error("Cannot grant permissions while role is assumed in OpenFGA Authorizer")]
     GrantRoleWithAssumedRole,
+    #[error("{0} is not supported while acting under an assumed role")]
+    NotSupportedWithAssumedRole(&'static str),
 }
 
 impl From<OpenFGAClientError> for OpenFGAError {
@@ -230,6 +232,9 @@ impl AuthorizationFailureSource for OpenFGAError {
             OpenFGAError::GrantRoleWithAssumedRole => {
                 ErrorModel::bad_request(err_msg, "GrantRoleWithAssumedRole", None)
             }
+            OpenFGAError::NotSupportedWithAssumedRole(_) => {
+                ErrorModel::bad_request(err_msg, "NotSupportedWithAssumedRole", None)
+            }
             e @ (OpenFGAError::ActiveAuthModelNotFound(_)
             | OpenFGAError::StoreNotFound(_)
             | OpenFGAError::GrantBatchLimitTooSmall { .. }
@@ -259,6 +264,7 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::SelfAssignment { .. }
             | OpenFGAError::InvalidQuery(_)
             | OpenFGAError::GrantRoleWithAssumedRole
+            | OpenFGAError::NotSupportedWithAssumedRole(_)
             | OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
                 AuthorizationFailureReason::InvalidRequestData
             }

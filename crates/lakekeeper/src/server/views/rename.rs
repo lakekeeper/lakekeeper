@@ -11,8 +11,9 @@ use crate::{
         require_warehouse_id,
         tables::validate_table_or_view_ident,
         tabular::{
-            claim_rename_idempotency_key, commit_rename_with_reparent,
-            ensure_authorized_destination,
+            TabularRenameEnds, authorize_tabular_move, claim_rename_idempotency_key,
+            commit_rename_with_reparent, ensure_authorized_destination,
+            ensure_rename_stays_in_namespace, rename_or_move, tabular_move_destination,
         },
     },
     service::{
@@ -37,12 +38,11 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let source = &request.source;
-    let destination = &request.destination;
-    validate_table_or_view_ident(source)?;
-    validate_table_or_view_ident(destination)?;
-    let source = source.clone();
-    let destination = destination.clone();
+    let source = request.source.clone();
+    let destination = request.destination.clone();
+    validate_table_or_view_ident(&source)?;
+    validate_table_or_view_ident(&destination)?;
+    let move_destination = tabular_move_destination(&source.namespace, &destination.namespace);
 
     // ------------------- AUDIT CONTEXT -------------------
     // Built before the idempotency check so a served replay can be audited.
@@ -52,7 +52,11 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state.v1_state.events,
         warehouse_id,
         source.clone(),
-        CatalogViewAction::Rename,
+        rename_or_move(
+            move_destination.as_ref(),
+            CatalogViewAction::Rename,
+            |destination| CatalogViewAction::Move { destination },
+        ),
     );
 
     // ------------------- IDEMPOTENCY CHECK -------------------
@@ -78,18 +82,13 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         warehouse_id,
         &source,
         &destination,
+        move_destination.clone(),
         &authorizer,
         state.v1_state.catalog.clone(),
     )
     .await;
-    let (
-        event_ctx,
-        AuthorizeRenameViewResult {
-            warehouse,
-            source_view_info,
-            destination_namespace,
-        },
-    ) = event_ctx.emit_authz(authz_result)?;
+    let (event_ctx, (warehouse, destination_namespace, source_view_info)) =
+        event_ctx.emit_authz(authz_result)?;
 
     let source_id = source_view_info.view_id();
     let source_namespace_id = source_view_info.namespace_id();
@@ -104,6 +103,11 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         return Ok(());
     }
 
+    ensure_rename_stays_in_namespace(
+        move_destination.as_ref(),
+        source_namespace_id,
+        destination_namespace_id,
+    )?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let renamed = C::rename_tabular(
         warehouse_id,
@@ -154,20 +158,15 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     Ok(())
 }
 
-struct AuthorizeRenameViewResult {
-    warehouse: Arc<ResolvedWarehouse>,
-    source_view_info: ViewInfo,
-    destination_namespace: NamespaceHierarchy,
-}
-
 async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     source: &TableIdent,
     destination: &TableIdent,
+    move_destination: Option<Arc<Vec<String>>>,
     authorizer: &A,
     state: C::State,
-) -> Result<AuthorizeRenameViewResult, AuthZError> {
+) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError> {
     let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone(),),
         // The destination is read uncached: it is the one resolution here with no version
@@ -233,9 +232,28 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     let source_view_info = source_view_info?;
     let destination_namespace = destination_namespace?;
 
-    Ok(AuthorizeRenameViewResult {
-        warehouse,
+    let (destination_namespace, source_view_info) = authorize_tabular_move(
+        authorizer,
+        request_metadata,
+        &warehouse,
+        TabularRenameEnds {
+            source_namespace: &source_namespace,
+            destination_namespace,
+            move_destination,
+        },
         source_view_info,
-        destination_namespace,
-    })
+        |info, destination| {
+            authorizer.require_view_action(
+                request_metadata,
+                &warehouse,
+                &source_namespace,
+                source.clone(),
+                Ok::<_, RequireViewActionError>(Some(info)),
+                CatalogViewAction::Move { destination },
+            )
+        },
+    )
+    .await?;
+
+    Ok((warehouse, destination_namespace, source_view_info))
 }

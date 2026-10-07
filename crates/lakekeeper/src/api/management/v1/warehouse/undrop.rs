@@ -39,7 +39,25 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
             CatalogWarehouseAction::Use,
         )
         .await?;
+    require_undrop_in_warehouse::<A, C>(
+        &warehouse,
+        request,
+        authorizer,
+        catalog_state,
+        request_metadata,
+    )
+    .await?;
+    Ok(warehouse)
+}
 
+/// `Undrop` on each of `request`, in a warehouse the caller is already allowed to use.
+pub(crate) async fn require_undrop_in_warehouse<A: Authorizer, C: CatalogStore>(
+    warehouse: &ResolvedWarehouse,
+    request: &[TabularId],
+    authorizer: &A,
+    catalog_state: C::State,
+    request_metadata: &RequestMetadata,
+) -> Result<(), AuthZError> {
     let warehouse_id = warehouse.warehouse_id;
     let tabulars = C::get_tabular_infos_by_id(
         warehouse_id,
@@ -109,9 +127,9 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     authorizer
-        .require_tabular_actions(request_metadata, &warehouse, &namespaces, &actions)
+        .require_tabular_actions(request_metadata, warehouse, &namespaces, &actions)
         .await?;
-    Ok(warehouse)
+    Ok(())
 }
 
 #[derive(Debug)]

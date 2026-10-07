@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use futures::future::try_join_all;
@@ -1482,10 +1482,15 @@ impl OpenFGAAuthorizer {
         // Collect objects for error reporting if guards fail
         let guard_objects: Vec<_> = guard_tuples.iter().map(|t| t.object.clone()).collect();
 
+        let refused: Vec<bool> = items.iter().map(is_refused_for_role).collect();
+
         // Append the permission guard checks
         items.extend(guard_tuples);
 
         let mut results = self.batch_check(items).await?;
+        for (result, refused) in results.iter_mut().zip(refused) {
+            *result &= !refused;
+        }
 
         // If we had guard checks, pop them and verify all passed
         if num_guards > 0 {
@@ -1762,6 +1767,26 @@ impl OpenFGAAuthorizer {
 /// id-only [`UserOrRoleId`]. A tuple we wrote but can't read back is an internal
 /// invariant violation, so a parse failure is a [`MalformedRoleAssignment`] (500),
 /// not the backend-fault (503).
+/// Moves and accepting moved objects, checked for a role (`role:…#assignee`), are denied.
+///
+/// Managed access is stored as `user:*` and `role:*` wildcards, which a role's assignee
+/// userset does not match, so the model cannot tell whether such a subject is under managed
+/// access. The same reason refuses grants below the warehouse under an assumed role.
+fn is_refused_for_role(item: &CheckRequestTupleKey) -> bool {
+    static REFUSED: LazyLock<HashSet<String>> = LazyLock::new(|| {
+        HashSet::from([
+            TableRelation::CanMove.to_string(),
+            ViewRelation::CanMove.to_string(),
+            GenericTableRelation::CanMove.to_string(),
+            NamespaceRelation::CanMove.to_string(),
+            NamespaceRelation::CanAcceptMovedTabular.to_string(),
+            NamespaceRelation::CanAcceptMovedNamespace.to_string(),
+            WarehouseRelation::CanAcceptMovedNamespace.to_string(),
+        ])
+    });
+    item.user.starts_with("role:") && REFUSED.contains(&item.relation)
+}
+
 fn parse_role_subject(subject: &str) -> Result<UserOrRoleId, MalformedRoleAssignment> {
     use lakekeeper::api::management::v1::check::UserOrRole as ApiUserOrRole;
 

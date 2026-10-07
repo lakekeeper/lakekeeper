@@ -9,7 +9,9 @@ use crate::{
     WarehouseId,
     api::{
         ApiContext,
-        management::v1::{ApiServer, impl_arc_into_response},
+        management::v1::{
+            ApiServer, impl_arc_into_response, warehouse::require_undrop_in_warehouse,
+        },
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
@@ -17,7 +19,7 @@ use crate::{
         CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity, NoWarehouseTaskError,
         ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId,
         TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
-        ViewOrTableInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
@@ -813,19 +815,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await;
 
-        let (event_ctx, tabular_expiration_entities) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, (warehouse, tabular_expiration_entities)) =
+            event_ctx.emit_authz(authz_result)?;
 
-        let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities.clone()));
+        let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities));
 
         // -------------------- Business Logic --------------------
         let task_ids = &event_ctx.action().task_ids;
+        let mut undropped = Vec::new();
         let mut t = C::Transaction::begin_write(catalog_state).await?;
         match event_ctx.action().action {
             ControlTaskAction::Stop => C::stop_tasks(task_ids, t.transaction()).await?,
             ControlTaskAction::Cancel => {
                 if !event_ctx.resolved().is_empty() {
-                    C::clear_tabular_deleted_at(
+                    undropped = C::clear_tabular_deleted_at_for_tasks(
                         event_ctx.resolved(),
+                        task_ids,
                         warehouse_id,
                         t.transaction(),
                     )
@@ -848,6 +853,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }
         }
         t.commit().await?;
+
+        if !undropped.is_empty() {
+            event_ctx.emit_tabular_undropped_by_task_cancel(
+                warehouse,
+                Arc::new(
+                    undropped
+                        .into_iter()
+                        .map(ViewOrTableDeletionInfo::into_table_or_view_info)
+                        .collect(),
+                ),
+            );
+        }
 
         Ok(())
     }
@@ -1519,7 +1536,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     query: &ControlTasksRequest,
     warehouse_id: WarehouseId,
-) -> Result<Vec<TabularId>, AuthZError> {
+) -> Result<(Arc<ResolvedWarehouse>, Vec<TabularId>), AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
@@ -1585,7 +1602,19 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
         )
         .await?;
     }
-    Ok(tabular_expiration_entities)
+    // Cancelling a soft-deletion task undrops its tabular, so it needs `undrop` on it,
+    // whatever task permissions the caller holds.
+    if query.action == ControlTaskAction::Cancel && !tabular_expiration_entities.is_empty() {
+        require_undrop_in_warehouse::<A, C>(
+            &warehouse,
+            &tabular_expiration_entities,
+            authorizer,
+            catalog_state,
+            request_metadata,
+        )
+        .await?;
+    }
+    Ok((warehouse, tabular_expiration_entities))
 }
 
 /// Pure validation that runs before `AuthZ` on the schedule endpoint.

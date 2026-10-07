@@ -11,8 +11,9 @@ use crate::{
         require_warehouse_id,
         tables::validate_table_or_view_ident,
         tabular::{
-            claim_rename_idempotency_key, commit_rename_with_reparent,
-            ensure_authorized_destination,
+            TabularRenameEnds, authorize_tabular_move, claim_rename_idempotency_key,
+            commit_rename_with_reparent, ensure_authorized_destination,
+            ensure_rename_stays_in_namespace, rename_or_move, tabular_move_destination,
         },
     },
     service::{
@@ -39,12 +40,11 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let source = &request.source;
-    let destination = &request.destination;
-    validate_table_or_view_ident(source)?;
-    validate_table_or_view_ident(destination)?;
-    let source = source.clone();
-    let destination = destination.clone();
+    let source = request.source.clone();
+    let destination = request.destination.clone();
+    validate_table_or_view_ident(&source)?;
+    validate_table_or_view_ident(&destination)?;
+    let move_destination = tabular_move_destination(&source.namespace, &destination.namespace);
 
     // ------------------- AUDIT CONTEXT -------------------
     // Built before the idempotency check so a served replay can be audited.
@@ -54,7 +54,11 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         state.v1_state.events,
         warehouse_id,
         source.clone(),
-        CatalogTableAction::Rename,
+        rename_or_move(
+            move_destination.as_ref(),
+            CatalogTableAction::Rename,
+            |destination| CatalogTableAction::Move { destination },
+        ),
     );
 
     // ------------------- IDEMPOTENCY CHECK -------------------
@@ -80,6 +84,7 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         warehouse_id,
         &source,
         &destination,
+        move_destination.clone(),
         &authorizer,
         state.v1_state.catalog.clone(),
     )
@@ -102,6 +107,11 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         return Ok(());
     }
 
+    ensure_rename_stays_in_namespace(
+        move_destination.as_ref(),
+        source_namespace_id,
+        destination_namespace_id,
+    )?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let renamed = C::rename_tabular(
         warehouse_id,
@@ -159,6 +169,7 @@ async fn authorize_rename_table<C: CatalogStore, A: Authorizer + Clone>(
     warehouse_id: WarehouseId,
     source: &TableIdent,
     destination: &TableIdent,
+    move_destination: Option<Arc<Vec<String>>>,
     authorizer: &A,
     catalog_state: C::State,
 ) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError> {
@@ -227,8 +238,28 @@ async fn authorize_rename_table<C: CatalogStore, A: Authorizer + Clone>(
         )
     );
 
-    let destination_namespace = destination_namespace?;
-    let source_table_info = source_table_info?;
+    let (destination_namespace, source_table_info) = authorize_tabular_move(
+        authorizer,
+        request_metadata,
+        &warehouse,
+        TabularRenameEnds {
+            source_namespace: &source_namespace,
+            destination_namespace: destination_namespace?,
+            move_destination,
+        },
+        source_table_info?,
+        |info, destination| {
+            authorizer.require_table_action(
+                request_metadata,
+                &warehouse,
+                &source_namespace,
+                source.clone(),
+                Ok::<_, RequireTableActionError>(Some(info)),
+                CatalogTableAction::Move { destination },
+            )
+        },
+    )
+    .await?;
 
     Ok((warehouse, destination_namespace, source_table_info))
 }

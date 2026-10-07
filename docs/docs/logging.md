@@ -379,8 +379,8 @@ When a field appears:
 | `purge`                 | Boolean | `true` when the client asked to purge the data          |
 | `recursive`             | Boolean | `true` when the client asked for a recursive delete     |
 | `target_refs`           | Array  | Commit only. The branch or tag references the commit targets; `[]` when it names none |
-| `source`                | Array  | The namespace path the entity is being moved from        |
-| `destination`           | Array  | The namespace path the entity is being moved to          |
+| `source`                | Array  | Where the entity is being moved from. For a namespace, its current full path. For a table, view or generic table, the path of the namespace it leaves |
+| `destination`           | Array  | Where the entity is being moved to. For a namespace, its full new path. For a table, view or generic table, the path of the destination namespace, without the new name |
 | `update_kinds`          | Array  | Commit only. The kinds of update the commit contains; `[]` when it names none |
 | `requested_provider_id` | String | The role provider the client named                   |
 | `requested_source_id`   | String | The source identifier the client named               |
@@ -720,7 +720,7 @@ A replay record also carries `actions`, `entities`, `privilege_source` and `user
 
 **Audit records contain live idempotency keys**, on authorization records as well as on replays. Anyone who can read the audit log can replay those keys, get a 204, and create more records. Protect access to the audit log accordingly. `idempotency-key-lifetime` sets the earliest time a stored result can be deleted. Deletion runs only as part of a small share of keyed requests, so on a quiet deployment keys stay live until traffic picks up again.
 
-**Only seven endpoints write replay records:** `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and return the stored result before authorization, so no `decision` is recorded. The change already happened, and denying the retry would report a failure for a completed operation.
+**Only seven endpoints write replay records:** `dropTable`, `dropView`, `dropNamespace` (recorded as `action_name = "delete"`), `dropGenericTable`, `renameTable`, `renameView`, `renameGenericTable`. They answer 204 and return the stored result before authorization, so no `decision` is recorded. The change already happened, and denying the retry would report a failure for a completed operation. `renameTable`, `renameView` and `renameGenericTable` record a rename into another namespace as `action_name = "move"`, on replays as on their authorization records.
 
 **Retries on the other idempotent endpoints are not marked, and look different from the original.** `createTable`, `registerTable`, `createNamespace`, `updateNamespaceProperties`, `replaceView` and `createGenericTable` build their response by loading the entity. A retry therefore writes the authorization record of that *load* (`action_name = "get_metadata"` on the entity) and no record for the create or update. `updateTable` writes both `commit` and `get_metadata`. Use `idempotency_key` to link these to the original.
 

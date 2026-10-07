@@ -1,0 +1,61 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.0"
+  },
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "move",
+      "destination": [
+        "archive"
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "table",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace": "sales",
+      "table": "orders"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "move",
+        "destination": [
+          "archive"
+        ]
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace": "sales",
+        "table": "orders"
+      },
+      "allowed": false,
+      "determined_by": []
+    }
+  ],
+  "decision": "denied",
+  "failure_reason": "action_forbidden",
+  "error": {
+    "type": "NotAuthorized",
+    "code": 403,
+    "message": "Principal is not allowed to move this table",
+    "stack": [
+      "authorizer: no matching grant"
+    ],
+    "error_id": "019684ff-0000-7000-8000-0000000000ff"
+  }
+}

@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
 use crate::{
-    api::{RequestMetadata, management::v1::warehouse::UndropTabularsRequest},
+    WarehouseId,
+    api::{
+        RequestMetadata,
+        management::v1::{tasks::ControlTasksRequest, warehouse::UndropTabularsRequest},
+    },
     service::{
-        ResolvedWarehouse, ViewOrTableInfo,
+        AuthZTabularInfo, ResolvedWarehouse, TabularId, ViewOrTableInfo,
         events::{
             APIEventContext,
             context::{AuthzChecked, Resolved, TabularAction, UserProvidedTabularsIDs},
@@ -43,6 +47,28 @@ impl
             request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.tabular_undropped(event).await;
+        });
+    }
+}
+
+impl APIEventContext<WarehouseId, Resolved<Vec<TabularId>>, ControlTasksRequest, AuthzChecked> {
+    /// Cancelling a soft-deletion task undrops its tabular; emit what `undrop_tabulars` emits.
+    pub(crate) fn emit_tabular_undropped_by_task_cancel(
+        &self,
+        warehouse: Arc<ResolvedWarehouse>,
+        responses: Arc<Vec<ViewOrTableInfo>>,
+    ) {
+        let event = super::UndropTabularEvent {
+            warehouse,
+            request: Arc::new(UndropTabularsRequest {
+                targets: responses.iter().map(AuthZTabularInfo::tabular_id).collect(),
+            }),
+            responses,
+            request_metadata: self.request_metadata.clone(),
+        };
+        let dispatcher = self.dispatcher.clone();
         tokio::spawn(async move {
             let () = dispatcher.tabular_undropped(event).await;
         });

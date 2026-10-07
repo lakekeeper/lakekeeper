@@ -693,6 +693,15 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError>;
 
+    /// Undrop the soft-deleted tabulars among `tabular_ids` whose pending soft-deletion task
+    /// is one of `task_ids`. Returns only those; the other tabulars stay unchanged.
+    async fn clear_tabular_deleted_at_for_tasks_impl(
+        tabular_ids: &[TabularId],
+        task_ids: &[TaskId],
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError>;
+
     async fn mark_tabular_as_deleted_impl(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,

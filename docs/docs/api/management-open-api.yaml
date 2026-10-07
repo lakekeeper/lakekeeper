@@ -5892,18 +5892,17 @@ paths:
         single-element path moves the namespace to the warehouse root. The path must not be
         empty.
 
-        Requires grant authority at **both** ends, because re-parenting makes the namespace's
-        contents inherit the destination subtree's permissions without any assignment being
-        recorded:
+        Requires:
 
         - `move` on the namespace being moved,
         - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
           the warehouse, when moving to the root).
 
-        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
-        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
-        alone is not sufficient at the destination: it authorizes adding an *empty* child,
-        whereas a move arrives carrying existing contents and their grants.
+        Re-parenting makes the namespace's contents inherit the destination subtree's
+        permissions without any assignment being recorded, and the namespace arrives carrying
+        its contents and their grants. With OpenFGA, `move` requires `manage_grants` and
+        `modify`; `accept_moved_namespace` requires `create`, plus `manage_grants` when the
+        destination is under managed access.
 
         Constraints:
         - Namespaces that contain child namespaces cannot be moved.
@@ -9432,6 +9431,7 @@ components:
         - read_data
         - get_metadata
         - rename
+        - move
         - include_in_list
         - get_tasks
         - control_tasks
@@ -10353,6 +10353,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperGenericTableActionWriteData'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionRename'
+        - $ref: '#/components/schemas/LakekeeperGenericTableActionMove'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionUndrop'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionGetTasks'
@@ -10369,6 +10370,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperGenericTableActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperGenericTableActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperGenericTableActionManageTags'
+          move: '#/components/schemas/LakekeeperGenericTableActionMove'
           read_data: '#/components/schemas/LakekeeperGenericTableActionReadData'
           read_grants: '#/components/schemas/LakekeeperGenericTableActionReadGrants'
           rename: '#/components/schemas/LakekeeperGenericTableActionRename'
@@ -10439,6 +10441,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperGenericTableActionMove:
+      type: object
+      description: |-
+        Rename this generic table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the generic table inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the generic table is being moved to.
     LakekeeperGenericTableActionReadData:
       type: object
       required:
@@ -10513,6 +10536,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedTabular'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadSubtreeGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionRevokeSubtreeGrants'
@@ -10520,6 +10544,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
+          accept_moved_tabular: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedTabular'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionCreateTable'
@@ -10546,10 +10571,8 @@ components:
 
         Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:
@@ -10562,6 +10585,25 @@ components:
           items:
             type: string
           description: Path the namespace is being moved from.
+    LakekeeperNamespaceActionAcceptMovedTabular:
+      type: object
+      description: |-
+        Accept a table, view or generic table being moved in from another namespace.
+
+        The tabular counterpart of `accept_moved_namespace`, asked together with the matching
+        `create_*` action: a moved tabular arrives carrying its direct grants.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_tabular
+        source:
+          type: array
+          items:
+            type: string
+          description: Namespace the tabular is being moved from.
     LakekeeperNamespaceActionCreateGenericTable:
       type: object
       required:
@@ -10727,6 +10769,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedTabular'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadSubtreeGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindRevokeSubtreeGrants'
@@ -10734,6 +10777,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
+          accept_moved_tabular: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedTabular'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionKindCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateTable'
@@ -10762,6 +10806,15 @@ components:
           type: string
           enum:
             - accept_moved_namespace
+    LakekeeperNamespaceActionKindAcceptMovedTabular:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_tabular
     LakekeeperNamespaceActionKindCreateGenericTable:
       type: object
       required:
@@ -11797,6 +11850,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperTableActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperTableActionCommit'
         - $ref: '#/components/schemas/LakekeeperTableActionRename'
+        - $ref: '#/components/schemas/LakekeeperTableActionMove'
         - $ref: '#/components/schemas/LakekeeperTableActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperTableActionUndrop'
         - $ref: '#/components/schemas/LakekeeperTableActionGetTasks'
@@ -11814,6 +11868,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperTableActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperTableActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperTableActionManageTags'
+          move: '#/components/schemas/LakekeeperTableActionMove'
           read_data: '#/components/schemas/LakekeeperTableActionReadData'
           read_grants: '#/components/schemas/LakekeeperTableActionReadGrants'
           rename: '#/components/schemas/LakekeeperTableActionRename'
@@ -11915,6 +11970,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperTableActionKindGetMetadata'
         - $ref: '#/components/schemas/LakekeeperTableActionKindCommit'
         - $ref: '#/components/schemas/LakekeeperTableActionKindRename'
+        - $ref: '#/components/schemas/LakekeeperTableActionKindMove'
         - $ref: '#/components/schemas/LakekeeperTableActionKindIncludeInList'
         - $ref: '#/components/schemas/LakekeeperTableActionKindUndrop'
         - $ref: '#/components/schemas/LakekeeperTableActionKindGetTasks'
@@ -11932,6 +11988,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperTableActionKindGetTasks'
           include_in_list: '#/components/schemas/LakekeeperTableActionKindIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperTableActionKindManageTags'
+          move: '#/components/schemas/LakekeeperTableActionKindMove'
           read_data: '#/components/schemas/LakekeeperTableActionKindReadData'
           read_grants: '#/components/schemas/LakekeeperTableActionKindReadGrants'
           rename: '#/components/schemas/LakekeeperTableActionKindRename'
@@ -12001,6 +12058,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperTableActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperTableActionKindReadData:
       type: object
       required:
@@ -12065,6 +12131,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperTableActionMove:
+      type: object
+      description: |-
+        Rename this table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the table inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the table is being moved to.
     LakekeeperTableActionReadData:
       type: object
       required:
@@ -12259,6 +12346,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionCommit'
         - $ref: '#/components/schemas/LakekeeperViewActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperViewActionRename'
+        - $ref: '#/components/schemas/LakekeeperViewActionMove'
         - $ref: '#/components/schemas/LakekeeperViewActionUndrop'
         - $ref: '#/components/schemas/LakekeeperViewActionGetTasks'
         - $ref: '#/components/schemas/LakekeeperViewActionControlTasks'
@@ -12275,6 +12363,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperViewActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperViewActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperViewActionManageTags'
+          move: '#/components/schemas/LakekeeperViewActionMove'
           read_grants: '#/components/schemas/LakekeeperViewActionReadGrants'
           rename: '#/components/schemas/LakekeeperViewActionRename'
           select: '#/components/schemas/LakekeeperViewActionSelect'
@@ -12361,6 +12450,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionKindCommit'
         - $ref: '#/components/schemas/LakekeeperViewActionKindIncludeInList'
         - $ref: '#/components/schemas/LakekeeperViewActionKindRename'
+        - $ref: '#/components/schemas/LakekeeperViewActionKindMove'
         - $ref: '#/components/schemas/LakekeeperViewActionKindUndrop'
         - $ref: '#/components/schemas/LakekeeperViewActionKindGetTasks'
         - $ref: '#/components/schemas/LakekeeperViewActionKindControlTasks'
@@ -12377,6 +12467,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperViewActionKindGetTasks'
           include_in_list: '#/components/schemas/LakekeeperViewActionKindIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperViewActionKindManageTags'
+          move: '#/components/schemas/LakekeeperViewActionKindMove'
           read_grants: '#/components/schemas/LakekeeperViewActionKindReadGrants'
           rename: '#/components/schemas/LakekeeperViewActionKindRename'
           select: '#/components/schemas/LakekeeperViewActionKindSelect'
@@ -12445,6 +12536,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperViewActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperViewActionKindReadGrants:
       type: object
       required:
@@ -12500,6 +12600,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperViewActionMove:
+      type: object
+      description: |-
+        Rename this view into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the view inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the view is being moved to.
     LakekeeperViewActionReadGrants:
       type: object
       description: Can list the grants held on this view.
@@ -12610,10 +12731,8 @@ components:
 
         Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:
@@ -13642,6 +13761,7 @@ components:
         - delete
         - move
         - accept_moved_namespace
+        - accept_moved_tabular
         - update_properties
         - get_metadata
         - read_assignments
@@ -15986,6 +16106,7 @@ components:
         - get_metadata
         - commit
         - rename
+        - move
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
@@ -17204,6 +17325,7 @@ components:
         - get_metadata
         - select
         - rename
+        - move
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants

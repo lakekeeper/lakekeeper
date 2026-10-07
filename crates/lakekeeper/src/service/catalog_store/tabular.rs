@@ -1592,6 +1592,23 @@ where
         Self::clear_tabular_deleted_at_impl(tabular_ids, warehouse_id, transaction).await
     }
 
+    /// Undrop the soft-deleted tabulars among `tabular_ids` whose pending soft-deletion task
+    /// is one of `task_ids`. Returns only those; the other tabulars stay unchanged.
+    async fn clear_tabular_deleted_at_for_tasks(
+        tabular_ids: &[TabularId],
+        task_ids: &[TaskId],
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
+        Self::clear_tabular_deleted_at_for_tasks_impl(
+            tabular_ids,
+            task_ids,
+            warehouse_id,
+            transaction,
+        )
+        .await
+    }
+
     async fn mark_tabular_as_deleted(
         warehouse_id: WarehouseId,
         tabular_id: impl Into<TabularId> + Send,

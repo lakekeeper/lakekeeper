@@ -1,13 +1,18 @@
+use std::sync::Arc;
+
+use iceberg::NamespaceIdent;
+
 use crate::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
     request_metadata::RequestMetadata,
     server::tables::parse_location,
     service::{
-        CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy, NamespaceId, TabularId,
-        Transaction,
-        authz::Authorizer,
+        CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy, NamespaceId, ResolvedWarehouse,
+        TabularId, Transaction,
+        authz::{AuthZError, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         idempotency::{IdempotencyInfo, IdempotencyKey},
+        is_same_namespace_path_ignoring_ascii_case,
         storage::{
             StorageProfile,
             storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
@@ -79,12 +84,112 @@ pub(crate) fn ensure_authorized_destination(
         "Rename destination namespace changed under the request: authorized {authorized}, \
          landed in {committed}. Refusing the rename."
     );
-    Err(ErrorModel::conflict(
+    Err(destination_namespace_changed().into())
+}
+
+fn destination_namespace_changed() -> ErrorModel {
+    ErrorModel::conflict(
         "The destination namespace changed while the request was in flight. Please retry.",
         "DestinationNamespaceChanged",
         None,
     )
-    .into())
+}
+
+/// Fail a rename whose paths name one namespace but which resolved to two.
+///
+/// Such a rename is recorded and authorized as `rename` on the strength of its paths, so it
+/// must not move the tabular. It happens when the namespace is replaced between the two
+/// lookups. The error asks the caller to retry.
+pub(crate) fn ensure_rename_stays_in_namespace(
+    move_destination: Option<&Arc<Vec<String>>>,
+    source: NamespaceId,
+    destination: NamespaceId,
+) -> Result<()> {
+    if move_destination.is_some() || source == destination {
+        return Ok(());
+    }
+    tracing::warn!(
+        "Rename paths name one namespace but resolved to {source} and {destination}. \
+         Refusing the rename."
+    );
+    Err(destination_namespace_changed().into())
+}
+
+/// The destination path of a rename that moves a tabular into another namespace; `None` for
+/// a rename within its namespace.
+///
+/// Decided on the request's paths, so the audit record names the action the checks ask
+/// (`move` or `rename`) before anything is resolved, a served replay included. Paths equal
+/// ignoring ASCII case name one namespace; any other difference counts as a move, which can
+/// only ask more than needed (see [`is_same_namespace_path_ignoring_ascii_case`]).
+pub(crate) fn tabular_move_destination(
+    source: &NamespaceIdent,
+    destination: &NamespaceIdent,
+) -> Option<Arc<Vec<String>>> {
+    (!is_same_namespace_path_ignoring_ascii_case(source.as_ref(), destination.as_ref()))
+        .then(|| Arc::new(destination.as_ref().clone()))
+}
+
+/// The action a rename is recorded and checked under: `move` into another namespace,
+/// `rename` within one.
+pub(crate) fn rename_or_move<A>(
+    move_destination: Option<&Arc<Vec<String>>>,
+    rename: A,
+    move_to: impl FnOnce(Arc<Vec<String>>) -> A,
+) -> A {
+    move_destination.map_or(rename, |destination| move_to(destination.clone()))
+}
+
+/// The namespaces at both ends of a rename, as [`authorize_tabular_move`] checks them.
+pub(crate) struct TabularRenameEnds<'a> {
+    pub(crate) source_namespace: &'a NamespaceHierarchy,
+    pub(crate) destination_namespace: NamespaceHierarchy,
+    /// From [`tabular_move_destination`].
+    pub(crate) move_destination: Option<Arc<Vec<String>>>,
+}
+
+/// The move half of a rename into another namespace: `AcceptMovedTabular` on the destination
+/// namespace and, through `require_move`, the tabular's own `Move`. A rename within one
+/// namespace asks neither; [`ensure_rename_stays_in_namespace`] holds it to that.
+///
+/// A moved tabular carries its direct grants and inherits the destination's, so, as for a
+/// namespace move, the authorizer may ask for grant authority at either end.
+pub(crate) async fn authorize_tabular_move<A, T, E, Fut>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+    ends: TabularRenameEnds<'_>,
+    tabular: T,
+    require_move: impl FnOnce(T, Arc<Vec<String>>) -> Fut,
+) -> std::result::Result<(NamespaceHierarchy, T), AuthZError>
+where
+    A: Authorizer,
+    Fut: Future<Output = std::result::Result<T, E>>,
+    AuthZError: From<E>,
+{
+    let TabularRenameEnds {
+        source_namespace,
+        destination_namespace,
+        move_destination,
+    } = ends;
+    let Some(destination_path) = move_destination else {
+        return Ok((destination_namespace, tabular));
+    };
+    let destination_id = destination_namespace.namespace_id();
+    let source_path = Arc::new(source_namespace.namespace_ident().as_ref().clone());
+    let (destination_namespace, tabular) = tokio::join!(
+        authorizer.require_namespace_action(
+            request_metadata,
+            warehouse,
+            destination_id,
+            Ok(Some(destination_namespace)),
+            CatalogNamespaceAction::AcceptMovedTabular {
+                source: source_path,
+            },
+        ),
+        require_move(tabular, destination_path),
+    );
+    Ok((destination_namespace?, tabular?))
 }
 
 /// Commit a rename, re-pointing the tabular's authorizer hierarchy when it crosses
@@ -383,6 +488,21 @@ mod tests {
         let landed_elsewhere = NamespaceId::new_random();
         let err = ensure_authorized_destination(authorized, landed_elsewhere)
             .expect_err("a destination that moved under the request must not be accepted");
+        assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
+        assert_eq!(err.error.r#type, "DestinationNamespaceChanged");
+    }
+
+    /// Paths that name one namespace must resolve to one; a move is not held to that.
+    #[test]
+    fn a_rename_recorded_as_in_place_must_stay_in_its_namespace() {
+        let source = NamespaceId::new_random();
+        let other = NamespaceId::new_random();
+        assert!(ensure_rename_stays_in_namespace(None, source, source).is_ok());
+        let destination = Arc::new(vec!["other".to_string()]);
+        assert!(ensure_rename_stays_in_namespace(Some(&destination), source, other).is_ok());
+
+        let err = ensure_rename_stays_in_namespace(None, source, other)
+            .expect_err("an in-place rename that resolved to two namespaces must fail");
         assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
         assert_eq!(err.error.r#type, "DestinationNamespaceChanged");
     }
