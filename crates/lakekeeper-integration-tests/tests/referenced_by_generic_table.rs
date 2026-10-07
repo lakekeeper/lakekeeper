@@ -21,7 +21,10 @@ use lakekeeper::{
     service::{
         AuthZViewInfo as _, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
         CatalogTabularOps as _, State, TabularListFlags, Transaction as _, UserId,
-        authz::{AllowAllAuthorizer, Authorizer, UserOrRole, tests::HidingAuthorizer},
+        authz::{
+            AllowAllAuthorizer, Authorizer, UserOrRole,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
     },
 };
 use lakekeeper_integration_tests::{
@@ -664,5 +667,49 @@ async fn test_instance_admin_cannot_traverse_definer_chain_to_generic_table(pool
     assert!(
         result.is_err(),
         "instance admin with `Select` denied on DEFINER entry view must not traverse into owner's context for generic tables",
+    );
+}
+
+/// A caller refused on the DEFINER entry view never makes the authorizer
+/// decide anything for the view's owner, even one whose lookup would fail.
+#[sqlx::test]
+async fn test_generic_table_credentials_refused_caller_never_sends_owner_checks(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchViewException", "{err:?}");
+    let check = |action: &str| RecordedTabularCheck {
+        object: view_key.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![vec![check("GetMetadata"), check("Select")]]
     );
 }

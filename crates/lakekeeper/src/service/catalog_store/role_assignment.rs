@@ -47,16 +47,18 @@ pub struct CatalogUserRoleAssignmentUser<'a> {
 }
 
 /// Whose request a user-centric role sync runs for, which decides whether it may
-/// restore a deleted user.
+/// create a sync record and restore a deleted user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncFor {
-    /// The synced user is the authenticated caller of the request. A deleted user is
-    /// restored and gets the synced assignments.
+    /// The synced user is the authenticated caller of the request. The sync creates
+    /// or refreshes the user's sync record; a deleted user is restored and gets the
+    /// synced assignments.
     Caller,
     /// The synced user is someone other than the caller, e.g. the subject of a
-    /// `for_user` check, a grantee or the owner of a DEFINER view. A deleted user
-    /// stays deleted: the sync upserts the roles but writes no assignment and no
-    /// sync record for that user.
+    /// `for_user` check, a grantee or the owner of a DEFINER view. The sync only
+    /// refreshes the user's existing sync record for the project and provider. A
+    /// user without one (never synced there, expired by a role delete, or deleted)
+    /// gets [`NoSyncRecord`], and the caller rolls its transaction back.
     OtherUser,
 }
 
@@ -182,10 +184,8 @@ pub struct SyncUserRoleAssignmentsResult {
     /// order, also when the sync assigned nothing.
     pub requested_roles: Vec<AssignedRole>,
     /// The timestamp written to the user role sync log for
-    /// `(user_id, project_id, provider_id)` by this sync run. `None` when the
-    /// sync wrote no assignment and no sync record: the user is deleted and the
-    /// sync ran for [`SyncFor::OtherUser`].
-    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `(user_id, project_id, provider_id)` by this sync run.
+    pub synced_at: chrono::DateTime<chrono::Utc>,
     /// The complete, authoritative role assignment list for this user after the
     /// sync run, covering **all** providers (not just `provider_id`).
     ///
@@ -206,10 +206,8 @@ pub struct SyncedUserRoleAssignments {
     /// The catalog row of each requested role in the synced project, in request
     /// order, also when the sync assigned nothing.
     pub requested_roles: Vec<AssignedRole>,
-    /// The timestamp written to the user role sync log by this sync run. `None`
-    /// when the sync wrote no assignment and no sync record: the user is deleted
-    /// and the sync ran for [`SyncFor::OtherUser`].
-    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The timestamp written to the user role sync log by this sync run.
+    pub synced_at: chrono::DateTime<chrono::Utc>,
     /// The user's role assignments after the sync, across all providers and
     /// projects.
     pub assignments: Arc<ListUserRoleAssignmentsResult>,
@@ -411,6 +409,33 @@ impl From<RoleDeletedDuringSync> for ErrorModel {
     }
 }
 
+/// A sync for [`SyncFor::OtherUser`] found no sync record of the user for the
+/// project and provider to refresh. A deleted user has none. The sync may have
+/// written to the transaction before it found the record missing, so the
+/// transaction must be rolled back, never committed.
+#[derive(thiserror::Error, Debug, PartialEq, Default)]
+#[error("The user has no role sync record for this project and provider to refresh.")]
+pub struct NoSyncRecord {
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(NoSyncRecord);
+impl NoSyncRecord {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl From<NoSyncRecord> for ErrorModel {
+    fn from(err: NoSyncRecord) -> Self {
+        ErrorModel::builder()
+            .r#type("NoSyncRecord")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 /// Reject an external role-provider sync that targets a reserved provider
 /// (`system` / `lakekeeper`). Backend-independent — enforced here in the
 /// `*Ops` layer so every storage backend and every sync entry point is covered.
@@ -568,7 +593,8 @@ define_transparent_error! {
         DuplicateRoleError,
         RoleProviderMismatchError,
         ReservedRoleProvider,
-        RoleDeletedDuringSync
+        RoleDeletedDuringSync,
+        NoSyncRecord
     ]
 }
 
@@ -1009,9 +1035,18 @@ where
     /// 5. Record the sync timestamp in the user role sync log for
     ///    `(user_id, project_id, provider_id)`.
     ///
-    /// For a deleted user and [`SyncFor::OtherUser`] only step 2 runs: the user
-    /// stays deleted, and the result carries the roles in
-    /// [`SyncUserRoleAssignmentsResult::requested_roles`] with `synced_at: None`.
+    /// For [`SyncFor::Caller`] step 5 creates the sync record if absent, and step 1
+    /// restores a deleted user.
+    ///
+    /// For [`SyncFor::OtherUser`] the sync only refreshes an existing sync record:
+    /// step 5 updates the record's timestamp and never creates one. A user with no
+    /// sync record for `(user_id, project_id, provider_id)` gets [`NoSyncRecord`]:
+    /// one never synced there, one whose record a role delete expired, and a deleted
+    /// user, since a user delete removes the user's records. The sync may detect the
+    /// missing record only at step 5, after steps 1-4 wrote to `transaction`; on this
+    /// error the caller must roll `transaction` back (or drop it), never commit it.
+    /// A record removed by the delete of a role the sync assigns can surface as
+    /// [`RoleDeletedDuringSync`] instead.
     ///
     /// Returns [`RoleProviderMismatchError`] if any role's `ident.provider_id()`
     /// differs from `provider_id`.
@@ -1149,8 +1184,10 @@ where
     ///    `CountedCache::cache_after_commit`).
     /// 4. Emits [`UserRoleAssignmentsSyncedEvent`] via `dispatcher`.
     ///
-    /// A sync that wrote nothing (a deleted user and [`SyncFor::OtherUser`])
-    /// skips steps 3 and 4 and returns `synced_at: None`.
+    /// A sync for [`SyncFor::OtherUser`] of a user without a sync record returns
+    /// [`NoSyncRecord`] and drops its transaction uncommitted: it writes nothing,
+    /// caches nothing and emits no event. The same holds when the retry after a
+    /// role delete finds the record gone.
     async fn sync_user_role_assignments(
         user: CatalogUserRoleAssignmentUser<'_>,
         sync_for: SyncFor,
@@ -1211,15 +1248,7 @@ where
         // Dedup role/project identity across cached users before storing.
         role_assignments_cache::share_identities(&mut list).await;
         let list_result = Arc::new(list);
-
-        let Some(synced_at) = sync_result.synced_at else {
-            t.commit().await?;
-            return Ok(SyncedUserRoleAssignments {
-                requested_roles: sync_result.requested_roles,
-                synced_at: None,
-                assignments: list_result,
-            });
-        };
+        let synced_at = sync_result.synced_at;
 
         // Commit, then cache; see `CountedCache::cache_after_commit`.
         let user_id = Arc::clone(user.user_id);
@@ -1252,7 +1281,7 @@ where
 
         Ok(SyncedUserRoleAssignments {
             requested_roles: sync_result.requested_roles,
-            synced_at: Some(synced_at),
+            synced_at,
             assignments: list_result,
         })
     }

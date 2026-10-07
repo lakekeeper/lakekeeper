@@ -4130,7 +4130,29 @@ pub mod tests {
         /// The admission roles each assume-role check saw. See
         /// [`Self::assume_role_checks`].
         assume_role_checks: Arc<std::sync::Mutex<Vec<Option<Vec<String>>>>>,
+        /// Every table, view and generic-table batch received. See
+        /// [`Self::tabular_checks`].
+        tabular_checks: Arc<std::sync::Mutex<Vec<Vec<RecordedTabularCheck>>>>,
+        /// Principals whose tabular checks fail with a backend error. See
+        /// [`Self::fail_tabular_checks_for_user`].
+        failing_tabular_subjects: Arc<RwLock<HashSet<String>>>,
     }
+
+    /// One table, view or generic-table check as the authorizer received it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RecordedTabularCheck {
+        /// `table:<warehouse>/<id>`, `view:…` or `generic_table:…`.
+        pub object: String,
+        /// The action's `Debug` form, e.g. `GetMetadata`.
+        pub action: String,
+        /// `None` when the check is for the actor itself.
+        pub user: Option<UserOrRole>,
+        pub is_delegated_execution: bool,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("Tabular checks for this principal fail in the test authorizer")]
+    struct InjectedTabularCheckFailure;
 
     /// A future run by each check, as `HidingAuthorizer` holds it.
     #[derive(Clone)]
@@ -4189,7 +4211,56 @@ pub mod tests {
                 unsupported_project_listing: false,
                 check_hook: None,
                 assume_role_checks: Arc::default(),
+                tabular_checks: Arc::default(),
+                failing_tabular_subjects: Arc::default(),
             }
+        }
+
+        /// One entry per table, view or generic-table batch, in call order.
+        ///
+        /// # Panics
+        /// Panics if the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn tabular_checks(&self) -> Vec<Vec<RecordedTabularCheck>> {
+            self.tabular_checks.lock().unwrap().clone()
+        }
+
+        /// Fail every table, view or generic-table batch that holds a check for
+        /// `user` with a backend error (503), as an authorizer does whose lookup
+        /// of that principal fails.
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn fail_tabular_checks_for_user(&self, user: &UserOrRole) {
+            self.failing_tabular_subjects
+                .write()
+                .unwrap()
+                .insert(format!("{user:?}"));
+        }
+
+        /// Records a tabular batch, then fails it if any check is for a principal
+        /// set by [`Self::fail_tabular_checks_for_user`].
+        fn record_tabular_checks(
+            &self,
+            metadata: &RequestMetadata,
+            checks: Vec<RecordedTabularCheck>,
+        ) -> Result<(), IsAllowedActionError> {
+            let actor_identity = metadata.actor().to_user_or_role();
+            let failing = self.failing_tabular_subjects.read().unwrap();
+            let fails = checks.iter().any(|check| {
+                check
+                    .user
+                    .as_ref()
+                    .or(actor_identity.as_ref())
+                    .is_some_and(|subject| failing.contains(&format!("{subject:?}")))
+            });
+            self.tabular_checks.lock().unwrap().push(checks);
+            if fails {
+                return Err(
+                    AuthorizationBackendUnavailable::new(InjectedTabularCheckFailure).into(),
+                );
+            }
+            Ok(())
         }
 
         /// One entry per assume-role check, in call order: the admission roles on
@@ -4649,6 +4720,22 @@ pub mod tests {
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             self.run_check_hook().await;
+            self.record_tabular_checks(
+                metadata,
+                actions
+                    .iter()
+                    .map(|(_, action)| RecordedTabularCheck {
+                        object: format!(
+                            "table:{}/{}",
+                            action.info.warehouse_id(),
+                            action.info.table_id()
+                        ),
+                        action: format!("{:?}", action.action.clone().into()),
+                        user: action.user.cloned(),
+                        is_delegated_execution: action.is_delegated_execution,
+                    })
+                    .collect(),
+            )?;
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -4684,6 +4771,22 @@ pub mod tests {
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             self.run_check_hook().await;
+            self.record_tabular_checks(
+                metadata,
+                actions
+                    .iter()
+                    .map(|(_, action)| RecordedTabularCheck {
+                        object: format!(
+                            "view:{}/{}",
+                            action.info.warehouse_id(),
+                            action.info.view_id()
+                        ),
+                        action: format!("{:?}", action.action.clone().into()),
+                        user: action.user.cloned(),
+                        is_delegated_execution: action.is_delegated_execution,
+                    })
+                    .collect(),
+            )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -4720,6 +4823,22 @@ pub mod tests {
             )],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             self.run_check_hook().await;
+            self.record_tabular_checks(
+                metadata,
+                actions
+                    .iter()
+                    .map(|(_, action)| RecordedTabularCheck {
+                        object: format!(
+                            "generic_table:{}/{}",
+                            action.info.warehouse_id(),
+                            action.info.generic_table_id()
+                        ),
+                        action: format!("{:?}", action.action.clone().into()),
+                        user: action.user.cloned(),
+                        is_delegated_execution: action.is_delegated_execution,
+                    })
+                    .collect(),
+            )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions

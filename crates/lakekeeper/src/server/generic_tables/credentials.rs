@@ -18,7 +18,7 @@ use crate::{
         maybe_get_secret, require_warehouse_id,
         tables::authorize_load::{
             AuthorizeLoadTabularObjects, TabularAuthzAction,
-            add_namespace_to_tabulars_for_authorize_load_tabular,
+            add_namespace_to_tabulars_for_authorize_load_tabular, are_allowed_load_chain_actions,
             build_actions_from_sorted_tabulars_for_authorize_load_tabular,
             check_required_namespaces, check_required_tabulars, effective_referenced_by,
             get_relevant_namespaces_to_authorize_load_tabular,
@@ -32,7 +32,7 @@ use crate::{
         State, TabularIdentBorrowed, TabularListFlags,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeGenericTable, AuthZCannotSeeView, AuthZError,
-            AuthZTableOps, AuthorizationCountMismatch, Authorizer, AuthzWarehouseOps,
+            AuthorizationCountMismatch, Authorizer, AuthzWarehouseOps,
             BackendUnavailableOrCountMismatch, CatalogGenericTableAction,
         },
         build_namespace_hierarchy,
@@ -213,15 +213,20 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
         token_idp_id,
     )?;
 
-    // 9. Build actions and authorize in batch.
+    // 9. Build actions and decide them one acting principal at a time.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
         &table,
     );
-    let authz_results = authorizer
-        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
-        .await?
-        .into_allowed();
+    let authz_results = are_allowed_load_chain_actions(
+        &authorizer,
+        request_metadata,
+        &warehouse,
+        &namespaces,
+        &actions,
+        &table,
+    )
+    .await?;
 
     // 10. Interpret results.
     let target_ns = sorted_tabulars_with_full_info

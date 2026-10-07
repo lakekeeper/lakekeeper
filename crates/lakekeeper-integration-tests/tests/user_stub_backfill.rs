@@ -89,7 +89,7 @@ async fn seed_null_stub(
             user_type: None,
             updated_with: UserLastUpdatedWith::RoleProvider,
         },
-        SyncFor::OtherUser,
+        SyncFor::Caller,
         project_id,
         &provider,
         &[],

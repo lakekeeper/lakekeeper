@@ -10,6 +10,7 @@ use crate::{
     WarehouseId,
     api::iceberg::types::ReferencingView,
     config::{MatchedEngines, SecurityModel},
+    request_metadata::RequestMetadata,
     service::{
         Actor, AuthZTabularInfo as _, CatalogBackendError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -19,9 +20,10 @@ use crate::{
         ViewOrTableInfo,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZCannotSeeNamespace, AuthZError, AuthZTableOps, AuthZViewOps, Authorizer,
-            AuthzBadRequest, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
-            RequireTableActionError, RequireViewActionError, UserOrRole,
+            AuthZCannotSeeNamespace, AuthZError, AuthZTableOps, AuthZViewOps,
+            AuthorizationCountMismatch, Authorizer, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CatalogGenericTableAction, CatalogTableAction,
+            CatalogViewAction, RequireTableActionError, RequireViewActionError, UserOrRole,
         },
     },
 };
@@ -502,6 +504,78 @@ pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
         .collect()
 }
 
+/// Who an action is decided for. Delegated execution is part of the key, so a
+/// DEFINER view owned by the caller still starts a new segment.
+fn acting_principal<'a>(action: &TabularAuthzAction<'a>) -> (Option<&'a UserOrRole>, bool) {
+    match &action.1 {
+        ActionOnTableOrView::Table(a) => (a.user, a.is_delegated_execution),
+        ActionOnTableOrView::View(a) => (a.user, a.is_delegated_execution),
+        ActionOnTableOrView::GenericTable(a) => (a.user, a.is_delegated_execution),
+    }
+}
+
+/// Splits `actions` into contiguous runs decided for the same principal.
+fn principal_segments<'s, 'a>(
+    actions: &'s [TabularAuthzAction<'a>],
+) -> impl Iterator<Item = &'s [TabularAuthzAction<'a>]> {
+    actions.chunk_by(|a, b| acting_principal(a) == acting_principal(b))
+}
+
+/// A refused check on an intermediate (non-target) view fails every load route:
+/// each consumer of [`build_actions_from_sorted_tabulars_for_authorize_load_tabular`]
+/// returns its error at the first such refusal. A refusal on the target's ident
+/// does not: `loadView` lets a later decision for the target replace it.
+fn refusal_ends_request(action: &TabularAuthzAction<'_>, target: &TableIdent) -> bool {
+    match &action.1 {
+        ActionOnTableOrView::View(view) => view.info.tabular_ident != *target,
+        ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => false,
+    }
+}
+
+/// Decides a load chain one principal at a time, in chain order.
+///
+/// A segment that refuses an intermediate view ends the request, so later
+/// segments are not sent to the authorizer: a refused caller never causes a
+/// lookup of a DEFINER owner. Their entries read as refused, which the
+/// consumers never reach — they return at that earlier refusal. A chain
+/// without DEFINER views is one segment and one call.
+pub(crate) async fn are_allowed_load_chain_actions<A: Authorizer>(
+    authorizer: &A,
+    metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+    namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+    actions: &[TabularAuthzAction<'_>],
+    target: &TableIdent,
+) -> Result<Vec<bool>, AuthZError> {
+    let mut results = Vec::with_capacity(actions.len());
+    for segment in principal_segments(actions) {
+        let decided = authorizer
+            .are_allowed_tabular_actions_vec(metadata, warehouse, namespaces, segment)
+            .await?
+            .into_allowed();
+        if decided.len() != segment.len() {
+            return Err(
+                BackendUnavailableOrCountMismatch::from(AuthorizationCountMismatch::new(
+                    segment.len(),
+                    decided.len(),
+                    "load_chain_segment",
+                ))
+                .into(),
+            );
+        }
+        let ends_request = segment
+            .iter()
+            .zip(&decided)
+            .any(|(action, allowed)| !allowed && refusal_ends_request(action, target));
+        results.extend(decided);
+        if ends_request {
+            break;
+        }
+    }
+    results.resize(actions.len(), false);
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -513,8 +587,16 @@ mod tests {
     use crate::{
         WarehouseId,
         config::{MatchedEngines, TrinoEngineConfig, TrustedEngine},
-        server::namespace::MAX_NAMESPACE_DEPTH,
-        service::TableInfo,
+        server::{namespace::MAX_NAMESPACE_DEPTH, tables::interpret_authz_results_for_load_table},
+        service::{
+            AuthZTableInfo as _, AuthZViewInfo as _, BasicTabularInfo as _, TableInfo,
+            authz::{
+                AuthZCannotSeeTable, AuthZCannotSeeView,
+                tests::{HidingAuthorizer, RecordedTabularCheck},
+            },
+            events::AuthorizationFailureSource as _,
+            storage::StoragePermissions,
+        },
     };
 
     fn referencing_views(n: usize) -> Vec<ReferencingView> {
@@ -1258,5 +1340,391 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- are_allowed_load_chain_actions tests ----
+
+    const OWNER_PROPERTY: &str = "trino.run-as-owner";
+
+    fn principal(name: &str) -> UserOrRole {
+        UserOrRole::User(UserId::new_unchecked("test", name))
+    }
+
+    fn caller_metadata() -> RequestMetadata {
+        RequestMetadata::test_user(UserId::new_unchecked("test", "caller"))
+    }
+
+    struct Chain {
+        warehouse: ResolvedWarehouse,
+        views: Vec<ViewInfo>,
+        target: TableIdent,
+        resolved: Vec<ResolvedTabular>,
+    }
+
+    impl Chain {
+        fn view_key(&self, i: usize) -> String {
+            format!(
+                "view:{}/{}",
+                self.warehouse.warehouse_id,
+                self.views[i].view_id()
+            )
+        }
+
+        fn target_key(&self) -> String {
+            match &self.resolved.last().expect("chain has a target").tabular {
+                ViewOrTableInfo::Table(t) => {
+                    format!("table:{}/{}", self.warehouse.warehouse_id, t.table_id())
+                }
+                ViewOrTableInfo::View(v) => {
+                    format!("view:{}/{}", self.warehouse.warehouse_id, v.view_id())
+                }
+                ViewOrTableInfo::GenericTable(_) => unreachable!("tests build no generic tables"),
+            }
+        }
+
+        async fn decide(&self, authz: &HidingAuthorizer) -> Result<Vec<bool>, AuthZError> {
+            let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+                &self.resolved,
+                &self.target,
+            );
+            are_allowed_load_chain_actions(
+                authz,
+                &caller_metadata(),
+                &self.warehouse,
+                &HashMap::new(),
+                &actions,
+                &self.target,
+            )
+            .await
+        }
+
+        async fn load_table(
+            &self,
+            authz: &HidingAuthorizer,
+        ) -> Result<(TableInfo, Option<StoragePermissions>), AuthZError> {
+            let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+                &self.resolved,
+                &self.target,
+            );
+            let results = are_allowed_load_chain_actions(
+                authz,
+                &caller_metadata(),
+                &self.warehouse,
+                &HashMap::new(),
+                &actions,
+                &self.target,
+            )
+            .await?;
+            interpret_authz_results_for_load_table(
+                &actions,
+                &results,
+                self.warehouse.warehouse_id,
+                &self.target,
+            )
+        }
+    }
+
+    /// `owners[i]` makes view `i` a DEFINER view owned by that principal; the
+    /// chain ends in `target`.
+    fn chain_to(owners: &[Option<&str>], target: ViewOrTableInfo) -> Chain {
+        let warehouse_id = target.warehouse_id();
+        let views: Vec<ViewInfo> = owners
+            .iter()
+            .map(|owner| {
+                let mut view = ViewInfo::new_random(warehouse_id);
+                if let Some(owner) = owner {
+                    view.properties
+                        .insert(OWNER_PROPERTY.to_string(), (*owner).to_string());
+                }
+                view
+            })
+            .collect();
+        let target_ident = target.tabular_ident().clone();
+        let sorted: Vec<(ViewOrTableInfo, NamespaceHierarchy)> = views
+            .iter()
+            .cloned()
+            .map(ViewOrTableInfo::from)
+            .chain(std::iter::once(target))
+            .map(|tabular| {
+                let namespace =
+                    NamespaceHierarchy::new_with_id(warehouse_id, tabular.namespace_id());
+                (tabular, namespace)
+            })
+            .collect();
+        let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: OWNER_PROPERTY.to_string(),
+            identities: HashMap::new(),
+        }));
+        let resolved = resolve_users_for_authorize_load_tabular(
+            &sorted,
+            caller_metadata().actor(),
+            &engines,
+            Some("test"),
+        )
+        .unwrap();
+        Chain {
+            warehouse: ResolvedWarehouse::new_with_id(warehouse_id),
+            views,
+            target: target_ident,
+            resolved,
+        }
+    }
+
+    fn chain(owners: &[Option<&str>]) -> (Chain, TableInfo) {
+        let table = TableInfo::new_random(WarehouseId::new_random());
+        (chain_to(owners, table.clone().into()), table)
+    }
+
+    fn check(object: &str, action: &str, user: Option<&str>) -> RecordedTabularCheck {
+        RecordedTabularCheck {
+            object: object.to_string(),
+            action: action.to_string(),
+            user: user.map(principal),
+            is_delegated_execution: user.is_some(),
+        }
+    }
+
+    fn view_checks(object: &str, user: Option<&str>) -> Vec<RecordedTabularCheck> {
+        vec![
+            check(object, "GetMetadata", user),
+            check(object, "Select", user),
+        ]
+    }
+
+    fn table_checks(object: &str, user: Option<&str>) -> Vec<RecordedTabularCheck> {
+        vec![
+            check(object, "GetMetadata", user),
+            check(object, "ReadData", user),
+            check(object, "WriteData", user),
+        ]
+    }
+
+    #[test]
+    fn test_principal_segments_invoker_chain_is_one_segment() {
+        let (chain, _) = chain(&[None, None]);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &chain.resolved,
+            &chain.target,
+        );
+        let lengths: Vec<usize> = principal_segments(&actions).map(<[_]>::len).collect();
+        assert_eq!(lengths, vec![7]);
+    }
+
+    /// view1 is decided as the caller, view2 and view3 as `owner_b`, the table as `owner_c`.
+    #[test]
+    fn test_principal_segments_split_at_each_definer_switch() {
+        let (chain, _) = chain(&[Some("owner_b"), None, Some("owner_c")]);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &chain.resolved,
+            &chain.target,
+        );
+        let lengths: Vec<usize> = principal_segments(&actions).map(<[_]>::len).collect();
+        assert_eq!(lengths, vec![2, 4, 3]);
+    }
+
+    /// Two DEFINER views of the same owner hand over to one principal: no extra call.
+    #[test]
+    fn test_principal_segments_same_owner_twice_is_one_segment() {
+        let (chain, _) = chain(&[Some("owner_b"), Some("owner_b")]);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &chain.resolved,
+            &chain.target,
+        );
+        let lengths: Vec<usize> = principal_segments(&actions).map(<[_]>::len).collect();
+        assert_eq!(lengths, vec![2, 5]);
+    }
+
+    #[tokio::test]
+    async fn test_refused_caller_never_sends_owner_checks() {
+        let (chain, _) = chain(&[Some("owner_b")]);
+        let authz = HidingAuthorizer::new();
+        authz.hide_for_user(&principal("caller"), &chain.view_key(0));
+
+        assert_eq!(
+            chain.decide(&authz).await.unwrap(),
+            vec![false, false, false, false, false]
+        );
+        let err = chain.load_table(&authz).await.unwrap_err();
+        let AuthZError::AuthZCannotSeeView(err) = err else {
+            panic!("expected AuthZCannotSeeView, got {err:?}");
+        };
+        assert_eq!(
+            err,
+            AuthZCannotSeeView::new_forbidden(
+                chain.warehouse.warehouse_id,
+                chain.views[0].tabular_ident.clone()
+            )
+            .with_delegated_execution(false)
+        );
+        // Both runs sent the caller's view checks and nothing for owner_b.
+        let caller_batch = view_checks(&chain.view_key(0), None);
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![caller_batch.clone(), caller_batch]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_refused_owner_is_decided_after_the_caller() {
+        let (chain, table) = chain(&[Some("owner_b")]);
+        let authz = HidingAuthorizer::new();
+        authz.hide_for_user(&principal("owner_b"), &chain.target_key());
+
+        let err = chain.load_table(&authz).await.unwrap_err();
+        let AuthZError::AuthZCannotSeeTable(err) = err else {
+            panic!("expected AuthZCannotSeeTable, got {err:?}");
+        };
+        assert_eq!(
+            err,
+            AuthZCannotSeeTable::new_forbidden(chain.warehouse.warehouse_id, table.tabular_ident)
+                .with_delegated_execution(true)
+        );
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                table_checks(&chain.target_key(), Some("owner_b")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_all_allowed_returns_table_and_storage_permissions() {
+        let (chain, table) = chain(&[Some("owner_b"), None, Some("owner_c")]);
+        let authz = HidingAuthorizer::new();
+
+        let (info, permissions) = chain.load_table(&authz).await.unwrap();
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(permissions, Some(StoragePermissions::ReadWriteDelete));
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                [
+                    view_checks(&chain.view_key(1), Some("owner_b")),
+                    view_checks(&chain.view_key(2), Some("owner_b")),
+                ]
+                .concat(),
+                table_checks(&chain.target_key(), Some("owner_c")),
+            ]
+        );
+    }
+
+    /// The owner's `ReadData`/`WriteData` only shape storage permissions.
+    #[tokio::test]
+    async fn test_owner_read_only_narrows_storage_permissions() {
+        let (chain, table) = chain(&[Some("owner_b")]);
+        let authz = HidingAuthorizer::new();
+        authz.block_action(&format!("table:{:?}", CatalogTableAction::WriteData));
+
+        let (info, permissions) = chain.load_table(&authz).await.unwrap();
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(permissions, Some(StoragePermissions::Read));
+    }
+
+    /// One call asks about tables before views; a split chain would ask the
+    /// caller's view first.
+    #[tokio::test]
+    async fn test_invoker_chain_is_decided_in_one_call() {
+        let (chain, table) = chain(&[None]);
+        let authz = HidingAuthorizer::new();
+
+        let (info, permissions) = chain.load_table(&authz).await.unwrap();
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(permissions, Some(StoragePermissions::ReadWriteDelete));
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                table_checks(&chain.target_key(), None),
+                view_checks(&chain.view_key(0), None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failing_owner_lookup_is_not_reached_when_caller_refused() {
+        let (chain, _) = chain(&[Some("owner_b")]);
+        let authz = HidingAuthorizer::new();
+        authz.fail_tabular_checks_for_user(&principal("owner_b"));
+        authz.hide_for_user(&principal("caller"), &chain.view_key(0));
+
+        let err = chain.load_table(&authz).await.unwrap_err();
+        let model = err.into_error_model();
+        let expected = AuthZError::from(
+            AuthZCannotSeeView::new_forbidden(
+                chain.warehouse.warehouse_id,
+                chain.views[0].tabular_ident.clone(),
+            )
+            .with_delegated_execution(false),
+        )
+        .into_error_model();
+        assert_eq!(model.code, StatusCode::NOT_FOUND.as_u16());
+        assert_eq!(model.code, expected.code);
+        assert_eq!(model.r#type, expected.r#type);
+        assert_eq!(model.message, expected.message);
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![view_checks(&chain.view_key(0), None)]
+        );
+    }
+
+    /// Counterpart: once the caller may traverse, the owner's failing lookup surfaces.
+    #[tokio::test]
+    async fn test_failing_owner_lookup_surfaces_when_caller_allowed() {
+        let (chain, _) = chain(&[Some("owner_b")]);
+        let authz = HidingAuthorizer::new();
+        authz.fail_tabular_checks_for_user(&principal("owner_b"));
+
+        let err = chain.load_table(&authz).await.unwrap_err();
+        assert_eq!(
+            err.into_error_model().code,
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        );
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                table_checks(&chain.target_key(), Some("owner_b")),
+            ]
+        );
+    }
+
+    /// A refused check on the target's own ident does not end the chain: `loadView`
+    /// lets a later decision for the target overwrite it.
+    #[tokio::test]
+    async fn test_refused_target_view_does_not_end_the_chain() {
+        let warehouse_id = WarehouseId::new_random();
+        let mut target = ViewInfo::new_random(warehouse_id);
+        target
+            .properties
+            .insert(OWNER_PROPERTY.to_string(), "owner_b".to_string());
+        // The target view is listed in its own referenced-by chain.
+        let mut chain = chain_to(&[], target.clone().into());
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, target.namespace_id);
+        let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: OWNER_PROPERTY.to_string(),
+            identities: HashMap::new(),
+        }));
+        chain.resolved = resolve_users_for_authorize_load_tabular(
+            &[
+                (target.clone().into(), namespace.clone()),
+                (target.clone().into(), namespace),
+            ],
+            caller_metadata().actor(),
+            &engines,
+            Some("test"),
+        )
+        .unwrap();
+        let authz = HidingAuthorizer::new();
+        authz.hide_for_user(&principal("caller"), &chain.target_key());
+
+        assert_eq!(chain.decide(&authz).await.unwrap(), vec![false, true]);
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                vec![check(&chain.target_key(), "GetMetadata", None)],
+                vec![check(&chain.target_key(), "GetMetadata", Some("owner_b"))],
+            ]
+        );
     }
 }

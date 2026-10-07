@@ -1192,15 +1192,20 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         token_idp_id,
     )?;
 
-    // 9. Build actions and check all authorizations in batch.
+    // 9. Build actions and decide them one acting principal at a time.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
         &table,
     );
-    let authz_results = authorizer
-        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
-        .await?
-        .into_allowed();
+    let authz_results = are_allowed_load_chain_actions(
+        &authorizer,
+        request_metadata,
+        &warehouse,
+        &namespaces,
+        &actions,
+        &table,
+    )
+    .await?;
 
     // 10. Interpret authorization results.
     let (table_info, storage_permissions) =
