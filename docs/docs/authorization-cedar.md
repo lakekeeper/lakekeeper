@@ -415,7 +415,7 @@ A property with a single entry is still a JSON array, and an empty array (`'[]'`
 
 ### How Tags Are Exposed to Cedar
 
-Every Warehouse, Namespace, Table, View and GenericTable entity carries a `lowercase_tags` attribute of type `ResourceTags`. This is a Cedar entity with one tag per governance tag in effect on the object, each holding a `TagValue` record:
+Every Warehouse, Namespace, Table, View and GenericTable entity carries a `governance_tags` attribute of type `ResourceTags`. This is a Cedar entity with one tag per governance tag in effect on the object, each holding a `TagValue` record:
 
 ```cedar
 type TagValue = {
@@ -427,19 +427,19 @@ type TagValue = {
 
 The tags are the object's [effective tags](./tags.md#effective-inherited-tags), the same set `?effective=true` returns: its own tags plus those inherited from the namespaces and the warehouse above it. When one tag is applied at several levels, the nearest one wins. Column tags are not included.
 
-Keys are the tag's name in lower case, so `hasTag("pii")` also matches a tag named `PII`. Tag names are unique per project ignoring case, so a rename that only changes case keeps matching. Values keep their case.
+Keys are the tag's name exactly as defined, case included: a tag named `PII` matches `hasTag("PII")`, not `hasTag("pii")`. Renaming a tag changes its key. Values keep their case too.
 
 ```cedar
 // The object, or anything above it, is tagged pii
-resource.lowercase_tags.hasTag("pii")
+resource.governance_tags.hasTag("pii")
 
 // The value in effect
-resource.lowercase_tags.hasTag("sensitivity") &&
-resource.lowercase_tags.getTag("sensitivity").value == "restricted"
+resource.governance_tags.hasTag("sensitivity") &&
+resource.governance_tags.getTag("sensitivity").value == "restricted"
 
 // Applied to this object itself, not inherited
-resource.lowercase_tags.hasTag("sensitivity") &&
-!resource.lowercase_tags.getTag("sensitivity").inherited
+resource.governance_tags.hasTag("sensitivity") &&
+!resource.governance_tags.getTag("sensitivity").inherited
 ```
 
 Guard every `getTag` with `hasTag`: any key may be missing, and Cedar rejects a policy that reads a tag without checking for it first.
@@ -458,8 +458,8 @@ forbid (
     resource is Lakekeeper::Table
 )
 when {
-    resource.lowercase_tags.hasTag("sensitivity") &&
-    resource.lowercase_tags.getTag("sensitivity").values.contains("restricted")
+    resource.governance_tags.hasTag("sensitivity") &&
+    resource.governance_tags.getTag("sensitivity").values.contains("restricted")
 }
 unless {
     principal is Lakekeeper::User &&
