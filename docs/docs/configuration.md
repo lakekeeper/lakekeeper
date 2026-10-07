@@ -713,6 +713,7 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 |---|---|---|---|
 | `LAKEKEEPER__AUDIT__TRACING__ENABLED` | `false` | `true` | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. |
 | `LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL` | `true` | `false` | Put the email of the users an audit record names on it: the actor, the subjects of its checks, the recipients of its grants. Best-effort, from the token or the [user cache](#caching); absent when not known. See [User Emails on Audit Records](./logging.md#audit-user-emails), including the note on personal data. |
+| `LAKEKEEPER__AUDIT__TRACING__INCLUDE_ROLE_SOURCE_ID` | `false` | `true` | Put a role's `source_id` next to its id and `provider_id` on audit records, read through the [role cache](#caching). Some providers let a source id be a free-form name, so it might hold personal data. See [Role Sources on Audit Records](./logging.md#audit-role-sources). |
 
 ### Trusted Engines
 

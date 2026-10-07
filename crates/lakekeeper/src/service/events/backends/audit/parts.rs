@@ -104,12 +104,33 @@ impl ActorRecord {
                 assumed_role: Some(AssumedRoleRecord {
                     role_id: assumed_role.id.to_string(),
                     provider_id: assumed_role.provider_id().to_string(),
-                    source_id: assumed_role.source_id().to_string(),
+                    source_id: include_role_source_id()
+                        .then(|| assumed_role.source_id().to_string()),
                 }),
                 email: None,
             },
         }
     }
+}
+
+/// Whether audit records name a role's source id next to its id and provider.
+pub(crate) fn include_role_source_id() -> bool {
+    #[cfg(any(test, feature = "test-utils"))]
+    if OMIT_ROLE_SOURCE_ID_IN_TESTS.get().is_some() {
+        return false;
+    }
+    crate::CONFIG.audit.tracing.include_role_source_id
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+static OMIT_ROLE_SOURCE_ID_IN_TESTS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Make every audit record in this process name roles without their source id, whatever
+/// the configuration says. For a test binary of its own: it cannot be undone, and it
+/// reaches every test in the process.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn omit_role_source_id_in_tests() {
+    let _ = OMIT_ROLE_SOURCE_ID_IN_TESTS.set(());
 }
 
 /// Whether the operator enabled emails on audit records.
@@ -239,8 +260,9 @@ pub struct AssumedRoleRecord {
     pub(crate) role_id: String,
     /// The provider that supplied the role.
     pub(crate) provider_id: String,
-    /// The role's id at the provider.
-    pub(crate) source_id: String,
+    /// The role's id at the provider. Absent when the operator turned role source ids off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_id: Option<String>,
 }
 
 /// A principal named as a target: `for_principal` on a decision entry, `principal` on a grant
@@ -264,6 +286,8 @@ impl SubjectRecord {
             }),
             UserOrRoleId::Role(role) => Self::Role(RoleSubjectRecord {
                 role: role.to_string(),
+                provider_id: None,
+                source_id: None,
             }),
         }
     }
@@ -287,6 +311,14 @@ pub struct UserSubjectRecord {
 pub struct RoleSubjectRecord {
     /// The role's id.
     pub(crate) role: String,
+    /// The provider that supplied the role. Absent when it is not known: the role no longer
+    /// exists, or it could not be looked up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_id: Option<String>,
+    /// The role's id at the provider, for looking it up there. Absent when `provider_id` is,
+    /// or when the operator turned role source ids off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_id: Option<String>,
 }
 
 /// One entry of `authorizations[]`: which action on which entity was evaluated, for whom,

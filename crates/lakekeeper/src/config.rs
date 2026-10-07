@@ -1104,6 +1104,15 @@ pub(crate) struct AuditTracingConfig {
     /// carries one, otherwise from the user cache and the database.
     #[serde(default)]
     pub include_user_email: bool,
+    /// Put a role's `source_id` next to its id and `provider_id` on audit records: on an
+    /// assumed role, and on every role a record names. A source id is chosen at the role's
+    /// provider and may be a free-form name, so it might hold personal data.
+    #[serde(default = "include_role_source_id_default")]
+    pub include_role_source_id: bool,
+}
+
+fn include_role_source_id_default() -> bool {
+    true
 }
 
 /// Cache for `UserId → ListUserRoleAssignmentsResult` lookups.
@@ -1418,6 +1427,7 @@ impl Default for DynAppConfig {
                 tracing: AuditTracingConfig {
                     enabled: true,
                     include_user_email: false,
+                    include_role_source_id: true,
                 },
             },
             maintenance_mode: MaintenanceMode::Off,

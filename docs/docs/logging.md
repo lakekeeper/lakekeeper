@@ -76,6 +76,22 @@ The email is best-effort. It is absent, never `null`, when it is not known: the 
 
 **Note:** With this setting, audit logs hold users' email addresses. An email stays in the log after the user is deleted from the catalog, so plan retention and access for the log accordingly.
 
+### Role Sources on Audit Records {#audit-role-sources}
+
+A role on an audit record carries, next to its id, the provider it comes from and its id there: `provider_id` and `source_id`. With these a reader can find the role at its provider, for example the LDAP group behind it. This applies to every role a record names: `actor.assumed_role`, `authorizations[].for_principal`, `context.principal` on grant records, `principals` on `apply_grants`, and `principal` on subtree grant requests.
+
+```json
+{"role": "1f7b…", "provider_id": "corporate-ldap", "source_id": "engineering"}
+```
+
+`provider_id` is always included. `source_id` is included by default. Some providers let it be a free-form name, so Lakekeeper cannot rule out that it holds personal data. To leave `source_id` out of every record, set:
+
+```bash
+LAKEKEEPER__AUDIT__TRACING__INCLUDE_ROLE_SOURCE_ID=false
+```
+
+Except on `actor.assumed_role`, both are best-effort: absent when the role no longer exists or the lookup failed. They are read through the role cache, so a role named on many records costs one database read per cache lifetime. Correlate on the role's id: a role's source does not change, but its id is what every record carries.
+
 ## Log Types
 
 Lakekeeper produces four types of logs. The first three are identified by their `event_source` field. General application logs have no `event_source` field.
@@ -277,10 +293,10 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 |----------------|--------|---------------------------------------------------------------------------------------------------|
 | `actor_type`   | String | `"anonymous"`, `"principal"`, `"assumed_role"`, or `"lakekeeper_internal"`. Always present. |
 | `principal`    | String | The authenticated principal. Present for `principal` and `assumed_role`.                           |
-| `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id` and `source_id`. Present for `assumed_role`. |
+| `assumed_role` | Object | The role being acted as, with `role_id`, `provider_id`, and `source_id` unless [role source ids](#audit-role-sources) are turned off. Present for `assumed_role`. |
 | `email`        | String | The principal's email, for `principal` and `assumed_role`. Only with [user emails](#audit-user-emails) enabled, and only when known. |
 
-**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`. With [user emails](#audit-user-emails) enabled, the user form can also carry `email`: `{"user": "oidc~alice", "email": "alice@example.com"}`.
+**Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`. With [user emails](#audit-user-emails) enabled, the user form can also carry `email`: `{"user": "oidc~alice", "email": "alice@example.com"}`. The role form carries `provider_id` and `source_id` when they are known, `source_id` unless [role source ids](#audit-role-sources) are turned off: `{"role": "<uuid>", "provider_id": "corporate-ldap", "source_id": "engineering"}`.
 
 **`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is an object naming the one principal whose grants a subtree request reaches (`{"user": "oidc~alice"}`), present only when `principal_scope` is `one`. A query on `principal.user` finds nothing in `actor`, where the value is a string.
 

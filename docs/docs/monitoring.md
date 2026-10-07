@@ -70,7 +70,7 @@ Both gauges return to zero once the last task finishes, because each cache is dr
 
 A low hit rate here does not mean the cache is too small, unlike the other caches. Every task starts with an empty cache and reads most manifests once, so misses dominate by design. Judge the budget by whether `lakekeeper_cache_weighted_bytes` plateaus — at capacity, manifests are evicted and re-read from object storage — and by the headroom the peak leaves against the container memory limit.
 
-### Audit Email Metrics
+### Audit Enrichment Metrics
 
 With [user emails on audit records](./logging.md#audit-user-emails) enabled, Lakekeeper counts the users whose email a record looked up in the catalog. Emails taken from the caller's token are not counted, since they need no lookup.
 
@@ -79,6 +79,14 @@ With [user emails on audit records](./logging.md#audit-user-emails) enabled, Lak
 | <code class="selectable">lakekeeper_audit_<wbr>email_lookups_total</code>     | Counter | `outcome` | Users looked up, by outcome: `found`, `missing` (no user, or no email), `error`, `timeout` |
 
 The lookups go through the user cache (`cache_type="user"` above), so most are answered without a database read. A rising `error` or `timeout` count means records are written without emails because the database could not answer in time.
+
+Lakekeeper also counts the roles whose provider and source a record looked up, for [role sources on audit records](./logging.md#audit-role-sources). An assumed role is not counted, since the request already holds it.
+
+| Metric                                                                        | Type    | Labels    | Description |
+|-------------------------------------------------------------------------------|---------|-----------|-----|
+| <code class="selectable">lakekeeper_audit_<wbr>role_lookups_total</code>      | Counter | `outcome` | Roles looked up, by outcome: `found`, `missing` (no such role), `error`, `timeout` |
+
+These go through the role cache (`cache_type="role"`).
 
 ### Role Provider Metrics { .lkp }
 

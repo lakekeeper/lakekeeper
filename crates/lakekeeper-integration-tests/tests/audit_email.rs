@@ -14,9 +14,10 @@ use lakekeeper::{
             ApiServer,
             check::{
                 CatalogActionCheckItem, CatalogActionCheckOperation,
-                CatalogActionsBatchCheckRequest, UserOrRole, check_internal,
+                CatalogActionsBatchCheckRequest, RoleAssignee, UserOrRole, check_internal,
             },
             grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
+            role::{CreateRoleRequest, Service as _},
             user::{UserLastUpdatedWith, UserType},
         },
     },
@@ -391,6 +392,82 @@ async fn subtree_principal_carries_its_email(pool: PgPool) {
     assert_eq!(action["principal_scope"], "one");
     assert_eq!(action["principal"]["user"], bob.to_string());
     assert_eq!(action["principal"]["email"], "subtree-bob@example.com");
+}
+
+/// A role a record names carries its provider and source next to its id, on decisions,
+/// on `apply_grants` and on grant records.
+#[sqlx::test]
+async fn roles_carry_their_provider_and_source(pool: PgPool) {
+    let f = Fixture::new(pool, None).await;
+    let mut caller = RequestMetadata::test_user(user("role-caller"));
+    caller.with_project_id(f.project_id.clone());
+    let role = ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::create_role(
+        CreateRoleRequest {
+            name: "analysts".to_string(),
+            description: None,
+            project_id: None,
+            provider_id: None,
+            source_id: None,
+        },
+        f.ctx.clone(),
+        caller.clone(),
+    )
+    .await
+    .unwrap();
+    let expected = |value: &Value| {
+        assert_eq!(value["role"], role.id.to_string());
+        assert_eq!(value["provider_id"], role.provider_id.to_string());
+        assert_eq!(value["source_id"], role.source_id.to_string());
+    };
+
+    check_internal(
+        f.ctx.clone(),
+        caller.clone(),
+        CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: None,
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role.id))),
+                operation: CatalogActionCheckOperation::Server {
+                    action: CatalogServerAction::ProvisionUsers,
+                },
+            }],
+            error_on_not_found: false,
+        },
+    )
+    .await
+    .unwrap();
+    ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::apply_warehouse_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        caller,
+        ApplyGrantsRequest {
+            writes: vec![GrantEntry {
+                privilege: "get_metadata".to_string(),
+                principal: UserOrRole::Role(RoleAssignee::from_role(role.id)),
+            }],
+            deletes: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // create_role, the check, apply_grants, and the grant_created record.
+    let records = f.logs.wait_for(4).await;
+    let check = records
+        .iter()
+        .find(|r| r["actions"][0]["action_name"] == "introspect_permissions")
+        .expect("the check record");
+    expected(&check["authorizations"][0]["for_principal"]);
+    let apply = records
+        .iter()
+        .find(|r| r["actions"][0]["action_name"] == "apply_grants")
+        .expect("the apply_grants record");
+    expected(&apply["actions"][0]["principals"][0]);
+    let grant = records
+        .iter()
+        .find(|r| r["operation"] == "grant_created")
+        .expect("the grant record");
+    expected(&grant["context"]["principal"]);
 }
 
 #[derive(Debug)]

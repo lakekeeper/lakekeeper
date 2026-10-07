@@ -705,13 +705,12 @@
         },
         "source_id": {
           "type": "string",
-          "description": "The role's id at the provider."
+          "description": "The role's id at the provider. Absent when the operator turned role source ids off."
         }
       },
       "required": [
         "role_id",
-        "provider_id",
-        "source_id"
+        "provider_id"
       ],
       "description": "The role an `assumed_role` actor acts as.",
       "x-audit-kind": "part"
@@ -1838,6 +1837,14 @@
         "role": {
           "type": "string",
           "description": "The role's id."
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that supplied the role. Absent when it is not known: the role no longer\nexists, or it could not be looked up."
+        },
+        "source_id": {
+          "type": "string",
+          "description": "The role's id at the provider, for looking it up there. Absent when `provider_id` is,\nor when the operator turned role source ids off."
         }
       },
       "required": [

@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 
 use crate::service::{
-    CatalogBackendError, CatalogStore, UserId,
+    ArcRoleIdent, CatalogBackendError, CatalogRoleOps as _, CatalogStore,
+    GetRoleAcrossProjectsError, RoleId, UserId,
     user_cache::{self, UserEmail},
 };
 
@@ -29,6 +30,16 @@ pub trait EventCatalog: Send + Sync + std::fmt::Debug {
     ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
         let _ = user_ids;
         Err(unsupported("user_emails"))
+    }
+
+    /// The provider and source id of each of `role_ids` that exists, through the role
+    /// cache. A role that does not exist is left out.
+    async fn role_sources(
+        &self,
+        role_ids: &[RoleId],
+    ) -> Result<HashMap<RoleId, ArcRoleIdent>, CatalogBackendError> {
+        let _ = role_ids;
+        Err(unsupported("role_sources"))
     }
 }
 
@@ -69,5 +80,26 @@ impl<C: CatalogStore> EventCatalog for CatalogStoreReader<C> {
         user_ids: &[UserId],
     ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
         user_cache::user_emails::<C>(user_ids, self.state.clone()).await
+    }
+
+    async fn role_sources(
+        &self,
+        role_ids: &[RoleId],
+    ) -> Result<HashMap<RoleId, ArcRoleIdent>, CatalogBackendError> {
+        let mut sources = HashMap::with_capacity(role_ids.len());
+        for role_id in role_ids {
+            match C::get_role_by_id_across_projects(*role_id, self.state.clone()).await {
+                Ok(role) => {
+                    sources.insert(*role_id, role.ident_arc());
+                }
+                Err(GetRoleAcrossProjectsError::RoleIdNotFound(_)) => {}
+                Err(error) => {
+                    return Err(CatalogBackendError::new_unexpected(std::io::Error::other(
+                        error.to_string(),
+                    )));
+                }
+            }
+        }
+        Ok(sources)
     }
 }

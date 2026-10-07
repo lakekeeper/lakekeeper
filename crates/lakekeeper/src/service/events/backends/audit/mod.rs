@@ -3,8 +3,8 @@ use std::fmt::Display;
 use crate::audit::audit_part;
 
 pub mod assemble;
-pub mod email;
 pub mod emitter;
+pub mod enrichment;
 pub mod part;
 pub mod parts;
 pub mod render;
@@ -16,9 +16,9 @@ pub mod validate;
 
 use std::sync::Arc;
 
-use email::Emails;
-pub use email::user_email;
 pub use emitter::{AuditEmitter, EmitterStamp, is_emitter_name};
+use enrichment::Enrichment;
+pub use enrichment::user_email;
 pub use part::{
     AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
     Registration, Vocabulary, Wire, WireKey, WireName, enabled, warn_on_retired_audit_filter,
@@ -34,7 +34,6 @@ pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecor
 use crate::{
     request_metadata::RequestMetadata,
     service::{
-        UserId,
         authz::UserOrRoleId,
         events::{
             AuthorizationFailedEvent, AuthorizationSucceededEvent, EventCatalog, EventListener,
@@ -205,8 +204,9 @@ impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
 #[derive(Debug, Default, Clone)]
 pub struct AuditEventListener {
     /// Read access to the catalog, set once at startup and never changed: records read the
-    /// emails of user principals the token does not cover from it. `None` puts only the
-    /// token's email on a record.
+    /// emails of user principals the token does not cover, and the sources of the roles
+    /// they name, from it. `None` puts only the token's email and an assumed role's own
+    /// source on a record.
     catalog: Option<Arc<dyn EventCatalog>>,
 }
 
@@ -226,12 +226,18 @@ impl AuditEventListener {
         }
     }
 
-    async fn emails<'a>(
+    async fn enrichment(
         &self,
-        request_metadata: &'a RequestMetadata,
-        principals: impl IntoIterator<Item = &'a UserId>,
-    ) -> Emails {
-        Emails::resolve(self.catalog.as_deref(), request_metadata, principals).await
+        request_metadata: &RequestMetadata,
+        named: &assemble::NamedPrincipals,
+    ) -> Enrichment {
+        Enrichment::resolve(
+            self.catalog.as_deref(),
+            request_metadata,
+            &named.users,
+            &named.roles,
+        )
+        .await
     }
 }
 
@@ -243,8 +249,8 @@ impl Display for AuditEventListener {
 
 /// One grant record per triple, not one per request: the batch is a dispatch optimisation,
 /// while the audit trail is answered per grant.
-fn emit_grant_records(event: &GrantsChangedEvent, emails: &Emails) {
-    let actor = || assemble::actor(&event.request_metadata, emails);
+fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment) {
+    let actor = || assemble::actor(&event.request_metadata, enrichment);
     for (specs, operation, message) in [
         (
             &event.removed,
@@ -264,7 +270,7 @@ fn emit_grant_records(event: &GrantsChangedEvent, emails: &Emails) {
                 AuditOutcome::Success.as_wire(),
             )
             .context(GrantContextRecord::new(
-                assemble::subject(&spec.principal, emails),
+                assemble::subject(&spec.principal, enrichment),
                 &spec.privilege,
                 &spec.resource,
             ))
@@ -280,9 +286,9 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let named = assemble::named_users(&event.actions, &event.authorizations);
-        let emails = self.emails(&event.request_metadata, &named).await;
-        assemble::authorization_failed(&event, &emails).emit("Authorization failed event");
+        let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
+        let enrichment = self.enrichment(&event.request_metadata, &named).await;
+        assemble::authorization_failed(&event, &enrichment).emit("Authorization failed event");
         Ok(())
     }
 
@@ -293,29 +299,40 @@ impl EventListener for AuditEventListener {
     /// privilege. This records the confirmed triples. A revoked grant is hard-deleted, so its
     /// record here is the only remaining evidence the access existed.
     ///
-    /// The grant endpoints wait for this listener, so with emails enabled the lookup and the
-    /// records move to a task of their own. The records of a deleted user's grants carry no
+    /// The grant endpoints wait for this listener, so a record that needs a lookup moves,
+    /// with the lookup, to a task of its own: with emails enabled, or with a role among
+    /// the grants. The records of a deleted user's grants carry no
     /// email for that user: the delete cleared it before they are written.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
         if !enabled() {
             return Ok(());
         }
-        let Some(catalog) = self.catalog.clone().filter(|_| include_user_email()) else {
-            emit_grant_records(&event, &Emails::default());
+        let names_a_role = event
+            .removed
+            .iter()
+            .chain(&event.created)
+            .any(|spec| matches!(spec.principal, UserOrRoleId::Role(_)));
+        let needs_lookup = include_user_email() || names_a_role;
+        let Some(catalog) = self.catalog.clone().filter(|_| needs_lookup) else {
+            emit_grant_records(&event, &Enrichment::default());
             return Ok(());
         };
         tokio::spawn(async move {
-            let principals = event
-                .removed
-                .iter()
-                .chain(&event.created)
-                .filter_map(|spec| match &spec.principal {
-                    UserOrRoleId::User(user_id) => Some(user_id),
-                    UserOrRoleId::Role(_) => None,
-                });
-            let emails =
-                Emails::resolve(Some(catalog.as_ref()), &event.request_metadata, principals).await;
-            emit_grant_records(&event, &emails);
+            let named = assemble::NamedPrincipals::of_grants(
+                event
+                    .removed
+                    .iter()
+                    .chain(&event.created)
+                    .map(|spec| &spec.principal),
+            );
+            let enrichment = Enrichment::resolve(
+                Some(catalog.as_ref()),
+                &event.request_metadata,
+                &named.users,
+                &named.roles,
+            )
+            .await;
+            emit_grant_records(&event, &enrichment);
         });
         Ok(())
     }
@@ -327,9 +344,10 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let named = assemble::named_users(&event.actions, &event.authorizations);
-        let emails = self.emails(&event.request_metadata, &named).await;
-        assemble::authorization_succeeded(&event, &emails).emit("Authorization succeeded event");
+        let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
+        let enrichment = self.enrichment(&event.request_metadata, &named).await;
+        assemble::authorization_succeeded(&event, &enrichment)
+            .emit("Authorization succeeded event");
         Ok(())
     }
 
@@ -342,9 +360,9 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let named = assemble::named_users(&event.actions, &[]);
-        let emails = self.emails(&event.request_metadata, &named).await;
-        assemble::replay(&event, &emails).emit("Idempotent replay served");
+        let named = assemble::NamedPrincipals::of(&event.actions, &[]);
+        let enrichment = self.enrichment(&event.request_metadata, &named).await;
+        assemble::replay(&event, &enrichment).emit("Idempotent replay served");
         Ok(())
     }
 }

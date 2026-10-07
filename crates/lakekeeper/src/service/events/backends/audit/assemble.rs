@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use super::{
     Decision,
-    email::Emails,
+    enrichment::Enrichment,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord,
-        HandlerContext, SubjectRecord,
+        HandlerContext, SubjectRecord, include_role_source_id,
     },
     shapes::{AuthorizationRecord, ReplayRecord},
 };
@@ -15,7 +15,7 @@ use crate::{
     audit::EmitterStamp,
     request_metadata::{RequestMetadata, UserAgent},
     service::{
-        UserId,
+        RoleId, UserId,
         authz::{ActionDescriptor, UserOrRoleId},
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -27,7 +27,7 @@ use crate::{
 
 pub(crate) fn authorization_succeeded(
     event: &AuthorizationSucceededEvent,
-    emails: &Emails,
+    enrichment: &Enrichment,
 ) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
@@ -38,13 +38,13 @@ pub(crate) fn authorization_succeeded(
         &event.authorizations,
         Decision::Allowed,
         None,
-        emails,
+        enrichment,
     )
 }
 
 pub(crate) fn authorization_failed(
     event: &AuthorizationFailedEvent,
-    emails: &Emails,
+    enrichment: &Enrichment,
 ) -> AuthorizationRecord {
     authorization(
         &event.request_metadata,
@@ -55,7 +55,7 @@ pub(crate) fn authorization_failed(
         &event.authorizations,
         Decision::Denied,
         Some((&event.failure_reason, &event.error)),
-        emails,
+        enrichment,
     )
 }
 
@@ -69,23 +69,23 @@ fn authorization(
     authorizations: &[Authorization],
     decision: Decision,
     failure: Option<(&AuthorizationFailureReason, &AuthorizationError)>,
-    emails: &Emails,
+    enrichment: &Enrichment,
 ) -> AuthorizationRecord {
     AuthorizationRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(actions, authorizations, extra_context),
         ),
-        actions: self::actions(actions, emails),
+        actions: self::actions(actions, enrichment),
         entities: self::entities(entities),
         request_id: request_metadata.request_id().clone(),
         time: occurred_at.into(),
-        actor: actor(request_metadata, emails),
+        actor: actor(request_metadata, enrichment),
         privilege_source: request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(request_metadata),
         break_glass: request_metadata.break_glass_reason().map(str::to_owned),
         context: handler_context(extra_context),
-        authorizations: decisions(authorizations, emails),
+        authorizations: decisions(authorizations, enrichment),
         idempotency_key: idempotency_key(request_metadata),
         decision: decision.as_wire(),
         failure_reason: failure.map(|(reason, _)| reason.as_wire()),
@@ -93,46 +93,59 @@ fn authorization(
     }
 }
 
-pub(crate) fn replay(event: &IdempotentReplayEvent, emails: &Emails) -> ReplayRecord {
+pub(crate) fn replay(event: &IdempotentReplayEvent, enrichment: &Enrichment) -> ReplayRecord {
     ReplayRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(&event.actions, &[], &BTreeMap::new()),
         ),
-        actions: actions(&event.actions, emails),
+        actions: actions(&event.actions, enrichment),
         entities: entities(&event.entities),
         request_id: event.request_metadata.request_id().clone(),
         time: event.occurred_at.into(),
-        actor: actor(&event.request_metadata, emails),
+        actor: actor(&event.request_metadata, enrichment),
         privilege_source: event.request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(&event.request_metadata),
         idempotency_key: event.idempotency_key.as_uuid().to_string(),
     }
 }
 
-/// The request's actor, with its email from the token or, failing that, from `emails`.
-pub(crate) fn actor(request_metadata: &RequestMetadata, emails: &Emails) -> ActorRecord {
+/// The request's actor, with its email from the token or, failing that, from `enrichment`.
+pub(crate) fn actor(request_metadata: &RequestMetadata, enrichment: &Enrichment) -> ActorRecord {
     let actor = ActorRecord::from_request(request_metadata);
     match request_metadata.user_id() {
-        Some(user_id) if actor.lacks_email() => actor.with_email(emails.get(user_id)),
+        Some(user_id) if actor.lacks_email() => actor.with_email(enrichment.email(user_id)),
         _ => actor,
     }
 }
 
-/// A principal named as a target, with its email from `emails` when it is a user.
-pub(crate) fn subject(id: &UserOrRoleId, emails: &Emails) -> SubjectRecord {
-    subject_record_with_email(&SubjectRecord::from_id(id), emails)
+/// A principal named as a target, with what `enrichment` knows about it.
+pub(crate) fn subject(id: &UserOrRoleId, enrichment: &Enrichment) -> SubjectRecord {
+    enriched_subject(&SubjectRecord::from_id(id), enrichment)
 }
 
-/// `subject` with its email from `emails` when it is a user.
-fn subject_record_with_email(subject: &SubjectRecord, emails: &Emails) -> SubjectRecord {
+/// `subject` with what `enrichment` knows about it: a user's email, a role's provider and
+/// source.
+fn enriched_subject(subject: &SubjectRecord, enrichment: &Enrichment) -> SubjectRecord {
     let mut record = subject.clone();
-    if let SubjectRecord::User(user) = &mut record
-        && let Ok(user_id) = UserId::try_from(user.user.as_str())
-    {
-        user.email = emails.get(&user_id);
+    match &mut record {
+        SubjectRecord::User(user) => {
+            if let Ok(user_id) = UserId::try_from(user.user.as_str()) {
+                user.email = enrichment.email(&user_id);
+            }
+        }
+        SubjectRecord::Role(role) => {
+            if let Some(ident) = role_id_of(&role.role).and_then(|id| enrichment.role(&id)) {
+                role.provider_id = Some(ident.provider_id().to_string());
+                role.source_id = include_role_source_id().then(|| ident.source_id().to_string());
+            }
+        }
     }
     record
+}
+
+fn role_id_of(text: &str) -> Option<RoleId> {
+    uuid::Uuid::parse_str(text).ok().map(RoleId::new)
 }
 
 /// Every emitter other than Lakekeeper whose vocabulary this record carries a name from.
@@ -167,39 +180,39 @@ fn idempotency_key(request_metadata: &RequestMetadata) -> Option<String> {
         .map(|key| key.as_uuid().to_string())
 }
 
-pub(crate) fn action(descriptor: &ActionDescriptor, emails: &Emails) -> ActionRecord {
+pub(crate) fn action(descriptor: &ActionDescriptor, enrichment: &Enrichment) -> ActionRecord {
     ActionRecord {
         action_name: descriptor.action_name,
         context: descriptor
             .context
             .iter()
-            .map(|key| (key.as_str(), context_value(key, emails)))
+            .map(|key| (key.as_str(), context_value(key, enrichment)))
             .collect(),
     }
 }
 
 /// The value of an action's context key, with an email on each user it names.
-fn context_value(key: &ActionContextKey, emails: &Emails) -> serde_json::Value {
+fn context_value(key: &ActionContextKey, enrichment: &Enrichment) -> serde_json::Value {
     match key {
         ActionContextKey::Principals(subjects) => serde_json::to_value(
             subjects
                 .iter()
-                .map(|subject| subject_record_with_email(subject, emails))
+                .map(|subject| enriched_subject(subject, enrichment))
                 .collect::<Vec<_>>(),
         )
         .expect("audit types serialize to JSON"),
         ActionContextKey::Principal(subject) => {
-            serde_json::to_value(subject_record_with_email(subject, emails))
+            serde_json::to_value(enriched_subject(subject, enrichment))
                 .expect("audit types serialize to JSON")
         }
         _ => key.value(),
     }
 }
 
-fn actions(descriptors: &[ActionDescriptor], emails: &Emails) -> Vec<ActionRecord> {
+fn actions(descriptors: &[ActionDescriptor], enrichment: &Enrichment) -> Vec<ActionRecord> {
     descriptors
         .iter()
-        .map(|descriptor| action(descriptor, emails))
+        .map(|descriptor| action(descriptor, enrichment))
         .collect()
 }
 
@@ -218,58 +231,90 @@ fn entities(entities: &EventEntities) -> Vec<EntityRecord> {
     entities.entities.iter().map(entity).collect()
 }
 
-pub(crate) fn decision(authorization: &Authorization, emails: &Emails) -> DecisionRecord {
+pub(crate) fn decision(authorization: &Authorization, enrichment: &Enrichment) -> DecisionRecord {
     DecisionRecord {
         id: authorization.id.clone(),
         for_principal: authorization
             .for_principal
             .as_ref()
-            .map(|id| subject(id, emails)),
-        action: action(&authorization.action, emails),
+            .map(|id| subject(id, enrichment)),
+        action: action(&authorization.action, enrichment),
         entity: entity(&authorization.entity),
         allowed: authorization.allowed,
         determined_by: authorization.determined_by.clone(),
     }
 }
 
-fn decisions(authorizations: &[Authorization], emails: &Emails) -> Vec<DecisionRecord> {
+fn decisions(authorizations: &[Authorization], enrichment: &Enrichment) -> Vec<DecisionRecord> {
     authorizations
         .iter()
-        .map(|authorization| decision(authorization, emails))
+        .map(|authorization| decision(authorization, enrichment))
         .collect()
 }
 
-/// The users a record names besides its actor, for [`Emails::resolve`]: the subjects of its
-/// decisions, and the users in its actions' `principals` and `principal`.
-pub(crate) fn named_users(
-    actions: &[ActionDescriptor],
-    authorizations: &[Authorization],
-) -> Vec<UserId> {
-    let subjects =
-        authorizations
+/// The principals a record names besides its actor, for [`Enrichment::resolve`].
+#[derive(Debug, Default)]
+pub(crate) struct NamedPrincipals {
+    pub(crate) users: Vec<UserId>,
+    pub(crate) roles: Vec<RoleId>,
+}
+
+impl NamedPrincipals {
+    fn add(&mut self, principal: &UserOrRoleId) {
+        match principal {
+            UserOrRoleId::User(user_id) => self.users.push(user_id.clone()),
+            UserOrRoleId::Role(role_id) => self.roles.push(*role_id),
+        }
+    }
+
+    fn add_record(&mut self, subject: &SubjectRecord) {
+        match subject {
+            SubjectRecord::User(user) => {
+                if let Ok(user_id) = UserId::try_from(user.user.as_str()) {
+                    self.users.push(user_id);
+                }
+            }
+            SubjectRecord::Role(role) => self.roles.extend(role_id_of(&role.role)),
+        }
+    }
+
+    /// The principals of grants: their recipients.
+    pub(crate) fn of_grants<'a>(principals: impl IntoIterator<Item = &'a UserOrRoleId>) -> Self {
+        let mut named = Self::default();
+        for principal in principals {
+            named.add(principal);
+        }
+        named
+    }
+
+    /// The principals of a record's decisions and actions: the subjects of its decisions,
+    /// and the principals in its actions' `principals` and `principal`.
+    pub(crate) fn of(actions: &[ActionDescriptor], authorizations: &[Authorization]) -> Self {
+        let mut named = Self::default();
+        for subject in authorizations
             .iter()
-            .filter_map(|authorization| match &authorization.for_principal {
-                Some(UserOrRoleId::User(user_id)) => Some(user_id.clone()),
-                _ => None,
+            .filter_map(|authorization| authorization.for_principal.as_ref())
+        {
+            named.add(subject);
+        }
+        let in_actions = actions
+            .iter()
+            .chain(
+                authorizations
+                    .iter()
+                    .map(|authorization| &authorization.action),
+            )
+            .flat_map(|descriptor| &descriptor.context)
+            .flat_map(|key| match key {
+                ActionContextKey::Principals(principals) => principals.as_slice(),
+                ActionContextKey::Principal(principal) => std::slice::from_ref(principal),
+                _ => &[],
             });
-    let in_actions = actions
-        .iter()
-        .chain(
-            authorizations
-                .iter()
-                .map(|authorization| &authorization.action),
-        )
-        .flat_map(|descriptor| &descriptor.context)
-        .flat_map(|key| match key {
-            ActionContextKey::Principals(principals) => principals.as_slice(),
-            ActionContextKey::Principal(principal) => std::slice::from_ref(principal),
-            _ => &[],
-        })
-        .filter_map(|subject| match subject {
-            SubjectRecord::User(user) => UserId::try_from(user.user.as_str()).ok(),
-            SubjectRecord::Role(_) => None,
-        });
-    subjects.chain(in_actions).collect()
+        for subject in in_actions {
+            named.add_record(subject);
+        }
+        named
+    }
 }
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is
