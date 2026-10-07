@@ -477,6 +477,23 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     assert_eq!(empty_commit["entities"], serde_json::json!([]));
     assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
 
+    // The two renames across namespaces, each a `move` naming its destination namespace.
+    let mut moves = records
+        .iter()
+        .flat_map(|record| record["actions"].as_array().cloned().unwrap_or_default())
+        .filter(|action| action["action_name"] == "move")
+        .collect::<Vec<_>>();
+    moves.sort_by_key(ToString::to_string);
+    assert_eq!(
+        moves,
+        vec![
+            serde_json::json!({"action_name": "move", "destination": ["audit_corpus"]}),
+            serde_json::json!({"action_name": "move", "destination": ["audit_corpus_moves"]}),
+        ],
+        "move records:\n{}",
+        describe(&records)
+    );
+
     eprintln!("audit corpus: {} record(s) checked", records.len());
 }
 

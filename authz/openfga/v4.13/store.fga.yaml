@@ -243,6 +243,78 @@ tuples:
   - user: user:view_1_modify_only
     relation: modify
     object: lakekeeper_view:warehouse_1/view_1
+  # Hierarchies: warehouse_1 -> namespace_1_3 (managed access) -> namespace_1_3_1.
+  # Managed access set on a namespace inside an unmanaged warehouse.
+  - user: warehouse:warehouse_1
+    relation: parent
+    object: namespace:namespace_1_3
+  - user: namespace:namespace_1_3
+    relation: namespace
+    object: warehouse:warehouse_1
+  - user: namespace:namespace_1_3
+    relation: parent
+    object: namespace:namespace_1_3_1
+  - user: namespace:namespace_1_3_1
+    relation: child
+    object: namespace:namespace_1_3
+  - user: user:*
+    relation: managed_access
+    object: namespace:namespace_1_3
+  - user: role:*
+    relation: managed_access
+    object: namespace:namespace_1_3
+  # Accepting moved objects: `create` alone, and `create` with `manage_grants`.
+  - user: user:namespace_1_3_create_only
+    relation: create
+    object: namespace:namespace_1_3
+  - user: user:namespace_1_3_grant_creator
+    relation: create
+    object: namespace:namespace_1_3
+  - user: user:namespace_1_3_grant_creator
+    relation: manage_grants
+    object: namespace:namespace_1_3
+  - user: user:warehouse_2_create_only
+    relation: create
+    object: warehouse:warehouse_2
+  - user: user:warehouse_2_grant_creator
+    relation: create
+    object: warehouse:warehouse_2
+  - user: user:warehouse_2_grant_creator
+    relation: manage_grants
+    object: warehouse:warehouse_2
+  # Owns a table in an unmanaged namespace and may create in two others.
+  - user: user:table_1_owner_creator
+    relation: ownership
+    object: lakekeeper_table:warehouse_1/table_1
+  - user: user:table_1_owner_creator
+    relation: create
+    object: namespace:namespace_1_2
+  - user: user:table_1_owner_creator
+    relation: create
+    object: namespace:namespace_1_3
+  # table_1_3 under managed-access namespace_1_3, owned by a role and by a user, both of
+  # which may create in namespace_1_3.
+  - user: lakekeeper_table:warehouse_1/table_1_3
+    relation: child
+    object: namespace:namespace_1_3
+  - user: namespace:namespace_1_3
+    relation: parent
+    object: lakekeeper_table:warehouse_1/table_1_3
+  - user: user:role_mover
+    relation: assignee
+    object: role:mover
+  - user: role:mover#assignee
+    relation: ownership
+    object: lakekeeper_table:warehouse_1/table_1_3
+  - user: role:mover#assignee
+    relation: create
+    object: namespace:namespace_1_3
+  - user: user:table_1_3_owner
+    relation: ownership
+    object: lakekeeper_table:warehouse_1/table_1_3
+  - user: user:table_1_3_owner
+    relation: create
+    object: namespace:namespace_1_3
 
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
@@ -698,8 +770,9 @@ tests:
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: true
-          # The mirror image: create without manage_grants.
-          can_accept_moved_namespace: false
+          # Create without manage_grants: enough to accept, as warehouse_1 is not
+          # under managed access.
+          can_accept_moved_namespace: true
           can_delete: true
           can_update_storage: true
           can_update_storage_credential: true
@@ -726,8 +799,8 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
-          can_accept_moved_namespace: false
-          can_accept_moved_tabular: false
+          can_accept_moved_namespace: true
+          can_accept_moved_tabular: true
           can_delete: true
           can_move: false
           can_update_properties: true
@@ -2015,7 +2088,7 @@ tests:
           describe_effective: true
           visible_below: false
           can_get_metadata: true
-  - name: moving a tabular needs manage_grants and modify, accepting one needs manage_grants and create
+  - name: moving a tabular needs manage_grants and modify, accepting one needs create, plus manage_grants under managed access
     check:
       # Under managed access, owning the table supplies modify but not manage_grants.
       - user: user:warehouse_2/table_2_2_owner
@@ -2063,11 +2136,13 @@ tests:
         assertions:
           can_rename: true
           can_move: false
+      # Outside managed access, `create` alone accepts a moved object.
       - user: user:namespace_1_2_create_only
         object: namespace:namespace_1_2
         assertions:
           can_create_table: true
-          can_accept_moved_tabular: false
+          can_accept_moved_namespace: true
+          can_accept_moved_tabular: true
       # Outside managed access, ownership confers both.
       - user: user:warehouse_1_owner
         object: lakekeeper_generic_table:warehouse_1/generic_table_1
@@ -2078,3 +2153,105 @@ tests:
         object: namespace:namespace_1_2
         assertions:
           can_accept_moved_tabular: true
+  - name: accepting a moved object needs manage_grants only under managed access
+    check:
+      # An owner of a table in an unmanaged namespace may move it, and `create` on an
+      # unmanaged destination accepts it.
+      - user: user:table_1_owner_creator
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_move: true
+      - user: user:table_1_owner_creator
+        object: namespace:namespace_1_2
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: true
+          can_accept_moved_namespace: true
+      # Managed access set on the destination itself.
+      - user: user:table_1_owner_creator
+        object: namespace:namespace_1_3
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: false
+          can_accept_moved_namespace: false
+      - user: user:namespace_1_3_create_only
+        object: namespace:namespace_1_3
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: false
+          can_accept_moved_namespace: false
+      - user: user:namespace_1_3_grant_creator
+        object: namespace:namespace_1_3
+        assertions:
+          can_accept_moved_tabular: true
+          can_accept_moved_namespace: true
+      # Managed access inherited from an ancestor namespace.
+      - user: user:namespace_1_3_create_only
+        object: namespace:namespace_1_3_1
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: false
+          can_accept_moved_namespace: false
+      - user: user:namespace_1_3_grant_creator
+        object: namespace:namespace_1_3_1
+        assertions:
+          can_accept_moved_tabular: true
+          can_accept_moved_namespace: true
+      # Managed access inherited from the warehouse, and on the warehouse root.
+      - user: user:warehouse_2_create_only
+        object: warehouse:warehouse_2
+        assertions:
+          can_create_namespace: true
+          can_accept_moved_namespace: false
+      - user: user:warehouse_2_create_only
+        object: namespace:namespace_2_2
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: false
+          can_accept_moved_namespace: false
+      - user: user:warehouse_2_grant_creator
+        object: warehouse:warehouse_2
+        assertions:
+          can_accept_moved_namespace: true
+      - user: user:warehouse_2_grant_creator
+        object: namespace:namespace_2_2
+        assertions:
+          can_accept_moved_tabular: true
+          can_accept_moved_namespace: true
+      # On an unmanaged warehouse root, `create` alone accepts a moved namespace.
+      - user: user:warehouse_1_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_create_namespace: true
+          can_accept_moved_namespace: true
+  - name: managed access does not apply to a role's assignees, so the server refuses moves under an assumed role
+    check:
+      # Managed access is stored as `user:*` and `role:*`; a `role:…#assignee` userset
+      # matches neither, so for a role the model sees no managed access. The server
+      # therefore denies `can_move` and `can_accept_moved_*` for a role, and refuses
+      # grants and managed-access changes below the warehouse under an assumed role.
+      - user: role:mover#assignee
+        object: namespace:namespace_1_3
+        assertions:
+          managed_access_inheritance: false
+          can_create_table: true
+          can_accept_moved_tabular: true
+          can_accept_moved_namespace: true
+      - user: role:mover#assignee
+        object: lakekeeper_table:warehouse_1/table_1_3
+        assertions:
+          manage_grants: true
+          can_move: true
+      # The same grants held by a user: managed access applies.
+      - user: user:table_1_3_owner
+        object: namespace:namespace_1_3
+        assertions:
+          managed_access_inheritance: true
+          can_create_table: true
+          can_accept_moved_tabular: false
+          can_accept_moved_namespace: false
+      - user: user:table_1_3_owner
+        object: lakekeeper_table:warehouse_1/table_1_3
+        assertions:
+          manage_grants: false
+          can_move: false

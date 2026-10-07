@@ -39,7 +39,8 @@ type warehouse
 
     # ------------------ Actions ------------------
     define can_create_namespace: create_effective
-    define can_accept_moved_namespace: manage_grants and create_effective
+    # See the namespace twin.
+    define can_accept_moved_namespace: (create_effective but not managed_access_inheritance) or (manage_grants and create_effective)
     # Delete this warehouse permanently
     define can_delete: modify_effective
     define can_update_storage: modify_effective

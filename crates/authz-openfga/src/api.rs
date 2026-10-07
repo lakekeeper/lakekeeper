@@ -1118,13 +1118,20 @@ async fn set_namespace_managed_access<C: CatalogStore, S: SecretStore>(
         PermissionAction::CanSetManagedAccess,
     );
 
-    let authz_result = authorizer
-        .require_action(
-            event_ctx.request_metadata(),
-            AllNamespaceRelations::CanSetManagedAccess,
-            &namespace_id.to_openfga(),
-        )
-        .await;
+    // Below the warehouse, managed access cannot be evaluated for a role, as for grants.
+    let authz_result = if matches!(event_ctx.request_metadata().actor(), Actor::Role { .. }) {
+        Err(OpenFGAError::NotSupportedWithAssumedRole(
+            "Changing managed access of a namespace",
+        ))
+    } else {
+        authorizer
+            .require_action(
+                event_ctx.request_metadata(),
+                AllNamespaceRelations::CanSetManagedAccess,
+                &namespace_id.to_openfga(),
+            )
+            .await
+    };
 
     let _ = event_ctx.emit_authz(authz_result)?;
 

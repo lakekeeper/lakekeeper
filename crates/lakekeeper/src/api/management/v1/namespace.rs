@@ -84,13 +84,10 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     // Two checks at the destination, not one.
     //
     // `CreateNamespace` answers "may a child be added here" — the structural question, and
-    // the same one `create_namespace` asks. `AcceptMovedNamespace` answers "may grants be
-    // issued here", which `create` does not imply: an inbound move carries existing contents
-    // and their direct grants, so allowing it on `create` alone would let a namespace be
-    // populated and granted under a permissive parent and then moved into a `managed_access`
-    // subtree — issuing grants there that the actor could never have issued directly.
-    //
-    // Net rule: the actor must be able to grant at *both* ends.
+    // the same one `create_namespace` asks. `AcceptMovedNamespace` answers "may a namespace
+    // arrive here with its contents and their direct grants". An authorizer may require grant
+    // authority for it; otherwise a namespace could be populated and granted under a
+    // permissive parent and then moved into a `managed_access` subtree.
     //
     // `None` parent means the warehouse root, mirroring `authorize_namespace_create`. The
     // root needs the same treatment: a `managed_access` warehouse is equally a destination
@@ -364,8 +361,8 @@ where
     ///
     /// Requires `move` on the namespace itself, plus both `create_namespace` and
     /// `accept_moved_namespace` on the destination parent (or on the warehouse, when moving
-    /// to the root) — grant authority on top of the ordinary write privilege at each end.
-    /// See [`authorize_namespace_move`].
+    /// to the root). An authorizer may require grant authority at the destination; OpenFGA
+    /// does when it is under managed access. See [`authorize_namespace_move`].
     ///
     /// # Authorization-hierarchy ordering
     ///

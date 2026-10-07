@@ -11,7 +11,7 @@ renameTable, renameView, renameGenericTable into another namespace
 namespace  accept_moved_tabular   source
 ```
 
-The record of such a rename names `move` on the renamed entity, refused or allowed, on replays as well. `destination` holds the path of the destination namespace; the entity's new name is not part of it. A rename within one namespace is still recorded as `rename`. Whether the namespace changes is decided on the paths in the request, ignoring ASCII case: two paths that differ only in the case of a non-ASCII letter are recorded as `move`.
+The record of such a rename names `move` on the renamed entity, refused or allowed, on replays as well. `destination` holds the path of the destination namespace; the entity's new name is not part of it, unlike for a namespace `move`, where `destination` is the full new path. A rename within one namespace is still recorded as `rename`. Whether the namespace changes is decided on the paths in the request, ignoring upper and lower case of ASCII letters: two paths that differ only in the case of a non-ASCII letter are recorded as `move`.
 
 `accept_moved_tabular` is the check on the destination namespace. `source` holds the path of the namespace the entity is moved from. It appears in records of permission checks that name it, such as `/management/v1/action/batch-check`.
 

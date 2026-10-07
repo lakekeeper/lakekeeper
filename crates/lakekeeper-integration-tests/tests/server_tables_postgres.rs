@@ -2981,10 +2981,17 @@ async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) 
     assert_advertises_client_planning(registered.config.as_ref(), "registerTable");
 }
 
-/// Register authorizes `create_table` on the namespace before it reads the metadata file:
-/// a missing file is reported as forbidden, not as not found.
-#[sqlx::test]
-async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: PgPool) {
+/// A namespace `reg_ns` holding table `existing`, and the metadata locations of `existing`
+/// and of a file that does not exist next to it.
+async fn register_table_setup(
+    pool: PgPool,
+) -> (
+    ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    HidingAuthorizer,
+    NamespaceParameters,
+    String,
+    String,
+) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = setup_simple(
         pool,
@@ -3005,13 +3012,22 @@ async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: 
         "{}/does-not-exist.metadata.json",
         existing_location.rsplit_once('/').unwrap().0
     );
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(prefix)),
+        namespace: ns.namespace,
+    };
+    (ctx, authz, ns_params, existing_location, missing_location)
+}
 
-    authz.block_action("namespace:CreateTable");
+/// Register checks that the caller can see the namespace before it reads the metadata file:
+/// a missing file is reported as a namespace the caller cannot see, not as a storage error.
+#[sqlx::test]
+async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: PgPool) {
+    let (ctx, authz, ns_params, _, missing_location) = register_table_setup(pool).await;
+
+    authz.block_action("namespace:GetMetadata");
     let err = CatalogServer::register_table(
-        NamespaceParameters {
-            prefix: Some(Prefix(prefix)),
-            namespace: ns.namespace,
-        },
+        ns_params,
         iceberg_ext::catalog::rest::RegisterTableRequest::builder()
             .name("registered".to_string())
             .metadata_location(missing_location)
@@ -3022,6 +3038,88 @@ async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: 
     )
     .await
     .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchNamespaceException");
+}
+
+/// `create_table` is checked after the metadata file is read: a caller who can see the
+/// namespace but may not create tables in it is refused.
+#[sqlx::test]
+async fn test_register_table_requires_create_table(pool: PgPool) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+
+    authz.block_action("namespace:CreateTable");
+    let err = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("registered".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent::new(ns_params.namespace, "registered".to_string()),
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
+}
+
+/// `create_table` is checked before the file's contents are validated: a caller who may
+/// not create tables learns nothing about a file the warehouse would refuse.
+#[sqlx::test]
+async fn test_register_table_checks_create_table_before_validating_the_file(pool: PgPool) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+    ManagementApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V1],
+            default_format_version: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let register = || {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let err = register().await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+
+    authz.block_action("namespace:CreateTable");
+    let err = register().await.unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "NamespaceActionForbidden");
 }

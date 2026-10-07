@@ -61,6 +61,7 @@ const AWS_COMMERCIAL_PARTITION: &str = "aws";
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
+        .timeout(CREDENTIALS_REQUEST_TIMEOUT)
         // Serves the Alibaba Cloud STS and Cloudflare R2 credential calls. Both carry
         // credentials and the STS endpoint can be user-configured, so a redirect is not
         // followed: it would send them to a host nobody configured.
@@ -770,39 +771,33 @@ impl S3Profile {
         // Parse the response
         if !response.status().is_success() {
             let status_code = response.status();
-            let body = read_body_capped(response, CREDENTIALS_ERROR_BODY_LIMIT).await;
+            let body = read_error_body(response, CLOUDFLARE_R2).await;
+            let rejection = cloudflare_r2_rejection(status_code, &body);
             tracing::debug!(
-                "Failed to get temporary credentials from Cloudflare R2 ({status_code}): {body}",
+                http_status = rejection.http_status(),
+                code = rejection.code(),
+                api_message = rejection.message(),
+                "Failed to get temporary credentials from Cloudflare R2",
             );
             return Err(CredentialsError::ShortTermCredential {
                 source: None,
-                reason: format!(
-                    "Failed to get temporary credentials from Cloudflare R2: HTTP {}",
-                    status_code.as_u16()
-                ),
+                reason: credentials_failure_reason(CLOUDFLARE_R2, &rejection),
             });
         }
 
-        let credentials: serde_json::Value =
-            response
-                .json()
-                .await
-                .map_err(|e| CredentialsError::ShortTermCredential {
-                    source: Some(Box::new(e)),
-                    reason:
-                        "Failed to parse temporary credentials response from Cloudflare R2 as json."
-                            .to_string(),
-                })?;
-
-        // Extract credentials from the response
-        let tmp_credentials: R2TemporaryCredentialsResponse = serde_json::from_value(credentials)
-            .map_err(|e| {
-            CredentialsError::ShortTermCredential {
+        let body = read_body_capped(response, CREDENTIALS_BODY_LIMIT)
+            .await
+            .map_err(|e| CredentialsError::ShortTermCredential {
                 source: Some(Box::new(e)),
+                reason: "Failed to read temporary credentials response from Cloudflare R2."
+                    .to_string(),
+            })?;
+        let tmp_credentials: R2TemporaryCredentialsResponse =
+            parse_json_body(&body).map_err(|e| CredentialsError::ShortTermCredential {
+                source: Some(e),
                 reason: "Failed to parse temporary credentials response from Cloudflare R2."
                     .to_string(),
-            }
-        })?;
+            })?;
 
         // Return the credentials
         Ok(aws_sdk_sts::types::Credentials::builder()
@@ -888,25 +883,33 @@ impl S3Profile {
 
         if !response.status().is_success() {
             let status_code = response.status();
-            let body = read_body_capped(response, CREDENTIALS_ERROR_BODY_LIMIT).await;
+            let body = read_error_body(response, ALIBABA_CLOUD_STS).await;
+            let rejection = aliyun_sts_rejection(status_code, &body);
             tracing::debug!(
-                "Failed to get temporary credentials from Alibaba Cloud STS ({status_code}): {body}",
+                http_status = rejection.http_status(),
+                code = rejection.code(),
+                sts_message = rejection.message(),
+                request_id = rejection.request_id(),
+                "Failed to get temporary credentials from Alibaba Cloud STS",
             );
             return Err(CredentialsError::ShortTermCredential {
                 source: None,
-                reason: aliyun_sts_failure_reason(status_code, &body),
+                reason: credentials_failure_reason(ALIBABA_CLOUD_STS, &rejection),
             });
         }
 
+        let body = read_body_capped(response, CREDENTIALS_BODY_LIMIT)
+            .await
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                source: Some(Box::new(e)),
+                reason: "Failed to read AssumeRole response from Alibaba Cloud STS.".to_string(),
+            })?;
         let tmp_credentials: AliyunAssumeRoleResponse =
-            response
-                .json()
-                .await
-                .map_err(|e| CredentialsError::ShortTermCredential {
-                    source: Some(Box::new(e)),
-                    reason: "Failed to parse AssumeRole response from Alibaba Cloud STS as json."
-                        .to_string(),
-                })?;
+            parse_json_body(&body).map_err(|e| CredentialsError::ShortTermCredential {
+                source: Some(e),
+                reason: "Failed to parse AssumeRole response from Alibaba Cloud STS as json."
+                    .to_string(),
+            })?;
         let creds = tmp_credentials.credentials;
 
         // Use the expiration STS actually granted rather than recomputing `now + DurationSeconds`:
@@ -1633,21 +1636,55 @@ struct AliyunStsCredentials {
     expiration: String,
 }
 
+/// Longest a credentials request may take, including reading the response.
+const CREDENTIALS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How much of a failed credentials response is read. The errors these endpoints return are
 /// far smaller.
 const CREDENTIALS_ERROR_BODY_LIMIT: usize = 64 * 1024;
 
+/// How much of a successful credentials response is read. The credentials these endpoints
+/// return are far smaller.
+const CREDENTIALS_BODY_LIMIT: usize = 1024 * 1024;
+
+const ALIBABA_CLOUD_STS: &str = "Alibaba Cloud STS";
+const CLOUDFLARE_R2: &str = "Cloudflare R2";
+
 /// Up to `limit` bytes of the response body, read chunk by chunk; the rest is not read.
-async fn read_body_capped(mut response: reqwest::Response, limit: usize) -> String {
+async fn read_body_capped(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, reqwest::Error> {
     let mut body = Vec::new();
     while body.len() < limit {
-        let Ok(Some(chunk)) = response.chunk().await else {
+        let Some(chunk) = response.chunk().await? else {
             break;
         };
         let take = chunk.len().min(limit - body.len());
         body.extend_from_slice(&chunk[..take]);
     }
-    String::from_utf8_lossy(&body).into_owned()
+    Ok(body)
+}
+
+/// `body` as JSON. It must be UTF-8 throughout, including values that are not read.
+fn parse_json_body<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+) -> Result<T, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    Ok(serde_json::from_str(std::str::from_utf8(body)?)?)
+}
+
+/// The body of a failed credentials call from `endpoint`, for parsing its error; empty when
+/// it cannot be read.
+async fn read_error_body(response: reqwest::Response, endpoint: &str) -> Vec<u8> {
+    read_body_capped(response, CREDENTIALS_ERROR_BODY_LIMIT)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::debug!(
+                error = %e.without_url(),
+                "Failed to read the error response from {endpoint}"
+            );
+            Vec::new()
+        })
 }
 
 /// Error response from the Alibaba Cloud STS API (`Format=JSON`).
@@ -1659,20 +1696,58 @@ struct AliyunStsErrorResponse {
     request_id: Option<String>,
 }
 
-/// What a failed Alibaba Cloud STS call returned, for the caller: the status plus the code,
-/// message and request id parsed from the JSON error. The raw body is never included.
-fn aliyun_sts_failure_reason(status: reqwest::StatusCode, body: &str) -> String {
-    let error = serde_json::from_str::<AliyunStsErrorResponse>(body).ok();
+/// The status plus the code, message and request id parsed from an Alibaba Cloud STS JSON
+/// error.
+fn aliyun_sts_rejection(status: reqwest::StatusCode, body: &[u8]) -> StsRejection {
+    let error = serde_json::from_slice::<AliyunStsErrorResponse>(body).ok();
     let (code, message, request_id) = error
         .map(|e| (e.code, e.message, e.request_id))
         .unwrap_or_default();
-    let rejection = StsRejection::new(Some(status.as_u16()), code, message, request_id);
+    StsRejection::new(Some(status.as_u16()), code, message, request_id)
+}
+
+/// Error response from the Cloudflare API, e.g.
+/// `{"success": false, "errors": [{"code": 10000, "message": "Authentication error"}]}`.
+#[derive(Debug, Deserialize)]
+struct CloudflareErrorResponse {
+    #[serde(default)]
+    errors: Vec<CloudflareError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudflareError {
+    code: Option<serde_json::Value>,
+    message: Option<String>,
+}
+
+/// The status plus the code and message of the first error parsed from a Cloudflare API
+/// error.
+fn cloudflare_r2_rejection(status: reqwest::StatusCode, body: &[u8]) -> StsRejection {
+    let error = serde_json::from_slice::<CloudflareErrorResponse>(body)
+        .ok()
+        .and_then(|e| e.errors.into_iter().next());
+    let (code, message) = error
+        .map(|e| {
+            let code = match e.code {
+                Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+                Some(serde_json::Value::String(s)) => Some(s),
+                _ => None,
+            };
+            (code, e.message)
+        })
+        .unwrap_or_default();
+    StsRejection::new(Some(status.as_u16()), code, message, None)
+}
+
+/// What a failed credentials call to `endpoint` returned, for the caller. The raw body is
+/// never included.
+fn credentials_failure_reason(endpoint: &str, rejection: &StsRejection) -> String {
     let request_id = rejection
         .request_id()
         .map(|id| format!(" (request ID: {id})"))
         .unwrap_or_default();
     format!(
-        "Failed to get temporary credentials from Alibaba Cloud STS: {}{request_id}",
+        "Failed to get temporary credentials from {endpoint}: {}{request_id}",
         rejection.summary()
     )
 }
@@ -2598,7 +2673,10 @@ pub(crate) mod test {
         })
         .to_string();
         assert_eq!(
-            aliyun_sts_failure_reason(reqwest::StatusCode::FORBIDDEN, &body),
+            credentials_failure_reason(
+                ALIBABA_CLOUD_STS,
+                &aliyun_sts_rejection(reqwest::StatusCode::FORBIDDEN, body.as_bytes())
+            ),
             "Failed to get temporary credentials from Alibaba Cloud STS: NoPermission (HTTP 403): \
              You are not authorized to do this action. (request ID: \
              6894B13B-6D71-4EF5-88FA-F32781734A7F)"
@@ -2608,11 +2686,61 @@ pub(crate) mod test {
     #[test]
     fn test_aliyun_sts_failure_omits_an_unstructured_body() {
         assert_eq!(
-            aliyun_sts_failure_reason(
-                reqwest::StatusCode::BAD_GATEWAY,
-                "<html>internal page</html>"
+            credentials_failure_reason(
+                ALIBABA_CLOUD_STS,
+                &aliyun_sts_rejection(
+                    reqwest::StatusCode::BAD_GATEWAY,
+                    b"<html>internal page</html>"
+                )
             ),
             "Failed to get temporary credentials from Alibaba Cloud STS: HTTP 502"
+        );
+    }
+
+    #[test]
+    fn test_cloudflare_r2_failure_keeps_only_the_parsed_error() {
+        let body = serde_json::json!({
+            "success": false,
+            "errors": [
+                {"code": 10000, "message": "Authentication error"},
+                {"code": 10001, "message": "Second error"}
+            ],
+            "messages": [],
+            "result": null
+        })
+        .to_string();
+        let rejection = cloudflare_r2_rejection(reqwest::StatusCode::FORBIDDEN, body.as_bytes());
+        assert_eq!(rejection.code(), Some("10000"));
+        assert_eq!(rejection.message(), Some("Authentication error"));
+        assert_eq!(rejection.request_id(), None);
+        assert_eq!(
+            credentials_failure_reason(CLOUDFLARE_R2, &rejection),
+            "Failed to get temporary credentials from Cloudflare R2: 10000 (HTTP 403): \
+             Authentication error"
+        );
+    }
+
+    #[test]
+    fn test_cloudflare_r2_failure_omits_an_unstructured_body() {
+        assert_eq!(
+            credentials_failure_reason(
+                CLOUDFLARE_R2,
+                &cloudflare_r2_rejection(
+                    reqwest::StatusCode::BAD_GATEWAY,
+                    b"<html>internal page</html>"
+                )
+            ),
+            "Failed to get temporary credentials from Cloudflare R2: HTTP 502"
+        );
+        assert_eq!(
+            credentials_failure_reason(
+                CLOUDFLARE_R2,
+                &cloudflare_r2_rejection(
+                    reqwest::StatusCode::BAD_REQUEST,
+                    br#"{"success": false, "errors": []}"#
+                )
+            ),
+            "Failed to get temporary credentials from Cloudflare R2: HTTP 400"
         );
     }
 
@@ -2621,15 +2749,40 @@ pub(crate) mod test {
         let rejection = StsRejection::new(
             Some(403),
             Some(format!("Access\nDenied{}", "x".repeat(300))),
-            Some("ä".repeat(300)),
+            Some(format!(
+                "a\u{202E}b\u{2028}c\u{200B}d\u{FEFF}e{}",
+                "ä".repeat(3000)
+            )),
             Some("id\u{1b}[31m".to_string()),
         );
         assert_eq!(
             rejection.code(),
-            Some(format!("Access Denied{}", "x".repeat(243)).as_str())
+            Some(format!("Access Denied{}…", "x".repeat(243)).as_str())
         );
-        assert_eq!(rejection.message(), Some("ä".repeat(256).as_str()));
+        assert_eq!(
+            rejection.message(),
+            Some(format!("a b c d e{}…", "ä".repeat(2039)).as_str())
+        );
         assert_eq!(rejection.request_id(), Some("id [31m"));
+    }
+
+    #[test]
+    fn test_sts_rejection_keeps_fields_at_the_limit() {
+        let rejection = StsRejection::new(
+            None,
+            Some("c".repeat(StsRejection::MAX_FIELD_CHARS)),
+            Some("m".repeat(StsRejection::MAX_MESSAGE_CHARS)),
+            Some("Ünïcode-id".to_string()),
+        );
+        assert_eq!(
+            rejection.code(),
+            Some("c".repeat(StsRejection::MAX_FIELD_CHARS).as_str())
+        );
+        assert_eq!(
+            rejection.message(),
+            Some("m".repeat(StsRejection::MAX_MESSAGE_CHARS).as_str())
+        );
+        assert_eq!(rejection.request_id(), Some("Ünïcode-id"));
     }
 
     /// Only the first `limit` bytes of a large body are read.
@@ -2647,38 +2800,16 @@ pub(crate) mod test {
             .send()
             .await
             .unwrap();
-        let body = read_body_capped(response, CREDENTIALS_ERROR_BODY_LIMIT).await;
-        assert_eq!(body, "y".repeat(CREDENTIALS_ERROR_BODY_LIMIT));
+        let body = read_body_capped(response, CREDENTIALS_ERROR_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert_eq!(body, vec![b'y'; CREDENTIALS_ERROR_BODY_LIMIT]);
     }
 
-    /// A redirect from the STS endpoint is a failure, not followed, and its body is not shown.
-    #[tokio::test]
-    async fn test_aliyun_sts_does_not_follow_redirects() {
-        use axum::{Router, http::header::LOCATION, response::IntoResponse, routing::any};
-
-        let credentials = || async {
-            axum::Json(serde_json::json!({
-                "Credentials": {
-                    "AccessKeyId": "STS.id",
-                    "AccessKeySecret": "secret",
-                    "SecurityToken": "token",
-                    "Expiration": "2099-01-01T00:00:00Z"
-                }
-            }))
-        };
-        let router = Router::new()
-            .route(
-                "/",
-                any(|| async {
-                    (
-                        axum::http::StatusCode::FOUND,
-                        [(LOCATION, "/elsewhere")],
-                        "redirect body",
-                    )
-                        .into_response()
-                }),
-            )
-            .route("/elsewhere", any(credentials));
+    /// Requests Alibaba Cloud STS credentials from a local server running `router`.
+    async fn aliyun_sts_credentials_from(
+        router: axum::Router,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2697,7 +2828,7 @@ pub(crate) mod test {
             warehouse_id: crate::WarehouseId::new_random(),
             tabular_id: crate::service::TabularId::Table(crate::service::TableId::new_random()),
         };
-        let err = profile
+        profile
             .get_aliyun_oss_temporary_credentials(
                 &request,
                 S3AccessKeyCredential {
@@ -2707,7 +2838,105 @@ pub(crate) mod test {
                 },
             )
             .await
-            .unwrap_err();
+    }
+
+    fn aliyun_sts_credentials_body(padding: &str) -> serde_json::Value {
+        serde_json::json!({
+            "Padding": padding,
+            "Credentials": {
+                "AccessKeyId": "STS.id",
+                "AccessKeySecret": "secret",
+                "SecurityToken": "token",
+                "Expiration": "2099-01-01T00:00:00Z"
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn test_aliyun_sts_reads_credentials() {
+        use axum::{Router, routing::any};
+
+        let router = Router::new().route(
+            "/",
+            any(|| async { axum::Json(aliyun_sts_credentials_body("")) }),
+        );
+        let credentials = aliyun_sts_credentials_from(router).await.unwrap();
+        assert_eq!(credentials.access_key_id(), "STS.id");
+        assert_eq!(credentials.secret_access_key(), "secret");
+        assert_eq!(credentials.session_token(), "token");
+    }
+
+    /// A success body that is not valid UTF-8 does not parse.
+    #[tokio::test]
+    async fn test_aliyun_sts_refuses_a_body_that_is_not_utf8() {
+        use axum::{Router, routing::any};
+
+        let router = Router::new().route(
+            "/",
+            any(|| async {
+                let mut body = br#"{"Padding": ""#.to_vec();
+                body.push(0xff);
+                body.extend_from_slice(
+                    br#"", "Credentials": {"AccessKeyId": "STS.id", "AccessKeySecret": "secret", "SecurityToken": "token", "Expiration": "2099-01-01T00:00:00Z"}}"#,
+                );
+                body
+            }),
+        );
+        let err = aliyun_sts_credentials_from(router).await.unwrap_err();
+        let CredentialsError::ShortTermCredential { reason, .. } = err else {
+            panic!("expected ShortTermCredential error, got: {err:?}");
+        };
+        assert_eq!(
+            reason,
+            "Failed to parse AssumeRole response from Alibaba Cloud STS as json."
+        );
+    }
+
+    /// A success body larger than the limit is cut, so it does not parse.
+    #[tokio::test]
+    async fn test_aliyun_sts_refuses_an_oversized_body() {
+        use axum::{Router, routing::any};
+
+        let router = Router::new().route(
+            "/",
+            any(|| async {
+                axum::Json(aliyun_sts_credentials_body(
+                    &"y".repeat(CREDENTIALS_BODY_LIMIT),
+                ))
+            }),
+        );
+        let err = aliyun_sts_credentials_from(router).await.unwrap_err();
+        let CredentialsError::ShortTermCredential { reason, .. } = err else {
+            panic!("expected ShortTermCredential error, got: {err:?}");
+        };
+        assert_eq!(
+            reason,
+            "Failed to parse AssumeRole response from Alibaba Cloud STS as json."
+        );
+    }
+
+    /// A redirect from the STS endpoint is a failure, not followed, and its body is not shown.
+    #[tokio::test]
+    async fn test_aliyun_sts_does_not_follow_redirects() {
+        use axum::{Router, http::header::LOCATION, response::IntoResponse, routing::any};
+
+        let router = Router::new()
+            .route(
+                "/",
+                any(|| async {
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [(LOCATION, "/elsewhere")],
+                        "redirect body",
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/elsewhere",
+                any(|| async { axum::Json(aliyun_sts_credentials_body("")) }),
+            );
+        let err = aliyun_sts_credentials_from(router).await.unwrap_err();
         let CredentialsError::ShortTermCredential { reason, .. } = err else {
             panic!("expected ShortTermCredential error, got: {err:?}");
         };

@@ -828,8 +828,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ControlTaskAction::Stop => C::stop_tasks(task_ids, t.transaction()).await?,
             ControlTaskAction::Cancel => {
                 if !event_ctx.resolved().is_empty() {
-                    undropped = C::clear_tabular_deleted_at(
+                    undropped = C::clear_tabular_deleted_at_for_tasks(
                         event_ctx.resolved(),
+                        task_ids,
                         warehouse_id,
                         t.transaction(),
                     )

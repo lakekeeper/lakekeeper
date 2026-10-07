@@ -454,15 +454,30 @@ async fn soft_deleted_table_with_task(pool: PgPool) -> SoftDeletedTable {
     let prefix = warehouse_id.to_string();
     create_ns(ctx.clone(), prefix.clone(), "ns".to_string()).await;
     let table_id = TableId::from(
-        create_table(ctx.clone(), prefix.clone(), "ns", "tbl", false)
+        create_table(ctx.clone(), prefix, "ns", "tbl", false)
             .await
             .unwrap()
             .metadata
             .uuid(),
     );
+    drop_tbl(&ctx, warehouse_id).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    SoftDeletedTable {
+        ctx,
+        authz,
+        project_id: warehouse.project_id,
+        warehouse_id,
+        table_id,
+        task_id: tasks[0],
+    }
+}
+
+/// Soft-delete `ns.tbl`, which schedules its soft-deletion task.
+async fn drop_tbl(ctx: &HidingCtx, warehouse_id: WarehouseId) {
     CatalogServer::drop_table(
         TableParameters {
-            prefix: Some(Prefix(prefix)),
+            prefix: Some(Prefix(warehouse_id.to_string())),
             table: TableIdent::new(NamespaceIdent::new("ns".to_string()), "tbl".to_string()),
         },
         DropParams {
@@ -474,16 +489,19 @@ async fn soft_deleted_table_with_task(pool: PgPool) -> SoftDeletedTable {
     )
     .await
     .unwrap();
-    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
-    assert_eq!(tasks.len(), 1);
-    SoftDeletedTable {
-        ctx,
-        authz,
-        project_id: warehouse.project_id,
+}
+
+async fn undrop_tbl(ctx: &HidingCtx, warehouse_id: WarehouseId, table_id: TableId) {
+    ApiServer::undrop_tabulars(
         warehouse_id,
-        table_id,
-        task_id: tasks[0],
-    }
+        random_request_metadata(),
+        UndropTabularsRequest {
+            targets: vec![TabularId::Table(table_id)],
+        },
+        ctx.clone(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn scheduled_tasks(
@@ -632,6 +650,18 @@ async fn the_only_undrop(
     event
 }
 
+/// Waits briefly, then checks that no undrop event was dispatched.
+async fn no_undrop(events: &mut tokio::sync::mpsc::UnboundedReceiver<UndropTabularEvent>) {
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "no undrop event"
+    );
+}
+
 /// Cancelling a soft-deletion task announces the undrop as `undrop_tabulars` does.
 #[sqlx::test]
 async fn test_cancel_soft_deletion_task_emits_the_undrop(pool: PgPool) {
@@ -763,4 +793,68 @@ async fn test_cancel_soft_deletion_task_together_with_another_task(pool: PgPool)
     );
     let event = the_only_undrop(&mut undrops).await;
     assert_eq!(event.request.targets, vec![TabularId::Table(table_id)]);
+}
+
+/// Cancelling a soft-deletion task that an undrop already cancelled changes nothing and
+/// announces no undrop.
+#[sqlx::test]
+async fn test_cancel_stale_soft_deletion_task_of_an_active_table(pool: PgPool) {
+    let SoftDeletedTable {
+        ctx,
+        warehouse_id,
+        table_id,
+        task_id,
+        ..
+    } = soft_deleted_table_with_task(pool).await;
+    let mut undrops = capture_undrops(&ctx).await;
+    undrop_tbl(&ctx, warehouse_id, table_id).await;
+    let undrop = the_only_undrop(&mut undrops).await;
+    assert_eq!(undrop.request.targets, vec![TabularId::Table(table_id)]);
+
+    cancel_tasks(&ctx, warehouse_id, vec![task_id])
+        .await
+        .unwrap();
+
+    no_undrop(&mut undrops).await;
+    assert_eq!(
+        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+        Vec::<TaskId>::new()
+    );
+    assert_eq!(
+        soft_deleted_names(&ctx, warehouse_id).await,
+        Vec::<String>::new()
+    );
+}
+
+/// Cancelling the soft-deletion task of an earlier drop leaves a table dropped again
+/// soft-deleted, with its newer task still scheduled.
+#[sqlx::test]
+async fn test_cancel_stale_soft_deletion_task_keeps_a_newer_drop(pool: PgPool) {
+    let SoftDeletedTable {
+        ctx,
+        warehouse_id,
+        table_id,
+        task_id: stale_task_id,
+        ..
+    } = soft_deleted_table_with_task(pool).await;
+    let mut undrops = capture_undrops(&ctx).await;
+    undrop_tbl(&ctx, warehouse_id, table_id).await;
+    let undrop = the_only_undrop(&mut undrops).await;
+    assert_eq!(undrop.request.targets, vec![TabularId::Table(table_id)]);
+    drop_tbl(&ctx, warehouse_id).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    let newer_task_id = tasks[0];
+    assert_ne!(newer_task_id, stale_task_id);
+
+    cancel_tasks(&ctx, warehouse_id, vec![stale_task_id])
+        .await
+        .unwrap();
+
+    no_undrop(&mut undrops).await;
+    assert_eq!(
+        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+        vec![newer_task_id]
+    );
+    assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, vec!["tbl"]);
 }

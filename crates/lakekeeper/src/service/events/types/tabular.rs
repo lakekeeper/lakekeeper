@@ -7,7 +7,7 @@ use crate::{
         management::v1::{tasks::ControlTasksRequest, warehouse::UndropTabularsRequest},
     },
     service::{
-        ResolvedWarehouse, TabularId, ViewOrTableInfo,
+        AuthZTabularInfo, ResolvedWarehouse, TabularId, ViewOrTableInfo,
         events::{
             APIEventContext,
             context::{AuthzChecked, Resolved, TabularAction, UserProvidedTabularsIDs},
@@ -63,7 +63,7 @@ impl APIEventContext<WarehouseId, Resolved<Vec<TabularId>>, ControlTasksRequest,
         let event = super::UndropTabularEvent {
             warehouse,
             request: Arc::new(UndropTabularsRequest {
-                targets: self.resolved().clone(),
+                targets: responses.iter().map(AuthZTabularInfo::tabular_id).collect(),
             }),
             responses,
             request_metadata: self.request_metadata.clone(),

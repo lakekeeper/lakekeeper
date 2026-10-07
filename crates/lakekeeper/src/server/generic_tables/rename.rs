@@ -180,7 +180,14 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
             CachePolicy::Skip,
             catalog_state.clone(),
         ),
-        C::get_namespace(warehouse_id, &source.namespace, catalog_state.clone()),
+        // The source is read uncached too: the generic table is loaded within it, so a stale
+        // entry would resolve the two ends to different namespaces on every retry.
+        C::get_namespace_cache_aware(
+            warehouse_id,
+            &source.namespace,
+            CachePolicy::Skip,
+            catalog_state.clone(),
+        ),
     );
 
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;

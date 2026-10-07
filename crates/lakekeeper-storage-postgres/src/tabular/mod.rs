@@ -19,7 +19,7 @@ use lakekeeper::{
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
         TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location, tasks::TaskId,
     },
 };
 use lakekeeper_io::Location;
@@ -1720,13 +1720,42 @@ impl From<FromTabularRowError> for ClearTabularDeletedAtError {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn clear_tabular_deleted_at(
     tabular_ids: &[TabularId],
     warehouse_id: WarehouseId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
+    let undropped = clear_deleted_at(tabular_ids, None, warehouse_id, transaction).await?;
+    let found_ids = undropped
+        .iter()
+        .map(|r| *r.tabular_id())
+        .collect::<std::collections::HashSet<Uuid>>();
+    if let Some(missing_id) = tabular_ids.iter().find(|id| !found_ids.contains(&**id)) {
+        return Err(TabularNotFound::new(warehouse_id, *missing_id).into());
+    }
+    Ok(undropped)
+}
+
+pub(crate) async fn clear_tabular_deleted_at_for_tasks(
+    tabular_ids: &[TabularId],
+    task_ids: &[TaskId],
+    warehouse_id: WarehouseId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
+    clear_deleted_at(tabular_ids, Some(task_ids), warehouse_id, transaction).await
+}
+
+/// Clears `deleted_at` of `tabular_ids`. With `task_ids`, only of soft-deleted tabulars whose
+/// pending soft-deletion task is one of them.
+#[allow(clippy::too_many_lines)]
+async fn clear_deleted_at(
+    tabular_ids: &[TabularId],
+    task_ids: Option<&[TaskId]>,
+    warehouse_id: WarehouseId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
     let tabular_ids_uuid: Vec<Uuid> = tabular_ids.iter().map(|id| **id).collect();
+    let task_ids_uuid: Option<Vec<Uuid>> = task_ids.map(|ids| ids.iter().map(|id| **id).collect());
     let undrop_tabular_informations = sqlx::query_as!(
         TabularRowWithDeletion,
         r#"WITH locked_tabulars AS (
@@ -1736,6 +1765,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             WHERE n.warehouse_id = $2
                 AND t.warehouse_id = $2
                 AND t.tabular_id = ANY($1::uuid[])
+                AND ($3::uuid[] IS NULL OR t.deleted_at IS NOT NULL)
             FOR UPDATE OF t
         ),
         locked_tasks AS (
@@ -1753,6 +1783,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             FROM locked_tabulars lt
             LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id
             WHERE t.tabular_id = lt.tabular_id AND t.warehouse_id = $2
+                AND ($3::uuid[] IS NULL OR lta.task_id = ANY($3::uuid[]))
             RETURNING
                 t.tabular_id,
                 t.name as tabular_name,
@@ -1824,6 +1855,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         "#,
         &tabular_ids_uuid,
         *warehouse_id,
+        task_ids_uuid.as_deref(),
     )
     .fetch_all(&mut **transaction)
     .await
@@ -1838,14 +1870,6 @@ pub(crate) async fn clear_tabular_deleted_at(
             _ => e.into_catalog_backend_error().into(),
         }
     })?;
-
-    let found_ids = undrop_tabular_informations
-        .iter()
-        .map(|r| r.tabular_id)
-        .collect::<std::collections::HashSet<Uuid>>();
-    if let Some(missing_id) = tabular_ids.iter().find(|id| !found_ids.contains(&**id)) {
-        return Err(TabularNotFound::new(warehouse_id, *missing_id).into());
-    }
 
     undrop_tabular_informations
         .into_iter()

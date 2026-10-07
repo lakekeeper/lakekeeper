@@ -379,8 +379,8 @@ When a field appears:
 | `purge`                 | Boolean | `true` when the client asked to purge the data          |
 | `recursive`             | Boolean | `true` when the client asked for a recursive delete     |
 | `target_refs`           | Array  | Commit only. The branch or tag references the commit targets; `[]` when it names none |
-| `source`                | Array  | The namespace path the entity is being moved from        |
-| `destination`           | Array  | The namespace path the entity is being moved to          |
+| `source`                | Array  | Where the entity is being moved from. For a namespace, its current full path. For a table, view or generic table, the path of the namespace it leaves |
+| `destination`           | Array  | Where the entity is being moved to. For a namespace, its full new path. For a table, view or generic table, the path of the destination namespace, without the new name |
 | `update_kinds`          | Array  | Commit only. The kinds of update the commit contains; `[]` when it names none |
 | `requested_provider_id` | String | The role provider the client named                   |
 | `requested_source_id`   | String | The source identifier the client named               |

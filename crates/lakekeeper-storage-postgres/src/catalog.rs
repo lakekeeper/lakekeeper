@@ -116,10 +116,10 @@ use crate::{
     namespace::{get_namespaces_by_id, get_namespaces_by_name, set_namespace_protected},
     role::{search_role, update_role_source_system},
     tabular::{
-        clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
-        get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
-        mark_tabular_as_deleted, rename_tabular, repair_tabular_namespace_path_casing,
-        search_tabular, set_tabular_protected,
+        clear_tabular_deleted_at, clear_tabular_deleted_at_for_tasks, drop_tabular,
+        get_tabular_infos_by_idents, get_tabular_infos_by_ids, get_tabular_infos_by_s3_location,
+        list_tabulars, mark_tabular_as_deleted, rename_tabular,
+        repair_tabular_namespace_path_casing, search_tabular, set_tabular_protected,
         table::{commit_table_transaction, create_table},
         view::{commit_existing_view, create_view, load_view},
     },
@@ -345,6 +345,15 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
         clear_tabular_deleted_at(tabular_ids, warehouse_id, transaction).await
+    }
+
+    async fn clear_tabular_deleted_at_for_tasks_impl(
+        tabular_ids: &[TabularId],
+        task_ids: &[TaskId],
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
+        clear_tabular_deleted_at_for_tasks(tabular_ids, task_ids, warehouse_id, transaction).await
     }
 
     async fn mark_tabular_as_deleted_impl(

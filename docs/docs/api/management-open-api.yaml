@@ -5892,18 +5892,17 @@ paths:
         single-element path moves the namespace to the warehouse root. The path must not be
         empty.
 
-        Requires grant authority at **both** ends, because re-parenting makes the namespace's
-        contents inherit the destination subtree's permissions without any assignment being
-        recorded:
+        Requires:
 
         - `move` on the namespace being moved,
         - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
           the warehouse, when moving to the root).
 
-        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
-        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
-        alone is not sufficient at the destination: it authorizes adding an *empty* child,
-        whereas a move arrives carrying existing contents and their grants.
+        Re-parenting makes the namespace's contents inherit the destination subtree's
+        permissions without any assignment being recorded, and the namespace arrives carrying
+        its contents and their grants. With OpenFGA, `move` requires `manage_grants` and
+        `modify`; `accept_moved_namespace` requires `create`, plus `manage_grants` when the
+        destination is under managed access.
 
         Constraints:
         - Namespaces that contain child namespaces cannot be moved.
@@ -10445,8 +10444,8 @@ components:
     LakekeeperGenericTableActionMove:
       type: object
       description: |-
-        Rename this generic table into another namespace. Such a rename is recorded under this
-        action; `rename` is asked as well.
+        Rename this generic table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
 
         The move changes which grants the generic table inherits, as moving a namespace does, so it
         is gated on grant authority in addition to write access. The destination is gated by
@@ -10572,10 +10571,8 @@ components:
 
         Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:
@@ -12137,8 +12134,8 @@ components:
     LakekeeperTableActionMove:
       type: object
       description: |-
-        Rename this table into another namespace. Such a rename is recorded under this
-        action; `rename` is asked as well.
+        Rename this table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
 
         The move changes which grants the table inherits, as moving a namespace does, so it
         is gated on grant authority in addition to write access. The destination is gated by
@@ -12606,8 +12603,8 @@ components:
     LakekeeperViewActionMove:
       type: object
       description: |-
-        Rename this view into another namespace. Such a rename is recorded under this
-        action; `rename` is asked as well.
+        Rename this view into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
 
         The move changes which grants the view inherits, as moving a namespace does, so it
         is gated on grant authority in addition to write access. The destination is gated by
@@ -12734,10 +12731,8 @@ components:
 
         Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:

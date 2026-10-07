@@ -164,7 +164,7 @@ This optimization is transparent — it produces the same results as per-resourc
 
 ## Context Forwarding
 
-The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:
+The OPA bridge forwards resource names and paths to Lakekeeper's batch-check API for create actions and for moves. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, or on where a table or view is moved from and to:
 
 | Trino Operation | Lakekeeper Action | Name Forwarded |
 |-----------------|-------------------|----------------|
@@ -172,7 +172,12 @@ The OPA bridge forwards resource names to Lakekeeper's batch-check API for creat
 | `CreateSchema` (nested) | `create_namespace` (parent namespace) | Child schema name |
 | `CreateTable` | `create_table` (namespace) | Table name |
 | `CreateView` / `CreateMaterializedView` | `create_view` (namespace) | View name |
+| `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
 
 Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded.
+
+A rename into another catalog is refused.
+
+Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

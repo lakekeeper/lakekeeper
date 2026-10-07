@@ -206,7 +206,8 @@ pub enum ActionContextKey {
     CreatedBefore(String),
     /// The number of entries the request asked to revoke, before deduplication.
     Deletes(i64),
-    /// The namespace path the entity is being moved to.
+    /// Where the entity is being moved to: for a namespace, its full new path; for a table,
+    /// view or generic table, the path of the destination namespace, without the new name.
     Destination(Vec<String>),
     /// `true` when the call only reports what it would do and changes nothing.
     DryRun(bool),
@@ -248,7 +249,8 @@ pub enum ActionContextKey {
     ResourceTypes(Vec<Wire<ResourceType>>),
     /// `included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are.
     RootLevel(Wire<RootLevelGrants>),
-    /// The namespace path the entity is being moved from.
+    /// Where the entity is being moved from: for a namespace, its current full path; for a
+    /// table, view or generic table, the path of the namespace it leaves.
     Source(Vec<String>),
     /// The table id the client requested.
     TableId(String),

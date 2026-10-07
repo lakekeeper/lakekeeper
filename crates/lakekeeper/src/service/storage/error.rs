@@ -371,11 +371,15 @@ pub struct StsRejection {
 }
 
 impl StsRejection {
-    /// Longest `code`, `message` or `request_id` kept, in characters.
+    /// Longest `code` or `request_id` kept, in characters.
     pub const MAX_FIELD_CHARS: usize = 256;
+    /// Longest `message` kept, in characters.
+    pub const MAX_MESSAGE_CHARS: usize = 2048;
 
-    /// The fields come from the endpoint, so each is cut to [`Self::MAX_FIELD_CHARS`] and
-    /// its control characters are replaced by spaces.
+    /// The fields come from the endpoint: `message` is cut to [`Self::MAX_MESSAGE_CHARS`],
+    /// `code` and `request_id` to [`Self::MAX_FIELD_CHARS`], and a cut field ends in `…`.
+    /// Control characters, line and paragraph separators and invisible formatting
+    /// characters are replaced by spaces.
     #[must_use]
     pub fn new(
         http_status: Option<u16>,
@@ -383,19 +387,11 @@ impl StsRejection {
         message: Option<String>,
         request_id: Option<String>,
     ) -> Self {
-        let clean = |value: Option<String>| {
-            value.map(|v| {
-                v.chars()
-                    .take(Self::MAX_FIELD_CHARS)
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect()
-            })
-        };
         Self {
             http_status,
-            code: clean(code),
-            message: clean(message),
-            request_id: clean(request_id),
+            code: code.map(|v| clean_endpoint_text(&v, Self::MAX_FIELD_CHARS)),
+            message: message.map(|v| clean_endpoint_text(&v, Self::MAX_MESSAGE_CHARS)),
+            request_id: request_id.map(|v| clean_endpoint_text(&v, Self::MAX_FIELD_CHARS)),
         }
     }
 
@@ -455,6 +451,39 @@ impl StsRejection {
             .as_ref()
             .map(|id| format!("STS request ID: {id}"))
     }
+}
+
+/// `value` cut to `max_chars` characters, with `…` appended when cut, and every character
+/// that is not shown as itself replaced by a space.
+fn clean_endpoint_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut cleaned: String = chars
+        .by_ref()
+        .take(max_chars)
+        .map(|c| if is_hidden_char(c) { ' ' } else { c })
+        .collect();
+    if chars.next().is_some() {
+        cleaned.push('…');
+    }
+    cleaned
+}
+
+/// Control characters, line and paragraph separators, and the format characters that are
+/// invisible or reorder text: zero-width, bidirectional and tag characters.
+fn is_hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 #[derive(thiserror::Error, Debug)]

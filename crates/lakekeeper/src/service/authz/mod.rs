@@ -1128,10 +1128,8 @@ pub enum CatalogWarehouseAction {
     ///
     /// Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
-    /// and their direct grants, which is why this is gated on grant authority in addition to
-    /// `create` — without it, a namespace could be populated and granted somewhere
-    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
-    /// control that subtree exists to enforce.
+    /// and their direct grants, so an authorizer may require grant authority here in
+    /// addition to `create`. OpenFGA does when this entity is under managed access.
     AcceptMovedNamespace {
         /// Path the namespace is being moved from.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1431,10 +1429,8 @@ pub enum CatalogNamespaceAction {
     ///
     /// Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
-    /// and their direct grants, which is why this is gated on grant authority in addition to
-    /// `create` — without it, a namespace could be populated and granted somewhere
-    /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
-    /// control that subtree exists to enforce.
+    /// and their direct grants, so an authorizer may require grant authority here in
+    /// addition to `create`. OpenFGA does when this entity is under managed access.
     AcceptMovedNamespace {
         /// Path the namespace is being moved from.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1703,8 +1699,8 @@ pub enum CatalogTableAction {
         update_kinds: Arc<BTreeSet<TableUpdateKind>>,
     },
     Rename,
-    /// Rename this table into another namespace. Such a rename is recorded under this
-    /// action; `rename` is asked as well.
+    /// Rename this table into another namespace. Asked in addition to `rename` when a
+    /// rename changes the namespace.
     ///
     /// The move changes which grants the table inherits, as moving a namespace does, so it
     /// is gated on grant authority in addition to write access. The destination is gated by
@@ -1851,8 +1847,8 @@ pub enum CatalogViewAction {
     },
     IncludeInList,
     Rename,
-    /// Rename this view into another namespace. Such a rename is recorded under this
-    /// action; `rename` is asked as well.
+    /// Rename this view into another namespace. Asked in addition to `rename` when a
+    /// rename changes the namespace.
     ///
     /// The move changes which grants the view inherits, as moving a namespace does, so it
     /// is gated on grant authority in addition to write access. The destination is gated by
@@ -1974,8 +1970,8 @@ pub enum CatalogGenericTableAction {
     WriteData,
     GetMetadata,
     Rename,
-    /// Rename this generic table into another namespace. Such a rename is recorded under this
-    /// action; `rename` is asked as well.
+    /// Rename this generic table into another namespace. Asked in addition to `rename` when a
+    /// rename changes the namespace.
     ///
     /// The move changes which grants the generic table inherits, as moving a namespace does, so it
     /// is gated on grant authority in addition to write access. The destination is gated by

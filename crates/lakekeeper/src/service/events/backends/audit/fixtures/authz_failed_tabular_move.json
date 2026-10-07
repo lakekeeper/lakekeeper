@@ -52,7 +52,7 @@
   "error": {
     "type": "NotAuthorized",
     "code": 403,
-    "message": "Principal is not allowed to read this table",
+    "message": "Principal is not allowed to move this table",
     "stack": [
       "authorizer: no matching grant"
     ],

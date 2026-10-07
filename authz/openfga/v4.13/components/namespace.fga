@@ -38,8 +38,10 @@ type namespace
     define can_create_view: create_effective
     define can_create_generic_table: create_effective
     define can_create_namespace: create_effective
-    define can_accept_moved_namespace: manage_grants and create_effective
-    define can_accept_moved_tabular: manage_grants and create_effective
+    # A moved object arrives with its grants. Under managed access, grants here need
+    # grant authority, so accepting one does too.
+    define can_accept_moved_namespace: (create_effective but not managed_access_inheritance) or (manage_grants and create_effective)
+    define can_accept_moved_tabular: (create_effective but not managed_access_inheritance) or (manage_grants and create_effective)
     define can_delete: modify_effective
     define can_move: manage_grants and modify_effective
     define can_update_properties: modify_effective

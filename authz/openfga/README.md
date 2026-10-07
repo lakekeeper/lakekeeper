@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds the relations that gate moving a table, view or generic table into another namespace, and splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
+Adds the relations that gate moving a table, view or generic table into another namespace, requires grant authority for accepting a moved namespace only under managed access, and splits each assignable data privilege into two relations so that answering "does this principal hold a grant anywhere below here" stops re-deriving the inherited answer once per descendant. No tuple is written, rewritten or backfilled: the relation a grant is stored under keeps its name and its meaning as a stored relation.
 
 Supersedes `v4.11` and `v4.12`, neither of which reached a release. `v4.11` carried the subtree grant relations, `v4.12` added the privilege split, and `v4.13` adds the tabular move relations on top. A store already provisioned with either from a `main` build must see a higher version to pick up the new relations, hence the bumps. Neither is registered any more; stores on either migrate straight to `v4.13`.
 
@@ -23,9 +23,17 @@ Supersedes `v4.11` and `v4.12`, neither of which reached a release. `v4.11` carr
 
 `namespace`:
 
-- Add `can_accept_moved_tabular` (from `manage_grants and create_effective`), the destination-side check, mirroring `can_accept_moved_namespace`. It is asked together with `can_create_table`, `can_create_view` or `can_create_generic_table`.
+- Add `can_accept_moved_tabular`, the destination-side check, mirroring `can_accept_moved_namespace`. It is asked together with `can_create_table`, `can_create_view` or `can_create_generic_table`. It is `create_effective` on a namespace that is not under managed access, and `manage_grants and create_effective` on one that is, directly or through an ancestor namespace or the warehouse (`managed_access_inheritance`).
 
 Both are relations of their own, so a later change to namespace moves does not change what a tabular move requires.
+
+### Namespace moves
+
+`namespace`, `warehouse`:
+
+- `can_accept_moved_namespace` follows the same rule as `can_accept_moved_tabular`: `create_effective`, plus `manage_grants` when the destination is under managed access. A moved object arrives with its grants; outside managed access, anyone with `create` may already grant there through ownership of what they create, so grant authority is required only where managed access withholds it. `can_move` on the source is unchanged.
+
+Managed access is stored as `user:*` and `role:*`, which a role's `assignee` userset does not match, so for a role the model sees no managed access. The relaxed acceptance therefore assumes no assumed-role session: the server denies `can_move`, `can_accept_moved_tabular` and `can_accept_moved_namespace` for a role, and refuses changing a namespace's managed access under an assumed role, as it refuses grants below the warehouse.
 
 ### Subtree grant relations
 

@@ -98,8 +98,8 @@ fn destination_namespace_changed() -> ErrorModel {
 /// Fail a rename whose paths name one namespace but which resolved to two.
 ///
 /// Such a rename is recorded and authorized as `rename` on the strength of its paths, so it
-/// must not move the tabular. The catalog's collation rules this out; failing keeps the
-/// record and the checks in agreement should it ever happen.
+/// must not move the tabular. It happens when the namespace is replaced between the two
+/// lookups. The error asks the caller to retry.
 pub(crate) fn ensure_rename_stays_in_namespace(
     move_destination: Option<&Arc<Vec<String>>>,
     source: NamespaceId,
@@ -153,7 +153,7 @@ pub(crate) struct TabularRenameEnds<'a> {
 /// namespace asks neither; [`ensure_rename_stays_in_namespace`] holds it to that.
 ///
 /// A moved tabular carries its direct grants and inherits the destination's, so, as for a
-/// namespace move, the actor must be able to grant at both ends.
+/// namespace move, the authorizer may ask for grant authority at either end.
 pub(crate) async fn authorize_tabular_move<A, T, E, Fut>(
     authorizer: &A,
     request_metadata: &RequestMetadata,

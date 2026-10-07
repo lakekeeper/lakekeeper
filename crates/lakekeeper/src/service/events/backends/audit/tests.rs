@@ -1130,7 +1130,10 @@ fn fixture_authz_failed_tabular_move() {
             entities,
             actions,
             failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
-            error: fixture_error(),
+            error: Arc::new(crate::service::events::AuthorizationError {
+                message: "Principal is not allowed to move this table".to_string(),
+                ..fixture_error().as_ref().clone()
+            }),
             extra_context: fixture_context(&[]),
             authorizations,
         })

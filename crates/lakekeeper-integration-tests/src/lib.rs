@@ -13,8 +13,10 @@
 //! [`lakekeeper_storage_postgres::test_utils`] so that crate's own inline
 //! tests can use them without a dev-dep cycle.
 
+mod authz_helper;
 mod internal_helper;
 mod pagination_macro; // exports `impl_pagination_tests!` via `#[macro_export]`
+pub use authz_helper::*;
 pub use internal_helper::*;
 // `pastey` is needed at the macro call sites because `impl_pagination_tests!`
 // expands to `paste! { ... }`. Re-export it so downstream test files don't
