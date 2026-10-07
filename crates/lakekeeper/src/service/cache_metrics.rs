@@ -2,11 +2,11 @@
 //!
 //! Every cache emits the same three metric names differentiated by the
 //! `cache_type` label (values: `"role"`, `"warehouse"`, `"namespace"`,
-//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_ancestors"`,
+//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_ancestors"`, `"user"`,
 //! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`,
-//! `"shared_role_idents"`, `"shared_project_ids"`). The user-assignments cache
-//! also counts the results it leaves uncached after an overlapping invalidation or
-//! sync ([`METRIC_CACHE_FENCED_TOTAL`]).
+//! `"shared_role_idents"`, `"shared_project_ids"`). The user-assignments and user
+//! caches also count the results they leave uncached after an overlapping
+//! invalidation or sync ([`METRIC_CACHE_FENCED_TOTAL`]).
 //!
 //! Caches owned by code outside this crate — an
 //! [`AdmissionGate`](crate::service::admission::AdmissionGate), an

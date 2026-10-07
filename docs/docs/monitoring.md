@@ -43,7 +43,7 @@ The user-assignments and user caches also count the entries they leave uncached 
 |---------------------------------------------------------------------|---------|--------------|-----|
 | <code class="selectable">lakekeeper_cache_<wbr>fenced_total</code>  | Counter | `cache_type` | Loaded or synced entries left uncached after an overlapping change |
 
-Its only `cache_type` is `user_assignments`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total{cache_type="user_assignments"}` points to frequent role changes or syncs overlapping the same users.
+Its `cache_type` values are `user_assignments` and `user`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total` of the same `cache_type` points to frequent changes overlapping the same users: role changes and syncs for `user_assignments`, user writes for `user`.
 
 Role-membership cache invalidation emits one additional metric:
 
