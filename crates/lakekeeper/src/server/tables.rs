@@ -21,7 +21,7 @@ use iceberg_ext::{
     },
 };
 use itertools::Itertools;
-use lakekeeper_io::Location;
+use lakekeeper_io::{Location, s3::S3Location};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -1689,7 +1689,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
 
     transaction.commit().await?;
 
-    let mut expired_metadata_logs: Vec<MetadataLog> = vec![];
+    let mut expired_metadata_files: Vec<Location> = vec![];
 
     // Apply changes
     let commits = request
@@ -1727,7 +1727,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
-                expired_metadata_logs: mut this_expired,
+                expired_metadata_logs: this_expired,
             } = apply_commit(
                 previous_table_metadata.table_metadata.clone(),
                 previous_table_metadata.metadata_location.as_ref(),
@@ -1736,12 +1736,6 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             )?;
 
             let number_expired_metadata_log_entries = this_expired.len();
-
-            if delete_after_commit_enabled(new_metadata.properties()) {
-                expired_metadata_logs.extend(this_expired);
-            } else {
-                this_expired.clear();
-            }
 
             let next_metadata_count = previous_table_metadata
                 .metadata_location
@@ -1755,6 +1749,12 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 warehouse
                     .storage_profile
                     .require_allowed_location(&new_table_location)?;
+            }
+            if delete_after_commit_enabled(new_metadata.properties()) {
+                expired_metadata_files.extend(expired_metadata_files_to_delete(
+                    this_expired,
+                    &new_table_location,
+                ));
             }
             let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
             let new_metadata_location = warehouse.storage_profile.default_metadata_location(
@@ -1869,10 +1869,34 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     }
 
     // Delete files in parallel - if one delete fails, we still want to delete the rest
-    let expired_locations = expired_metadata_logs
+    let delete_results = futures::future::join_all(
+        expired_metadata_files
+            .iter()
+            .map(|location| delete_file(&file_io, location))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+    for r in delete_results {
+        if let Err(e) = r {
+            tracing::warn!("Failed to delete expired metadata file: {e:?}");
+        }
+    }
+
+    Ok(Arc::new(commits))
+}
+
+/// The expired metadata files a commit deletes: those inside the table location. A registered
+/// table carries a client-supplied metadata log, so an entry may name any path.
+fn expired_metadata_files_to_delete(
+    expired_metadata_logs: Vec<MetadataLog>,
+    table_location: &Location,
+) -> Vec<Location> {
+    let mut table_location = with_canonical_s3_scheme(table_location);
+    table_location.without_trailing_slash();
+    expired_metadata_logs
         .into_iter()
         .filter_map(|expired_metadata_log| {
-            Location::parse_value(&expired_metadata_log.metadata_file)
+            let location = Location::parse_value(&expired_metadata_log.metadata_file)
                 .map_err(|e| {
                     tracing::warn!(
                         "Failed to parse expired metadata file location {}: {:?}",
@@ -1880,23 +1904,27 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                         e
                     );
                 })
-                .ok()
+                .ok()?;
+            let mut canonical = with_canonical_s3_scheme(&location);
+            canonical.without_trailing_slash();
+            if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+                Some(location)
+            } else {
+                tracing::warn!(
+                    "Not deleting expired metadata file {location}: outside of table location {table_location}"
+                );
+                None
+            }
         })
-        .collect::<Vec<_>>();
-    let _ = futures::future::join_all(
-        expired_locations
-            .iter()
-            .map(|location| delete_file(&file_io, location))
-            .collect::<Vec<_>>(),
-    )
-    .await
-    .into_iter()
-    .map(|r| {
-        r.map_err(|e| tracing::warn!("Failed to delete expired metadata file: {:?}", e))
-            .ok()
-    });
+        .collect()
+}
 
-    Ok(Arc::new(commits))
+/// `location` with an `s3a`/`s3n` scheme spelled `s3`, so the aliases compare equal.
+fn with_canonical_s3_scheme(location: &Location) -> Location {
+    S3Location::try_from_location(location, true).map_or_else(
+        |_| location.clone(),
+        |s3_location| s3_location.set_s3_scheme().into_location(),
+    )
 }
 
 pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
@@ -2566,6 +2594,109 @@ mod unit_tests {
         .unwrap();
         let count = extract_count_from_metadata_location(&location);
         assert!(count.is_none());
+    }
+
+    fn files_to_delete(table_location: &str, metadata_files: &[&str]) -> Vec<String> {
+        let expired = metadata_files
+            .iter()
+            .map(|metadata_file| MetadataLog {
+                metadata_file: (*metadata_file).to_string(),
+                timestamp_ms: 0,
+            })
+            .collect();
+        expired_metadata_files_to_delete(expired, &Location::from_str(table_location).unwrap())
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// A registered table's metadata log is client-supplied, so it must not reach outside the
+    /// table location.
+    #[test]
+    fn test_expired_metadata_files_outside_table_location_are_kept() {
+        assert_eq!(
+            files_to_delete(
+                "s3://bucket/wh/tbl",
+                &[
+                    "s3://bucket/wh/tbl-other/metadata/00000-a.metadata.json",
+                    "s3://bucket/wh/other/metadata/00000-a.metadata.json",
+                    "s3://other-bucket/wh/tbl/metadata/00000-a.metadata.json",
+                    "s3://bucket/wh/tbl",
+                    "s3://bucket/wh/tbl/",
+                    "s3://bucket/wh",
+                    "gs://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                    "abfss://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json",
+                    "file:///etc/passwd",
+                    "s3://bucket/wh/tbl/../other/00000-a.metadata.json",
+                    "not a location",
+                ],
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_expired_metadata_files_inside_table_location_are_deleted() {
+        assert_eq!(
+            files_to_delete(
+                "s3://bucket/wh/tbl",
+                &[
+                    "s3://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                    "s3://bucket/wh/tbl/00001-b.metadata.json",
+                    "s3://bucket/wh/tbl-other/metadata/00000-a.metadata.json",
+                ],
+            ),
+            vec![
+                "s3://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                "s3://bucket/wh/tbl/00001-b.metadata.json",
+            ]
+        );
+        assert_eq!(
+            files_to_delete(
+                "s3://bucket/wh/tbl/",
+                &["s3://bucket/wh/tbl/metadata/00000-a.metadata.json"],
+            ),
+            vec!["s3://bucket/wh/tbl/metadata/00000-a.metadata.json"]
+        );
+        assert_eq!(
+            files_to_delete(
+                "abfss://fs@account.dfs.core.windows.net/wh/tbl",
+                &[
+                    "abfss://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json",
+                    "abfss://fs@account.dfs.core.windows.net/wh/other/metadata/00000-a.metadata.json",
+                ],
+            ),
+            vec!["abfss://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json"]
+        );
+    }
+
+    /// `s3`, `s3a` and `s3n` name the same objects; the entry keeps the scheme it was logged with.
+    #[test]
+    fn test_expired_metadata_files_compare_s3_scheme_aliases() {
+        assert_eq!(
+            files_to_delete(
+                "s3a://bucket/wh/tbl",
+                &[
+                    "s3://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                    "s3n://bucket/wh/tbl/metadata/00001-b.metadata.json",
+                    "s3a://bucket/wh/tbl/metadata/00002-c.metadata.json",
+                    "s3://bucket/wh/other/metadata/00000-a.metadata.json",
+                    "gs://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                ],
+            ),
+            vec![
+                "s3://bucket/wh/tbl/metadata/00000-a.metadata.json",
+                "s3n://bucket/wh/tbl/metadata/00001-b.metadata.json",
+                "s3a://bucket/wh/tbl/metadata/00002-c.metadata.json",
+            ]
+        );
+        assert_eq!(
+            files_to_delete(
+                "s3://bucket/wh/tbl",
+                &["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"],
+            ),
+            vec!["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"]
+        );
     }
 
     // ---- interpret_authz_results tests ----

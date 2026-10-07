@@ -11,8 +11,12 @@
     {
       "action_name": "apply_grants",
       "principals": [
-        "role:019684ff-0000-7000-8000-000000000007",
-        "user:oidc~alice"
+        {
+          "role": "019684ff-0000-7000-8000-000000000007"
+        },
+        {
+          "user": "oidc~alice"
+        }
       ],
       "privileges": [
         "describe",
@@ -40,8 +44,12 @@
       "action": {
         "action_name": "apply_grants",
         "principals": [
-          "role:019684ff-0000-7000-8000-000000000007",
-          "user:oidc~alice"
+          {
+            "role": "019684ff-0000-7000-8000-000000000007"
+          },
+          {
+            "user": "oidc~alice"
+          }
         ],
         "privileges": [
           "describe",

@@ -14,7 +14,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, SecretStore, State, Transaction, UserUpsertMode,
-        WarehouseNameNotFound, WarehouseStatus,
+        UserWrite, WarehouseNameNotFound, WarehouseStatus,
         authz::{
             Authorizer, AuthzWarehouseOps, CatalogWarehouseAction, RequireWarehouseActionError,
         },
@@ -39,12 +39,18 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         // first-touch user-register side-effect so `GET /v1/config` stays a
         // pure read. Returning the catalog config itself is still valuable —
         // existing clients need it to keep reading.
-        if matches!(CONFIG.maintenance_mode, MaintenanceMode::Off) {
+        let user_write = if matches!(CONFIG.maintenance_mode, MaintenanceMode::Off) {
             maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone())
-                .await?;
-        }
+                .await?
+        } else {
+            None
+        };
 
         let request_metadata_arc = Arc::new(request_metadata);
+        api_context
+            .v1_state
+            .events
+            .users_written_async(user_write, Some(&request_metadata_arc));
 
         // Arg takes precedence over auth
         let Some(query_warehouse) = query.warehouse else {
@@ -158,12 +164,14 @@ fn token_provides_name(request_metadata: &RequestMetadata) -> bool {
         .is_some_and(|name| !name.is_empty())
 }
 
+/// Registers or backfills the caller's user. Returns the write, committed, for the
+/// caller to announce.
 async fn maybe_register_user<D: CatalogStore>(
     request_metadata: &RequestMetadata,
     state: <D as CatalogStore>::State,
-) -> Result<()> {
+) -> Result<Option<UserWrite>> {
     let Some(user_id) = request_metadata.user_id() else {
-        return Ok(());
+        return Ok(None);
     };
 
     // `parse_create_user_request` can fail - we can't run it for already registered users
@@ -196,26 +204,26 @@ async fn maybe_register_user<D: CatalogStore>(
         }
     };
 
-    if should_register {
-        let (creation_user_id, name, user_type, email) =
-            parse_create_user_request(request_metadata, None)?;
-
-        // If the user is authenticated, create or backfill the catalog user.
-        let mut t = D::Transaction::begin_write(state).await?;
-        D::create_or_update_user(
-            &creation_user_id,
-            &name,
-            email.as_deref(),
-            UserLastUpdatedWith::ConfigCallCreation,
-            user_type,
-            UserUpsertMode::BackfillUnnamedStub,
-            t.transaction(),
-        )
-        .await?;
-        t.commit().await?;
+    if !should_register {
+        return Ok(None);
     }
+    let (creation_user_id, name, user_type, email) =
+        parse_create_user_request(request_metadata, None)?;
 
-    Ok(())
+    // If the user is authenticated, create or backfill the catalog user.
+    let mut t = D::Transaction::begin_write(state).await?;
+    let written = D::create_or_update_user(
+        &creation_user_id,
+        &name,
+        email.as_deref(),
+        UserLastUpdatedWith::ConfigCallCreation,
+        user_type,
+        UserUpsertMode::BackfillUnnamedStub,
+        t.transaction(),
+    )
+    .await?;
+    t.commit().await?;
+    Ok(written.write())
 }
 
 #[cfg(test)]

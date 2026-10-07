@@ -27,7 +27,7 @@ Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Ancestors. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
@@ -35,15 +35,15 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `user`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
 
-The user-assignments cache also counts the entries it leaves uncached because a change or another role provider sync overlapped the load or the sync that read them:
+The user-assignments and user caches also count the entries they leave uncached because a change or a role provider sync overlapped the load or the sync that read them:
 
 | Metric                                                              | Type    | Labels       | Description |
 |---------------------------------------------------------------------|---------|--------------|-----|
 | <code class="selectable">lakekeeper_cache_<wbr>fenced_total</code>  | Counter | `cache_type` | Loaded or synced entries left uncached after an overlapping change |
 
-Its only `cache_type` is `user_assignments`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total{cache_type="user_assignments"}` points to frequent role changes or syncs overlapping the same users.
+Its `cache_type` values are `user_assignments` and `user`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total` of the same `cache_type` points to frequent changes overlapping the same users: role changes and syncs for `user_assignments`, user writes for `user`.
 
 Role-membership cache invalidation emits one additional metric:
 
@@ -69,6 +69,24 @@ One cache is built per maintenance task rather than once per process, so its bud
 Both gauges return to zero once the last task finishes, because each cache is dropped with the task that built it.
 
 A low hit rate here does not mean the cache is too small, unlike the other caches. Every task starts with an empty cache and reads most manifests once, so misses dominate by design. Judge the budget by whether `lakekeeper_cache_weighted_bytes` plateaus — at capacity, manifests are evicted and re-read from object storage — and by the headroom the peak leaves against the container memory limit.
+
+### Audit Enrichment Metrics
+
+With [user emails on audit records](./logging.md#audit-user-emails) enabled, Lakekeeper counts the users whose email a record looked up in the catalog. Emails taken from the caller's token are not counted, since they need no lookup.
+
+| Metric                                                                        | Type    | Labels    | Description |
+|-------------------------------------------------------------------------------|---------|-----------|-----|
+| <code class="selectable">lakekeeper_audit_<wbr>email_lookups_total</code>     | Counter | `outcome` | Users looked up, by outcome: `found`, `missing` (no user, or no email), `error`, `timeout` |
+
+The lookups go through the user cache (`cache_type="user"` above), so most are answered without a database read. A rising `error` or `timeout` count means records are written without emails because the database could not answer in time.
+
+Lakekeeper also counts the roles whose provider and source a record looked up, for [role sources on audit records](./logging.md#audit-role-sources). An assumed role is not counted, since the request already holds it.
+
+| Metric                                                                        | Type    | Labels    | Description |
+|-------------------------------------------------------------------------------|---------|-----------|-----|
+| <code class="selectable">lakekeeper_audit_<wbr>role_lookups_total</code>      | Counter | `outcome` | Roles looked up, by outcome: `found`, `missing` (no such role), `error`, `timeout` |
+
+These go through the role cache (`cache_type="role"`).
 
 ### Role Provider Metrics { .lkp }
 

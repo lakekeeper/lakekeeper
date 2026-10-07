@@ -67,9 +67,9 @@
               "principals": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "$ref": "#/$defs/SubjectRecord"
                 },
-                "description": "The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "description": "The distinct principals the grants are for, as `{\"user\": …}` or `{\"role\": …}`. A user also carries `email` when audit records carry emails and it is known."
               },
               "privileges": {
                 "type": "array",
@@ -450,8 +450,12 @@
                 "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string",
-                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "$ref": "#/$defs/SubjectRecord",
+                "description": "The one principal whose grants are in range, as `{\"user\": …}` or `{\"role\": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known."
+              },
+              "principal_scope": {
+                "$ref": "#/$defs/PrincipalScope",
+                "description": "`every` when the request reaches the grants of every principal, `one` when it names one in `principal`."
               },
               "privilege_scope": {
                 "$ref": "#/$defs/PrivilegeScope",
@@ -504,8 +508,12 @@
                 "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string",
-                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "$ref": "#/$defs/SubjectRecord",
+                "description": "The one principal whose grants are in range, as `{\"user\": …}` or `{\"role\": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known."
+              },
+              "principal_scope": {
+                "$ref": "#/$defs/PrincipalScope",
+                "description": "`every` when the request reaches the grants of every principal, `one` when it names one in `principal`."
               },
               "privilege_scope": {
                 "$ref": "#/$defs/PrivilegeScope",
@@ -602,6 +610,10 @@
         "assumed_role": {
           "description": "The role acted as. Present for `assumed_role`; `principal` is still the human.",
           "$ref": "#/$defs/AssumedRoleRecord"
+        },
+        "email": {
+          "type": "string",
+          "description": "The principal's email, best-effort: only when the operator enabled it, and absent\nwhenever it is not known. Metadata, not identity: correlate on `principal`."
         }
       },
       "required": [
@@ -693,13 +705,12 @@
         },
         "source_id": {
           "type": "string",
-          "description": "The role's id at the provider."
+          "description": "The role's id at the provider. Absent when the operator turned role source ids off."
         }
       },
       "required": [
         "role_id",
-        "provider_id",
-        "source_id"
+        "provider_id"
       ],
       "description": "The role an `assumed_role` actor acts as.",
       "x-audit-kind": "part"
@@ -1671,6 +1682,16 @@
         "permit": "The policy grants the action."
       }
     },
+    "PrincipalScope": {
+      "type": "string",
+      "description": "Values of `principal_scope`. A new value is a major format change.",
+      "enum": [
+        "every",
+        "one"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "principal_scope"
+    },
     "PrivilegeScope": {
       "type": "string",
       "description": "Values of `privilege_scope`. A new value is a major format change.",
@@ -1816,6 +1837,14 @@
         "role": {
           "type": "string",
           "description": "The role's id."
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that supplied the role. Absent when it is not known: the role no longer\nexists, or it could not be looked up."
+        },
+        "source_id": {
+          "type": "string",
+          "description": "The role's id at the provider, for looking it up there. Absent when `provider_id` is,\nor when the operator turned role source ids off."
         }
       },
       "required": [
@@ -1889,6 +1918,10 @@
         "user": {
           "type": "string",
           "description": "The user's principal id."
+        },
+        "email": {
+          "type": "string",
+          "description": "The user's email, best-effort: only when the operator enabled it, and absent\nwhenever it is not known. Metadata, not identity: correlate on `user`."
         }
       },
       "required": [

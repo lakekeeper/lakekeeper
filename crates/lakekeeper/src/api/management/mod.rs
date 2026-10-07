@@ -274,7 +274,8 @@ pub mod v1 {
             .await
             .map(|u| match u {
                 CreateOrUpdateUserResponse::Created(user) => (StatusCode::CREATED, Json(user)),
-                CreateOrUpdateUserResponse::Updated(user) => (StatusCode::OK, Json(user)),
+                CreateOrUpdateUserResponse::Updated { user, .. }
+                | CreateOrUpdateUserResponse::Unchanged(user) => (StatusCode::OK, Json(user)),
             })
     }
 

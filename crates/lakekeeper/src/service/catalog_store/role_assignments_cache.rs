@@ -120,7 +120,7 @@ where
     K: Hash + Eq + Clone + Display + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    fn new(
+    pub(super) fn new(
         cache_type: &'static str,
         noun: (&'static str, &'static str),
         enabled: bool,
@@ -202,7 +202,45 @@ where
         self.update_size_metric();
     }
 
-    async fn get(&self, key: &K) -> Option<V> {
+    /// Cache `value`, read outside the key lock, under `key`. Puts only when no entry
+    /// exists and `key`'s count is still `invalidations_before`, read before the read
+    /// of `value`: an invalidation or a write counted in between leaves it uncached.
+    ///
+    /// For a loader that reads several keys at once, where holding every key lock
+    /// across the read is not possible.
+    pub(super) async fn put_unless_invalidated(
+        &self,
+        key: &K,
+        value: V,
+        invalidations_before: InvalidationCount<K>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let stripe = self.invalidations.stripe(key);
+        let outcome = self
+            .cache
+            .entry(key.clone())
+            .and_compute_with(|maybe_entry| async move {
+                if maybe_entry.is_none() && stripe.load(Ordering::Acquire) == invalidations_before.0
+                {
+                    Op::Put(value)
+                } else {
+                    Op::Nop
+                }
+            })
+            .await;
+        if matches!(outcome, CompResult::StillNone(_)) {
+            tracing::debug!(
+                "Leaving {} for {key} uncached after an overlapping invalidation or sync",
+                self.noun.1
+            );
+            cache_metrics::record_cache_fenced(self.cache_type);
+        }
+        self.update_size_metric();
+    }
+
+    pub(super) async fn get(&self, key: &K) -> Option<V> {
         if !self.enabled {
             return None;
         }
@@ -224,7 +262,7 @@ where
     /// one landing mid-load is a no-op and the loader's later insert resurrects the
     /// revoked entry until TTL. `Op::Remove` orders this post-commit removal after
     /// any in-flight load's insert. See [`Self::get_or_load_optional`].
-    async fn invalidate(&self, key: &K) {
+    pub(super) async fn invalidate(&self, key: &K) {
         if self.enabled {
             tracing::debug!("Invalidating {} for {key} from cache", self.noun.1);
             self.invalidations.bump(key);
@@ -1817,6 +1855,44 @@ mod tests {
             .expect("loader succeeds after a prior failure");
         assert!(Arc::ptr_eq(&loaded, &value));
         assert!(cache.get(&user_id).await.is_some());
+    }
+
+    /// A value read outside the key lock is cached only if nothing counted an
+    /// invalidation of its key since the read began, and never replaces an entry.
+    #[tokio::test]
+    async fn put_unless_invalidated_stands_down_for_an_invalidation_or_an_entry() {
+        let cache = ua_cache();
+        let user_id = UserId::new_unchecked("oidc", "put-unless-invalidated");
+        let value = |source: &str| {
+            user_result_with_role(
+                RoleId::new_random(),
+                Arc::new(ProjectId::new_random()),
+                test_role_ident("lakekeeper", source),
+            )
+        };
+
+        // An invalidation counted between the read and the put leaves it uncached.
+        let before = cache.invalidations(&user_id);
+        cache.invalidate(&user_id).await;
+        cache
+            .put_unless_invalidated(&user_id, value("stale"), before)
+            .await;
+        assert!(cache.get(&user_id).await.is_none());
+
+        // Without one, it is cached.
+        let fresh = value("fresh");
+        let before = cache.invalidations(&user_id);
+        cache
+            .put_unless_invalidated(&user_id, Arc::clone(&fresh), before)
+            .await;
+        assert!(Arc::ptr_eq(&cache.get(&user_id).await.unwrap(), &fresh));
+
+        // An existing entry is not replaced.
+        let before = cache.invalidations(&user_id);
+        cache
+            .put_unless_invalidated(&user_id, value("later"), before)
+            .await;
+        assert!(Arc::ptr_eq(&cache.get(&user_id).await.unwrap(), &fresh));
     }
 
     /// A `None` from the loader is not cached: after a `None` load the entry stays

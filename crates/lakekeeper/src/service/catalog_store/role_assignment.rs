@@ -14,6 +14,7 @@ use crate::{
     service::{
         ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
         RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId, Transaction,
+        UserWrite,
         authn::{UserId, UserIdRef},
         cache_metrics, define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
@@ -170,6 +171,8 @@ pub struct SyncRoleMembersResult {
     pub skipped_deleted: Vec<AssignedUser>,
     /// The timestamp written to the role member sync log by this sync run.
     pub synced_at: chrono::DateTime<chrono::Utc>,
+    /// The member users this sync created or changed.
+    pub user_writes: Vec<UserWrite>,
 }
 
 /// Outcome of a [`CatalogRoleAssignmentOps::sync_user_role_assignments_by_provider`] call.
@@ -198,6 +201,8 @@ pub struct SyncUserRoleAssignmentsResult {
     ///
     /// Matches the `provider_sync_times` field of [`ListUserRoleAssignmentsResult`].
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
+    /// The user, if this sync created or changed it.
+    pub user_write: Option<UserWrite>,
 }
 
 /// Outcome of a [`CatalogRoleAssignmentOps::sync_user_role_assignments`] call.
@@ -592,6 +597,7 @@ define_transparent_error! {
     stack_message: "Error syncing user role assignments",
     variants: [
         CatalogBackendError,
+        DatabaseIntegrityError,
         RoleNameAlreadyExists,
         DuplicateRoleError,
         RoleProviderMismatchError,
@@ -1153,6 +1159,7 @@ where
         })
         .await?;
 
+        dispatcher.users_written_async(sync_result.user_writes, None);
         let event = RoleMembersSyncedEvent {
             added: sync_result.added.into_iter().map(|u| u.user_id).collect(),
             removed: sync_result.removed.into_iter().map(|u| u.user_id).collect(),
@@ -1277,6 +1284,7 @@ where
         })
         .await?;
 
+        dispatcher.users_written_async(sync_result.user_write, None);
         let event = UserRoleAssignmentsSyncedEvent {
             user_id: user.user_id.clone(),
             added: sync_result.added.into(),

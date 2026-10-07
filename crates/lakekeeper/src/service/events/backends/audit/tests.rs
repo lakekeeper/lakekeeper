@@ -60,6 +60,9 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
     }
 }
 
+/// The listener as the binary installs it with emails off.
+static LISTENER: AuditEventListener = AuditEventListener::new();
+
 /// Render audit events through the same JSON formatter the binary configures
 /// (`crates/lakekeeper-bin/src/main.rs`), and return the parsed lines.
 ///
@@ -727,7 +730,7 @@ fn the_fixture_directory_matches_the_declared_set() {
 #[test]
 fn fixture_authz_succeeded_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             RequestMetadataTestBuilder::builder()
                 .request_id(
                     FIXTURE_REQUEST_ID
@@ -756,7 +759,7 @@ fn fixture_authz_succeeded_break_glass() {
         .build();
     metadata.with_break_glass(Some("INC-1234 undoing lockout forbid".to_string()));
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             metadata,
             EventEntities::one(fixture_table_entity()),
             vec![fixture_read_action()],
@@ -773,7 +776,7 @@ fn fixture_authz_succeeded_break_glass() {
 #[test]
 fn fixture_authz_succeeded_plural_actions_plural_entities() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(AuthorizationSucceededEvent {
+        LISTENER.authorization_succeeded(AuthorizationSucceededEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::many([
@@ -802,7 +805,7 @@ fn fixture_authz_succeeded_plural_actions_plural_entities() {
 #[test]
 fn fixture_authz_succeeded_single_action_plural_entities() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::many([fixture_table_entity(), fixture_namespace_entity()]),
             vec![fixture_metadata_action()],
@@ -817,7 +820,7 @@ fn fixture_authz_succeeded_single_action_plural_entities() {
 #[test]
 fn fixture_authz_succeeded_plural_actions_single_entity() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_namespace_entity()),
             vec![fixture_metadata_action(), fixture_action_with_context()],
@@ -836,7 +839,7 @@ fn fixture_authz_succeeded_plural_actions_single_entity() {
 #[test]
 fn fixture_authz_succeeded_rich_action_context() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_namespace_entity()),
             vec![
@@ -861,7 +864,7 @@ fn fixture_authz_succeeded_rich_action_context() {
 #[test]
 fn fixture_authz_succeeded_revoke_subtree_grants() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_warehouse_entity()),
             vec![fixture_revoke_subtree_grants_action()],
@@ -883,7 +886,7 @@ fn fixture_authz_succeeded_revoke_subtree_grants() {
 #[test]
 fn fixture_authz_succeeded_apply_grants() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_warehouse_entity()),
             vec![fixture_apply_grants_action()],
@@ -902,7 +905,7 @@ fn fixture_authz_succeeded_apply_grants() {
 #[test]
 fn fixture_authz_succeeded_empty_collections() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(fixture_table_entity()),
             vec![
@@ -932,7 +935,7 @@ fn fixture_authz_succeeded_empty_batch_check() {
     let entities = (crate::service::ServerId::new_random(), checks).event_entities();
     let actions = crate::service::events::context::IntrospectPermissions {}.event_actions();
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             entities,
             actions,
@@ -960,7 +963,7 @@ fn fixture_authz_succeeded_with_idempotency_key() {
     );
 
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             request_metadata,
             EventEntities::one(fixture_table_entity()),
             vec![fixture_read_action()],
@@ -984,7 +987,7 @@ fn fixture_authz_succeeded_create_role_source_system() {
         }),
     };
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(EntityDescriptor::new(EntityType::Project).field(
                 FIELD_NAME_PROJECT_ID,
@@ -1025,7 +1028,7 @@ fn fixture_authz_succeeded_project_subtree_grants() {
         }),
     };
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(fixture_succeeded_event(
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
             fixture_metadata(),
             EventEntities::one(EntityDescriptor::new(EntityType::Project).field(
                 FIELD_NAME_PROJECT_ID,
@@ -1047,7 +1050,7 @@ fn fixture_authz_succeeded_project_subtree_grants() {
 #[test]
 fn fixture_authz_failed_single_action_single_entity() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::one(fixture_table_entity())),
@@ -1069,7 +1072,7 @@ fn fixture_authz_failed_single_action_single_entity() {
 #[test]
 fn fixture_authz_failed_with_context() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::one(fixture_table_entity())),
@@ -1098,7 +1101,7 @@ fn fixture_authz_failed_admission_gate() {
         ))
     };
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities: Arc::new(EventEntities::many([
@@ -1156,7 +1159,7 @@ fn fixture_idempotent_replay() {
     .event_entities();
 
     let record = emit_and_capture_one(|| {
-        AuditEventListener.idempotent_replay_served(IdempotentReplayEvent {
+        LISTENER.idempotent_replay_served(IdempotentReplayEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities: Arc::new(entities),
@@ -1188,7 +1191,7 @@ fn fixture_grants_changed_emits_one_record_per_triple() {
     };
 
     let records = emit_and_capture(|| {
-        AuditEventListener.grants_changed(GrantsChangedEvent::new(
+        LISTENER.grants_changed(GrantsChangedEvent::new(
             vec![spec("modify", table())],
             vec![spec("select", table())],
             Arc::new(fixture_metadata()),
@@ -1216,7 +1219,7 @@ fn fixture_grant_created_server() {
         FIXTURE_ROLE_ID.parse().expect("fixed test uuid"),
     ));
     let records = emit_and_capture(|| {
-        AuditEventListener.grants_changed(GrantsChangedEvent::new(
+        LISTENER.grants_changed(GrantsChangedEvent::new(
             vec![],
             vec![crate::service::authz::GrantSpec {
                 principal,
@@ -1459,7 +1462,7 @@ fn fixture_admission_unavailable() {
 #[test]
 fn audit_records_carry_the_envelope_keys_consumers_rely_on() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(fixture_metadata()))
+        LISTENER.authorization_succeeded(succeeded_event(fixture_metadata()))
     });
 
     for key in ["timestamp", "level", "message", "target"] {
@@ -1486,7 +1489,7 @@ fn the_capture_helper_omits_envelope_keys_production_omits() {
         // Built inside the closure, so the span is registered with the capture
         // subscriber; `Instrument` makes it current while the future is polled.
         let span = tracing::info_span!("request");
-        AuditEventListener
+        LISTENER
             .authorization_succeeded(succeeded_event(metadata))
             .instrument(span)
     });
@@ -2127,7 +2130,7 @@ fn every_audit_record_example_in_the_docs_validates() {
 #[test]
 fn the_gate_and_the_emission_name_one_target() {
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_succeeded(succeeded_event(fixture_metadata()))
+        LISTENER.authorization_succeeded(succeeded_event(fixture_metadata()))
     });
     assert_eq!(
         record.get("target").and_then(serde_json::Value::as_str),

@@ -1,8 +1,10 @@
+pub mod catalog;
 pub mod context;
 pub mod dispatch;
 pub mod publisher;
 pub mod types;
 
+pub use catalog::{CatalogStoreReader, EventCatalog};
 pub use context::APIEventContext;
 pub use dispatch::{EventDispatcher, EventListener};
 pub use publisher::{

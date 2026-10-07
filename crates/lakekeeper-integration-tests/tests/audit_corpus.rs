@@ -158,7 +158,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     // Only this context emits audit events; the shared harness is untouched.
     ctx.v1_state
         .events
-        .append(Arc::new(AuditEventListener))
+        .append(Arc::new(AuditEventListener::default()))
         .await;
 
     let warehouse = warehouse_response.warehouse_id.to_string();

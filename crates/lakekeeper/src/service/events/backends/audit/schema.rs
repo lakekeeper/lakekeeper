@@ -236,10 +236,12 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     // Every type the generator referenced. A registered one is already defined; an
     // unregistered one is an object or a plain string a part holds, such as an id. An
     // unregistered set of values is refused: it would lack openness, descriptions and field.
+    let mut unregistered = BTreeSet::new();
     for (name, mut schema) in generator.take_definitions(true) {
         if defs.contains_key(&name) {
             continue;
         }
+        unregistered.insert(name.clone());
         if let Some(object) = schema.as_object_mut() {
             let values = object.contains_key("enum")
                 || object
@@ -262,7 +264,48 @@ fn definitions(regs: &[&Registration]) -> BTreeMap<String, Value> {
     add_audit_record(&mut defs, regs);
     link_carried_keys(&mut defs, regs, &key_schemas);
     type_nested_keys(&mut defs, regs, &key_schemas);
+    drop_unreferenced(&mut defs, &unregistered);
     defs
+}
+
+/// Remove each of `unregistered` that no registered definition reaches through `$ref`. The
+/// generator also defines the types of keys shared by every product, and a product whose
+/// records carry none of those keys would otherwise publish definitions nothing refers to.
+fn drop_unreferenced(defs: &mut BTreeMap<String, Value>, unregistered: &BTreeSet<String>) {
+    fn collect_refs<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    match (key.as_str(), value) {
+                        ("$ref", Value::String(target)) => {
+                            out.extend(target.strip_prefix("#/$defs/"));
+                        }
+                        _ => collect_refs(value, out),
+                    }
+                }
+            }
+            Value::Array(values) => values.iter().for_each(|value| collect_refs(value, out)),
+            _ => {}
+        }
+    }
+    let mut reached: BTreeSet<String> = defs
+        .keys()
+        .filter(|name| !unregistered.contains(*name))
+        .cloned()
+        .collect();
+    let mut pending: Vec<String> = reached.iter().cloned().collect();
+    while let Some(name) = pending.pop() {
+        let mut refs = Vec::new();
+        if let Some(def) = defs.get(&name) {
+            collect_refs(def, &mut refs);
+        }
+        for target in refs {
+            if reached.insert(target.to_owned()) {
+                pending.push(target.to_owned());
+            }
+        }
+    }
+    defs.retain(|name, _| reached.contains(name));
 }
 
 /// The objects whose keys sit beside the value that names them, not nested under it: the wire
