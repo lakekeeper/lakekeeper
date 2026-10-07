@@ -12,8 +12,9 @@ use crate::{
         require_warehouse_id,
         tables::validate_table_or_view_ident,
         tabular::{
-            claim_rename_idempotency_key, commit_rename_with_reparent,
-            ensure_authorized_destination,
+            TabularRenameEnds, authorize_tabular_move, claim_rename_idempotency_key,
+            commit_rename_with_reparent, ensure_authorized_destination,
+            ensure_rename_stays_in_namespace, rename_or_move, tabular_move_destination,
         },
     },
     service::{
@@ -47,6 +48,7 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
     let destination = to_table_ident(request.destination.clone(), "InvalidDestinationIdent")?;
     validate_table_or_view_ident(&source)?;
     validate_table_or_view_ident(&destination)?;
+    let move_destination = tabular_move_destination(&source.namespace, &destination.namespace);
 
     // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
@@ -55,7 +57,11 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         state.v1_state.events.clone(),
         warehouse_id,
         source.clone(),
-        CatalogGenericTableAction::Rename,
+        rename_or_move(
+            move_destination.as_ref(),
+            CatalogGenericTableAction::Rename,
+            |destination| CatalogGenericTableAction::Move { destination },
+        ),
     );
 
     if let Some(ref key) = idempotency_key {
@@ -79,6 +85,7 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         warehouse_id,
         &source,
         &destination,
+        move_destination.clone(),
         authorizer,
         state.v1_state.catalog.clone(),
     )
@@ -100,6 +107,11 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
         return Ok(());
     }
 
+    ensure_rename_stays_in_namespace(
+        move_destination.as_ref(),
+        source_namespace_id,
+        destination_namespace_id,
+    )?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let renamed = C::rename_tabular(
         warehouse_id,
@@ -150,6 +162,7 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
     warehouse_id: WarehouseId,
     source: &TableIdent,
     destination: &TableIdent,
+    move_destination: Option<Arc<Vec<String>>>,
     authorizer: &A,
     catalog_state: C::State,
 ) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, GenericTableInfo), AuthZError>
@@ -210,19 +223,7 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
     )
     .await?;
 
-    let create_action = CatalogNamespaceAction::CreateGenericTable {
-        name: Some(destination.name.clone()),
-        generic_table_id: Some(source_info.generic_table_id),
-        format: Some(source_info.format.to_string()),
-        base_location: Some(source_info.location.to_string()),
-        properties: Arc::new(
-            source_info
-                .properties
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>(),
-        ),
-    };
+    let create_action = create_at_destination(destination, &source_info);
 
     let user_provided_namespace = &destination.namespace;
     let (destination_namespace, source_info) = tokio::join!(
@@ -243,8 +244,49 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
         ),
     );
 
-    let destination_namespace = destination_namespace?;
-    let source_info = source_info?;
+    let (destination_namespace, source_info) = authorize_tabular_move(
+        authorizer,
+        request_metadata,
+        &warehouse,
+        TabularRenameEnds {
+            source_namespace: &source_namespace,
+            destination_namespace: destination_namespace?,
+            move_destination,
+        },
+        source_info?,
+        |info, destination| {
+            authorizer.require_generic_table_action(
+                request_metadata,
+                &warehouse,
+                &source_namespace,
+                source.clone(),
+                Ok::<_, RequireGenericTableActionError>(Some(info)),
+                CatalogGenericTableAction::Move { destination },
+            )
+        },
+    )
+    .await?;
 
     Ok((warehouse, destination_namespace, source_info))
+}
+
+/// `CreateGenericTable` on the destination namespace, describing the generic table as it
+/// would arrive there.
+fn create_at_destination(
+    destination: &TableIdent,
+    source_info: &GenericTableInfo,
+) -> CatalogNamespaceAction {
+    CatalogNamespaceAction::CreateGenericTable {
+        name: Some(destination.name.clone()),
+        generic_table_id: Some(source_info.generic_table_id),
+        format: Some(source_info.format.to_string()),
+        base_location: Some(source_info.location.to_string()),
+        properties: Arc::new(
+            source_info
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+    }
 }

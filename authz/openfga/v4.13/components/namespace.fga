@@ -39,6 +39,7 @@ type namespace
     define can_create_generic_table: create_effective
     define can_create_namespace: create_effective
     define can_accept_moved_namespace: manage_grants and create_effective
+    define can_accept_moved_tabular: manage_grants and create_effective
     define can_delete: modify_effective
     define can_move: manage_grants and modify_effective
     define can_update_properties: modify_effective

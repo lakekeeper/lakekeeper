@@ -1440,6 +1440,15 @@ pub enum CatalogNamespaceAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         source: Arc<Vec<String>>,
     },
+    /// Accept a table, view or generic table being moved in from another namespace.
+    ///
+    /// The tabular counterpart of `accept_moved_namespace`, asked together with the matching
+    /// `create_*` action: a moved tabular arrives carrying its direct grants.
+    AcceptMovedTabular {
+        /// Namespace the tabular is being moved from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source: Arc<Vec<String>>,
+    },
     /// Can list the grants held on this namespace.
     ReadGrants,
     /// Can list and read every grant in the subtree rooted here: the namespace's own and
@@ -1477,7 +1486,7 @@ pub enum CatalogNamespaceAction {
 /// The namespace actions enumerated for permission introspection (`GET
 /// /namespace/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 21]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -1524,6 +1533,9 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
         CatalogNamespaceAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
         },
+        CatalogNamespaceAction::AcceptMovedTabular {
+            source: Arc::new(Vec::new()),
+        },
         CatalogNamespaceAction::ReadGrants,
         CatalogNamespaceAction::ReadSubtreeGrants { scope: None },
         CatalogNamespaceAction::RevokeSubtreeGrants { scope: None },
@@ -1532,7 +1544,7 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 20]> = LazyL
 impl CatalogNamespaceAction {
     /// Introspectable namespace actions — see [`NAMESPACE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 20] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 21] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1608,7 +1620,7 @@ impl EventAction for CatalogNamespaceAction {
             }
             // The source subtree is the decision-relevant context for a policy engine:
             // it says what is being let in, and from where.
-            Self::AcceptMovedNamespace { source } => {
+            Self::AcceptMovedNamespace { source } | Self::AcceptMovedTabular { source } => {
                 b = b.context(ActionContextKey::Source(source.as_ref().clone()));
             }
             Self::Move { destination, force } => {
@@ -1691,6 +1703,18 @@ pub enum CatalogTableAction {
         update_kinds: Arc<BTreeSet<TableUpdateKind>>,
     },
     Rename,
+    /// Rename this table into another namespace. Such a rename is recorded under this
+    /// action; `rename` is asked as well.
+    ///
+    /// The move changes which grants the table inherits, as moving a namespace does, so it
+    /// is gated on grant authority in addition to write access. The destination is gated by
+    /// the matching `create_*` action plus `accept_moved_tabular`.
+    Move {
+        /// Namespace the table is being moved to.
+        // Defaulted so a check that names a bare `move` (e.g. batch-check) deserializes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        destination: Arc<Vec<String>>,
+    },
     IncludeInList,
     Undrop,
     GetTasks,
@@ -1701,7 +1725,7 @@ pub enum CatalogTableAction {
     /// Can list the grants held on this table.
     ReadGrants,
 }
-static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 13]> = LazyLock::new(|| {
+static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 14]> = LazyLock::new(|| {
     [
         CatalogTableAction::Drop {
             force: false,
@@ -1717,6 +1741,9 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 13]> = LazyLock::new
             update_kinds: Arc::new(BTreeSet::new()),
         },
         CatalogTableAction::Rename,
+        CatalogTableAction::Move {
+            destination: Arc::new(Vec::new()),
+        },
         CatalogTableAction::IncludeInList,
         CatalogTableAction::Undrop,
         CatalogTableAction::GetTasks,
@@ -1728,7 +1755,7 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 13]> = LazyLock::new
 });
 impl CatalogTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTableAction; 13] {
+    pub fn variants() -> &'static [CatalogTableAction; 14] {
         &TABLE_ACTION_VARIANTS
     }
 }
@@ -1761,6 +1788,9 @@ impl EventAction for CatalogTableAction {
                         .map(crate::audit::Vocabulary::wire)
                         .collect(),
                 ));
+            }
+            Self::Move { destination } => {
+                b = b.context(ActionContextKey::Destination(destination.as_ref().clone()));
             }
             Self::Drop { force, purge } => {
                 b = b.context(ActionContextKey::Force(*force));
@@ -1821,6 +1851,18 @@ pub enum CatalogViewAction {
     },
     IncludeInList,
     Rename,
+    /// Rename this view into another namespace. Such a rename is recorded under this
+    /// action; `rename` is asked as well.
+    ///
+    /// The move changes which grants the view inherits, as moving a namespace does, so it
+    /// is gated on grant authority in addition to write access. The destination is gated by
+    /// the matching `create_*` action plus `accept_moved_tabular`.
+    Move {
+        /// Namespace the view is being moved to.
+        // Defaulted so a check that names a bare `move` (e.g. batch-check) deserializes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        destination: Arc<Vec<String>>,
+    },
     Undrop,
     GetTasks,
     ControlTasks,
@@ -1830,7 +1872,7 @@ pub enum CatalogViewAction {
     /// Can list the grants held on this view.
     ReadGrants,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 12]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 13]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -1844,6 +1886,9 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 12]> = LazyLock::new(|
         },
         CatalogViewAction::IncludeInList,
         CatalogViewAction::Rename,
+        CatalogViewAction::Move {
+            destination: Arc::new(Vec::new()),
+        },
         CatalogViewAction::Undrop,
         CatalogViewAction::GetTasks,
         CatalogViewAction::ControlTasks,
@@ -1854,7 +1899,7 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 12]> = LazyLock::new(|
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 12] {
+    pub fn variants() -> &'static [CatalogViewAction; 13] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -1874,6 +1919,9 @@ impl EventAction for CatalogViewAction {
                 b = b.context(ActionContextKey::RemovedProperties(
                     removed_properties.as_ref().clone(),
                 ));
+            }
+            Self::Move { destination } => {
+                b = b.context(ActionContextKey::Destination(destination.as_ref().clone()));
             }
             Self::Drop { force, purge } => {
                 b = b.context(ActionContextKey::Force(*force));
@@ -1926,6 +1974,18 @@ pub enum CatalogGenericTableAction {
     WriteData,
     GetMetadata,
     Rename,
+    /// Rename this generic table into another namespace. Such a rename is recorded under this
+    /// action; `rename` is asked as well.
+    ///
+    /// The move changes which grants the generic table inherits, as moving a namespace does, so it
+    /// is gated on grant authority in addition to write access. The destination is gated by
+    /// the matching `create_*` action plus `accept_moved_tabular`.
+    Move {
+        /// Namespace the generic table is being moved to.
+        // Defaulted so a check that names a bare `move` (e.g. batch-check) deserializes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        destination: Arc<Vec<String>>,
+    },
     IncludeInList,
     Undrop,
     GetTasks,
@@ -1936,7 +1996,7 @@ pub enum CatalogGenericTableAction {
     /// Can list the grants held on this generic table.
     ReadGrants,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 13]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop {
@@ -1947,6 +2007,9 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> 
             CatalogGenericTableAction::WriteData,
             CatalogGenericTableAction::GetMetadata,
             CatalogGenericTableAction::Rename,
+            CatalogGenericTableAction::Move {
+                destination: Arc::new(Vec::new()),
+            },
             CatalogGenericTableAction::IncludeInList,
             CatalogGenericTableAction::Undrop,
             CatalogGenericTableAction::GetTasks,
@@ -1958,7 +2021,7 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> 
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 12] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 13] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
@@ -1967,6 +2030,9 @@ impl EventAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.as_wire());
         match self {
+            Self::Move { destination } => {
+                b = b.context(ActionContextKey::Destination(destination.as_ref().clone()));
+            }
             Self::Drop { force, purge } => {
                 b = b.context(ActionContextKey::Force(*force));
                 b = b.context(ActionContextKey::Purge(*purge));
@@ -2248,6 +2314,7 @@ pub enum CatalogNamespaceActionKind {
     ManageTags,
     Move,
     AcceptMovedNamespace,
+    AcceptMovedTabular,
     ReadGrants,
     ReadSubtreeGrants,
     RevokeSubtreeGrants,
@@ -2267,6 +2334,7 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::ListEverything => Self::ListEverything,
             CatalogNamespaceAction::Move { .. } => Self::Move,
             CatalogNamespaceAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
+            CatalogNamespaceAction::AcceptMovedTabular { .. } => Self::AcceptMovedTabular,
             CatalogNamespaceAction::SetProtection => Self::SetProtection,
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
@@ -2290,6 +2358,7 @@ pub enum CatalogTableActionKind {
     GetMetadata,
     Commit,
     Rename,
+    Move,
     IncludeInList,
     Undrop,
     GetTasks,
@@ -2307,6 +2376,7 @@ impl From<&CatalogTableAction> for CatalogTableActionKind {
             CatalogTableAction::GetMetadata => Self::GetMetadata,
             CatalogTableAction::Commit { .. } => Self::Commit,
             CatalogTableAction::Rename => Self::Rename,
+            CatalogTableAction::Move { .. } => Self::Move,
             CatalogTableAction::IncludeInList => Self::IncludeInList,
             CatalogTableAction::Undrop => Self::Undrop,
             CatalogTableAction::GetTasks => Self::GetTasks,
@@ -2329,6 +2399,7 @@ pub enum CatalogViewActionKind {
     Commit,
     IncludeInList,
     Rename,
+    Move,
     Undrop,
     GetTasks,
     ControlTasks,
@@ -2345,6 +2416,7 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::Commit { .. } => Self::Commit,
             CatalogViewAction::IncludeInList => Self::IncludeInList,
             CatalogViewAction::Rename => Self::Rename,
+            CatalogViewAction::Move { .. } => Self::Move,
             CatalogViewAction::Undrop => Self::Undrop,
             CatalogViewAction::GetTasks => Self::GetTasks,
             CatalogViewAction::ControlTasks => Self::ControlTasks,
@@ -3422,6 +3494,18 @@ pub mod tests {
                 serde_json::json!({"action": "rename"}),
             ),
             (
+                CatalogGenericTableAction::Move {
+                    destination: Arc::new(vec!["ns".to_string()]),
+                },
+                serde_json::json!({"action": "move", "destination": ["ns"]}),
+            ),
+            (
+                CatalogGenericTableAction::Move {
+                    destination: Arc::new(Vec::new()),
+                },
+                serde_json::json!({"action": "move"}),
+            ),
+            (
                 CatalogGenericTableAction::IncludeInList,
                 serde_json::json!({"action": "include_in_list"}),
             ),
@@ -3488,6 +3572,29 @@ pub mod tests {
             source: Arc::new(Vec::new()),
         };
         assert_eq!(keys(moved.action_descriptor()), vec!["source"]);
+
+        let moved_tabular = CatalogNamespaceAction::AcceptMovedTabular {
+            source: Arc::new(Vec::new()),
+        };
+        assert_eq!(keys(moved_tabular.action_descriptor()), vec!["source"]);
+
+        let table_move = CatalogTableAction::Move {
+            destination: Arc::new(Vec::new()),
+        };
+        assert_eq!(keys(table_move.action_descriptor()), vec!["destination"]);
+
+        let view_move = CatalogViewAction::Move {
+            destination: Arc::new(Vec::new()),
+        };
+        assert_eq!(keys(view_move.action_descriptor()), vec!["destination"]);
+
+        let generic_table_move = CatalogGenericTableAction::Move {
+            destination: Arc::new(Vec::new()),
+        };
+        assert_eq!(
+            keys(generic_table_move.action_descriptor()),
+            vec!["destination"]
+        );
 
         // An absent `Option` is still omitted.
         let create = CatalogNamespaceAction::CreateNamespace {
@@ -3618,6 +3725,18 @@ pub mod tests {
                 serde_json::json!({"action": "rename"}),
             ),
             (
+                CatalogViewAction::Move {
+                    destination: Arc::new(vec!["ns".to_string()]),
+                },
+                serde_json::json!({"action": "move", "destination": ["ns"]}),
+            ),
+            (
+                CatalogViewAction::Move {
+                    destination: Arc::new(Vec::new()),
+                },
+                serde_json::json!({"action": "move"}),
+            ),
+            (
                 CatalogViewAction::Undrop,
                 serde_json::json!({"action": "undrop"}),
             ),
@@ -3677,6 +3796,18 @@ pub mod tests {
             (
                 CatalogTableAction::Rename,
                 serde_json::json!({"action": "rename"}),
+            ),
+            (
+                CatalogTableAction::Move {
+                    destination: Arc::new(vec!["ns".to_string()]),
+                },
+                serde_json::json!({"action": "move", "destination": ["ns"]}),
+            ),
+            (
+                CatalogTableAction::Move {
+                    destination: Arc::new(Vec::new()),
+                },
+                serde_json::json!({"action": "move"}),
             ),
             (
                 CatalogTableAction::IncludeInList,

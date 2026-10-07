@@ -427,6 +427,7 @@ tests:
           # A server admin holds nothing inside a project, so neither half of either
           # intersection is satisfied.
           can_accept_moved_namespace: false
+          can_accept_moved_tabular: false
           can_delete: false
           can_move: false
           can_update_properties: false
@@ -451,6 +452,7 @@ tests:
           can_get_metadata: false
           can_commit: false
           can_rename: false
+          can_move: false
           can_include_in_list: false
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -466,6 +468,7 @@ tests:
           can_get_metadata: false
           can_select: false
           can_rename: false
+          can_move: false
           can_include_in_list: false
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -544,6 +547,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -559,6 +563,7 @@ tests:
           can_get_metadata: true
           can_select: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -618,6 +623,7 @@ tests:
           can_create_view: false
           can_create_namespace: false
           can_accept_moved_namespace: false
+          can_accept_moved_tabular: false
           can_delete: false
           # can_move is manage_grants AND modify: grant authority alone no longer restructures
           # the hierarchy — a security_admin without write access cannot move. can_move is
@@ -646,6 +652,7 @@ tests:
           can_get_metadata: true
           can_commit: false
           can_rename: false
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -661,6 +668,7 @@ tests:
           can_get_metadata: true
           can_select: false
           can_rename: false
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -719,6 +727,7 @@ tests:
           can_create_view: true
           can_create_namespace: true
           can_accept_moved_namespace: false
+          can_accept_moved_tabular: false
           can_delete: true
           can_move: false
           can_update_properties: true
@@ -744,6 +753,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -759,6 +769,7 @@ tests:
           can_get_metadata: true
           can_select: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -803,6 +814,7 @@ tests:
           can_create_view: true
           can_create_namespace: true
           can_accept_moved_namespace: true
+          can_accept_moved_tabular: true
           can_delete: true
           can_move: true
           can_update_properties: true
@@ -828,6 +840,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -843,6 +856,7 @@ tests:
           can_get_metadata: true
           can_select: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -876,6 +890,7 @@ tests:
           can_create_view: true
           can_create_namespace: true
           can_accept_moved_namespace: true
+          can_accept_moved_tabular: true
           can_delete: true
           can_move: true
           can_update_properties: true
@@ -922,6 +937,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -938,6 +954,7 @@ tests:
           can_get_metadata: true
           can_select: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -1042,6 +1059,7 @@ tests:
           can_get_metadata: true
           can_commit: false
           can_rename: false
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -1059,6 +1077,7 @@ tests:
           can_read_data: true
           can_get_metadata: true
           can_rename: false
+          can_move: false
           can_include_in_list: true
           can_set_protection: false
           can_grant_pass_grants: false
@@ -1157,6 +1176,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: true
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
@@ -1212,10 +1232,11 @@ tests:
         object: namespace:namespace_2_1
         assertions:
           # Ownership-derived manage_grants is stripped under managed access; a direct
-          # assignment is not — but can_move/can_accept_moved_namespace also need
+          # assignment is not — but can_move and can_accept_moved_* also need
           # modify/create, which this principal lacks.
           can_move: false
           can_accept_moved_namespace: false
+          can_accept_moved_tabular: false
           can_grant_select: true
       - user: user:namespace_2_1_move_admin
         object: namespace:namespace_2_1
@@ -1225,6 +1246,7 @@ tests:
           # namespace out of the managed subtree, and accept one moved in.
           can_move: true
           can_accept_moved_namespace: true
+          can_accept_moved_tabular: true
       - user: user:namespace_2_1_owner
         object: namespace:namespace_2_1
         assertions:
@@ -1232,6 +1254,7 @@ tests:
           can_create_view: true
           can_create_namespace: true
           can_accept_moved_namespace: false
+          can_accept_moved_tabular: false
           can_delete: true
           can_move: false
           can_update_properties: true
@@ -1258,6 +1281,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -1359,6 +1383,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -1375,6 +1400,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -1395,6 +1421,7 @@ tests:
           can_read_data: true
           can_get_metadata: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_set_protection: true
           can_grant_pass_grants: false
@@ -1515,6 +1542,7 @@ tests:
           can_get_metadata: true
           can_commit: true
           can_rename: true
+          can_move: false
           can_include_in_list: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
@@ -1987,3 +2015,66 @@ tests:
           describe_effective: true
           visible_below: false
           can_get_metadata: true
+  - name: moving a tabular needs manage_grants and modify, accepting one needs manage_grants and create
+    check:
+      # Under managed access, owning the table supplies modify but not manage_grants.
+      - user: user:warehouse_2/table_2_2_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          can_rename: true
+          can_move: false
+      # A direct manage_grants assignment on an ancestor inherits down; ownership of that
+      # ancestor supplies modify and create, so moves out of and into the subtree pass.
+      - user: user:namespace_2_1_move_admin
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          can_rename: true
+          can_move: true
+      - user: user:namespace_2_1_move_admin
+        object: lakekeeper_generic_table:warehouse_2/generic_table_2_2
+        assertions:
+          can_rename: true
+          can_move: true
+      - user: user:namespace_2_1_move_admin
+        object: namespace:namespace_2_2
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: true
+      # Grant authority without write access moves nothing.
+      - user: user:namespace_2_1_grant_admin
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          can_grant_manage_grants: true
+          can_rename: false
+          can_move: false
+      - user: user:namespace_2_1_grant_admin
+        object: namespace:namespace_2_2
+        assertions:
+          can_create_table: false
+          can_accept_moved_tabular: false
+      # Write access without grant authority renames in place but moves nothing.
+      - user: user:view_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_rename: true
+          can_move: false
+      - user: user:namespace_2_2_owner
+        object: lakekeeper_generic_table:warehouse_2/generic_table_2_2
+        assertions:
+          can_rename: true
+          can_move: false
+      - user: user:namespace_1_2_create_only
+        object: namespace:namespace_1_2
+        assertions:
+          can_create_table: true
+          can_accept_moved_tabular: false
+      # Outside managed access, ownership confers both.
+      - user: user:warehouse_1_owner
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_rename: true
+          can_move: true
+      - user: user:warehouse_1_owner
+        object: namespace:namespace_1_2
+        assertions:
+          can_accept_moved_tabular: true

@@ -362,15 +362,65 @@ impl From<CredentialsError> for IcebergErrorResponse {
 /// What a failed STS request returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StsRejection {
-    pub http_status: Option<u16>,
+    http_status: Option<u16>,
     /// The error code, e.g. `AccessDenied`.
-    pub code: Option<String>,
+    code: Option<String>,
     /// The endpoint's own error message, or a fixed description of the failure.
-    pub message: Option<String>,
-    pub request_id: Option<String>,
+    message: Option<String>,
+    request_id: Option<String>,
 }
 
 impl StsRejection {
+    /// Longest `code`, `message` or `request_id` kept, in characters.
+    pub const MAX_FIELD_CHARS: usize = 256;
+
+    /// The fields come from the endpoint, so each is cut to [`Self::MAX_FIELD_CHARS`] and
+    /// its control characters are replaced by spaces.
+    #[must_use]
+    pub fn new(
+        http_status: Option<u16>,
+        code: Option<String>,
+        message: Option<String>,
+        request_id: Option<String>,
+    ) -> Self {
+        let clean = |value: Option<String>| {
+            value.map(|v| {
+                v.chars()
+                    .take(Self::MAX_FIELD_CHARS)
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect()
+            })
+        };
+        Self {
+            http_status,
+            code: clean(code),
+            message: clean(message),
+            request_id: clean(request_id),
+        }
+    }
+
+    #[must_use]
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
+    }
+
+    /// The error code, e.g. `AccessDenied`.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// The endpoint's own error message, or a fixed description of the failure.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    #[must_use]
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
     /// The answer on one line, e.g. `AccessDenied (HTTP 403): User ... is not authorized`.
     #[must_use]
     pub fn summary(&self) -> String {

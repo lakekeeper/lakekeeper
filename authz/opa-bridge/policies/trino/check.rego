@@ -136,6 +136,28 @@ require_view_access_simple(catalog_name, schema_name, view_name, action) if {
 	)
 }
 
+# A rename into another schema moves the table or view: it also needs `move` on
+# the source and `accept_moved_tabular` on the target schema. `kind` is "table"
+# or "view".
+require_rename_target_access(_, source_catalog, source_schema, _, target_catalog, target_schema) if {
+	source_catalog == target_catalog
+	source_schema == target_schema
+}
+
+require_rename_target_access(kind, source_catalog, source_schema, name, target_catalog, target_schema) if {
+	[source_catalog, source_schema] != [target_catalog, target_schema]
+	trino_catalog := catalog_config_by_name[source_catalog]
+	lakekeeper.require_tabular_move_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		kind,
+		namespace_for_schema(source_schema),
+		name,
+		namespace_for_schema(target_schema),
+		lakekeeper_user_id,
+	)
+}
+
 child_schema_name(schema_name) := child_name if {
 	parts := split(schema_name, ".")
 	child_name := parts[count(parts) - 1]

@@ -8,6 +8,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
+pub(crate) use undrop::require_undrop_in_warehouse;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{

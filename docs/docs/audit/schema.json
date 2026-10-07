@@ -50,6 +50,29 @@
           "if": {
             "properties": {
               "action_name": {
+                "const": "accept_moved_tabular"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The namespace path the entity is being moved from."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
                 "const": "apply_grants"
               }
             },
@@ -956,6 +979,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_data",
         "read_grants",
         "rename",
@@ -967,6 +991,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this generic table.",
+        "move": "Rename this generic table into another namespace. Such a rename is recorded under this\naction; `rename` is asked as well.\n\nThe move changes which grants the generic table inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this generic table."
       }
     },
@@ -975,6 +1000,7 @@
       "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
         "accept_moved_namespace",
+        "accept_moved_tabular",
         "create_generic_table",
         "create_namespace",
         "create_table",
@@ -999,6 +1025,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, which is why this is gated on grant authority in addition to\n`create` — without it, a namespace could be populated and granted somewhere\npermissive and then moved into a `managed_access` subtree, smuggling grants past the\ncontrol that subtree exists to enforce.",
+        "accept_moved_tabular": "Accept a table, view or generic table being moved in from another namespace.\n\nThe tabular counterpart of `accept_moved_namespace`, asked together with the matching\n`create_*` action: a moved tabular arrives carrying its direct grants.",
         "manage_tags": "Attach/detach governance tags on this namespace.",
         "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
         "read_grants": "Can list the grants held on this namespace.",
@@ -1091,6 +1118,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_data",
         "read_grants",
         "rename",
@@ -1102,6 +1130,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this table.",
+        "move": "Rename this table into another namespace. Such a rename is recorded under this\naction; `rename` is asked as well.\n\nThe move changes which grants the table inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this table."
       }
     },
@@ -1158,6 +1187,7 @@
         "get_tasks",
         "include_in_list",
         "manage_tags",
+        "move",
         "read_grants",
         "rename",
         "select",
@@ -1168,6 +1198,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "manage_tags": "Attach/detach governance tags on this view.",
+        "move": "Rename this view into another namespace. Such a rename is recorded under this\naction; `rename` is asked as well.\n\nThe move changes which grants the view inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this view."
       }
     },

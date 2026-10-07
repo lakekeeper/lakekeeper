@@ -82,7 +82,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 14;
+const EXPECTED_RECORDS: usize = 17;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -276,6 +276,35 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         random_request_metadata(),
     )
     .await;
+
+    // A rename into another namespace is recorded as `move`, with the destination
+    // namespace as `destination` context; renaming it back is a second `move`.
+    let moves_namespace = NamespaceIdent::from_vec(vec!["audit_corpus_moves".to_string()]).unwrap();
+    let _ = CatalogServer::create_namespace(
+        Some(warehouse.clone().into()),
+        iceberg_ext::catalog::rest::CreateNamespaceRequest {
+            namespace: moves_namespace.clone(),
+            properties: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    for (from, to) in [
+        (namespace.clone(), moves_namespace.clone()),
+        (moves_namespace.clone(), namespace.clone()),
+    ] {
+        let _ = CatalogServer::rename_table(
+            Some(warehouse.clone().into()),
+            iceberg_ext::catalog::rest::RenameTableRequest {
+                source: iceberg::TableIdent::new(from, "audited_table".to_string()),
+                destination: iceberg::TableIdent::new(to, "audited_table".to_string()),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await;
+    }
 
     // Property updates carry `updated_properties` and `removed_properties`.
     let _ = CatalogServer::update_namespace_properties(

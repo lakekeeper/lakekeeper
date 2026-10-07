@@ -147,6 +147,10 @@ Two consequences are worth knowing:
 - Managed access removes `manage_grants` from *owners*, so ownership alone does not let someone move a namespace out of a managed subtree — which is the point, since moving it out would restore their ability to grant on it. A principal **directly assigned** `manage_grants` on that namespace still holds it — the direct assignment is unaffected by managed access — and can move the namespace provided it also holds `modify` there; ownership supplies that, so an owner who was additionally granted `manage_grants` directly can still move out.
 - `can_move` is the conjunction of `manage_grants` and `modify`, so it is strictly stronger than `can_delete`: anyone who may move a namespace may also delete it, but not the reverse. A `security_admin` with no write access cannot restructure the hierarchy, and a principal granted only `modify` cannot either — moving needs both.
 
+### Moving tables and views to another namespace
+
+The same rule applies when a table, view or generic table is renamed into another namespace. You need `manage_grants` and `modify` on the table, view or generic table, and `manage_grants` and `create` on the destination namespace. `manage_grants` can be granted directly or inherited from a parent; inside a managed-access namespace, ownership alone does not provide it. A rename that keeps the table, view or generic table in its namespace needs only `modify` on it.
+
 ## Best Practices
 
 We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.

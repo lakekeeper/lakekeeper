@@ -496,11 +496,11 @@ impl StackitProfile {
     /// The error type and advice for an STS answer STACKIT is known to give.
     fn sts_advice(&self, rejection: &StsRejection) -> Option<(&'static str, String)> {
         let urn = self.credentials_group_urn.as_deref().unwrap_or("<unset>");
-        let message = rejection.message.as_deref().unwrap_or_default();
-        let code = rejection.code.as_deref();
+        let message = rejection.message().unwrap_or_default();
+        let code = rejection.code();
         // Every branch keeps the one fact needed to act: engines show only the
         // message, not the details.
-        if rejection.http_status == Some(405) || code == Some("MethodNotAllowed") {
+        if rejection.http_status() == Some(405) || code == Some("MethodNotAllowed") {
             let storage = self.endpoint().map_or_else(
                 |_| format!("in region `{}`", self.region),
                 |e| format!("at `{e}`"),
@@ -1011,12 +1011,12 @@ mod tests {
     /// The table-config error STS produces for `rejection`.
     fn sts_failure(status: u16, code: Option<&str>, message: Option<&str>) -> TableConfigError {
         TableConfigError::Credentials(CredentialsError::StsRejected {
-            rejection: StsRejection {
-                http_status: Some(status),
-                code: code.map(ToString::to_string),
-                message: message.map(ToString::to_string),
-                request_id: Some("1234567890123456".to_string()),
-            },
+            rejection: StsRejection::new(
+                Some(status),
+                code.map(ToString::to_string),
+                message.map(ToString::to_string),
+                Some("1234567890123456".to_string()),
+            ),
             source: Box::new(std::io::Error::other("sdk error")),
         })
     }

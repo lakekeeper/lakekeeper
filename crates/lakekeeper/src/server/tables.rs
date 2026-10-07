@@ -368,6 +368,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
+        // Before any storage read; the full check below adds what the metadata file holds.
+        let namespace = authorizer
+            .require_namespace_action(
+                event_ctx.request_metadata(),
+                &warehouse,
+                provided_ns,
+                namespace,
+                event_ctx.action().clone(),
+            )
+            .await
+            .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let storage_profile = &warehouse.storage_profile;
@@ -412,7 +423,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 event_ctx.request_metadata(),
                 &warehouse,
                 provided_ns,
-                namespace,
+                Ok(Some(namespace)),
                 action,
             )
             .await;

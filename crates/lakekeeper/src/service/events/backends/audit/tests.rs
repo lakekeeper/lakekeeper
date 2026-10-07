@@ -562,6 +562,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_single",
     "authz_failed_context",
     "authz_failed_admission_gate",
+    "authz_failed_tabular_move",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
@@ -1089,6 +1090,53 @@ fn fixture_authz_failed_with_context() {
     });
 
     assert_matches_fixture("authz_failed_context", &contract_fields(record));
+}
+
+/// A refused rename of a table into another namespace: recorded as `move` with the
+/// destination namespace, built as the rename handler builds it.
+#[test]
+fn fixture_authz_failed_tabular_move() {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let source = TableIdent {
+        namespace: NamespaceIdent::new("sales".to_string()),
+        name: "orders".to_string(),
+    };
+    let destination_namespace = NamespaceIdent::new("archive".to_string());
+    let action = crate::server::tabular::rename_or_move(
+        crate::server::tabular::tabular_move_destination(&source.namespace, &destination_namespace)
+            .as_ref(),
+        CatalogTableAction::Rename,
+        |destination| CatalogTableAction::Move { destination },
+    );
+    let entities = Arc::new(
+        UserProvidedTable {
+            warehouse_id: crate::service::WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+            table: source.into(),
+        }
+        .event_entities(),
+    );
+    let actions = Arc::new(action.event_actions());
+    let authorizations = Arc::new(synthesise_authorizations(
+        &entities,
+        &actions,
+        None,
+        Some(false),
+    ));
+
+    let record = emit_and_capture_one(|| {
+        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities,
+            actions,
+            failure_reason: crate::service::events::AuthorizationFailureReason::ActionForbidden,
+            error: fixture_error(),
+            extra_context: fixture_context(&[]),
+            authorizations,
+        })
+    });
+
+    assert_matches_fixture("authz_failed_tabular_move", &contract_fields(record));
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`
