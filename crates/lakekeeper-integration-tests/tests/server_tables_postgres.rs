@@ -52,6 +52,7 @@ use lakekeeper_integration_tests::{
     create_table_request as create_request, create_view, drop_table as drop_table_helper,
     impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
 };
+use lakekeeper_io::LakekeeperStorage as _;
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
     test_utils::random_request_metadata,
@@ -758,6 +759,118 @@ async fn test_expire_metadata_log(pool: PgPool) {
     };
 
     assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+}
+
+/// A registered table's metadata log is client-supplied: expiring it deletes only the entries
+/// inside the table location.
+#[sqlx::test]
+async fn test_expire_registered_metadata_log_stays_in_table_location(pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
+    let io = memory_io_profile().file_io(None).await.unwrap();
+
+    let other = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("other".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let other_metadata_location = other.metadata_location.unwrap();
+
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-1".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Register the table again with a metadata log that also names the other table's file.
+    let table_location = table.metadata.location().to_string();
+    let own_metadata_location = format!("{table_location}/metadata/00000-own.metadata.json");
+    let crafted_metadata_location =
+        format!("{table_location}/metadata/00001-crafted.metadata.json");
+    io.write(&own_metadata_location, bytes::Bytes::from_static(b"{}"))
+        .await
+        .unwrap();
+    let last_updated_ms = table.metadata.last_updated_ms();
+    let mut crafted = serde_json::to_value(&*table.metadata).unwrap();
+    crafted["metadata-log"] = serde_json::json!([
+        {"metadata-file": other_metadata_location, "timestamp-ms": last_updated_ms - 2},
+        {"metadata-file": own_metadata_location, "timestamp-ms": last_updated_ms - 1},
+    ]);
+    crafted["properties"][TableProperties::PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX] =
+        serde_json::json!("1");
+    io.write(
+        &crafted_metadata_location,
+        serde_json::to_vec(&crafted).unwrap().into(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("tab-1".to_string())
+            .metadata_location(crafted_metadata_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Any commit expires both entries.
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident),
+                requirements: vec![],
+                updates: vec![TableUpdate::SetProperties {
+                    updates: HashMap::from_iter([("change_nr".to_string(), "1".to_string())]),
+                }],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap()
+    .unwrap_committed();
+
+    let lakekeeper_io::ReadError::IOError(err) =
+        io.read_single(&own_metadata_location).await.unwrap_err()
+    else {
+        panic!("expected an IO error reading a deleted file");
+    };
+    assert_eq!(err.kind(), lakekeeper_io::ErrorKind::NotFound);
+    io.read_single(&other_metadata_location)
+        .await
+        .expect("a file outside the table location must not be deleted");
 }
 
 #[sqlx::test]
