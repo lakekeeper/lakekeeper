@@ -304,7 +304,9 @@ jobs:
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
+      # Docker Hub publishing is paused; set the repository variable PUBLISH_DOCKERHUB=true to resume.
       - name: Test Login to Dockerhub
+        if: vars.PUBLISH_DOCKERHUB == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -330,6 +332,7 @@ jobs:
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
+        if: vars.PUBLISH_DOCKERHUB == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -352,6 +355,7 @@ jobs:
           docker manifest push quay.io/lakekeeper/catalog:latest-main
 
       - name: Push to Dockerhub
+        if: vars.PUBLISH_DOCKERHUB == 'true'
         run: |
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${COMMIT_SHA}-amd64
@@ -407,6 +411,7 @@ jobs:
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
+        if: vars.PUBLISH_DOCKERHUB == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -426,6 +431,7 @@ jobs:
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
 
       - name: Push Images to Dockerhub
+        if: vars.PUBLISH_DOCKERHUB == 'true'
         run: |
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
           docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
@@ -470,7 +476,7 @@ jobs:
           docker manifest push quay.io/lakekeeper/catalog:latest
 
       - name: Push Partial Tag to Dockerhub
-        if: steps.check-tag.outputs.match == 'true'
+        if: steps.check-tag.outputs.match == 'true' && vars.PUBLISH_DOCKERHUB == 'true'
         run: |
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:latest-amd64
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64
