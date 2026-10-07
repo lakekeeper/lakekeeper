@@ -187,3 +187,34 @@ async fn several_ids_resolve_together(pool: PgPool) {
     write_silently(&ctx, &unknown, Some("late@example.com")).await;
     assert_eq!(email_of(&ctx, &unknown).await, UserEmail::NoUser);
 }
+
+/// More ids than one statement reads: every chunk's answers come back, each under its own id.
+#[sqlx::test]
+async fn ids_beyond_one_read_resolve_together(pool: PgPool) {
+    let ctx = setup(pool).await;
+    let first = UserId::new_unchecked("oidc", "cache-chunk-first");
+    let last = UserId::new_unchecked("oidc", "cache-chunk-last");
+    write_silently(&ctx, &first, Some("first@example.com")).await;
+    write_silently(&ctx, &last, Some("last@example.com")).await;
+
+    let mut ids = vec![first.clone()];
+    ids.extend((0..1_000).map(|i| UserId::new_unchecked("oidc", &format!("cache-chunk-{i}"))));
+    ids.push(last.clone());
+    let emails = user_emails::<PostgresBackend>(&ids, ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    assert_eq!(emails.len(), ids.len());
+    assert_eq!(
+        emails[&first],
+        UserEmail::Email(Arc::from("first@example.com"))
+    );
+    assert_eq!(
+        emails[&last],
+        UserEmail::Email(Arc::from("last@example.com"))
+    );
+    assert!(
+        ids[1..ids.len() - 1]
+            .iter()
+            .all(|id| emails[id] == UserEmail::NoUser)
+    );
+}

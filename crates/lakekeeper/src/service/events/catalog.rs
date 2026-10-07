@@ -10,10 +10,14 @@
 
 use std::collections::HashMap;
 
-use crate::service::{
-    ArcRoleIdent, CatalogBackendError, CatalogRoleOps as _, CatalogStore,
-    GetRoleAcrossProjectsError, RoleId, UserId,
-    user_cache::{self, UserEmail},
+use crate::{
+    CONFIG,
+    api::iceberg::v1::PaginationQuery,
+    service::{
+        ArcRoleIdent, CatalogBackendError, CatalogListRolesByIdFilter, CatalogRoleOps as _,
+        CatalogStore, RoleId, UserId,
+        user_cache::{self, UserEmail},
+    },
 };
 
 /// Reads from the catalog that event listeners need.
@@ -86,19 +90,27 @@ impl<C: CatalogStore> EventCatalog for CatalogStoreReader<C> {
         &self,
         role_ids: &[RoleId],
     ) -> Result<HashMap<RoleId, ArcRoleIdent>, CatalogBackendError> {
+        // One query per page of ids. A page whose ids are all cached is answered from the
+        // cache; otherwise the query loads the page and caches what it finds. An id is the
+        // role's primary key, so a page returns at most one role per id and never more than
+        // its `LIMIT`.
+        let page_size = usize::try_from(CONFIG.pagination_size_max)
+            .unwrap_or(usize::MAX)
+            .max(1);
         let mut sources = HashMap::with_capacity(role_ids.len());
-        for role_id in role_ids {
-            match C::get_role_by_id_across_projects(*role_id, self.state.clone()).await {
-                Ok(role) => {
-                    sources.insert(*role_id, role.ident_arc());
-                }
-                Err(GetRoleAcrossProjectsError::RoleIdNotFound(_)) => {}
-                Err(error) => {
-                    return Err(CatalogBackendError::new_unexpected(std::io::Error::other(
-                        error.to_string(),
-                    )));
-                }
-            }
+        for page in role_ids.chunks(page_size) {
+            let roles = C::list_roles_across_projects(
+                CatalogListRolesByIdFilter::builder()
+                    .role_ids(Some(page))
+                    .build(),
+                PaginationQuery::new_with_page_size(i64::try_from(page.len()).unwrap_or(i64::MAX)),
+                self.state.clone(),
+            )
+            .await
+            .map_err(|error| {
+                CatalogBackendError::new_unexpected(std::io::Error::other(error.to_string()))
+            })?;
+            sources.extend(roles.roles.iter().map(|role| (role.id, role.ident_arc())));
         }
         Ok(sources)
     }

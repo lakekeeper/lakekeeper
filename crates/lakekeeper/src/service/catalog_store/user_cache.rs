@@ -76,8 +76,8 @@ const LOAD_CHUNK: usize = 500;
 /// the read pool.
 ///
 /// One id is loaded single-flight: concurrent misses for it share one read. Several
-/// ids are loaded in one read for all misses; concurrent misses for the same id then
-/// each read it once. A read error is returned and nothing is cached.
+/// ids are loaded in one read per [`LOAD_CHUNK`] misses; concurrent misses for the same id
+/// then each read it once. A read error is returned; chunks read before it stay cached.
 pub async fn user_emails<C: CatalogStore>(
     user_ids: &[UserId],
     catalog_state: C::State,
@@ -113,17 +113,20 @@ pub async fn user_emails<C: CatalogStore>(
         return Ok(emails);
     }
 
-    let counts: Vec<_> = misses
-        .iter()
-        .map(|id| USER_CACHE.invalidations(id))
-        .collect();
-    let mut loaded = load::<C>(&misses, catalog_state).await?;
-    for (user_id, count) in misses.into_iter().zip(counts) {
-        let email = loaded.remove(&user_id).unwrap_or(UserEmail::NoUser);
-        USER_CACHE
-            .put_unless_invalidated(&user_id, email.clone(), count)
-            .await;
-        emails.insert(user_id, email);
+    // Each chunk is cached as soon as it is read, so a lookup cut short keeps what it read.
+    for chunk in misses.chunks(LOAD_CHUNK) {
+        let counts: Vec<_> = chunk
+            .iter()
+            .map(|id| USER_CACHE.invalidations(id))
+            .collect();
+        let mut loaded = load::<C>(chunk, catalog_state.clone()).await?;
+        for (user_id, count) in chunk.iter().zip(counts) {
+            let email = loaded.remove(user_id).unwrap_or(UserEmail::NoUser);
+            USER_CACHE
+                .put_unless_invalidated(user_id, email.clone(), count)
+                .await;
+            emails.insert(user_id.clone(), email);
+        }
     }
     Ok(emails)
 }
@@ -134,26 +137,19 @@ pub async fn cached_user_email(user_id: &UserId) -> Option<UserEmail> {
     USER_CACHE.get(user_id).await
 }
 
-/// Read the emails of `user_ids`. A user the read does not return has no row or is
-/// deleted, and is left out.
+/// Read the emails of `user_ids`, at most [`LOAD_CHUNK`] of them, in one statement. A user
+/// the read does not return has no row or is deleted, and is left out.
 async fn load<C: CatalogStore>(
     user_ids: &[UserId],
     catalog_state: C::State,
 ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
-    let mut emails = HashMap::with_capacity(user_ids.len());
-    for chunk in user_ids.chunks(LOAD_CHUNK) {
-        let users = C::list_user_membership_entries(chunk, catalog_state.clone())
-            .await
-            .map_err(|e| {
-                CatalogBackendError::new_unexpected(std::io::Error::other(e.error.message))
-            })?;
-        emails.extend(
-            users
-                .into_iter()
-                .map(|user| (user.user_id, UserEmail::of(user.email.as_deref()))),
-        );
-    }
-    Ok(emails)
+    let users = C::list_user_membership_entries(user_ids, catalog_state)
+        .await
+        .map_err(|e| CatalogBackendError::new_unexpected(std::io::Error::other(e.error.message)))?;
+    Ok(users
+        .into_iter()
+        .map(|user| (user.user_id, UserEmail::of(user.email.as_deref())))
+        .collect())
 }
 
 #[cfg(feature = "router")]

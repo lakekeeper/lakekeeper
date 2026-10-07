@@ -500,6 +500,50 @@ async fn roles_carry_their_provider_and_source(pool: PgPool) {
     expected(&grant["context"]["principal"]);
 }
 
+/// Several roles are looked up together, each under its own id, whatever the order and
+/// however often it is asked for; a role that does not exist is left out.
+#[sqlx::test]
+async fn role_sources_are_looked_up_together(pool: PgPool) {
+    let f = Fixture::new(pool, None).await;
+    let mut caller = RequestMetadata::test_user(user("role-batch-caller"));
+    caller.with_project_id(f.project_id.clone());
+    let mut roles = Vec::new();
+    for name in ["readers", "writers", "admins"] {
+        let role = ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::create_role(
+            CreateRoleRequest {
+                name: name.to_string(),
+                description: None,
+                project_id: None,
+                provider_id: None,
+                source_id: None,
+            },
+            f.ctx.clone(),
+            caller.clone(),
+        )
+        .await
+        .unwrap();
+        roles.push(role);
+    }
+    let missing = lakekeeper::service::RoleId::new_random();
+    // Out of creation order, with one id twice.
+    let ids = vec![roles[2].id, missing, roles[0].id, roles[1].id, roles[0].id];
+
+    let reader = CatalogStoreReader::<PostgresBackend>::new(f.ctx.v1_state.catalog.clone());
+    let sources = reader.role_sources(&ids).await.unwrap();
+    assert_eq!(sources.len(), roles.len());
+    for role in &roles {
+        assert_eq!(
+            sources[&role.id].source_id().to_string(),
+            role.source_id.to_string()
+        );
+        assert_eq!(
+            sources[&role.id].provider_id().to_string(),
+            role.provider_id.to_string()
+        );
+    }
+    assert!(!sources.contains_key(&missing));
+}
+
 #[derive(Debug)]
 struct FailingCatalog;
 
