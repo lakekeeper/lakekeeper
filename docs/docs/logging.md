@@ -64,7 +64,7 @@ Audit records name users by their principal id. To also put their email on the r
 LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL=true
 ```
 
-It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
+It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, on the users in an `apply_grants` action's `principals`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
 
 The email comes from the caller's token when the token is that user's and carries an email claim (`email`, or `upn` or `preferred_username` when they hold an address). Otherwise it comes from the user's record in the catalog, through the [user cache](./configuration.md#caching), so a user named on every request costs one database read per cache lifetime.
 
@@ -377,7 +377,7 @@ A grant change request is checked once as a whole, so one `apply_grants` action 
 
 | Context field | Type   | Description                                                                 |
 |---------------|--------|-----------------------------------------------------------------------------|
-| `principals`  | Array  | The distinct principals the grants are for, each prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `principals`  | Array  | The distinct principals the grants are for, each `{"user": "…"}` or `{"role": "…"}` like `context.principal` on grant records; a user with `email` when [user emails](#audit-user-emails) are enabled and it is known |
 | `privileges`  | Array  | The distinct privilege names in the request                                 |
 | `writes`      | Integer | Number of grant entries requested, before removing duplicates              |
 | `deletes`     | Integer | Number of revocation entries requested, before removing duplicates         |
@@ -394,7 +394,7 @@ A *denied* `apply_grants` has the same detail as an allowed one: what was asked,
 // Denied attempt to grant `modify` to two principals
 {
   "action_name": "apply_grants",
-  "principals": ["role:1f7b…", "user:oidc~alice"],
+  "principals": [{"role": "1f7b…"}, {"user": "oidc~alice"}],
   "privileges": ["modify"],
   "writes": 2,
   "deletes": 0
@@ -1222,7 +1222,7 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.act
 cat logs.json | jq -R -r 'fromjson? | select(.event_source == "audit") | .user_agent // "(none sent)"' | sort | uniq -c | sort -rn
 
 # Refused attempts to grant privileges TO a specific principal
-cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.actions // [])[]; .action_name == "apply_grants" and any((.principals // [])[]; . == "user:oidc~alice")) and any((.authorizations // [])[]; .allowed == false))'
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.actions // [])[]; .action_name == "apply_grants" and any((.principals // [])[]; .user == "oidc~alice")) and any((.authorizations // [])[]; .allowed == false))'
 ```
 
 ## Best Practices

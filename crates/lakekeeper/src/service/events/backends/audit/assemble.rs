@@ -15,11 +15,12 @@ use crate::{
     audit::EmitterStamp,
     request_metadata::{RequestMetadata, UserAgent},
     service::{
+        UserId,
         authz::{ActionDescriptor, UserOrRoleId},
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationSucceededEvent, IdempotentReplayEvent,
-            context::{ContextEntry, EntityDescriptor, EventEntities},
+            context::{ActionContextKey, ContextEntry, EntityDescriptor, EventEntities},
         },
     },
 };
@@ -75,7 +76,7 @@ fn authorization(
             EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(actions, authorizations, extra_context),
         ),
-        actions: self::actions(actions),
+        actions: self::actions(actions, emails),
         entities: self::entities(entities),
         request_id: request_metadata.request_id().clone(),
         time: occurred_at.into(),
@@ -98,7 +99,7 @@ pub(crate) fn replay(event: &IdempotentReplayEvent, emails: &Emails) -> ReplayRe
             EmitterStamp::of::<crate::Lakekeeper>(),
             contributors(&event.actions, &[], &BTreeMap::new()),
         ),
-        actions: actions(&event.actions),
+        actions: actions(&event.actions, emails),
         entities: entities(&event.entities),
         request_id: event.request_metadata.request_id().clone(),
         time: event.occurred_at.into(),
@@ -120,9 +121,16 @@ pub(crate) fn actor(request_metadata: &RequestMetadata, emails: &Emails) -> Acto
 
 /// A principal named as a target, with its email from `emails` when it is a user.
 pub(crate) fn subject(id: &UserOrRoleId, emails: &Emails) -> SubjectRecord {
-    let mut record = SubjectRecord::from_id(id);
-    if let (SubjectRecord::User(user), UserOrRoleId::User(user_id)) = (&mut record, id) {
-        user.email = emails.get(user_id);
+    subject_record_with_email(&SubjectRecord::from_id(id), emails)
+}
+
+/// `subject` with its email from `emails` when it is a user.
+fn subject_record_with_email(subject: &SubjectRecord, emails: &Emails) -> SubjectRecord {
+    let mut record = subject.clone();
+    if let SubjectRecord::User(user) = &mut record
+        && let Ok(user_id) = UserId::try_from(user.user.as_str())
+    {
+        user.email = emails.get(&user_id);
     }
     record
 }
@@ -159,19 +167,36 @@ fn idempotency_key(request_metadata: &RequestMetadata) -> Option<String> {
         .map(|key| key.as_uuid().to_string())
 }
 
-pub(crate) fn action(descriptor: &ActionDescriptor) -> ActionRecord {
+pub(crate) fn action(descriptor: &ActionDescriptor, emails: &Emails) -> ActionRecord {
     ActionRecord {
         action_name: descriptor.action_name,
         context: descriptor
             .context
             .iter()
-            .map(|key| (key.as_str(), key.value()))
+            .map(|key| (key.as_str(), context_value(key, emails)))
             .collect(),
     }
 }
 
-fn actions(descriptors: &[ActionDescriptor]) -> Vec<ActionRecord> {
-    descriptors.iter().map(action).collect()
+/// The value of an action's context key, with an email on each user it names.
+fn context_value(key: &ActionContextKey, emails: &Emails) -> serde_json::Value {
+    match key {
+        ActionContextKey::Principals(subjects) => serde_json::to_value(
+            subjects
+                .iter()
+                .map(|subject| subject_record_with_email(subject, emails))
+                .collect::<Vec<_>>(),
+        )
+        .expect("audit types serialize to JSON"),
+        _ => key.value(),
+    }
+}
+
+fn actions(descriptors: &[ActionDescriptor], emails: &Emails) -> Vec<ActionRecord> {
+    descriptors
+        .iter()
+        .map(|descriptor| action(descriptor, emails))
+        .collect()
 }
 
 pub(crate) fn entity(descriptor: &EntityDescriptor) -> EntityRecord {
@@ -196,7 +221,7 @@ pub(crate) fn decision(authorization: &Authorization, emails: &Emails) -> Decisi
             .for_principal
             .as_ref()
             .map(|id| subject(id, emails)),
-        action: action(&authorization.action),
+        action: action(&authorization.action, emails),
         entity: entity(&authorization.entity),
         allowed: authorization.allowed,
         determined_by: authorization.determined_by.clone(),
@@ -210,16 +235,37 @@ fn decisions(authorizations: &[Authorization], emails: &Emails) -> Vec<DecisionR
         .collect()
 }
 
-/// The users the decisions of a record are about, for [`Emails::resolve`].
-pub(crate) fn decision_subjects(
+/// The users a record names besides its actor, for [`Emails::resolve`]: the subjects of its
+/// decisions, and the users in its actions' `principals`.
+pub(crate) fn named_users(
+    actions: &[ActionDescriptor],
     authorizations: &[Authorization],
-) -> impl Iterator<Item = &crate::service::UserId> {
-    authorizations
+) -> Vec<UserId> {
+    let subjects =
+        authorizations
+            .iter()
+            .filter_map(|authorization| match &authorization.for_principal {
+                Some(UserOrRoleId::User(user_id)) => Some(user_id.clone()),
+                _ => None,
+            });
+    let in_actions = actions
         .iter()
-        .filter_map(|authorization| match &authorization.for_principal {
-            Some(UserOrRoleId::User(user_id)) => Some(user_id),
+        .chain(
+            authorizations
+                .iter()
+                .map(|authorization| &authorization.action),
+        )
+        .flat_map(|descriptor| &descriptor.context)
+        .filter_map(|key| match key {
+            ActionContextKey::Principals(principals) => Some(principals),
             _ => None,
         })
+        .flatten()
+        .filter_map(|subject| match subject {
+            SubjectRecord::User(user) => UserId::try_from(user.user.as_str()).ok(),
+            SubjectRecord::Role(_) => None,
+        });
+    subjects.chain(in_actions).collect()
 }
 
 /// The handler-recorded `context`, or `None` when the handler recorded nothing, so the key is

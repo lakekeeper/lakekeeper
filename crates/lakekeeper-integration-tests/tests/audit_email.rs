@@ -11,10 +11,12 @@ use lakekeeper::{
     api::{
         RequestMetadata,
         management::v1::{
+            ApiServer,
             check::{
                 CatalogActionCheckItem, CatalogActionCheckOperation,
                 CatalogActionsBatchCheckRequest, UserOrRole, check_internal,
             },
+            grant::{ApplyGrantsRequest, GrantEntry, Service as _},
             user::{UserLastUpdatedWith, UserType},
         },
     },
@@ -108,6 +110,8 @@ fn committed_schema() -> Value {
 
 struct Fixture {
     ctx: Ctx,
+    warehouse_id: lakekeeper::WarehouseId,
+    project_id: lakekeeper::ProjectId,
     logs: CapturedLogs,
     _guard: tracing::subscriber::DefaultGuard,
 }
@@ -122,7 +126,7 @@ impl Fixture {
                 .with_writer(logs.clone())
                 .finish(),
         );
-        let (ctx, _) = SetupTestCatalog::builder()
+        let (ctx, warehouse) = SetupTestCatalog::builder()
             .pool(pool)
             .storage_profile(memory_io_profile())
             .authorizer(AllowAllAuthorizer::default())
@@ -141,6 +145,8 @@ impl Fixture {
             .await;
         Self {
             ctx,
+            warehouse_id: warehouse.warehouse_id,
+            project_id: (*warehouse.project_id).clone(),
             logs,
             _guard: guard,
         }
@@ -306,6 +312,52 @@ async fn grant_records_carry_the_recipients_email(pool: PgPool) {
     assert_eq!(
         records[0]["context"]["principal"]["email"],
         "grantee@example.com"
+    );
+}
+
+/// The principals an `apply_grants` record lists carry their emails, like every other
+/// place a user is named.
+#[sqlx::test]
+async fn apply_grants_principals_carry_their_emails(pool: PgPool) {
+    let f = Fixture::new(pool, None).await;
+    let bob = user("email-apply-bob");
+    let carol = user("email-apply-carol");
+    f.user(&bob, Some("bob@example.com")).await;
+    f.user(&carol, None).await;
+
+    let mut caller =
+        RequestMetadata::test_user_with_email(user("email-applier"), "applier@example.com");
+    caller.with_project_id(f.project_id.clone());
+    let entry = |principal: &UserId| GrantEntry {
+        privilege: "get_metadata".to_string(),
+        principal: UserOrRole::User(principal.clone()),
+    };
+    ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::apply_warehouse_grants(
+        f.warehouse_id,
+        f.ctx.clone(),
+        caller,
+        ApplyGrantsRequest {
+            writes: vec![entry(&bob), entry(&carol)],
+            deletes: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let records = f.logs.wait_for(3).await;
+    let apply = records
+        .iter()
+        .find(|record| record["record_type"] == "authorization")
+        .expect("the apply_grants record");
+    let principals = &apply["actions"][0]["principals"];
+    assert_eq!(principals[0]["user"], bob.to_string());
+    assert_eq!(principals[0]["email"], "bob@example.com");
+    assert_eq!(principals[1]["user"], carol.to_string());
+    assert!(principals[1].get("email").is_none());
+    // The decision's copy of the action carries the same.
+    assert_eq!(
+        apply["authorizations"][0]["action"]["principals"],
+        *principals
     );
 }
 

@@ -67,9 +67,9 @@
               "principals": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "$ref": "#/$defs/SubjectRecord"
                 },
-                "description": "The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "description": "The distinct principals the grants are for, as `{\"user\": …}` or `{\"role\": …}`. A user also carries `email` when audit records carry emails and it is known."
               },
               "privileges": {
                 "type": "array",

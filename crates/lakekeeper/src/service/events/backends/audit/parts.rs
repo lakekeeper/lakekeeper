@@ -247,7 +247,7 @@ pub struct AssumedRoleRecord {
 /// record. `{"user": …}` or `{"role": …}`.
 #[audit_part]
 #[serde(untagged)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubjectRecord {
     /// A user.
     User(UserSubjectRecord),
@@ -271,7 +271,7 @@ impl SubjectRecord {
 
 /// A user named as a target.
 #[audit_part]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserSubjectRecord {
     /// The user's principal id.
     pub(crate) user: String,
@@ -283,7 +283,7 @@ pub struct UserSubjectRecord {
 
 /// A role named as a target.
 #[audit_part]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleSubjectRecord {
     /// The role's id.
     pub(crate) role: String,

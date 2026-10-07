@@ -280,12 +280,8 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let emails = self
-            .emails(
-                &event.request_metadata,
-                assemble::decision_subjects(&event.authorizations),
-            )
-            .await;
+        let named = assemble::named_users(&event.actions, &event.authorizations);
+        let emails = self.emails(&event.request_metadata, &named).await;
         assemble::authorization_failed(&event, &emails).emit("Authorization failed event");
         Ok(())
     }
@@ -331,12 +327,8 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let emails = self
-            .emails(
-                &event.request_metadata,
-                assemble::decision_subjects(&event.authorizations),
-            )
-            .await;
+        let named = assemble::named_users(&event.actions, &event.authorizations);
+        let emails = self.emails(&event.request_metadata, &named).await;
         assemble::authorization_succeeded(&event, &emails).emit("Authorization succeeded event");
         Ok(())
     }
@@ -350,7 +342,8 @@ impl EventListener for AuditEventListener {
         if !enabled() {
             return Ok(());
         }
-        let emails = self.emails(&event.request_metadata, []).await;
+        let named = assemble::named_users(&event.actions, &[]);
+        let emails = self.emails(&event.request_metadata, &named).await;
         assemble::replay(&event, &emails).emit("Idempotent replay served");
         Ok(())
     }

@@ -32,7 +32,7 @@ use crate::{
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
-            EventDispatcher, IdempotentReplayEvent,
+            EventDispatcher, IdempotentReplayEvent, backends::audit::SubjectRecord,
         },
         idempotency::IdempotencyKey,
         storage::StoragePermissions,
@@ -221,8 +221,8 @@ pub enum ActionContextKey {
     NarrowedPrivileges(Vec<String>),
     /// Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
     Principal(String),
-    /// The distinct principals the grants are for, each prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
-    Principals(Vec<String>),
+    /// The distinct principals the grants are for, as `{"user": …}` or `{"role": …}`. A user also carries `email` when audit records carry emails and it is known.
+    Principals(Vec<SubjectRecord>),
     /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
     PrivilegeScope(Wire<PrivilegeScope>),
     /// The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege.
