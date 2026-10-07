@@ -1218,7 +1218,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
 /// to its corresponding action. This avoids relying on positional indices.
 ///
 /// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
-pub fn interpret_authz_results_for_load_table(
+pub(crate) fn interpret_authz_results_for_load_table(
     actions: &[TabularAuthzAction<'_>],
     authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,

@@ -561,7 +561,7 @@ fn refusal_ends_request(action: &TabularAuthzAction<'_>) -> bool {
 /// returns at that refusal and never reads them; [`Self::iter`] asserts this in
 /// debug builds.
 #[derive(Debug)]
-pub struct LoadChainDecisions {
+pub(crate) struct LoadChainDecisions {
     allowed: Vec<bool>,
     decided: usize,
 }

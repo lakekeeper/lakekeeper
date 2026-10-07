@@ -102,7 +102,7 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-
 
 **What happens when a request is not matched as a trusted engine:**
 
-- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The one exception is a chain deeper than the configured maximum, which is rejected with `400 ReferencedByDepthExceeded` before engine trust is considered.
+- `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The exceptions are malformed chains, rejected with `400` before engine trust is considered: a chain deeper than the configured maximum (`ReferencedByDepthExceeded`), or one that names the object being loaded (`ReferencedByContainsTarget`).
 - Only **commits that actually attempt to set or remove a protected owner property** (`create-view` or `commit-view` writing `trino.run-as-owner`) are rejected with `403 ProtectedPropertyModification`. An ignored `referenced-by` on a load does **not** trigger this error.
 
 !!! note "When using the OPA bridge"

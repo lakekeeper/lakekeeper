@@ -1625,6 +1625,65 @@ async fn test_load_view_referenced_by_itself_is_rejected(pool: PgPool) {
     assert_eq!(tabular_checks_since(&authz, since), Vec::<Vec<_>>::new());
 }
 
+/// A self-reference that differs from the target only in case is decided as an
+/// intermediate view: the caller needs `GetMetadata` and `Select` on it.
+#[sqlx::test]
+async fn test_load_view_case_variant_self_reference_is_an_intermediate_view(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+
+    let load = |ctx: ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>| {
+        let wh_prefix = prefix(&wh);
+        async move {
+            Server::load_view(
+                ViewParameters {
+                    prefix: Some(wh_prefix),
+                    view: table_ident("ns", "definer_view"),
+                },
+                LoadViewRequest {
+                    data_access: DataAccessMode::ClientManaged,
+                    referenced_by: Some(referenced_by(&[table_ident("ns", "DEFINER_VIEW")])),
+                },
+                ctx,
+                request_as_user("user_a"),
+            )
+            .await
+        }
+    };
+
+    // All allowed: the case variant is decided as an intermediate view for the
+    // caller (GetMetadata + Select), then the target for owner_b (GetMetadata).
+    let since = authz.tabular_checks().len();
+    load(ctx.clone()).await.expect("all allowed loads");
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![
+            intermediate_view_checks(&view_key, None),
+            vec![tabular_check(&view_key, "GetMetadata", Some("owner_b"))],
+        ]
+    );
+
+    // Caller refused: the request ends at the caller's segment with 404.
+    authz.hide_for_user(&user("user_a"), &view_key);
+    let since = authz.tabular_checks().len();
+    let err = load(ctx.clone()).await.unwrap_err();
+    assert_view_not_found(&err);
+    assert_eq!(
+        tabular_checks_since(&authz, since),
+        vec![intermediate_view_checks(&view_key, None)]
+    );
+}
+
 #[sqlx::test]
 async fn test_load_table_referenced_by_itself_is_rejected(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
