@@ -1124,7 +1124,7 @@ fn fixture_authz_failed_tabular_move() {
     ));
 
     let record = emit_and_capture_one(|| {
-        AuditEventListener.authorization_failed(AuthorizationFailedEvent {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
             request_metadata: Arc::new(fixture_metadata()),
             occurred_at: chrono::Utc::now(),
             entities,
