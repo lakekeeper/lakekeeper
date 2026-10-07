@@ -450,8 +450,12 @@
                 "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string",
-                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "$ref": "#/$defs/SubjectRecord",
+                "description": "The one principal whose grants are in range, as `{\"user\": …}` or `{\"role\": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known."
+              },
+              "principal_scope": {
+                "$ref": "#/$defs/PrincipalScope",
+                "description": "`every` when the request reaches the grants of every principal, `one` when it names one in `principal`."
               },
               "privilege_scope": {
                 "$ref": "#/$defs/PrivilegeScope",
@@ -504,8 +508,12 @@
                 "description": "The privileges named when `privilege_scope` is `only`; `[]` when it is `every`."
               },
               "principal": {
-                "type": "string",
-                "description": "Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`."
+                "$ref": "#/$defs/SubjectRecord",
+                "description": "The one principal whose grants are in range, as `{\"user\": …}` or `{\"role\": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known."
+              },
+              "principal_scope": {
+                "$ref": "#/$defs/PrincipalScope",
+                "description": "`every` when the request reaches the grants of every principal, `one` when it names one in `principal`."
               },
               "privilege_scope": {
                 "$ref": "#/$defs/PrivilegeScope",
@@ -1674,6 +1682,16 @@
         "forbid": "The policy denies the action.",
         "permit": "The policy grants the action."
       }
+    },
+    "PrincipalScope": {
+      "type": "string",
+      "description": "Values of `principal_scope`. A new value is a major format change.",
+      "enum": [
+        "every",
+        "one"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "principal_scope"
     },
     "PrivilegeScope": {
       "type": "string",

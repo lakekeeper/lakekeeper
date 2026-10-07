@@ -16,7 +16,7 @@ use lakekeeper::{
                 CatalogActionCheckItem, CatalogActionCheckOperation,
                 CatalogActionsBatchCheckRequest, UserOrRole, check_internal,
             },
-            grant::{ApplyGrantsRequest, GrantEntry, Service as _},
+            grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             user::{UserLastUpdatedWith, UserType},
         },
     },
@@ -359,6 +359,38 @@ async fn apply_grants_principals_carry_their_emails(pool: PgPool) {
         apply["authorizations"][0]["action"]["principals"],
         *principals
     );
+}
+
+/// A subtree request about one user names them in `principal` with their email.
+#[sqlx::test]
+async fn subtree_principal_carries_its_email(pool: PgPool) {
+    let f = Fixture::new(pool, None).await;
+    let bob = user("email-subtree-bob");
+    f.user(&bob, Some("subtree-bob@example.com")).await;
+
+    let mut caller = RequestMetadata::test_user(user("email-subtree-caller"));
+    caller.with_project_id(f.project_id.clone());
+    ApiServer::<PostgresBackend, AllowAllAuthorizer, SecretsState>::list_grants(
+        f.ctx.clone(),
+        caller,
+        ListGrantsQuery {
+            principal_user: Some(bob.clone()),
+            principal_role: None,
+        },
+        lakekeeper::api::iceberg::v1::PaginationQuery::new(
+            lakekeeper::api::iceberg::v1::PageToken::Empty,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let records = f.logs.wait_for(1).await;
+    let action = &records[0]["actions"][0];
+    assert_eq!(action["action_name"], "read_subtree_grants");
+    assert_eq!(action["principal_scope"], "one");
+    assert_eq!(action["principal"]["user"], bob.to_string());
+    assert_eq!(action["principal"]["email"], "subtree-bob@example.com");
 }
 
 #[derive(Debug)]

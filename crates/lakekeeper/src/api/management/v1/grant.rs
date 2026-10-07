@@ -3859,8 +3859,9 @@ mod tests {
             "an omitted include-root-level records as included: {unfiltered:?}"
         );
         assert!(
-            unfiltered.contains(&("principal".to_string(), "every".to_string())),
-            "covering every principal is stated, never left out: {unfiltered:?}"
+            unfiltered.contains(&("principal_scope".to_string(), "every".to_string()))
+                && !unfiltered.iter().any(|(key, _)| key == "principal"),
+            "covering every principal is stated in the scope, with no principal: {unfiltered:?}"
         );
         assert!(
             unfiltered.contains(&("privilege_scope".to_string(), "every".to_string()))
@@ -3878,7 +3879,8 @@ mod tests {
         assert!(
             narrowed.contains(&("resource_types".to_string(), "[table]".to_string()))
                 && narrowed.contains(&("root_level".to_string(), "excluded".to_string()))
-                && narrowed.contains(&("principal".to_string(), "user:oidc~alice".to_string())),
+                && narrowed.contains(&("principal_scope".to_string(), "one".to_string()))
+                && narrowed.contains(&("principal".to_string(), "{user: oidc~alice}".to_string())),
             "a narrowed request records exactly its narrowing: {narrowed:?}"
         );
         assert!(

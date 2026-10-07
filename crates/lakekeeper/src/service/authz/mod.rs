@@ -24,7 +24,7 @@ use crate::{
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
-        events::context::ActionContextKey,
+        events::{backends::audit::SubjectRecord, context::ActionContextKey},
     },
 };
 
@@ -555,7 +555,7 @@ pub enum CatalogProjectAction {
     /// base-capability question permission introspection asks.
     ReadSubtreeGrants {
         #[audit(
-            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+            expands_to = "dry_run, narrowed_privileges, principal, principal_scope, privilege_scope, resource_types, root_level"
         )]
         scope: Option<SubtreeGrantScope>,
     },
@@ -950,6 +950,27 @@ pub enum PrivilegeScope {
     Only,
 }
 
+/// The `principal_scope` label: whether a subtree request reaches the grants of every
+/// principal or of one.
+// An enum, so both values reach the audit schema and a rename fails `check-audit-format`,
+// as with `PrivilegeScope` for `privilege_scope`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
+    strum_macros::VariantNames,
+)]
+#[crate::audit::audit_part(field = "principal_scope", closed)]
+#[strum(serialize_all = "snake_case")]
+pub enum PrincipalScope {
+    Every,
+    One,
+}
+
 impl SubtreeGrantPrivileges {
     /// Which of the two cases this is, as the label the action context carries.
     #[must_use]
@@ -1012,16 +1033,7 @@ impl SubtreeGrantScope {
     /// directly.
     #[must_use]
     pub fn context(&self) -> Vec<ActionContextKey> {
-        // Principals are prefixed by kind, matching the wire discriminator, so a user id
-        // and a role id that coincide stay distinguishable.
-        let principal = match &self.principal {
-            SubtreeGrantPrincipal::Every {} => "every".to_string(),
-            SubtreeGrantPrincipal::One(AuthzUserOrRole::User(user_id)) => format!("user:{user_id}"),
-            SubtreeGrantPrincipal::One(AuthzUserOrRole::Role(assignee)) => {
-                format!("role:{}", assignee.role_id())
-            }
-        };
-        vec![
+        let mut context = vec![
             ActionContextKey::DryRun(self.dry_run),
             ActionContextKey::ResourceTypes(
                 self.resource_types
@@ -1031,7 +1043,15 @@ impl SubtreeGrantScope {
                     .collect(),
             ),
             ActionContextKey::RootLevel(self.root_level.as_wire()),
-            ActionContextKey::Principal(principal),
+            // Like the privileges below: the scope always says which case applies, and the
+            // one principal is added after it when there is one.
+            ActionContextKey::PrincipalScope(
+                match &self.principal {
+                    SubtreeGrantPrincipal::Every {} => PrincipalScope::Every,
+                    SubtreeGrantPrincipal::One(_) => PrincipalScope::One,
+                }
+                .as_wire(),
+            ),
             // Unlike the members above, the widest privilege case cannot be written out:
             // an empty filter matches privileges this authorizer no longer publishes, so
             // there is no list to expand it into. `privilege_scope` carries it instead,
@@ -1042,7 +1062,13 @@ impl SubtreeGrantScope {
                 SubtreeGrantPrivileges::Every {} => Vec::new(),
                 SubtreeGrantPrivileges::Only { names } => names.as_set().iter().cloned().collect(),
             }),
-        ]
+        ];
+        if let SubtreeGrantPrincipal::One(principal) = &self.principal {
+            context.push(ActionContextKey::Principal(SubjectRecord::from_id(
+                &UserOrRoleId::from(principal),
+            )));
+        }
+        context
     }
 }
 
@@ -1128,7 +1154,7 @@ pub enum CatalogWarehouseAction {
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
         #[audit(
-            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+            expands_to = "dry_run, narrowed_privileges, principal, principal_scope, privilege_scope, resource_types, root_level"
         )]
         scope: Option<SubtreeGrantScope>,
     },
@@ -1139,7 +1165,7 @@ pub enum CatalogWarehouseAction {
     /// `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
     RevokeSubtreeGrants {
         #[audit(
-            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+            expands_to = "dry_run, narrowed_privileges, principal, principal_scope, privilege_scope, resource_types, root_level"
         )]
         scope: Option<SubtreeGrantScope>,
     },
@@ -1432,7 +1458,7 @@ pub enum CatalogNamespaceAction {
     /// `GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.
     ReadSubtreeGrants {
         #[audit(
-            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+            expands_to = "dry_run, narrowed_privileges, principal, principal_scope, privilege_scope, resource_types, root_level"
         )]
         scope: Option<SubtreeGrantScope>,
     },
@@ -1443,7 +1469,7 @@ pub enum CatalogNamespaceAction {
     /// `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
     RevokeSubtreeGrants {
         #[audit(
-            expands_to = "dry_run, narrowed_privileges, principal, privilege_scope, resource_types, root_level"
+            expands_to = "dry_run, narrowed_privileges, principal, principal_scope, privilege_scope, resource_types, root_level"
         )]
         scope: Option<SubtreeGrantScope>,
     },

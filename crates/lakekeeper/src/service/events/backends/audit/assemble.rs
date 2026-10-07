@@ -188,6 +188,10 @@ fn context_value(key: &ActionContextKey, emails: &Emails) -> serde_json::Value {
                 .collect::<Vec<_>>(),
         )
         .expect("audit types serialize to JSON"),
+        ActionContextKey::Principal(subject) => {
+            serde_json::to_value(subject_record_with_email(subject, emails))
+                .expect("audit types serialize to JSON")
+        }
         _ => key.value(),
     }
 }
@@ -236,7 +240,7 @@ fn decisions(authorizations: &[Authorization], emails: &Emails) -> Vec<DecisionR
 }
 
 /// The users a record names besides its actor, for [`Emails::resolve`]: the subjects of its
-/// decisions, and the users in its actions' `principals`.
+/// decisions, and the users in its actions' `principals` and `principal`.
 pub(crate) fn named_users(
     actions: &[ActionDescriptor],
     authorizations: &[Authorization],
@@ -256,11 +260,11 @@ pub(crate) fn named_users(
                 .map(|authorization| &authorization.action),
         )
         .flat_map(|descriptor| &descriptor.context)
-        .filter_map(|key| match key {
-            ActionContextKey::Principals(principals) => Some(principals),
-            _ => None,
+        .flat_map(|key| match key {
+            ActionContextKey::Principals(principals) => principals.as_slice(),
+            ActionContextKey::Principal(principal) => std::slice::from_ref(principal),
+            _ => &[],
         })
-        .flatten()
         .filter_map(|subject| match subject {
             SubjectRecord::User(user) => UserId::try_from(user.user.as_str()).ok(),
             SubjectRecord::Role(_) => None,

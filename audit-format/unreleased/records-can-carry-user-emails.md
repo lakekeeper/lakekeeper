@@ -8,6 +8,7 @@ level: minor
 actor.email                          the principal's email, for principal and assumed_role actors
 authorizations[].for_principal.email  the user's email, for a user subject
 actions[].principals[].email         the user's email, for a user an apply_grants request names
+actions[].principal.email            the user's email, when a subtree grant request names one user
 context.principal.email              the recipient's email, on grant_created and grant_revoked
 ```
 

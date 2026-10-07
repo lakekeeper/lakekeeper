@@ -27,7 +27,8 @@ use crate::{
         authn::UserIdRef,
         authz::{
             ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
-            EventAction, PrivilegeScope, ResourceType, RootLevelGrants, UserOrRoleId,
+            EventAction, PrincipalScope, PrivilegeScope, ResourceType, RootLevelGrants,
+            UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -219,8 +220,10 @@ pub enum ActionContextKey {
     Name(String),
     /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
     NarrowedPrivileges(Vec<String>),
-    /// Whose grants are in range: `every`, or one principal prefixed by its kind, such as `user:oidc~alice` or `role:<uuid>`.
-    Principal(String),
+    /// The one principal whose grants are in range, as `{"user": …}` or `{"role": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known.
+    Principal(SubjectRecord),
+    /// `every` when the request reaches the grants of every principal, `one` when it names one in `principal`.
+    PrincipalScope(Wire<PrincipalScope>),
     /// The distinct principals the grants are for, as `{"user": …}` or `{"role": …}`. A user also carries `email` when audit records carry emails and it is known.
     Principals(Vec<SubjectRecord>),
     /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
@@ -733,12 +736,12 @@ pub enum ManagementAction {
     ApplyGrants,
     /// Revoke the grants in a range beneath one resource.
     // The handler assembles the context from the request body and the scope its gate is asked
-    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`. The six scope keys are
+    // with: see `RevokeSubtreeGrants` in `api::management::v1::grant`. The seven scope keys are
     // the ones `SubtreeGrantScope::context` writes. Also declared on the `Catalog*Action`
     // variants sharing this wire name; declaring them here keeps this variant self-contained.
     #[audit(
         carries = "allow_partial, created_before, dry_run, narrowed_privileges, principal, \
-                   privilege_scope, privileges, resource_types, root_level"
+                   principal_scope, privilege_scope, privileges, resource_types, root_level"
     )]
     RevokeSubtreeGrants,
 }

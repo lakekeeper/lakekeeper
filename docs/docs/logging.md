@@ -64,7 +64,7 @@ Audit records name users by their principal id. To also put their email on the r
 LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL=true
 ```
 
-It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, on the users in an `apply_grants` action's `principals`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
+It is off by default. When on, an `email` key appears next to the user it belongs to: on `actor` for `principal` and `assumed_role` actors, on the user form of `authorizations[].for_principal`, on the users in an `apply_grants` action's `principals` and in a subtree action's `principal`, and on the user form of `context.principal` on grant records. Roles, `anonymous` and `lakekeeper_internal` actors never carry one.
 
 The email comes from the caller's token when the token is that user's and carries an email claim (`email`, or `upn` or `preferred_username` when they hold an address). Otherwise it comes from the user's record in the catalog, through the [user cache](./configuration.md#caching), so a user named on every request costs one database read per cache lifetime.
 
@@ -191,7 +191,7 @@ One exception: the `target` **key** belongs to the subscriber, but its **value**
 |---|---|---|
 | `name` | `actions[].name` · `authorizations[].determined_by[].name` | A resource name · a policy name |
 | `type` | `authorizations[].determined_by[].type` · `error.type` | The kind of deciding factor · the error type |
-| `principal` | `actor.principal` · `context.principal` · `actions[].principal` | Who acted (string) · who holds the grant (object) · who a subtree request reaches (string) |
+| `principal` | `actor.principal` · `context.principal` · `actions[].principal` | Who acted (string) · who holds the grant (object) · whose grants a subtree request reaches (object) |
 | `source` | `actions[].source` · `authorizations[].determined_by[].source` | The namespace path an entity moves from (array) · where a policy came from (string) |
 | `message` | `message` · `context.message` | The subscriber's log message · on an admission record, the gate's own text |
 
@@ -282,7 +282,7 @@ The same set is selected by `authorizations[].allowed == false`. Because one req
 
 **Principal references.** Where a principal is the *target* rather than the caller (`authorizations[].for_principal`, and `context.principal` on grant records), it is an object with one key: `user` for a user, `role` for a role. For example `{"user": "oidc~alice"}` or `{"role": "<uuid>"}`. With [user emails](#audit-user-emails) enabled, the user form can also carry `email`: `{"user": "oidc~alice", "email": "alice@example.com"}`.
 
-**`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is a string naming whose grants a subtree request reaches (`"every"`, `"user:oidc~alice"`, `"role:<uuid>"`). A query on `principal.user` finds nothing where the value is a string.
+**`principal` has three meanings, depending on its path.** `actor.principal` is a string naming who acted. `context.principal` is an object naming who holds a grant (`{"user": "oidc~alice"}`). `actions[].principal` is an object naming the one principal whose grants a subtree request reaches (`{"user": "oidc~alice"}`), present only when `principal_scope` is `one`. A query on `principal.user` finds nothing in `actor`, where the value is a string.
 
 **Context fields** {#audit-context-fields}
 
@@ -405,16 +405,17 @@ A *denied* `apply_grants` has the same detail as an allowed one: what was asked,
 
 Both are checked once, at the root of the subtree, for the whole batch, so one action describes it. The root is the record's `entities` entry.
 
-`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal` always names one user or role. About yourself it records `get_metadata`.
+`GET /management/v1/grants` about another principal records `read_subtree_grants` on the project, with the same scope fields; its `principal_scope` is always `one`. About yourself it records `get_metadata`.
 
-Six fields describe the **scope**. It is the same scope the authorizer is asked about. The six fields appear together or not at all; a request without a scope carries none of them.
+Six fields describe the **scope**, plus `principal` when the scope names one principal. It is the same scope the authorizer is asked about. The six fields appear together or not at all; a request without a scope carries none of them.
 
 | Context field    | Type   | Description                                                                 |
 |------------------|--------|------------------------------------------------------------------------------|
 | `dry_run`        | Boolean | `true` when the call only reports what it would do. A dry run changes nothing, so `true` is not evidence of a revocation. A dry-run revoke is recorded as `revoke_subtree_grants` with `true`; a `read_subtree_grants` record from a subtree listing shows `false` |
 | `resource_types` | Array  | The resource kinds the request reaches. At least one, and only kinds the addressed resource covers |
 | `root_level`     | String | `included` when the addressed resource's own grants are in range, `excluded` when only those below it are. Closed set |
-| `principal`      | String | Whose grants are in range: `every`, or one principal prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `principal_scope` | String | `every` when the grants of every principal are in range, `one` when `principal` names the one. Closed set |
+| `principal`      | Object | The one principal whose grants are in range, `{"user": "…"}` or `{"role": "…"}`; a user with `email` when [user emails](#audit-user-emails) are enabled and it is known. Present only when `principal_scope` is `one` |
 | `privilege_scope` | String | `every` when the request reaches every privilege a matching grant can have, including privileges this server no longer lists; `only` when it names a set. Closed set |
 | `narrowed_privileges` | Array | The privileges named when `privilege_scope` is `only`. `[]` when it is `every`, so read `privilege_scope` first |
 

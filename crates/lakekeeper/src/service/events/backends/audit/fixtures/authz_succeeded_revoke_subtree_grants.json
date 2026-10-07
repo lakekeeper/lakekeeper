@@ -16,12 +16,15 @@
         "view"
       ],
       "root_level": "excluded",
-      "principal": "user:oidc~alice",
+      "principal_scope": "one",
       "privilege_scope": "only",
       "narrowed_privileges": [
         "describe",
         "select"
       ],
+      "principal": {
+        "user": "oidc~alice"
+      },
       "allow_partial": true,
       "privileges": [
         "describe",
@@ -53,12 +56,15 @@
           "view"
         ],
         "root_level": "excluded",
-        "principal": "user:oidc~alice",
+        "principal_scope": "one",
         "privilege_scope": "only",
         "narrowed_privileges": [
           "describe",
           "select"
         ],
+        "principal": {
+          "user": "oidc~alice"
+        },
         "allow_partial": true,
         "privileges": [
           "describe",
