@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.queue_name AS \"queue_name!\",\n            COUNT(*) FILTER (WHERE t.status = 'scheduled') AS \"scheduled_total!\",\n            COUNT(*) FILTER (WHERE t.status IN ('running', 'should-stop')) AS \"running_raw!\"\n        FROM task t\n        WHERE t.queue_name = ANY($1)\n        GROUP BY t.queue_name\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "queue_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "queue_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "scheduled_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "running_raw!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "5fd29b28149eea18d31325a900dc13fe7ce6ea5b8dce7a6c59f53d568da67dc1"
+}

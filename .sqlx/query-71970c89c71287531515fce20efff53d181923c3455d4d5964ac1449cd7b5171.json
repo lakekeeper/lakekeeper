@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH m AS (\n            SELECT match_name, canonical, default_hb, sum_field\n            FROM UNNEST($1::text[], $2::text[], $3::interval[], $4::text[])\n                AS u(match_name, canonical, default_hb, sum_field)\n        ),\n        names AS (\n            SELECT DISTINCT match_name, canonical FROM m\n        )\n        SELECT\n            t.queue_name AS \"queue_name!\",\n            m.default_hb AS \"default_hb!\",\n            m.sum_field,\n            COUNT(*) FILTER (\n                WHERE t.status = 'scheduled'\n                   OR (t.status IN ('running', 'should-stop')\n                       AND now() - t.last_heartbeat_at\n                           > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb))\n            ) AS \"scheduled_due!\",\n            COUNT(*) FILTER (\n                WHERE t.status IN ('running', 'should-stop')\n                  AND now() - t.last_heartbeat_at\n                      > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb)\n            ) AS \"stale_running!\",\n            MIN(t.scheduled_for) FILTER (\n                WHERE t.status = 'scheduled'\n                   OR (t.status IN ('running', 'should-stop')\n                       AND now() - t.last_heartbeat_at\n                           > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb))\n            ) AS \"oldest_due_scheduled_for\",\n            LEAST(GREATEST(\n                COALESCE(SUM(\n                    CASE\n                        WHEN m.sum_field IS NOT NULL\n                            AND (t.status = 'scheduled'\n                                 OR (t.status IN ('running', 'should-stop')\n                                     AND now() - t.last_heartbeat_at\n                                         > COALESCE(tc.max_time_since_last_heartbeat, m.default_hb)))\n                            AND jsonb_typeof(t.task_data -> m.sum_field) = 'number'\n                        THEN (t.task_data ->> m.sum_field)::numeric\n                        ELSE 0\n                    END\n                ), 0),\n                '-1e308'::numeric), '1e308'::numeric)::float8 AS \"payload_field_sum!\"\n        FROM task t\n        JOIN m ON t.queue_name = m.match_name\n        LEFT JOIN LATERAL (\n            SELECT cfg.max_time_since_last_heartbeat\n            FROM task_config cfg\n            JOIN names n ON n.match_name = cfg.queue_name AND n.canonical = m.canonical\n            WHERE ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL)\n                   OR (cfg.warehouse_id = t.warehouse_id))\n                AND cfg.project_id = t.project_id\n            ORDER BY (cfg.queue_name = m.canonical) DESC\n            LIMIT 1\n        ) tc ON true\n        WHERE t.queue_name = ANY($5) AND t.scheduled_for <= now()\n        GROUP BY t.queue_name, m.default_hb, m.sum_field\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "queue_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "queue_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "default_hb!",
+        "type_info": "Interval",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "sum_field",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "scheduled_due!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "stale_running!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "oldest_due_scheduled_for",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "payload_field_sum!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "IntervalArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "71970c89c71287531515fce20efff53d181923c3455d4d5964ac1449cd7b5171"
+}
