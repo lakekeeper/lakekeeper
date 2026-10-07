@@ -601,6 +601,25 @@ _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_cache_hits_total{cache_type="role_ancestors"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="role_ancestors"}`: Total number of cache misses
 
+**User Cache**
+
+Caches each user's email (`UserId → email`). Read only when audit records carry emails (`LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL`, see [Logging](./logging.md)), for a user whose token does not provide one. Unlike the other caches, it also keeps a user without a row and a user without an email, so a service account named on every request costs one database read per TTL.
+
+| Configuration Key                                        | Type    | Default | Description |
+|----------------------------------------------------------|---------|---------|-----|
+| `LAKEKEEPER__CACHE__USER__ENABLED`           | boolean | `true`  | Enable/disable user caching. With the cache disabled, every lookup reads the database. Default: `true` |
+| `LAKEKEEPER__CACHE__USER__CAPACITY`          | integer | `10000` | Maximum number of users held in memory. Default: `10000` |
+| `LAKEKEEPER__CACHE__USER__TIME_TO_LIVE_SECS` | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
+
+Creating, updating or deleting a user updates its entry on the worker that handled the change, including users written by first login and by role provider syncs. Other workers keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
+
+_Metrics_: The User cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_cache_size{cache_type="user"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="user"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="user"}`: Total number of cache misses
+- `lakekeeper_cache_fenced_total{cache_type="user"}`: Total number of loaded entries left uncached because a user write overlapped the load
+
 ### Endpoint Statistics
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:

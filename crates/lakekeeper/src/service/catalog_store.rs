@@ -80,6 +80,7 @@ mod role_assignment;
 pub use role_assignment::*;
 mod idempotency;
 pub(crate) mod role_assignments_cache;
+pub mod user_cache;
 pub use idempotency::*;
 pub mod generic_table;
 pub use generic_table::*;

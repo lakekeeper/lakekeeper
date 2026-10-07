@@ -1187,6 +1187,8 @@ pub(crate) struct Cache {
     pub(crate) role_members: RoleMembersCache,
     /// Role-ancestors cache: `RoleId → the roles it is a member of`.
     pub(crate) role_ancestors: RoleAncestorsCache,
+    /// User cache: `UserId → the user's email`, for audit email enrichment.
+    pub(crate) user: UserCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1257,6 +1259,29 @@ impl std::default::Default for SecretsCache {
         Self {
             enabled: true,
             capacity: 500,
+            time_to_live_secs: 600,
+        }
+    }
+}
+
+/// Cache for `UserId → the user's email`, read when audit records carry emails.
+///
+/// Unlike the other caches it also keeps absence, a user without a row or without an
+/// email, so principals that recur on every request cost one read per TTL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct UserCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 600 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for UserCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
             time_to_live_secs: 600,
         }
     }
