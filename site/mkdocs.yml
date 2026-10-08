@@ -63,6 +63,7 @@ nav:
   - Docs:
       - nightly: "!include versions/nightly/mkdocs.yml"
       - latest: "!include versions/latest/mkdocs.yml"
+      - Release 0.14.x: "!include versions/0.14.x/mkdocs.yml"
       - Release 0.13.x: "!include versions/0.13.x/mkdocs.yml"
       - Release 0.12.x: "!include versions/0.12.x/mkdocs.yml"
       - Release 0.11.x: "!include versions/0.11.x/mkdocs.yml"
