@@ -1090,6 +1090,20 @@ namespace Lakekeeper {
         source: String,
       }
     };
+  // Accepting a table, view or generic table moved in from another namespace.
+  // Authorized alongside the matching `Create*` action on this namespace, so a
+  // policy must allow both to admit a move. Outside `NamespaceCreateActions` for
+  // the reason `AcceptMovedNamespaceInNamespace` is: what arrives brings its
+  // contents and the grants held on it.
+  action AcceptMovedTabularInNamespace
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Namespace the tabular is moving from. Dotted, as in `Namespace.name`.
+        source: String,
+      }
+    };
   action DeleteNamespace in ["NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
@@ -1227,6 +1241,23 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table]
     };
+  // Renaming a table into another namespace. Asked in addition to
+  // `RenameTable`, and only when the namespace changes. Only the source half: the
+  // destination is authorized as the matching create action plus
+  // `AcceptMovedTabularInNamespace` on the namespace it arrives in.
+  //
+  // In no group, for the reason `MoveNamespace` is in none: the table stops
+  // inheriting from the namespace it leaves and starts inheriting from the one it
+  // arrives in. Name `MoveTable` in the policy.
+  action MoveTable
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Namespace the table is moving to. Dotted, as in `Namespace.name`.
+        destination: String,
+      }
+    };
   action DropTable in ["TableModifyActions"]
     appliesTo {
       principal: [User, Role],
@@ -1275,6 +1306,23 @@ namespace Lakekeeper {
     appliesTo {
       principal: [User, Role],
       resource: [View]
+    };
+  // Renaming a view into another namespace. Asked in addition to
+  // `RenameView`, and only when the namespace changes. Only the source half: the
+  // destination is authorized as the matching create action plus
+  // `AcceptMovedTabularInNamespace` on the namespace it arrives in.
+  //
+  // In no group, for the reason `MoveNamespace` is in none: the view stops
+  // inheriting from the namespace it leaves and starts inheriting from the one it
+  // arrives in. Name `MoveView` in the policy.
+  action MoveView
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Namespace the view is moving to. Dotted, as in `Namespace.name`.
+        destination: String,
+      }
     };
   action DropView in ["ViewModifyActions"]
     appliesTo {
@@ -1339,6 +1387,23 @@ namespace Lakekeeper {
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]
+    };
+  // Renaming a generic table into another namespace. Asked in addition to
+  // `RenameGenericTable`, and only when the namespace changes. Only the source half: the
+  // destination is authorized as the matching create action plus
+  // `AcceptMovedTabularInNamespace` on the namespace it arrives in.
+  //
+  // In no group, for the reason `MoveNamespace` is in none: the generic table stops
+  // inheriting from the namespace it leaves and starts inheriting from the one it
+  // arrives in. Name `MoveGenericTable` in the policy.
+  action MoveGenericTable
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable],
+      context: {
+        // Namespace the generic table is moving to. Dotted, as in `Namespace.name`.
+        destination: String,
+      }
     };
 
   // ---------- Grant Administration Actions ----------
