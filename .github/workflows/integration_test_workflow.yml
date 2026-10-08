@@ -84,10 +84,10 @@ jobs:
           postgresql_version: "17"
           path: dump.sql
       - name: compress
-        if: always()
+        if: always() && hashFiles('dump.sql') != ''
         run: cat dump.sql | gzip -9 > dump.sql.gz
       - name: Upload dump
-        if: always()
+        if: always() && hashFiles('dump.sql.gz') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: db-dump-${{ inputs.test_name }}

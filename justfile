@@ -33,11 +33,12 @@ check-release-please-crates:
     crates = {package["name"] for package in json.loads(metadata)["packages"]}
     with open("release-please/release-please-config.json") as f:
         extra_files = json.load(f)["extra-files"]
+    version_selector = re.compile(r'\$\.package\[\?\(@\.name\.value == "([^"]+)"\)\]\.version')
     bumped = {
         match.group(1)
         for entry in extra_files
         if entry.get("path") == "Cargo.lock"
-        for match in [re.search(r'@\.name\.value == "([^"]+)"', entry.get("jsonpath", ""))]
+        for match in [version_selector.fullmatch(entry.get("jsonpath", ""))]
         if match
     }
     missing, stale = sorted(crates - bumped), sorted(bumped - crates)
