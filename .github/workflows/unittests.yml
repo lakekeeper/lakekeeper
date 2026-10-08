@@ -141,6 +141,9 @@ jobs:
       - name: Cargo format
         run: just check-format
 
+      - name: Release-please bumps every workspace crate
+        run: just check-release-please-crates
+
       - name: Check diff
         run: git diff --exit-code
 
