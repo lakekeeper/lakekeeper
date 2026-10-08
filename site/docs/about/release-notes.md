@@ -268,7 +268,7 @@ _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → R
 
     **What to do:** correlate on `principal`, `user` and `role`, never on `email`. If you enable the setting, treat the log as holding personal data: an email stays in the log after the user is deleted.
 
-- **Every audit record carries four new top-level fields: `record_type`, `emitters`, `request_id` and `time`.**
+- **Audit records carry four new top-level fields: `record_type`, `emitters`, `time`, and `request_id` when a request caused the record.**
 
     ```text
     "record_type": "authorization",
