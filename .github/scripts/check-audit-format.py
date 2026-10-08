@@ -63,13 +63,15 @@ def load_config() -> None:
     """Override the path constants from `CONFIG_PATH`, if the file exists.
 
     Covers every path and pattern the checker uses: the version constant and the tree
-    searched for it, the field the release notes name, the upstream emitter, the developer
+    searched for it, the field the release notes name and the records that carry it, the
+    upstream emitter, the developer
     guide, the schema, the fragments, the parts of a fixture compared, the release tag
     pattern, the release notes and the release table. The defaults are Lakekeeper's, so this repository needs no config
     file.
     """
     global AUDIT_DIR, SCHEMA_PATH, FRAGMENT_DIR, RELEASE_TAG_PATTERN, RELEASE_NOTES_PATH
-    global RELEASE_TABLE_PATH, FIXTURE_PATHS, VERSION_FIELD, DEVELOPER_GUIDE, UPSTREAM
+    global RELEASE_TABLE_PATH, FIXTURE_PATHS, VERSION_FIELD, VERSION_SCOPE, DEVELOPER_GUIDE
+    global UPSTREAM
     global VERSION_CONST, VERSION_SEARCH_PATH
     global GIT_PATTERN, VERSION_RE, VERSION_WRITE_RE
     path = Path(CONFIG_PATH)
@@ -89,6 +91,7 @@ def load_config() -> None:
     FRAGMENT_DIR = config.get("fragments", FRAGMENT_DIR)
     FIXTURE_PATHS = config.get("fixture_paths", FIXTURE_PATHS)
     VERSION_FIELD = config.get("version_field", VERSION_FIELD)
+    VERSION_SCOPE = config.get("version_scope", VERSION_SCOPE)
     DEVELOPER_GUIDE = config.get("developer_guide", DEVELOPER_GUIDE)
     UPSTREAM = config.get("upstream", UPSTREAM)
     VERSION_CONST = config.get("version_const", VERSION_CONST)
@@ -205,6 +208,10 @@ RELEASE_NOTES_PATH = "site/docs/about/release-notes.md"
 
 # Where a record carries this repository's version, as the release notes name it.
 VERSION_FIELD = "audit_format"
+
+# Which records carry `VERSION_FIELD`, as a clause the release notes put after "Records from
+# vX.Y.Z", such as "that Lakekeeper Plus contributes to". `None` when every record carries it.
+VERSION_SCOPE: str | None = None
 
 # Where the checker's messages send a developer for the rules.
 DEVELOPER_GUIDE = "the audit log section of docs/docs/developer-guide.md"
@@ -1462,11 +1469,17 @@ def release_notes(version: str) -> int:
             for line in lines[1:]:
                 print(f"    {line}" if line.strip() else "")
         print()
+    print(version_line(tag, previous, current))
+    return 0
+
+
+def version_line(tag: str, previous: str | None, current: str | None) -> str:
+    """The last line of the audit log block: which version the records of `tag` carry."""
     was = "the first version" if previous is None else f"was {show(previous)}"
     if current == previous:
         was = "unchanged"
-    print(f"Records from {tag} carry `{VERSION_FIELD}` **{show(current)}** ({was}).")
-    return 0
+    records = f"Records from {tag} {VERSION_SCOPE}" if VERSION_SCOPE else f"Records from {tag}"
+    return f"{records} carry `{VERSION_FIELD}` **{show(current)}** ({was})."
 
 
 def release_notes_section(text: str, lakekeeper_version: str) -> str | None:
@@ -1856,6 +1869,20 @@ def self_test() -> int:
     check("an upstream major", upstream_change("1.4", "2.0")[0], "major")
     check("the first upstream version", upstream_change(None, "1.0")[0], "major")
     check("an upstream version no record carries", upstream_change("1.0", None), None)
+    check(
+        "the version line names every record by default",
+        version_line("v1.2.0", (1, 0), (1, 1)),
+        "Records from v1.2.0 carry `audit_format` **1.1** (was 1.0).",
+    )
+    global VERSION_SCOPE
+    saved, VERSION_SCOPE = VERSION_SCOPE, "that Lakekeeper Plus contributes to"
+    check(
+        "the version line names only the records in scope",
+        version_line("v1.2.0", None, (1, 0)),
+        "Records from v1.2.0 that Lakekeeper Plus contributes to carry `audit_format` "
+        "**1.0** (the first version).",
+    )
+    VERSION_SCOPE = saved
 
     # Exactly one declaration is required, and agreeing values do not excuse a second one.
     def ambiguity(found):
