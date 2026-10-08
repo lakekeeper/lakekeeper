@@ -1869,20 +1869,23 @@ def self_test() -> int:
     check("an upstream major", upstream_change("1.4", "2.0")[0], "major")
     check("the first upstream version", upstream_change(None, "1.0")[0], "major")
     check("an upstream version no record carries", upstream_change("1.0", None), None)
+    # The config file may set both, so the checks set them.
+    global VERSION_FIELD, VERSION_SCOPE
+    saved = VERSION_FIELD, VERSION_SCOPE
+    VERSION_FIELD, VERSION_SCOPE = "audit_format", None
     check(
         "the version line names every record by default",
         version_line("v1.2.0", (1, 0), (1, 1)),
         "Records from v1.2.0 carry `audit_format` **1.1** (was 1.0).",
     )
-    global VERSION_SCOPE
-    saved, VERSION_SCOPE = VERSION_SCOPE, "that Lakekeeper Plus contributes to"
+    VERSION_SCOPE = "that Lakekeeper Plus contributes to"
     check(
         "the version line names only the records in scope",
         version_line("v1.2.0", None, (1, 0)),
         "Records from v1.2.0 that Lakekeeper Plus contributes to carry `audit_format` "
         "**1.0** (the first version).",
     )
-    VERSION_SCOPE = saved
+    VERSION_FIELD, VERSION_SCOPE = saved
 
     # Exactly one declaration is required, and agreeing values do not excuse a second one.
     def ambiguity(found):
