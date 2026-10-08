@@ -1,0 +1,56 @@
+site_name: docs/0.14.x
+
+plugins:
+    - search
+
+hooks:
+    - hooks/env_key_wrap.py
+
+nav:
+    - Concepts: concepts.md
+    - API:
+          - Overview: api-overview.md
+          - Catalog: api/catalog.md
+          - Generic Tables: api/generic-table.md
+          - Management (Core): api/management.md
+          - Management <span class="lkp"></span>: api/management-plus.md
+    - Query Engines: engines.md
+    - Generic Tables:
+          - Overview: generic-tables.md
+          - Client Authentication: generic-tables-auth.md
+          - Python Client: generic-tables-pylakekeeper.md
+          - Apache Spark (PySpark): generic-tables-spark.md
+          - Apache Flink (Java): generic-tables-flink.md
+    - User Guide:
+          - bootstrap.md
+          - Storage:
+                - Overview: storage.md
+                - S3: storage-s3.md
+                - STACKIT: storage-stackit.md
+                - Azure Data Lake Storage: storage-adls.md
+                - OneLake: storage-onelake.md
+                - Google Cloud Storage: storage-gcs.md
+                - Storage Layout: storage-layout.md
+                - Validation: storage-validation.md
+          - authentication.md
+          - Authorization:
+                - Overview: authorization.md
+                - OpenFGA: authorization-openfga.md
+                - Cedar <span class="lkp"></span>: authorization-cedar.md
+                - Instance Admins: instance-admins.md
+                - Grants API <span class="lkp-preview"></span>: grants.md
+          - Governance Tags: tags.md
+          - Admission Gates: admission.md
+          - View Security: view-security.md
+          - UI Branding <span class="lkp"></span>: ui-branding.md
+          - logging.md
+          - Audit Log Schema: audit/schema.md
+          - monitoring.md
+          - opa.md
+          - table-maintenance.md
+          - production.md
+          - gotchas.md
+    - Configuration: configuration.md
+    - Contribute:
+          - developer-guide.md
+          - customize.md
