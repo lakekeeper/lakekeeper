@@ -1,103 +1,103 @@
 {
-    "packages": {
-        ".": {
-            "release-type": "simple",
-            "exclude-paths": [
-                ".github",
-                ".cargo",
-                "release-please",
-                ".gitignore",
-                "renovate.json"
-            ]
-        }
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "exclude-paths": [
+        ".github",
+        ".cargo",
+        "release-please",
+        ".gitignore",
+        "renovate.json"
+      ]
+    }
+  },
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "include-component-in-tag": false,
+  "release-as": "0.13.7",
+  "extra-files": [
+    {
+      "type": "toml",
+      "path": "Cargo.toml",
+      "jsonpath": "$.workspace.package.version"
     },
-    "bump-minor-pre-major": true,
-    "bump-patch-for-minor-pre-major": false,
-    "include-component-in-tag": false,
-    "release-as": "0.13.6",
-    "extra-files": [
-        {
-            "type": "toml",
-            "path": "Cargo.toml",
-            "jsonpath": "$.workspace.package.version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"iceberg-ext\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-alloc\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-bin\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-kafka\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-nats\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-integration-tests\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-io\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-secrets-kv2\")].version"
-        },
-        {
-            "type": "toml",
-            "path": "Cargo.lock",
-            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-storage-postgres\")].version"
-        }
-    ],
-    "changelog-sections": [
-        {
-            "type": "feat",
-            "hidden": false,
-            "section": "Features"
-        },
-        {
-            "type": "fix",
-            "hidden": false,
-            "section": "Bug Fixes"
-        },
-        {
-            "type": "docs",
-            "hidden": false,
-            "section": "Documentation"
-        },
-        {
-            "type": "chore",
-            "hidden": false,
-            "section": "Miscellaneous Chores"
-        }
-    ],
-    "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"iceberg-ext\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-alloc\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-authz-openfga\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-bin\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-kafka\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-nats\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-integration-tests\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-io\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-secrets-kv2\")].version"
+    },
+    {
+      "type": "toml",
+      "path": "Cargo.lock",
+      "jsonpath": "$.package[?(@.name.value == \"lakekeeper-storage-postgres\")].version"
+    }
+  ],
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "hidden": false,
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "hidden": false,
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "docs",
+      "hidden": false,
+      "section": "Documentation"
+    },
+    {
+      "type": "chore",
+      "hidden": false,
+      "section": "Miscellaneous Chores"
+    }
+  ],
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
 }
