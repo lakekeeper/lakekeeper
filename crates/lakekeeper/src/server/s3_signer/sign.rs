@@ -7,7 +7,7 @@ use aws_sigv4::{
 };
 use lakekeeper_io::{Location, s3::S3Location};
 
-use super::{super::CatalogServer, error::SignError};
+use super::{super::CatalogServer, error::SignError, policy};
 use crate::{
     WarehouseId,
     api::{
@@ -31,9 +31,7 @@ use crate::{
         },
         events::{APIEventContext, context::authz_to_error_no_audit},
         secrets::SecretStore,
-        storage::{
-            S3Credential, S3Profile, StorageProfile, ValidationError, s3::S3UrlStyleDetectionMode,
-        },
+        storage::{S3Credential, S3Profile, StorageProfile, ValidationError},
     },
 };
 
@@ -44,17 +42,6 @@ const UNSIGNED_HEADERS: &[&str] = &[
     "amz-sdk-retry",
 ];
 const HOST_HEADER: &str = "host";
-/// Also covers `x-amz-copy-source-range` and the `x-amz-copy-source-if-*` conditions.
-const COPY_SOURCE_HEADER_PREFIX: &str = "x-amz-copy-source";
-const ACL_HEADER: &str = "x-amz-acl";
-/// Canned ACLs that grant no one but the bucket owner access.
-const SIGNABLE_CANNED_ACLS: &[&str] =
-    &["private", "bucket-owner-read", "bucket-owner-full-control"];
-const GRANT_HEADER_PREFIX: &str = "x-amz-grant-";
-const ACL_SUB_RESOURCE: &str = "acl";
-const OBJECT_LOCK_HEADER_PREFIX: &str = "x-amz-object-lock-";
-const BYPASS_GOVERNANCE_HEADER: &str = "x-amz-bypass-governance-retention";
-const OBJECT_LOCK_SUB_RESOURCES: &[&str] = &["retention", "legal-hold", "object-lock"];
 const CACHEABLE_METHODS: &[http::Method] = &[http::Method::GET, http::Method::HEAD];
 const CACHE_CONTROL_HEADER: &str = "Cache-Control";
 const CACHE_CONTROL_NO_CACHE: &str = "no-cache";
@@ -159,19 +146,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             // Too noisy otherwise
             .map_err(authz_to_error_no_audit)?;
 
-        // Check if remote signing is enabled for this storage profile
-        if let StorageProfile::S3(s3_profile) = &warehouse.storage_profile {
-            if !s3_profile.remote_signing_enabled {
-                return Err(IcebergErrorResponse::from(ErrorModel::forbidden(
-                    "Remote signing is disabled for this storage profile",
-                    "RemoteSigningDisabled",
-                    None,
-                )));
-            }
-        } else {
+        let StorageProfile::S3(s3_profile) = &warehouse.storage_profile else {
             return Err(IcebergErrorResponse::from(ErrorModel::bad_request(
                 "Remote signing is only supported for S3 storage",
                 "UnsupportedStorageType",
+                None,
+            )));
+        };
+        if !s3_profile.remote_signing_enabled {
+            return Err(IcebergErrorResponse::from(ErrorModel::forbidden(
+                "Remote signing is disabled for this storage profile",
+                "RemoteSigningDisabled",
                 None,
             )));
         }
@@ -203,14 +188,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )));
         }
 
-        validate_host_header(&request_url, &request_headers)?;
-        validate_request_access(&request_url, &request_headers)?;
-
-        let (parsed_url, operation) = s3_utils::parse_s3_url(
-            &s3_utils::SignRequestUri::new(request_url.clone())?,
-            s3_url_style_detection(&warehouse)?,
+        let (parsed_url, operation) = check_request(
+            s3_profile,
+            &request_url,
             &request_method,
             request_body.as_deref(),
+            &request_headers,
         )?;
 
         let first_location = parsed_url.locations.first().ok_or_else(|| {
@@ -358,19 +341,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-fn s3_url_style_detection(
-    warehouse: &ResolvedWarehouse,
-) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
-    let storage_profile = &warehouse.storage_profile;
-    if let StorageProfile::S3(s3_profile) = storage_profile {
-        return Ok(s3_profile.remote_signing_url_style);
-    }
-
-    Err(IcebergErrorResponse::from(ErrorModel::bad_request(
-        "Warehouse storage profile is not an S3 profile",
-        "InvalidWarehouse",
-        None,
-    )))
+/// Everything about a request to sign that is checked before its table is known: the
+/// locations it touches, its query parameters and its headers.
+fn check_request(
+    s3_profile: &S3Profile,
+    request_url: &url::Url,
+    request_method: &http::Method,
+    request_body: Option<&str>,
+    request_headers: &HashMap<String, Vec<String>>,
+) -> Result<(s3_utils::ParsedSignRequest, Operation)> {
+    validate_host_header(request_url, request_headers)?;
+    let headers = policy::RequestHeaders::new(request_headers)?;
+    policy::require_signable_headers(
+        &headers,
+        request_method,
+        s3_profile.aws_kms_key_arn.as_deref(),
+    )?;
+    s3_utils::parse_sign_request(
+        &s3_utils::SignRequestUri::new(request_url.clone())?,
+        s3_profile.remote_signing_url_style,
+        request_method,
+        request_body,
+        &headers,
+    )
 }
 
 async fn sign(
@@ -413,7 +406,7 @@ async fn sign(
     let mut headers_vec: Vec<(String, String)> = Vec::new();
 
     for (key, values) in request_headers.clone() {
-        if UNSIGNED_HEADERS.contains(&key.as_str()) {
+        if UNSIGNED_HEADERS.contains(&key.to_ascii_lowercase().as_str()) {
             // Skip unsigned headers
             continue;
         }
@@ -548,68 +541,6 @@ fn signed_host(request_url: &url::Url) -> Result<String> {
     host.map(ToString::to_string).ok_or_else(|| {
         ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None).into()
     })
-}
-
-/// Rejects requests whose effect reaches beyond the validated object key: a copy reads a
-/// source object that is never checked against the table location, ACLs other than
-/// [`SIGNABLE_CANNED_ACLS`] change who can access the object, and an object lock keeps it
-/// from being deleted.
-fn validate_request_access(
-    request_url: &url::Url,
-    request_headers: &HashMap<String, Vec<String>>,
-) -> Result<()> {
-    for (name, values) in request_headers {
-        validate_access_parameter(name, values.iter().map(String::as_str))?;
-    }
-    // S3 accepts `x-amz-*` headers as query parameters too.
-    for (key, value) in request_url.query_pairs() {
-        validate_access_parameter(&key, std::iter::once(value.as_ref()))?;
-    }
-    Ok(())
-}
-
-fn validate_access_parameter<'a>(
-    name: &str,
-    mut values: impl Iterator<Item = &'a str>,
-) -> Result<()> {
-    // Unicode-aware, as aws-sigv4 lowercases header names before signing.
-    let name = name.to_lowercase();
-
-    let refused = if name.starts_with(COPY_SOURCE_HEADER_PREFIX) {
-        Some((
-            "Requests that copy an object cannot be signed",
-            "CopyNotSignable",
-        ))
-    } else if name.starts_with(OBJECT_LOCK_HEADER_PREFIX)
-        || name == BYPASS_GOVERNANCE_HEADER
-        || OBJECT_LOCK_SUB_RESOURCES.contains(&name.as_str())
-    {
-        Some((
-            "Requests that change an object lock cannot be signed",
-            "ObjectLockNotSignable",
-        ))
-    } else if name == ACL_SUB_RESOURCE
-        || name.starts_with(GRANT_HEADER_PREFIX)
-        || (name == ACL_HEADER && !values.all(is_signable_canned_acl))
-    {
-        Some((
-            "Requests that change access control cannot be signed",
-            "AccessControlNotSignable",
-        ))
-    } else {
-        None
-    };
-
-    match refused {
-        Some((message, r#type)) => Err(ErrorModel::forbidden(message, r#type, None).into()),
-        None => Ok(()),
-    }
-}
-
-fn is_signable_canned_acl(acl: &str) -> bool {
-    SIGNABLE_CANNED_ACLS
-        .iter()
-        .any(|signable| acl.trim().eq_ignore_ascii_case(signable))
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
@@ -895,19 +826,20 @@ fn validate_uri(
 }
 
 pub(super) mod s3_utils {
+
     use lakekeeper_io::s3::S3Location;
     use lazy_regex::regex;
     use percent_encoding::{AsciiSet, utf8_percent_encode};
     use serde::{Deserialize, Serialize};
 
-    use super::{ErrorModel, Operation, Result};
+    use super::{
+        ErrorModel, Operation, Result,
+        policy::{
+            self, COPY_SOURCE_HEADER, DELETE_QUERY_PARAM, LIST_TYPE_QUERY_PARAM, LIST_TYPE_V2,
+            PREFIX_QUERY_PARAM, RequestHeaders, RequestKind, VERSION_ID_QUERY_PARAM,
+        },
+    };
     use crate::service::storage::{ValidationError, s3::S3UrlStyleDetectionMode};
-
-    /// Query parameter that identifies a `ListObjectsV2` request, and its only valid value.
-    const LIST_TYPE_QUERY_PARAM: &str = "list-type";
-    const LIST_TYPE_V2: &str = "2";
-    /// Query parameter carrying the key prefix a list request is scoped to.
-    const PREFIX_QUERY_PARAM: &str = "prefix";
 
     /// The url path percent-encode set, which is what a `Location` built from an object key
     /// carries. `/` is not part of it - it separates segments in both representations. `\` is
@@ -1007,6 +939,83 @@ pub(super) mod s3_utils {
         matches!(segment, "." | "..") || (segment.is_empty() && !is_last)
     }
 
+    /// `true` if a key S3 takes verbatim, rather than from the request path, has a segment
+    /// [`is_ambiguous_key_segment`] refuses, or a `\`, which some stores read as a separator.
+    /// Keys in the request path refuse `\` too.
+    fn has_ambiguous_key_segment(key: &str) -> bool {
+        let segments = key.split('/').collect::<Vec<_>>();
+        key.contains('\\')
+            || segments
+                .iter()
+                .enumerate()
+                .any(|(i, segment)| is_ambiguous_key_segment(segment, i + 1 == segments.len()))
+    }
+
+    /// The location of the object a copy reads, taken from its `x-amz-copy-source` header:
+    /// `[/]{bucket}/{key}[?versionId={version}]`, with the key url-encoded. `None` if the
+    /// request does not copy.
+    ///
+    /// The source has to lie inside the table just like the destination, which is why it
+    /// becomes one of the request's locations. S3 decodes the key once, so it is decoded
+    /// once here, held to the rules of a key S3 takes verbatim, and encoded again the way
+    /// the destination's key is, so that both compare to the table location alike.
+    pub(super) fn copy_source_location(headers: &RequestHeaders<'_>) -> Result<Option<S3Location>> {
+        let err = |m: &str| ErrorModel::bad_request(m, "InvalidCopySource", None);
+
+        let Some(value) = headers.single(COPY_SOURCE_HEADER)? else {
+            return Ok(None);
+        };
+        let (path, query) = value.split_once('?').unwrap_or((value, ""));
+        if !query.is_empty()
+            && !query
+                .strip_prefix(VERSION_ID_QUERY_PARAM)
+                .and_then(|rest| rest.strip_prefix('='))
+                .is_some_and(|version| !version.is_empty() && !version.contains('&'))
+        {
+            return Err(err("A copy source may only carry a `versionId`").into());
+        }
+
+        let (bucket, key) = path
+            .strip_prefix('/')
+            .unwrap_or(path)
+            .split_once('/')
+            .filter(|(bucket, key)| !bucket.is_empty() && !key.is_empty())
+            .ok_or_else(|| err("A copy source must be `{bucket}/{key}`"))?;
+        // Stores differ on whether a `+` in the source is a space. Clients send `%2B`.
+        if key.contains('+') {
+            return Err(err("A copy source must encode `+` as `%2B`").into());
+        }
+        // A `%` that does not start an escape is kept by this decoder but makes others fall
+        // back to the undecoded key, so the two would name different objects.
+        let is_escape =
+            |escape: &[u8]| escape.len() == 2 && escape.iter().all(u8::is_ascii_hexdigit);
+        if key.bytes().enumerate().any(|(i, byte)| {
+            byte == b'%' && !is_escape(key.as_bytes().get(i + 1..i + 3).unwrap_or_default())
+        }) {
+            return Err(err("The key of a copy source is not valid url-encoded utf-8").into());
+        }
+        let key = urlencoding::decode(key)
+            .map_err(|_| err("The key of a copy source is not valid url-encoded utf-8"))?;
+
+        if has_ambiguous_key_segment(&key) {
+            return Err(
+                err("A copy source must not contain `.`, `..`, empty segments or `\\`").into(),
+            );
+        }
+
+        let key = utf8_percent_encode(&key, URL_PATH_ENCODE_SET);
+        S3Location::try_from_str(&format!("s3://{bucket}/{key}"), false)
+            .map(Some)
+            .map_err(|e| {
+                ErrorModel::bad_request(
+                    format!("Invalid copy source: {e}"),
+                    "InvalidCopySource",
+                    Some(Box::new(e)),
+                )
+                .into()
+            })
+    }
+
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
         pub(super) uri: SignRequestUri,
@@ -1055,32 +1064,38 @@ pub(super) mod s3_utils {
         NoObjects,
     }
 
-    /// Parse S3 `DeleteObjects` XML and extract all keys
-    ///
-    /// # Arguments
-    /// * `xml` - Raw XML string from S3 `DeleteObjects` request
-    ///
-    /// # Returns
-    /// * `Result<Vec<String>, S3DeleteParseError>` - List of object keys or an error
-    pub(super) fn parse_s3_delete_xml(xml: &str) -> Result<Vec<String>, S3DeleteParseError> {
-        // Approach 1: Full deserialization using serde
+    /// Parse the body of an S3 `DeleteObjects` request into the objects it deletes.
+    pub(super) fn parse_s3_delete_xml(
+        xml: &str,
+    ) -> Result<Vec<ObjectIdentifier>, S3DeleteParseError> {
         let delete_request: DeleteObjectsRequest = quick_xml::de::from_str(xml)?;
 
         if delete_request.objects.is_empty() {
             return Err(S3DeleteParseError::NoObjects);
         }
 
-        let keys = delete_request
-            .objects
-            .into_iter()
-            .map(|obj| obj.key)
-            .collect();
-
-        Ok(keys)
+        Ok(delete_request.objects)
     }
 
-    /// Determine the locations a request touches.
-    pub(super) fn parse_s3_url(
+    /// Determine the locations a request touches, including the object a copy reads. The
+    /// destination comes first: it names the table.
+    pub(super) fn parse_sign_request(
+        uri: &SignRequestUri,
+        s3_url_style_detection: S3UrlStyleDetectionMode,
+        method: &http::Method,
+        body: Option<&str>,
+        headers: &RequestHeaders<'_>,
+    ) -> Result<(ParsedSignRequest, Operation)> {
+        let (mut parsed_request, operation) =
+            parse_s3_url(uri, s3_url_style_detection, method, body)?;
+        if let Some(copy_source) = copy_source_location(headers)? {
+            parsed_request.locations.push(copy_source);
+        }
+        Ok((parsed_request, operation))
+    }
+
+    /// Determine the locations a request touches, apart from the object a copy reads.
+    fn parse_s3_url(
         uri: &SignRequestUri,
         s3_url_style_detection: S3UrlStyleDetectionMode,
         method: &http::Method,
@@ -1097,34 +1112,11 @@ pub(super) mod s3_utils {
             .into());
         }
 
-        // Determine operation type based on method
-        let (operation, is_post_delete_operation) = match *method {
-            http::Method::GET | http::Method::HEAD => (Operation::Read, false),
-            http::Method::POST | http::Method::PUT => {
-                // Handle special case: DeleteObjects operation (POST with ?delete and XML body)
-                if method == http::Method::POST
-                    && uri.received().query().is_some_and(|q| q.contains("delete"))
-                {
-                    (Operation::Delete, true)
-                } else {
-                    (Operation::Write, false)
-                }
-            }
-            http::Method::DELETE => (Operation::Delete, false),
-            _ => {
-                return Err(ErrorModel::builder()
-                    .code(http::StatusCode::METHOD_NOT_ALLOWED.into())
-                    .message("Method not allowed".to_string())
-                    .r#type("MethodNotAllowed".to_string())
-                    .build()
-                    .into());
-            }
-        };
+        let (kind, operation) = request_kind(uri.received(), method)?;
 
         // `DeleteObjects` and `ListObjectsV2` address the bucket instead of a single object.
         // The keys that identify the table live in the request body resp. the query string.
-        let is_list_operation = *method == http::Method::GET && is_list_objects_v2(uri.received());
-        let allow_no_key = is_post_delete_operation || is_list_operation;
+        let allow_no_key = kind != RequestKind::Object;
 
         // Bucket-level requests are held to the stricter `require_bucket_addressed`.
         if !allow_no_key && !uri.segments_survived_decoding() {
@@ -1150,49 +1142,84 @@ pub(super) mod s3_utils {
             }
         };
 
-        // For DeleteObjects operation, parse the XML body for object keys
-        if is_post_delete_operation {
-            if let Some(xml_body) = body {
+        match kind {
+            RequestKind::DeleteObjects => {
+                parsed_request.locations = delete_objects_locations(&parsed_request, body)?;
+            }
+            RequestKind::List => {
+                // The URI path is just the bucket - the table is identified by the `prefix`.
                 let bucket = bucket_of(&parsed_request)?;
                 require_bucket_addressed(&parsed_request, &bucket)?;
-
-                // Parse XML body to get deletion keys
-                let keys = parse_s3_delete_xml(xml_body)
-                    .map_err(|e| err("InvalidDeleteBody", &format!("{e}")))?;
-
-                // Create S3 locations for each key
-                let mut locations = Vec::with_capacity(keys.len());
-                for key in keys {
-                    let segments = key.split('/').collect::<Vec<_>>();
-                    if segments.iter().enumerate().any(|(i, segment)| {
-                        is_ambiguous_key_segment(segment, i + 1 == segments.len())
-                    }) {
-                        return Err(err(
-                            "AmbiguousDeleteKey",
-                            "Keys to delete must not contain `.`, `..` or empty segments",
-                        )
-                        .into());
-                    }
-                    let location =
-                        S3Location::new(&bucket, &segments, None).map_err(ValidationError::from)?;
-                    locations.push(location);
-                }
-
-                // Replace the locations in the parsed request
-                parsed_request.locations = locations;
-            } else {
-                return Err(err("DeleteWithoutBody", "Delete requests require a body").into());
+                policy::require_known_parameters(uri.received(), RequestKind::List)?;
+                parsed_request.locations = vec![list_prefix_location(uri.received(), &bucket)?];
+                parsed_request.locations_are_list_prefixes = true;
             }
-        } else if is_list_operation {
-            // The URI path is just the bucket - the table is identified by the `prefix`.
-            let bucket = bucket_of(&parsed_request)?;
-            require_bucket_addressed(&parsed_request, &bucket)?;
-            require_known_list_parameters(uri.received())?;
-            parsed_request.locations = vec![list_prefix_location(uri.received(), &bucket)?];
-            parsed_request.locations_are_list_prefixes = true;
+            RequestKind::Object => {
+                policy::require_known_parameters(uri.received(), RequestKind::Object)?;
+                policy::require_unversioned_change(uri.received(), method)?;
+            }
         }
 
         Ok((parsed_request, operation))
+    }
+
+    fn request_kind(uri: &url::Url, method: &http::Method) -> Result<(RequestKind, Operation)> {
+        let has = |param: &str| uri.query_pairs().any(|(key, _)| key == param);
+        Ok(match *method {
+            http::Method::GET if is_list_objects_v2(uri) => (RequestKind::List, Operation::Read),
+            http::Method::GET | http::Method::HEAD => (RequestKind::Object, Operation::Read),
+            http::Method::POST if has(DELETE_QUERY_PARAM) => {
+                (RequestKind::DeleteObjects, Operation::Delete)
+            }
+            http::Method::POST | http::Method::PUT => (RequestKind::Object, Operation::Write),
+            http::Method::DELETE => (RequestKind::Object, Operation::Delete),
+            _ => {
+                return Err(ErrorModel::builder()
+                    .code(http::StatusCode::METHOD_NOT_ALLOWED.into())
+                    .message("Method not allowed".to_string())
+                    .r#type("MethodNotAllowed".to_string())
+                    .build()
+                    .into());
+            }
+        })
+    }
+
+    /// The locations of the keys a `DeleteObjects` request names in its body.
+    fn delete_objects_locations(
+        parsed_request: &ParsedSignRequest,
+        body: Option<&str>,
+    ) -> Result<Vec<S3Location>> {
+        let err = |t: &str, m: &str| ErrorModel::bad_request(m, t, None);
+        let Some(xml_body) = body else {
+            return Err(err("DeleteWithoutBody", "Delete requests require a body").into());
+        };
+        let bucket = bucket_of(parsed_request)?;
+        require_bucket_addressed(parsed_request, &bucket)?;
+        policy::require_known_parameters(
+            parsed_request.uri.received(),
+            RequestKind::DeleteObjects,
+        )?;
+
+        let objects =
+            parse_s3_delete_xml(xml_body).map_err(|e| err("InvalidDeleteBody", &format!("{e}")))?;
+        if objects.iter().any(|object| object.version_id.is_some()) {
+            return Err(policy::version_change_error().into());
+        }
+
+        objects
+            .into_iter()
+            .map(|object| {
+                if has_ambiguous_key_segment(&object.key) {
+                    return Err(err(
+                        "AmbiguousDeleteKey",
+                        "Keys to delete must not contain `.`, `..`, empty segments or `\\`",
+                    )
+                    .into());
+                }
+                let segments = object.key.split('/').collect::<Vec<_>>();
+                Ok(S3Location::new(&bucket, &segments, None).map_err(ValidationError::from)?)
+            })
+            .collect()
     }
 
     /// `GET /{bucket}?list-type=2` - the `ListObjectsV2` API. Other bucket-level `GET`
@@ -1225,55 +1252,6 @@ pub(super) mod s3_utils {
                 None,
             )
             .into());
-        }
-
-        Ok(())
-    }
-
-    /// Parameters of the `ListObjectsV2` API, plus the `x-id` telemetry parameter that some
-    /// AWS SDKs append. None of them widens the set of keys `prefix` selects.
-    const LIST_QUERY_PARAMS: &[&str] = &[
-        LIST_TYPE_QUERY_PARAM,
-        PREFIX_QUERY_PARAM,
-        "continuation-token",
-        "delimiter",
-        "encoding-type",
-        "fetch-owner",
-        "max-keys",
-        "start-after",
-        "x-id",
-    ];
-
-    /// Rejects list requests that carry any other parameter, or one of them twice.
-    ///
-    /// S3 dispatches on the query string, so a bucket sub-resource (`?policy`, `?versioning`,
-    /// `?uploads`, …) alongside the list parameters would make the signed request return
-    /// something else entirely - something no table location can authorize. Which of two
-    /// values for the same parameter S3 applies is implementation defined, so only one of
-    /// them could be authorized.
-    fn require_known_list_parameters(uri: &url::Url) -> Result<()> {
-        let mut seen: Vec<std::borrow::Cow<'_, str>> = Vec::new();
-
-        for (key, _) in uri.query_pairs() {
-            if !LIST_QUERY_PARAMS.contains(&key.as_ref()) {
-                return Err(ErrorModel::bad_request(
-                    format!("Unsupported query parameter for a list request: `{key}`"),
-                    "UnsupportedListParameter",
-                    None,
-                )
-                .into());
-            }
-
-            if seen.contains(&key) {
-                return Err(ErrorModel::bad_request(
-                    format!("Repeated query parameter in a list request: `{key}`"),
-                    "RepeatedListParameter",
-                    None,
-                )
-                .into());
-            }
-
-            seen.push(key);
         }
 
         Ok(())
@@ -1493,34 +1471,24 @@ mod test_delete_body_deserialization {
         </Object>
     </Delete>"#;
 
+    /// Versions are kept, so that a delete naming one can be refused.
     #[test]
-    fn test_parse_s3_delete_xml() {
-        let keys = parse_s3_delete_xml(TEST_XML).unwrap();
-        assert_eq!(keys.len(), 3);
-        assert!(
-            keys.contains(
-                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file1.avro"
-                    .to_string()
-            )
-        );
-        assert!(
-            keys.contains(
-                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file2.avro"
-                    .to_string()
-            )
-        );
-        assert!(
-            keys.contains(
-                &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro"
-                    .to_string()
-            )
-        );
+    fn test_parse_s3_delete_xml_keeps_versions() {
+        let versions = parse_s3_delete_xml(TEST_XML)
+            .unwrap()
+            .into_iter()
+            .map(|object| object.version_id)
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec![None, None, Some("version-id-1".to_string())]);
     }
 
     #[test]
     fn test_full_deserialize_2() {
         let keys = parse_s3_delete_xml("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-7686961691068480281-1-d204b9d8-6b72-454a-9f67-37a6d5e6d4a5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-1836869532246818762-1-aebc0c21-c6ac-4ef2-abd0-5a17647a4f78.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-5189981498526175103-1-91703d93-aa16-4f0f-835e-606656746aa5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-2371629502487233412-1-9ec13408-f2a0-4f30-8560-ac7ab26611b5.avro</Key></Object></Delete>").unwrap();
-        let keys = HashSet::<String>::from_iter(keys);
+        let keys = keys
+            .into_iter()
+            .map(|object| object.key)
+            .collect::<HashSet<_>>();
         let expected = HashSet::from_iter(
             vec![
                 "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro".to_string(),
@@ -1584,7 +1552,7 @@ mod test {
     use itertools::Itertools as _;
 
     use super::*;
-    use crate::service::storage::S3Flavor;
+    use crate::service::storage::{S3Flavor, s3::S3UrlStyleDetectionMode};
 
     #[derive(Debug)]
     struct TC {
@@ -1601,11 +1569,22 @@ mod test {
         method: &http::Method,
         body: Option<&str>,
     ) -> Result<(s3_utils::ParsedSignRequest, Operation)> {
-        s3_utils::parse_s3_url(
+        parse_with_headers(uri, mode, method, body, &HashMap::new())
+    }
+
+    fn parse_with_headers(
+        uri: &url::Url,
+        mode: S3UrlStyleDetectionMode,
+        method: &http::Method,
+        body: Option<&str>,
+        headers: &HashMap<String, Vec<String>>,
+    ) -> Result<(s3_utils::ParsedSignRequest, Operation)> {
+        s3_utils::parse_sign_request(
             &s3_utils::SignRequestUri::new(uri.clone())?,
             mode,
             method,
             body,
+            &policy::RequestHeaders::new(headers)?,
         )
     }
 
@@ -2098,7 +2077,7 @@ mod test {
                 "http://s3.example.com:8333/bucket/ns/tbl%5Ca/f.parquet",
                 &http::Method::GET
             ),
-            "AmbiguousUriPath"
+            (400, "AmbiguousUriPath".to_string())
         );
     }
 
@@ -2240,11 +2219,12 @@ mod test {
             "decoding must collapse to the bucket for this test to mean anything"
         );
 
-        let err = s3_utils::parse_s3_url(
+        let err = s3_utils::parse_sign_request(
             &uri,
             S3UrlStyleDetectionMode::Auto,
             &http::Method::GET,
             None,
+            &policy::RequestHeaders::new(&HashMap::new()).unwrap(),
         )
         .map(|(parsed, _)| parsed)
         .expect_err("a path that only decodes to the bucket must not be signable");
@@ -2292,6 +2272,7 @@ mod test {
             "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&versions",
             "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&uploads",
             "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&location",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/;acl",
         ] {
             assert_eq!(
                 parse_list_err(uri, S3UrlStyleDetectionMode::Auto),
@@ -2391,17 +2372,13 @@ mod test {
 
     const OBJECT_URI: &str = "http://s3.example.com:8333/bucket/wh/tbl/data/x.parquet";
 
+    const KMS_KEY: &str = "arn:aws:kms:eu-central-1:123456789012:key/abc";
+
     fn headers(names: &[&str]) -> HashMap<String, Vec<String>> {
         names
             .iter()
             .map(|name| ((*name).to_string(), vec!["value".to_string()]))
             .collect()
-    }
-
-    fn request_access_err(uri: &str, header_names: &[&str]) -> (u16, String) {
-        let err = validate_request_access(&url::Url::parse(uri).unwrap(), &headers(header_names))
-            .expect_err(&format!("{uri} with {header_names:?} must not be signable"));
-        (err.error.code, err.error.r#type)
     }
 
     fn header_values(headers: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
@@ -2411,133 +2388,122 @@ mod test {
             .collect()
     }
 
-    fn request_access_with_values_err(uri: &str, headers: &[(&str, &str)]) -> (u16, String) {
-        let err = validate_request_access(&url::Url::parse(uri).unwrap(), &header_values(headers))
-            .expect_err(&format!("{uri} with {headers:?} must not be signable"));
-        (err.error.code, err.error.r#type)
+    fn s3_profile(kms_key: Option<&str>) -> S3Profile {
+        let mut profile = S3Profile::builder()
+            .region("my-region".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .bucket("bucket".to_string())
+            .build();
+        profile.aws_kms_key_arn = kms_key.map(ToString::to_string);
+        profile
     }
 
-    /// Only the destination key is validated against the table location, so a copy would
-    /// read a source object the table does not cover.
+    /// A write that copies from inside the table, encrypted with the warehouse's key, is
+    /// checked against both locations.
     #[test]
-    fn test_request_access_rejects_copy() {
-        for header in [
-            "x-amz-copy-source",
-            "X-Amz-Copy-Source",
-            "x-amz-copy-source-range",
-        ] {
-            assert_eq!(
-                request_access_err(OBJECT_URI, &["content-type", header]),
-                (403, "CopyNotSignable".to_string()),
-                "Test case: {header}"
-            );
-        }
-    }
-
-    /// Client headers are signed as-is, so an ACL header would change who can read the object.
-    #[test]
-    fn test_request_access_rejects_access_control_headers() {
-        for header in [
-            "x-amz-grant-read",
-            "X-Amz-Grant-Full-Control",
-            "x-amz-grant-read-acp",
-            "x-amz-grant-write-acp",
-        ] {
-            assert_eq!(
-                request_access_err(OBJECT_URI, &["content-type", header]),
-                (403, "AccessControlNotSignable".to_string()),
-                "Test case: {header}"
-            );
-        }
-    }
-
-    /// Canned ACLs that grant anyone but the bucket owner access are refused.
-    #[test]
-    fn test_request_access_rejects_widening_canned_acls() {
-        for acl in [
-            "public-read",
-            "public-read-write",
-            "authenticated-read",
-            "aws-exec-read",
-            "log-delivery-write",
-            "",
-        ] {
-            for name in ["x-amz-acl", "X-Amz-Acl"] {
-                assert_eq!(
-                    request_access_with_values_err(OBJECT_URI, &[(name, acl)]),
-                    (403, "AccessControlNotSignable".to_string()),
-                    "Test case: {name}: {acl}"
-                );
-            }
-        }
-        // Every value of a repeated header counts.
-        let err = validate_request_access(
+    fn test_check_request_allows_copy_within_the_table() {
+        let (parsed, operation) = check_request(
+            &s3_profile(Some(KMS_KEY)),
             &url::Url::parse(OBJECT_URI).unwrap(),
-            &HashMap::from([(
-                "x-amz-acl".to_string(),
-                vec!["private".to_string(), "public-read".to_string()],
-            )]),
+            &http::Method::PUT,
+            None,
+            &header_values(&[
+                ("X-Amz-Copy-Source", "bucket/wh/tbl/data/old.parquet"),
+                ("x-amz-metadata-directive", "COPY"),
+                ("x-amz-server-side-encryption", "aws:kms"),
+                ("x-amz-server-side-encryption-aws-kms-key-id", KMS_KEY),
+                ("X-Amzn-Trace-Id", "Root=1-abc"),
+                ("Content-Length", "0"),
+            ]),
         )
-        .unwrap_err();
+        .unwrap();
+        assert_eq!(operation, Operation::Write);
         assert_eq!(
-            (err.error.code, err.error.r#type),
-            (403, "AccessControlNotSignable".to_string())
+            parsed
+                .locations
+                .iter()
+                .map(ToString::to_string)
+                .collect_vec(),
+            vec![
+                "s3://bucket/wh/tbl/data/x.parquet",
+                "s3://bucket/wh/tbl/data/old.parquet",
+            ]
         );
+        validate_uri(&parsed, &Location::from_str("s3://bucket/wh/tbl").unwrap()).unwrap();
     }
 
-    /// Java `S3FileIO` sends the canned ACL configured in `s3.acl` on uploads, typically
-    /// `bucket-owner-full-control` for cross-account buckets.
+    /// Every check that runs before the table is known refuses on its own.
     #[test]
-    fn test_request_access_allows_bucket_owner_and_private_acls() {
-        for acl in [
-            "bucket-owner-full-control",
-            "Bucket-Owner-Full-Control",
-            "bucket-owner-read",
-            "private",
-            "PRIVATE",
+    fn test_check_request_refuses() {
+        let versioned = format!("{OBJECT_URI}?versionId=v1");
+        let acl_query = format!("{OBJECT_URI}?x-amz-acl=public-read");
+        for (method, uri, headers, expected) in [
+            (
+                http::Method::PUT,
+                OBJECT_URI,
+                vec![("x-amz-website-redirect-location", "/x")],
+                (403, "HeaderNotSignable"),
+            ),
+            (
+                http::Method::PUT,
+                OBJECT_URI,
+                vec![("x-amz-server-side-encryption", "AES256")],
+                (403, "EncryptionNotSignable"),
+            ),
+            (
+                http::Method::GET,
+                OBJECT_URI,
+                vec![("x-amz-copy-source", "bucket/wh/tbl/data/a.parquet")],
+                (403, "CopyNotSignable"),
+            ),
+            (
+                http::Method::PUT,
+                OBJECT_URI,
+                vec![("x-amz-copy-source", "bucket/wh/tbl/data/a+b.parquet")],
+                (400, "InvalidCopySource"),
+            ),
+            (
+                http::Method::PUT,
+                versioned.as_str(),
+                vec![],
+                (403, "VersionChangeNotSignable"),
+            ),
+            (
+                http::Method::PUT,
+                acl_query.as_str(),
+                vec![],
+                (400, "UnsupportedObjectParameter"),
+            ),
+            (
+                http::Method::PUT,
+                OBJECT_URI,
+                vec![("host", "other.example.com")],
+                (400, "HostHeaderMismatch"),
+            ),
+            (
+                http::Method::PUT,
+                OBJECT_URI,
+                vec![("x_amz_acl", "public-read")],
+                (400, "InvalidHeaderName"),
+            ),
         ] {
-            for name in ["x-amz-acl", "X-Amz-Acl"] {
-                for query in ["", "?uploads"] {
-                    let uri = url::Url::parse(&format!("{OBJECT_URI}{query}")).unwrap();
-                    validate_request_access(&uri, &header_values(&[(name, acl)])).unwrap_or_else(
-                        |e| panic!("{uri} with {name}: {acl} must be signable: {e:?}"),
-                    );
-                }
-            }
-            let uri = url::Url::parse(&format!("{OBJECT_URI}?x-amz-acl={acl}")).unwrap();
-            validate_request_access(&uri, &HashMap::new())
-                .unwrap_or_else(|e| panic!("{uri} must be signable: {e:?}"));
-        }
-    }
-
-    /// An object lock would make objects undeletable, even for the operator, or bypass one.
-    #[test]
-    fn test_request_access_rejects_object_lock() {
-        for header in [
-            "x-amz-object-lock-mode",
-            "X-Amz-Object-Lock-Retain-Until-Date",
-            "x-amz-object-lock-legal-hold",
-            "x-amz-bypass-governance-retention",
-            // KELVIN SIGN lowercases to `k`, as aws-sigv4 lowercases header names.
-            "x-amz-object-loc\u{212A}-mode",
-        ] {
+            let err = check_request(
+                &s3_profile(Some(KMS_KEY)),
+                &url::Url::parse(uri).unwrap(),
+                &method,
+                None,
+                &header_values(&headers),
+            )
+            .map(|(parsed, _)| parsed)
+            .expect_err(&format!(
+                "{method} {uri} with {headers:?} must not be signable"
+            ))
+            .error;
             assert_eq!(
-                request_access_err(OBJECT_URI, &["content-type", header]),
-                (403, "ObjectLockNotSignable".to_string()),
-                "Test case: {header}"
-            );
-        }
-        for query in [
-            "retention",
-            "legal-hold",
-            "object-lock",
-            "x-amz-object-lock-mode=COMPLIANCE",
-            "x-amz-bypass-governance-retention=true",
-        ] {
-            assert_eq!(
-                request_access_err(&format!("{OBJECT_URI}?{query}"), &[]),
-                (403, "ObjectLockNotSignable".to_string()),
-                "Test case: {query}"
+                (err.code, err.r#type.as_str()),
+                expected,
+                "Test case: {method} {uri} {headers:?}"
             );
         }
     }
@@ -2616,61 +2582,8 @@ mod test {
         }
     }
 
-    /// The `acl` sub-resource and query parameters named like the headers change access too.
-    #[test]
-    fn test_request_access_rejects_access_control_query() {
-        for (query, expected_type) in [
-            ("acl", "AccessControlNotSignable"),
-            ("ACL", "AccessControlNotSignable"),
-            ("x-amz-acl=public-read", "AccessControlNotSignable"),
-            ("X-Amz-Grant-Read=uri%3Dall", "AccessControlNotSignable"),
-            ("x-amz-copy-source=other%2Fkey", "CopyNotSignable"),
-        ] {
-            assert_eq!(
-                request_access_err(&format!("{OBJECT_URI}?{query}"), &[]),
-                (403, expected_type.to_string()),
-                "Test case: {query}"
-            );
-        }
-    }
-
-    /// Headers and query parameters Iceberg clients send for reads, writes and multipart uploads.
-    #[test]
-    fn test_request_access_allows_regular_requests() {
-        let header_names = [
-            "content-type",
-            "Content-Length",
-            "content-md5",
-            "x-amz-content-sha256",
-            "x-amz-date",
-            "x-amz-checksum-crc32",
-            "x-amz-sdk-checksum-algorithm",
-            "x-amz-server-side-encryption",
-            "x-amz-meta-iceberg",
-            "x-amz-meta-acl",
-            "x-amz-tagging",
-            "x-amz-storage-class",
-            "amz-sdk-invocation-id",
-            "amz-sdk-request",
-            "range",
-            "user-agent",
-        ];
-        for query in [
-            "",
-            "?x-id=PutObject",
-            "?uploads",
-            "?partNumber=1&uploadId=abc",
-            "?uploadId=abc",
-            "?tagging",
-        ] {
-            let uri = url::Url::parse(&format!("{OBJECT_URI}{query}")).unwrap();
-            validate_request_access(&uri, &headers(&header_names))
-                .unwrap_or_else(|e| panic!("{uri} must be signable: {e:?}"));
-        }
-    }
-
-    fn parse_object_err(uri: &str, method: &http::Method) -> String {
-        parse_uri(
+    fn parse_object_err(uri: &str, method: &http::Method) -> (u16, String) {
+        let err = parse_uri(
             &url::Url::parse(uri).unwrap(),
             S3UrlStyleDetectionMode::Auto,
             method,
@@ -2678,8 +2591,8 @@ mod test {
         )
         .map(|(parsed, _)| parsed)
         .expect_err(&format!("{uri} must not be signable"))
-        .error
-        .r#type
+        .error;
+        (err.code, err.r#type)
     }
 
     /// The received URI is signed, so S3 stores the key the client sent: a segment that only
@@ -2721,7 +2634,7 @@ mod test {
             for method in [http::Method::GET, http::Method::PUT, http::Method::DELETE] {
                 assert_eq!(
                     parse_object_err(uri, &method),
-                    "AmbiguousUriPath",
+                    (400, "AmbiguousUriPath".to_string()),
                     "Test case: {method} {uri}"
                 );
             }
@@ -2811,6 +2724,314 @@ mod test {
         }
     }
 
+    /// The parameters a `FileIO` sends with its object requests keep the request signable and
+    /// inside the table.
+    #[test]
+    fn test_parse_s3_url_object_allows_fileio_parameters() {
+        let table_location = Location::from_str("s3://bucket/wh/tbl").unwrap();
+        for (method, query) in [
+            (http::Method::GET, ""),
+            (http::Method::GET, "?x-id=GetObject"),
+            (http::Method::GET, "?versionId=v1"),
+            (http::Method::GET, "?partNumber=1"),
+            (http::Method::GET, "?attributes"),
+            (http::Method::GET, "?tagging"),
+            (http::Method::GET, "?response-content-type=text%2Fplain"),
+            (
+                http::Method::GET,
+                "?uploadId=abc&max-parts=10&part-number-marker=2",
+            ),
+            (http::Method::HEAD, "?versionId=v1"),
+            (http::Method::PUT, "?x-id=PutObject"),
+            (
+                http::Method::PUT,
+                "?partNumber=1&uploadId=abc&x-id=UploadPart",
+            ),
+            (http::Method::PUT, "?tagging"),
+            (http::Method::POST, "?uploads"),
+            (http::Method::POST, "?uploadId=abc"),
+            (http::Method::DELETE, "?x-id=DeleteObject"),
+            (
+                http::Method::DELETE,
+                "?uploadId=abc&x-id=AbortMultipartUpload",
+            ),
+            (http::Method::DELETE, "?tagging"),
+        ] {
+            let uri = format!("{OBJECT_URI}{query}");
+            let (parsed, _) = parse_uri(
+                &url::Url::parse(&uri).unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &method,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{method} {uri} must be signable: {e:?}"));
+            validate_uri(&parsed, &table_location)
+                .unwrap_or_else(|e| panic!("{method} {uri} must be inside the table: {e:?}"));
+        }
+    }
+
+    /// S3 dispatches on the query string: another sub-resource on a key inside the table turns
+    /// the signed request into an operation the key does not authorize, such as a rename that
+    /// removes a source object outside the table.
+    #[test]
+    fn test_parse_s3_url_object_rejects_unknown_parameters() {
+        for (method, query) in [
+            (http::Method::PUT, "?renameObject"),
+            (http::Method::PUT, "?x-id=RenameObject&renameObject"),
+            (http::Method::POST, "?restore"),
+            (http::Method::POST, "?select&select-type=2"),
+            (http::Method::GET, "?torrent"),
+            (http::Method::PUT, "?append&position=0"),
+            (http::Method::GET, "?x-id=GetObject&policy"),
+            (http::Method::POST, "?undelete"),
+            // Some servers split on `;` too, which would hide a sub-resource in a value.
+            (http::Method::GET, "?x-id=GetObject;retention"),
+        ] {
+            let uri = format!("{OBJECT_URI}{query}");
+            assert_eq!(
+                parse_object_err(&uri, &method),
+                (400, "UnsupportedObjectParameter".to_string()),
+                "Test case: {method} {uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_s3_url_object_rejects_repeated_parameters() {
+        for (method, query) in [
+            (http::Method::PUT, "?partNumber=1&uploadId=abc&uploadId=def"),
+            (http::Method::GET, "?versionId=v1&versionId=v2"),
+        ] {
+            let uri = format!("{OBJECT_URI}{query}");
+            assert_eq!(
+                parse_object_err(&uri, &method),
+                (400, "RepeatedObjectParameter".to_string()),
+                "Test case: {method} {uri}"
+            );
+        }
+    }
+
+    /// A `DeleteObjects` request is identified by its `delete` parameter, and carries no other
+    /// sub-resource next to it.
+    #[test]
+    fn test_parse_s3_url_delete_objects_parameters() {
+        let delete = |query: &str| {
+            parse_uri(
+                &url::Url::parse(&format!("http://s3.example.com:8333/bucket{query}")).unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::POST,
+                Some(&delete_body(&["wh/tbl/x.parquet"])),
+            )
+            .map(|(_, operation)| operation)
+        };
+
+        assert_eq!(delete("?delete").unwrap(), Operation::Delete);
+        assert_eq!(
+            delete("?delete&x-id=DeleteObjects").unwrap(),
+            Operation::Delete
+        );
+        for (query, expected) in [
+            ("?delete&policy", "UnsupportedDeleteParameter"),
+            ("?delete&delete", "RepeatedDeleteParameter"),
+            // Not `DeleteObjects`: an object write to the bucket itself, which has no key.
+            ("?undelete", "UriNotS3"),
+        ] {
+            assert_eq!(
+                delete(query).unwrap_err().error.r#type,
+                expected,
+                "Test case: {query}"
+            );
+        }
+    }
+
+    fn copy_source_from(headers: &HashMap<String, Vec<String>>) -> Result<Option<S3Location>> {
+        s3_utils::copy_source_location(&policy::RequestHeaders::new(headers)?)
+    }
+
+    fn copy_source(value: &str) -> Result<Option<S3Location>> {
+        copy_source_from(&header_values(&[("X-Amz-Copy-Source", value)]))
+    }
+
+    #[test]
+    fn test_copy_source_location() {
+        assert!(
+            copy_source_from(&headers(&["content-type"]))
+                .unwrap()
+                .is_none()
+        );
+        for (value, expected) in [
+            (
+                "/bucket/wh/tbl/data/x.parquet",
+                "s3://bucket/wh/tbl/data/x.parquet",
+            ),
+            (
+                "bucket/wh/tbl/data/x.parquet",
+                "s3://bucket/wh/tbl/data/x.parquet",
+            ),
+            (
+                "/bucket/wh/tbl/data/x.parquet?versionId=v1",
+                "s3://bucket/wh/tbl/data/x.parquet",
+            ),
+            (
+                "/bucket/wh/tbl/data/name%3Da%20b/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a%20b/x.parquet",
+            ),
+            (
+                "/bucket/wh/tbl/data/a%2Bb.parquet",
+                "s3://bucket/wh/tbl/data/a+b.parquet",
+            ),
+            // HTTP strips spaces and tabs around a header value.
+            (
+                " \t/bucket/wh/tbl/data/x.parquet\t ",
+                "s3://bucket/wh/tbl/data/x.parquet",
+            ),
+            // Decoded once, as S3 does: the key holds a literal `%2F`.
+            (
+                "/bucket/wh/tbl/data/name=a%252Fb/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a%2Fb/x.parquet",
+            ),
+        ] {
+            assert_eq!(
+                copy_source(value)
+                    .unwrap_or_else(|e| panic!("{value} must be a copy source: {e:?}"))
+                    .map(|location| location.to_string()),
+                Some(expected.to_string()),
+                "Test case: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_copy_source_location_rejects_malformed_sources() {
+        for value in [
+            "bucket",
+            "/bucket/",
+            "/bucket/wh/tbl/x.parquet?versionId=",
+            "/bucket/wh/tbl/x.parquet?uploadId=abc",
+            "/bucket/wh/tbl/x.parquet?versionId=v1&uploadId=abc",
+            // Decoded once, these are separators and dot segments S3 keeps verbatim.
+            "/bucket/wh/tbl%2F..%2Fother/x.parquet",
+            "/bucket/wh/tbl/.%2Fx.parquet",
+            "/bucket/wh//tbl/x.parquet",
+            "/bucket/wh/tbl/%FF.parquet",
+            "/bucket/wh/tbl/a+b.parquet",
+            // Some stores read `\` as a separator.
+            "/bucket/wh/tbl/x%5C..%5C..%5Cother%5Csecret",
+            "/bucket/wh/tbl/x\\y.parquet",
+            // Other decoders keep such a key undecoded.
+            "/bucket/%77h/tbl/x%zz",
+            "/bucket/wh/tbl/x%7",
+            // Only spaces and tabs are stripped, so this is part of the bucket name.
+            "\u{a0}/bucket/wh/tbl/x.parquet",
+            // Access point ARNs are not resolved to a bucket.
+            "arn:aws:s3:us-east-1:123456789012:accesspoint/ap/object/wh/tbl/x.parquet",
+        ] {
+            assert_eq!(
+                copy_source(value)
+                    .expect_err(&format!("{value} must not be a copy source"))
+                    .error
+                    .r#type,
+                "InvalidCopySource",
+                "Test case: {value}"
+            );
+        }
+
+        let two_sources = HashMap::from([(
+            "x-amz-copy-source".to_string(),
+            vec![
+                "/bucket/wh/tbl/x.parquet".to_string(),
+                "/bucket/wh/other/y.parquet".to_string(),
+            ],
+        )]);
+        let two_spellings = HashMap::from([
+            (
+                "x-amz-copy-source".to_string(),
+                vec!["/bucket/wh/tbl/x.parquet".to_string()],
+            ),
+            (
+                "X-Amz-Copy-Source".to_string(),
+                vec!["/bucket/wh/other/y.parquet".to_string()],
+            ),
+        ]);
+        // A store could read either value, or the second of two joined with `,`.
+        let joined = header_values(&[(
+            "x-amz-copy-source",
+            "/bucket/wh/tbl/x.parquet,/bucket/wh/other/y.parquet",
+        )]);
+        for headers in [two_sources, two_spellings, joined] {
+            let err = copy_source_from(&headers).unwrap_err().error;
+            assert_eq!(
+                (err.code, err.r#type.as_str()),
+                (400, "InvalidHeaderValue"),
+                "Test case: {headers:?}"
+            );
+        }
+    }
+
+    /// A copy reads its source, so the source has to lie inside the table like the destination.
+    #[test]
+    fn test_validate_uri_copy_source() {
+        let table_location = Location::from_str("s3://bucket/wh/tbl").unwrap();
+        for (source, inside) in [
+            ("/bucket/wh/tbl/data/old.parquet", true),
+            ("/bucket/wh/tbl/data/old.parquet?versionId=v1", true),
+            ("/bucket/wh/other/data/x.parquet", false),
+            ("/bucket/wh/tblX/data/x.parquet", false),
+            ("/other-bucket/wh/tbl/data/x.parquet", false),
+        ] {
+            let (parsed, _) = parse_with_headers(
+                &url::Url::parse(&format!("{OBJECT_URI}?partNumber=1&uploadId=abc")).unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::PUT,
+                None,
+                &header_values(&[("X-Amz-Copy-Source", source)]),
+            )
+            .unwrap_or_else(|e| panic!("{source} must be a copy source: {e:?}"));
+            assert_eq!(
+                parsed.locations.first().map(ToString::to_string).as_deref(),
+                Some("s3://bucket/wh/tbl/data/x.parquet"),
+                "The destination names the table. Test case: {source}"
+            );
+            assert_eq!(
+                validate_uri(&parsed, &table_location).is_ok(),
+                inside,
+                "Test case: {source}"
+            );
+        }
+    }
+
+    /// Deleting one version removes it for good, past what bucket versioning keeps.
+    #[test]
+    fn test_parse_s3_url_rejects_versioned_deletes() {
+        let err = parse_uri(
+            &url::Url::parse(&format!("{OBJECT_URI}?versionId=v1")).unwrap(),
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::DELETE,
+            None,
+        )
+        .map(|(parsed, _)| parsed)
+        .expect_err("a versioned delete must not be signable")
+        .error;
+        assert_eq!(
+            (err.code, err.r#type.as_str()),
+            (403, "VersionChangeNotSignable")
+        );
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>wh/tbl/x.parquet</Key></Object><Object><Key>wh/tbl/y.parquet</Key><VersionId>v1</VersionId></Object></Delete>";
+        let err = parse_uri(
+            &url::Url::parse("http://s3.example.com:8333/bucket?delete").unwrap(),
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::POST,
+            Some(body),
+        )
+        .map(|(parsed, _)| parsed)
+        .expect_err("a versioned delete must not be signable")
+        .error;
+        assert_eq!(
+            (err.code, err.r#type.as_str()),
+            (403, "VersionChangeNotSignable")
+        );
+    }
+
     fn delete_body(keys: &[&str]) -> String {
         let objects = keys
             .iter()
@@ -2831,6 +3052,7 @@ mod test {
             "wh/tbl/../tblX/x.parquet",
             "wh/tbl/./x.parquet",
             "wh/tbl/..",
+            "wh/tbl/x\\..\\..\\other\\y.parquet",
         ] {
             let err = parse_uri(
                 &url::Url::parse("http://s3.example.com:8333/bucket?delete").unwrap(),
