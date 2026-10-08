@@ -73,8 +73,11 @@ jobs:
           LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN }}
           LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET: ${{ secrets.LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET }}
           LAKEKEEPER_TEST__AWS_S3_KMS_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_KMS_ARN }}
+      # A debugging aid: a stuck dump must not hold the job, nor a failed one fail it.
       - name: Dump DB
         if: always()
+        timeout-minutes: 5
+        continue-on-error: true
         uses: tj-actions/pg-dump@f68d6b3b0a96a30fda60109a19a5d9fb3c536c9c
         with:
           database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
