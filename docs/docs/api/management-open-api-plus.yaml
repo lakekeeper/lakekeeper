@@ -424,12 +424,21 @@ paths:
         Lists every Cedar policy stored for the requested project, full content
         included. A scope holds at most `LAKEKEEPER__CEDAR__MAX_POLICIES_PER_SCOPE`
         policies, so the listing is unpaginated: one consistent snapshot.
-        Requires permission to list the project's Cedar policies.
+        Requires permission to list the project's Cedar policies; `can-write` says
+        whether the caller can also change them.
       operationId: list_project_scope_policies
       parameters:
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). `can-write` then shows whether you could change these policies with emergency access.
           required: false
           schema:
             type:
@@ -483,7 +492,7 @@ paths:
               - 'null'
         - name: x-break-glass
           in: header
-          description: 'Required for an instance admin: a reason for the change, recorded on the audit event. Refused as `CedarInstanceAdminNeedsBreakGlass` when an instance admin sends none.'
+          description: Send this header with your reason to use emergency access (break-glass). If your normal permissions block this change, the server's emergency rules decide instead. Instance admins must always send it. Your reason is recorded.
           required: false
           schema:
             type:
@@ -630,12 +639,21 @@ paths:
         Lists the predefined policies with their enablement for the requested
         project. Policies are enabled or disabled per scope, never edited; a
         disabled policy stays listed. Requires permission to list the project's
-        Cedar policies.
+        Cedar policies; each entry's `can-toggle` says whether the caller can also
+        switch it.
       operationId: list_project_predefined_policies
       parameters:
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). Each `can-toggle` then shows whether you could switch that policy, or remove it if it is retired, with emergency access.
           required: false
           schema:
             type:
@@ -679,15 +697,17 @@ paths:
       summary: Set Predefined Policies of a Project
       description: |-
         Enables or disables predefined policies for the requested project, and
-        returns the project's full listing as of the write. Idempotent: repeating a
-        request re-applies the same decisions and changes nothing, including a
-        retired-row cleanup (`enabled: true` for a policy this server no longer
-        provides) whose row an earlier attempt already removed. Requires permission
-        to switch the project's predefined policies, asked once per entry with the
-        policy and the direction in context — so a policy of yours can allow
-        switching one off without allowing switching it back on. Deciding a
-        predefined policy is policy management, and it stays recoverable through
-        break-glass like any other policy repair.
+        returns the project's full listing as of the write. Its `can-toggle` values
+        are decided after the write, so switching off what let you switch shows
+        here. They can lag briefly behind the write; the write itself is always
+        checked. Idempotent: repeating a request re-applies the same decisions and
+        changes nothing, including a retired-row cleanup (`enabled: true` for a
+        policy this server no longer provides) whose row an earlier attempt already
+        removed. Requires permission to switch the project's predefined policies,
+        asked once per entry with the policy and the direction in context — so a
+        policy of yours can allow switching one off without allowing switching it
+        back on. Deciding a predefined policy is policy management, and it stays
+        recoverable through break-glass like any other policy repair.
 
         The first decision recorded for a scope curates it: from then on the scope
         holds its own row per policy, and a policy shipped by a later release starts
@@ -697,6 +717,14 @@ paths:
         - name: x-project-id
           in: header
           description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). If your normal permissions block this change, the server's emergency rules decide instead. Your reason is recorded.
           required: false
           schema:
             type:
@@ -896,7 +924,8 @@ paths:
         policies, so the listing is unpaginated: one consistent snapshot. The
         warehouse evaluates its project's policies too, so the listing also carries
         the project's `project-scope-version`.
-        Requires permission to list the warehouse's Cedar policies.
+        Requires permission to list the warehouse's Cedar policies; `can-write`
+        says whether the caller can also change them.
       operationId: list_warehouse_scope_policies
       parameters:
         - name: warehouse_id
@@ -906,6 +935,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). `can-write` then shows whether you could change these policies with emergency access.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: The warehouse's stored Cedar policies
@@ -953,7 +990,7 @@ paths:
             format: uuid
         - name: x-break-glass
           in: header
-          description: 'Required for an instance admin: a reason for the change, recorded on the audit event. Refused as `CedarInstanceAdminNeedsBreakGlass` when an instance admin sends none.'
+          description: Send this header with your reason to use emergency access (break-glass). If your normal permissions block this change, the server's emergency rules decide instead. Instance admins must always send it. Your reason is recorded.
           required: false
           schema:
             type:
@@ -1101,7 +1138,8 @@ paths:
         project disabled is reported disabled here too (`disabled-by: project`) and
         cannot be re-enabled at the warehouse. Policies that apply to
         the project itself, and those about tags, are decided per project and are not
-        listed here. Requires permission to list the warehouse's Cedar policies.
+        listed here. Requires permission to list the warehouse's Cedar policies;
+        each entry's `can-toggle` says whether the caller can also switch it.
       operationId: list_warehouse_predefined_policies
       parameters:
         - name: warehouse_id
@@ -1111,6 +1149,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). Each `can-toggle` then shows whether you could switch that policy, or remove it if it is retired, with emergency access.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
         - name: include-policy
           in: query
           description: |-
@@ -1149,16 +1195,18 @@ paths:
       summary: Set Predefined Policies of a Warehouse
       description: |-
         Enables or disables predefined policies for the requested warehouse, and
-        returns the warehouse's full listing as of the write. Only the policies a
-        warehouse decides — the ones its listing reports — can be named: a policy
-        decided per project is refused here. A warehouse can only narrow its project:
-        enabling a policy its project disabled records the decision but does not put
-        the policy in force. Idempotent: repeating a request re-applies the same
-        decisions and changes nothing, including a retired-row cleanup (`enabled:
-        true` for a policy this server no longer provides) whose row an earlier
-        attempt already removed. Requires permission to switch the warehouse's
-        predefined policies, asked once per entry with the policy and the direction
-        in context.
+        returns the warehouse's full listing as of the write. Its `can-toggle`
+        values are decided after the write, so switching off what let you switch
+        shows here. They can lag briefly behind the write; the write itself is
+        always checked. Only the policies a warehouse decides — the ones its listing
+        reports — can be named: a policy decided per project is refused here. A
+        warehouse can only narrow its project: enabling a policy its project
+        disabled records the decision but does not put the policy in force.
+        Idempotent: repeating a request re-applies the same decisions and changes
+        nothing, including a retired-row cleanup (`enabled: true` for a policy this
+        server no longer provides) whose row an earlier attempt already removed.
+        Requires permission to switch the warehouse's predefined policies, asked
+        once per entry with the policy and the direction in context.
 
         The first decision recorded for a scope curates it: from then on the scope
         holds its own row per policy, and a policy shipped by a later release starts
@@ -1172,6 +1220,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-break-glass
+          in: header
+          description: Send this header with your reason to use emergency access (break-glass). If your normal permissions block this change, the server's emergency rules decide instead. Your reason is recorded.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
         - name: include-policy
           in: query
           description: |-
@@ -2921,8 +2977,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -6854,18 +6909,17 @@ paths:
         single-element path moves the namespace to the warehouse root. The path must not be
         empty.
 
-        Requires grant authority at **both** ends, because re-parenting makes the namespace's
-        contents inherit the destination subtree's permissions without any assignment being
-        recorded:
+        Requires:
 
         - `move` on the namespace being moved,
         - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
           the warehouse, when moving to the root).
 
-        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
-        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
-        alone is not sufficient at the destination: it authorizes adding an *empty* child,
-        whereas a move arrives carrying existing contents and their grants.
+        Re-parenting makes the namespace's contents inherit the destination subtree's
+        permissions without any assignment being recorded, and the namespace arrives carrying
+        its contents and their grants. With OpenFGA, `move` requires `manage_grants` and
+        `modify`; `accept_moved_namespace` requires `create`, plus `manage_grants` when the
+        destination is under managed access.
 
         Constraints:
         - Namespaces that contain child namespaces cannot be moved.
@@ -8342,8 +8396,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -8464,8 +8517,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -8586,8 +8638,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -8647,8 +8698,7 @@ paths:
             x-request-id:
               schema:
                 type: string
-                format: uuid
-              description: Request identifier, add this to your bug reports.
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
           content:
             application/json:
               schema:
@@ -10666,8 +10716,8 @@ components:
         policy-id:
           type: string
           description: |-
-            Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
-            `PolicyId`). Always present.
+            Stable, authorizer-assigned identifier of the policy, such as a Cedar policy
+            id. Always present.
         source:
           type:
             - string
@@ -11104,6 +11154,7 @@ components:
         - read_data
         - get_metadata
         - rename
+        - move
         - include_in_list
         - get_tasks
         - control_tasks
@@ -12082,6 +12133,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperGenericTableActionWriteData'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionRename'
+        - $ref: '#/components/schemas/LakekeeperGenericTableActionMove'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionUndrop'
         - $ref: '#/components/schemas/LakekeeperGenericTableActionGetTasks'
@@ -12098,6 +12150,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperGenericTableActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperGenericTableActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperGenericTableActionManageTags'
+          move: '#/components/schemas/LakekeeperGenericTableActionMove'
           read_data: '#/components/schemas/LakekeeperGenericTableActionReadData'
           read_grants: '#/components/schemas/LakekeeperGenericTableActionReadGrants'
           rename: '#/components/schemas/LakekeeperGenericTableActionRename'
@@ -12122,6 +12175,15 @@ components:
           type: string
           enum:
             - drop
+        force:
+          type: boolean
+          description: |-
+            Whether the warehouse-configured soft-deletion is bypassed: the generic table is
+            hard-deleted at once, not kept for the configured grace period. Extra destructive —
+            irreversible right away.
+        purge:
+          type: boolean
+          description: Whether the underlying data files are physically purged from storage.
     LakekeeperGenericTableActionGetMetadata:
       type: object
       required:
@@ -12151,6 +12213,7 @@ components:
             - include_in_list
     LakekeeperGenericTableActionManageTags:
       type: object
+      description: Attach/detach governance tags on this generic table.
       required:
         - action
       properties:
@@ -12158,6 +12221,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperGenericTableActionMove:
+      type: object
+      description: |-
+        Rename this generic table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the generic table inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the generic table is being moved to.
     LakekeeperGenericTableActionReadData:
       type: object
       required:
@@ -12169,6 +12253,7 @@ components:
             - read_data
     LakekeeperGenericTableActionReadGrants:
       type: object
+      description: Can list the grants held on this generic table.
       required:
         - action
       properties:
@@ -12231,6 +12316,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedTabular'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionReadSubtreeGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionRevokeSubtreeGrants'
@@ -12238,6 +12324,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedNamespace'
+          accept_moved_tabular: '#/components/schemas/LakekeeperNamespaceActionAcceptMovedTabular'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionCreateTable'
@@ -12262,12 +12349,10 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:
@@ -12280,6 +12365,25 @@ components:
           items:
             type: string
           description: Path the namespace is being moved from.
+    LakekeeperNamespaceActionAcceptMovedTabular:
+      type: object
+      description: |-
+        Accept a table, view or generic table being moved in from another namespace.
+
+        The tabular counterpart of `accept_moved_namespace`, asked together with the matching
+        `create_*` action: a moved tabular arrives carrying its direct grants.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_tabular
+        source:
+          type: array
+          items:
+            type: string
+          description: Namespace the tabular is being moved from.
     LakekeeperNamespaceActionCreateGenericTable:
       type: object
       required:
@@ -12398,9 +12502,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e.
-            contained tabulars are hard-deleted immediately instead of being
-            recoverable for the configured grace period.
+            Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
+            hard-deleted at once, not kept for the configured grace period.
         purge:
           type: boolean
           description: Whether the underlying data/metadata files are physically purged.
@@ -12446,6 +12549,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindMove'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
+        - $ref: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedTabular'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindReadSubtreeGrants'
         - $ref: '#/components/schemas/LakekeeperNamespaceActionKindRevokeSubtreeGrants'
@@ -12453,6 +12557,7 @@ components:
         propertyName: action
         mapping:
           accept_moved_namespace: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedNamespace'
+          accept_moved_tabular: '#/components/schemas/LakekeeperNamespaceActionKindAcceptMovedTabular'
           create_generic_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateGenericTable'
           create_namespace: '#/components/schemas/LakekeeperNamespaceActionKindCreateNamespace'
           create_table: '#/components/schemas/LakekeeperNamespaceActionKindCreateTable'
@@ -12481,6 +12586,15 @@ components:
           type: string
           enum:
             - accept_moved_namespace
+    LakekeeperNamespaceActionKindAcceptMovedTabular:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - accept_moved_tabular
     LakekeeperNamespaceActionKindCreateGenericTable:
       type: object
       required:
@@ -12752,7 +12866,7 @@ components:
       description: |-
         Can list and read every grant in the subtree rooted here: the namespace's own and
         those on every descendant namespace and tabular. Strictly stronger than
-        `ReadGrants`, which covers this one resource; granted separately because it
+        `read_grants`, which covers this one resource; granted separately because it
         enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -12782,7 +12896,7 @@ components:
         the whole batch. An authorizer must answer it as authority over everything
         beneath — or refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:
@@ -13232,12 +13346,12 @@ components:
       description: |-
         Can list every grant one principal holds anywhere in this project: on the project,
         its warehouses, namespaces, tables, views, generic tables and tag definitions.
-        Covers more than `ReadGrants`, which covers the project's own grants.
-        Not listed in project actions where the authorizer keeps its own grants (OpenFGA),
-        because the listing is not available there.
+        Covers more than `read_grants`, which covers the project's own grants. Not listed in
+        project actions where the authorizer keeps its own grants (OpenFGA), because the
+        listing is not available there.
 
         `scope` states what the listing covers, on the same terms as the warehouse's
-        `ReadSubtreeGrants`. Every enforced check carries it; an absent scope is the
+        `read_subtree_grants`. Every enforced check carries it; an absent scope is the
         base-capability question permission introspection asks.
       required:
         - action
@@ -13516,6 +13630,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperTableActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperTableActionCommit'
         - $ref: '#/components/schemas/LakekeeperTableActionRename'
+        - $ref: '#/components/schemas/LakekeeperTableActionMove'
         - $ref: '#/components/schemas/LakekeeperTableActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperTableActionUndrop'
         - $ref: '#/components/schemas/LakekeeperTableActionGetTasks'
@@ -13533,6 +13648,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperTableActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperTableActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperTableActionManageTags'
+          move: '#/components/schemas/LakekeeperTableActionMove'
           read_data: '#/components/schemas/LakekeeperTableActionReadData'
           read_grants: '#/components/schemas/LakekeeperTableActionReadGrants'
           rename: '#/components/schemas/LakekeeperTableActionRename'
@@ -13593,9 +13709,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            table is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -13634,6 +13750,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperTableActionKindGetMetadata'
         - $ref: '#/components/schemas/LakekeeperTableActionKindCommit'
         - $ref: '#/components/schemas/LakekeeperTableActionKindRename'
+        - $ref: '#/components/schemas/LakekeeperTableActionKindMove'
         - $ref: '#/components/schemas/LakekeeperTableActionKindIncludeInList'
         - $ref: '#/components/schemas/LakekeeperTableActionKindUndrop'
         - $ref: '#/components/schemas/LakekeeperTableActionKindGetTasks'
@@ -13651,6 +13768,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperTableActionKindGetTasks'
           include_in_list: '#/components/schemas/LakekeeperTableActionKindIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperTableActionKindManageTags'
+          move: '#/components/schemas/LakekeeperTableActionKindMove'
           read_data: '#/components/schemas/LakekeeperTableActionKindReadData'
           read_grants: '#/components/schemas/LakekeeperTableActionKindReadGrants'
           rename: '#/components/schemas/LakekeeperTableActionKindRename'
@@ -13720,6 +13838,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperTableActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperTableActionKindReadData:
       type: object
       required:
@@ -13784,6 +13911,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperTableActionMove:
+      type: object
+      description: |-
+        Rename this table into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the table inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the table is being moved to.
     LakekeeperTableActionReadData:
       type: object
       required:
@@ -13978,6 +14126,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionCommit'
         - $ref: '#/components/schemas/LakekeeperViewActionIncludeInList'
         - $ref: '#/components/schemas/LakekeeperViewActionRename'
+        - $ref: '#/components/schemas/LakekeeperViewActionMove'
         - $ref: '#/components/schemas/LakekeeperViewActionUndrop'
         - $ref: '#/components/schemas/LakekeeperViewActionGetTasks'
         - $ref: '#/components/schemas/LakekeeperViewActionControlTasks'
@@ -13994,6 +14143,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperViewActionGetTasks'
           include_in_list: '#/components/schemas/LakekeeperViewActionIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperViewActionManageTags'
+          move: '#/components/schemas/LakekeeperViewActionMove'
           read_grants: '#/components/schemas/LakekeeperViewActionReadGrants'
           rename: '#/components/schemas/LakekeeperViewActionRename'
           select: '#/components/schemas/LakekeeperViewActionSelect'
@@ -14039,9 +14189,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed, i.e. the
-            view is hard-deleted immediately instead of being recoverable for the
-            configured grace period. Extra destructive — irreversible right away.
+            Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
+            once, not kept for the configured grace period. Extra destructive — irreversible right
+            away.
         purge:
           type: boolean
           description: Whether the underlying metadata files are physically purged from storage.
@@ -14080,6 +14230,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionKindCommit'
         - $ref: '#/components/schemas/LakekeeperViewActionKindIncludeInList'
         - $ref: '#/components/schemas/LakekeeperViewActionKindRename'
+        - $ref: '#/components/schemas/LakekeeperViewActionKindMove'
         - $ref: '#/components/schemas/LakekeeperViewActionKindUndrop'
         - $ref: '#/components/schemas/LakekeeperViewActionKindGetTasks'
         - $ref: '#/components/schemas/LakekeeperViewActionKindControlTasks'
@@ -14096,6 +14247,7 @@ components:
           get_tasks: '#/components/schemas/LakekeeperViewActionKindGetTasks'
           include_in_list: '#/components/schemas/LakekeeperViewActionKindIncludeInList'
           manage_tags: '#/components/schemas/LakekeeperViewActionKindManageTags'
+          move: '#/components/schemas/LakekeeperViewActionKindMove'
           read_grants: '#/components/schemas/LakekeeperViewActionKindReadGrants'
           rename: '#/components/schemas/LakekeeperViewActionKindRename'
           select: '#/components/schemas/LakekeeperViewActionKindSelect'
@@ -14164,6 +14316,15 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperViewActionKindMove:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
     LakekeeperViewActionKindReadGrants:
       type: object
       required:
@@ -14219,6 +14380,27 @@ components:
           type: string
           enum:
             - manage_tags
+    LakekeeperViewActionMove:
+      type: object
+      description: |-
+        Rename this view into another namespace. Asked in addition to `rename` when a
+        rename changes the namespace.
+
+        The move changes which grants the view inherits, as moving a namespace does, so it
+        is gated on grant authority in addition to write access. The destination is gated by
+        the matching `create_*` action plus `accept_moved_tabular`.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - move
+        destination:
+          type: array
+          items:
+            type: string
+          description: Namespace the view is being moved to.
     LakekeeperViewActionReadGrants:
       type: object
       description: Can list the grants held on this view.
@@ -14327,12 +14509,10 @@ components:
       description: |-
         Accept a namespace being moved in from elsewhere as a child of this entity.
 
-        Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
+        Distinct from `create_namespace`: creating adds an *empty* child, so exposing it to
         this subtree's grantees exposes nothing. A move arrives carrying existing contents
-        and their direct grants, which is why this is gated on grant authority in addition to
-        `create` — without it, a namespace could be populated and granted somewhere
-        permissive and then moved into a `managed_access` subtree, smuggling grants past the
-        control that subtree exists to enforce.
+        and their direct grants, so an authorizer may require grant authority here in
+        addition to `create`. OpenFGA does when this entity is under managed access.
       required:
         - action
       properties:
@@ -14401,6 +14581,11 @@ components:
           type: string
           enum:
             - delete
+        force:
+          type: boolean
+          description: |-
+            Whether protection is bypassed, so a warehouse marked protected is deleted with
+            everything in it.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -14815,7 +15000,7 @@ components:
       type: object
       description: |-
         Can list and read every grant in the warehouse: the warehouse's own and those on
-        every namespace and tabular inside it. Strictly stronger than `ReadGrants`, which
+        every namespace and tabular inside it. Strictly stronger than `read_grants`, which
         covers this one resource; granted separately because it enumerates the subtree.
 
         `scope` states what the listing covers — the resource kinds it reaches, how far its
@@ -14854,7 +15039,7 @@ components:
         batch. An authorizer must answer it as authority over everything beneath — or
         refuse the subtree routes.
 
-        `scope` states what the revoke covers, on the same terms as `ReadSubtreeGrants`.
+        `scope` states what the revoke covers, on the same terms as `read_subtree_grants`.
       required:
         - action
       properties:
@@ -15374,6 +15559,19 @@ components:
       enum:
         - self-managed
         - instance-admin
+    MemoryProfile:
+      type: object
+      required:
+        - base-location
+      properties:
+        base-location:
+          type: string
+          description: Base location for the local profile
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
     MoveNamespaceRequest:
       type: object
       description: Request to move a namespace to a new location in the hierarchy.
@@ -15430,6 +15628,7 @@ components:
         - delete
         - move
         - accept_moved_namespace
+        - accept_moved_tabular
         - update_properties
         - get_metadata
         - read_assignments
@@ -15803,7 +16002,18 @@ components:
         - id
         - description
         - enabled
+        - can-toggle
       properties:
+        can-toggle:
+          type: boolean
+          description: |-
+            Whether you can switch this policy to the other state its `enabled`
+            shows, on to off or off to on, decided for this request, `x-break-glass`
+            included. For a retired row, whether you can remove it. `false` when you
+            may only read it, when a policy forbids that switch, when this deployment
+            does not store scope policies or has its policy refresh loop off, or, in
+            a write's answer, when it could not be decided. On a warehouse, `false`
+            for a policy its project switches off: switch it on in the project.
         description:
           type: string
           description: What this policy allows, in plain language.
@@ -16307,14 +16517,8 @@ components:
         The kinds of resource a grant can be held on.
 
         Every value is also the URL segment that addresses that kind of resource, so a
-        client can build request paths straight from a vocabulary response. Kept link-free:
-        this doc comment is published verbatim in the `OpenAPI` description, where an
-        intra-doc link would render as a raw Rust module path.
-
-        This is the vocabulary the API speaks. A store is free to persist a coarser one —
-        tables, views and generic tables are one kind to a catalog that already records
-        which of the three an id refers to — so this deliberately carries no storage
-        mapping.
+        client can build request paths straight from a vocabulary response. The audit log
+        spells these kinds the same way.
       enum:
         - server
         - project
@@ -17028,7 +17232,16 @@ components:
       required:
         - policies
         - scope-version
+        - can-write
       properties:
+        can-write:
+          type: boolean
+          description: |-
+            Whether you can change this scope's stored policies, decided for this
+            request, `x-break-glass` included. `false` when you may only read them,
+            when you are an instance admin who sent no `x-break-glass` reason, or
+            when this deployment does not store scope policies or has its policy
+            refresh loop off.
         policies:
           type: array
           items:
@@ -18056,12 +18269,14 @@ components:
         - $ref: '#/components/schemas/StorageProfileS3'
         - $ref: '#/components/schemas/StorageProfileStackit'
         - $ref: '#/components/schemas/StorageProfileGcs'
+        - $ref: '#/components/schemas/StorageProfileMemory'
       description: Storage profile for a warehouse.
       discriminator:
         propertyName: type
         mapping:
           adls: '#/components/schemas/StorageProfileAdls'
           gcs: '#/components/schemas/StorageProfileGcs'
+          memory: '#/components/schemas/StorageProfileMemory'
           onelake: '#/components/schemas/StorageProfileOneLake'
           s3: '#/components/schemas/StorageProfileS3'
           stackit: '#/components/schemas/StorageProfileStackit'
@@ -18093,6 +18308,17 @@ components:
               type: string
               enum:
                 - gcs
+    StorageProfileMemory:
+      allOf:
+        - $ref: '#/components/schemas/MemoryProfile'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - memory
     StorageProfileOneLake:
       allOf:
         - $ref: '#/components/schemas/OneLakeProfile'
@@ -18249,6 +18475,7 @@ components:
         - get_metadata
         - commit
         - rename
+        - move
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
@@ -19467,6 +19694,7 @@ components:
         - get_metadata
         - select
         - rename
+        - move
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
