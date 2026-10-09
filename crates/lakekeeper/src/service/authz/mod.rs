@@ -4,7 +4,7 @@ use std::{
 };
 
 use axum::Router;
-use iceberg_ext::catalog::TableUpdateKind;
+pub use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::EnumString;
@@ -1692,7 +1692,8 @@ pub enum CatalogTableAction {
         // lets an authorizer decide per branch (e.g. protect `main`).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         target_refs: Arc<BTreeSet<String>>,
-        /// The kinds of metadata updates this commit contains.
+        /// The kinds of metadata updates this commit contains. A check that names none
+        /// is answered for any commit.
         // Lets an authorizer require table-wide authority for anything beyond a
         // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -1753,6 +1754,26 @@ impl CatalogTableAction {
     #[must_use]
     pub fn variants() -> &'static [CatalogTableAction; 14] {
         &TABLE_ACTION_VARIANTS
+    }
+
+    /// Whether this is a commit that only changes the table's data; see
+    /// [`TableUpdateKind::changes_only_data`]. A commit check that names no update kinds
+    /// asks about commits in general, so it is not one.
+    #[must_use]
+    pub fn is_data_commit(&self) -> bool {
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+                target_refs: _,
+                update_kinds,
+            } => {
+                updated_properties.is_empty()
+                    && removed_properties.is_empty()
+                    && TableUpdateKind::changes_only_data(update_kinds)
+            }
+            _ => false,
+        }
     }
 }
 impl EventAction for CatalogTableAction {

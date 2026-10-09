@@ -15,12 +15,15 @@ type lakekeeper_table
     define describe: [user, role#assignee]
     define describe_effective: describe or ownership or select_effective or describe_effective from parent
     define select: [user, role#assignee]
-    define select_effective: select or ownership or modify_effective or select_effective from parent
+    define select_effective: select or ownership or write_effective or select_effective from parent
+    # Write data without changing the table's structure, dropping or renaming it.
+    define write: [user, role#assignee]
+    define write_effective: write or ownership or modify_effective or write_effective from parent
     define modify: [user, role#assignee]
     define modify_effective: modify or ownership or modify_effective from parent
 
     # A grant on this object. A leaf, so there is nothing below to recurse into.
-    define visible_below: describe or select or modify or ownership
+    define visible_below: describe or select or write or modify or ownership
     # Governance tag attachment. Independent of `modify` (separation of duties);
     # inherits from the parent namespace.
     define manage_tags: [user, role#assignee] or manage_tags from parent
@@ -28,14 +31,16 @@ type lakekeeper_table
     # ------------------ Actions ------------------
     define can_drop: modify_effective
     define can_undrop: modify_effective
-    define can_write_data: modify_effective
+    define can_write_data: write_effective
     define can_read_data: select_effective
     define can_get_metadata: describe_effective
+    # A commit that only adds data: snapshots, ref moves and statistics.
+    define can_commit_data: write_effective
     define can_commit: modify_effective
     define can_rename: modify_effective
     define can_move: manage_grants and modify_effective
     define can_include_in_list: can_get_metadata
-    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_grant_manage_tags or can_change_ownership
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_write or can_grant_modify or can_grant_manage_tags or can_change_ownership
     define can_set_protection: modify_effective
     define can_manage_tags: manage_tags
     # Task permissions
@@ -47,12 +52,14 @@ type lakekeeper_table
     define can_grant_manage_grants: manage_grants
     define can_grant_describe: manage_grants or (describe_effective and pass_grants)
     define can_grant_select: manage_grants or (select_effective and pass_grants)
+    define can_grant_write: manage_grants or (write_effective and pass_grants)
     define can_grant_modify: manage_grants or (modify_effective and pass_grants)
     define can_grant_manage_tags: manage_grants
 
     # REVOKE Permissions
     # Taking a privilege back is administration, never delegation
     define can_revoke_describe: manage_grants
+    define can_revoke_write: manage_grants
     define can_revoke_modify: manage_grants
     define can_revoke_select: manage_grants
     define can_change_ownership: manage_grants

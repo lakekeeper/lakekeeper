@@ -143,9 +143,11 @@ require_table_access_simple(lakekeeper_id, warehouse_name, namespace_name, table
 }
 
 # Check access to a table
+# `update_kinds` names what the commit changes, e.g. `["add-schema"]`. A check that
+# names none is answered for any commit.
 require_table_access_commit(
 	lakekeeper_id, warehouse_name, namespace_name,
-	table_name, user, updated_properties, removed_properties,
+	table_name, user, updated_properties, removed_properties, update_kinds,
 ) if {
 	value := authenticated_http_send(
 		lakekeeper_id,
@@ -158,6 +160,7 @@ require_table_access_commit(
 						"action": "commit",
 						"updated_properties": updated_properties,
 						"removed_properties": removed_properties,
+						"update_kinds": update_kinds,
 					},
 					"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 					"namespace": namespace_name,
