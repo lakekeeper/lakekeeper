@@ -2501,7 +2501,7 @@ mod tests {
             CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId, RoleSourceId,
             SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction, UniqueMembers,
             UniqueRoles, UserUpsertMode,
-            authn::{UserId, UserIdRef},
+            authn::{ArcUserId, UserId},
             authz::UserOrRoleId,
         },
     };
@@ -2528,7 +2528,7 @@ mod tests {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    fn make_user<'a>(user_id: &'a UserIdRef, name: &'a str) -> CatalogUserRoleAssignmentUser<'a> {
+    fn make_user<'a>(user_id: &'a ArcUserId, name: &'a str) -> CatalogUserRoleAssignmentUser<'a> {
         CatalogUserRoleAssignmentUser {
             user_id,
             name: Some(name),
@@ -2538,7 +2538,7 @@ mod tests {
         }
     }
 
-    fn make_role<'a>(ident: &'a Arc<RoleIdent>, name: &'a str) -> CatalogRoleForAssignment<'a> {
+    fn make_role<'a>(ident: &'a ArcRoleIdent, name: &'a str) -> CatalogRoleForAssignment<'a> {
         CatalogRoleForAssignment {
             ident,
             name: Some(name),
