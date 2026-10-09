@@ -29,3 +29,21 @@ SQLX_OFFLINE = "true"
 # `--with-malloc-conf` first and `MALLOC_CONF` last, so an operator can override
 # it at runtime with `_RJEM_MALLOC_CONF`.
 JEMALLOC_SYS_WITH_MALLOC_CONF = "thp:never"
+
+# Build the vendored MIT krb5 1.19.2 (`krb5-src`, pulled in by rdkafka's
+# `gssapi-vendored` feature) on GCC >= 15 and glibc >= 2.43.
+#
+# GCC 15 compiles C as C23 by default, where `int f()` declares a function that
+# takes no arguments; krb5's K&R-style RPC code then fails with "too many
+# arguments to function". `-std=gnu17` restores the default of GCC <= 14.
+#
+# glibc 2.43 makes `strchr` and similar functions return `const char *` for a
+# `const char *` argument whenever `_GNU_SOURCE` is set, independent of `-std`.
+# krb5 assigns such results to `char *` and builds with
+# `-Werror=discarded-qualifiers`. krb5's configure adds its warning flags only
+# when `WARN_CFLAGS` is unset, so setting it keeps those warnings non-fatal.
+#
+# Both are fixed upstream in krb5 1.22; remove these once `krb5-src` bundles it.
+# A `CFLAGS` set in the environment replaces this value.
+CFLAGS = "-std=gnu17"
+WARN_CFLAGS = "-Wall"
